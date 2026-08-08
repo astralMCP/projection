@@ -29,6 +29,9 @@
  * ```
  */
 
+// Entry point
+export { wrapMcpServer, type McCircuitFacade, type WrapOptions } from './wrap.js';
+
 // Shared contract
 export * from './types.js';
 export { McCircuitError, toStructuredError } from './errors.js';
