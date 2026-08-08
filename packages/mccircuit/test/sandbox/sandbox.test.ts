@@ -161,6 +161,35 @@ describe('isolation invariants (R11/N3, R9, S1)', () => {
     });
   });
 
+  it('does not leak host environment variables through process.env (S1)', async () => {
+    // The QuickJS provider injects a `process` global whose `env` is the
+    // tool-call binding object. If a provider change ever folded host env
+    // into it, authored code would read secrets here. Plant a canary and
+    // prove it stays on the host.
+    const canary = 'MCC_HOST_ENV_CANARY_9f13';
+    process.env[canary] = 'leaked';
+    try {
+      await withSession({}, async (session) => {
+        const result = await session.evaluate(
+          `const p = globalThis.process;
+           export default {
+             hasProcess: typeof p,
+             canary: p && p.env ? p.env[${JSON.stringify(canary)}] : 'no-env',
+             envKeys: p && p.env ? Object.keys(p.env).sort() : [],
+           };`,
+        );
+        const seen = result as { hasProcess: string; canary: unknown; envKeys: string[] };
+        expect(seen.canary).toBeUndefined();
+        // The only thing reachable through process.env is the I/O binding.
+        expect(seen.envKeys).not.toContain('PATH');
+        expect(seen.envKeys).not.toContain('HOME');
+        expect(seen.envKeys).not.toContain(canary);
+      });
+    } finally {
+      delete process.env[canary];
+    }
+  });
+
   it('rejects node:fs imports from authored code', async () => {
     const error = await createSandboxSession({
       code: `import fs from 'node:fs'; export default typeof fs;`,

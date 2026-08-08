@@ -445,6 +445,16 @@ export async function createSandboxSession(
   // are hoisted and would otherwise run the authored module before the
   // hardening statements. Then evaluate the authored module (R10) and publish
   // its namespace at `globalThis.__mccircuit.module`.
+  //
+  // S1 note on `process`: the QuickJS provider injects a `process` global
+  // whose `process.env` is the `env` binding object built at `env:` above —
+  // it holds ONLY `__mccircuit_toolCall` and never any host environment
+  // variable (verified: PATH/HOME and planted canaries are absent in-VM). It
+  // is deliberately not deleted here because that same object is how the
+  // tools bridge reaches the host (the sole I/O channel). Any change to the
+  // `env:` option below MUST keep it to the tool-call binding alone; adding
+  // host-derived entries would leak them into authored code through
+  // `process.env`.
   try {
     await runInVm(`delete globalThis.fetch; export default null;`);
     await runInVm(
