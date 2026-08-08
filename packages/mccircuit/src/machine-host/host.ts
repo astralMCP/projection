@@ -254,7 +254,7 @@ class SegmentRunner {
   }
 
   async run(options: RunSegmentOptions): Promise<SegmentOutcome> {
-    const { session, caps } = this.deps;
+    const { session } = this.deps;
     const resume = options.resume;
 
     let drained: DrainResult;

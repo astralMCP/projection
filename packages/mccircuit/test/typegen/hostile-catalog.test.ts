@@ -70,8 +70,14 @@ describe('hostile wrapped server (S5)', () => {
     const { dts, bridgeSource } = generateToolTypes(
       catalog({
         tools: [
-          tool({ name: 'run', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } }),
-          tool({ name: 'run', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } }),
+          tool({
+            name: 'run',
+            inputSchema: { type: 'object', properties: { a: { type: 'string' } } },
+          }),
+          tool({
+            name: 'run',
+            inputSchema: { type: 'object', properties: { b: { type: 'number' } } },
+          }),
         ],
       }),
     );
