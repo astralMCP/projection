@@ -1,6 +1,5 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/client';
+import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { McCircuitError } from '../../src/errors.js';
@@ -17,14 +16,14 @@ function buildFixtureServer(): McpServer {
     'get_weather',
     {
       description: 'Get the current weather for a city.',
-      inputSchema: {
+      inputSchema: z.object({
         city: z.string().describe('City name'),
         units: z.enum(['c', 'f']).optional().describe('Temperature units'),
-      },
-      outputSchema: {
+      }),
+      outputSchema: z.object({
         temperature: z.number(),
         conditions: z.string(),
-      },
+      }),
       annotations: { readOnlyHint: true, title: 'Weather' },
     },
     async ({ city }) => {
@@ -40,7 +39,7 @@ function buildFixtureServer(): McpServer {
     'delete_file',
     {
       description: 'Delete a file. Dangerous.',
-      inputSchema: { path: z.string() },
+      inputSchema: z.object({ path: z.string() }),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     },
     async ({ path }) => ({ content: [{ type: 'text', text: `deleted ${path}` }] }),
@@ -48,13 +47,13 @@ function buildFixtureServer(): McpServer {
 
   server.registerTool(
     'always_fails',
-    { description: 'Always returns an isError result.', inputSchema: {} },
+    { description: 'Always returns an isError result.', inputSchema: z.object({}) },
     async () => ({ content: [{ type: 'text', text: 'boom: the thing broke' }], isError: true }),
   );
 
   server.registerTool(
     'always_throws',
-    { description: 'Handler throws.', inputSchema: {} },
+    { description: 'Handler throws.', inputSchema: z.object({}) },
     async () => {
       throw new Error('kaput');
     },

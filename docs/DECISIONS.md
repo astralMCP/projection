@@ -1,6 +1,6 @@
 # Engineering decisions
 
-## D1 — Use the SDK's MRTR types; keep our own AEAD requestState sealer (2026-08-08, corrected)
+## D1 — Use the SDK's MRTR types; keep our own AEAD requestState sealer (2026-08-08, corrected, then done)
 
 The PRD targets MCP 2026-07-28 MRTR (SEP-2322): `tools/call` may return
 `resultType: "input_required"` with an `inputRequests` map and an opaque
@@ -41,6 +41,82 @@ to bring. Our sealer additionally carries the fields MRTR does not model —
 `codeHash` (S4), `serverIdentity` (R30), the `pending` map (S2) and `trip`
 (R18) — and supports key rotation (R22). The SDK's `bind` concept is worth
 adopting later for principal binding.
+
+**Done (2026-08-08).** The migration landed. Shape it took:
+
+_Dependencies._ `@modelcontextprotocol/sdk@^1.30.0` is gone; the package
+depends on `@modelcontextprotocol/server@2.0.0` and
+`@modelcontextprotocol/client@2.0.0` (exact pins). `@modelcontextprotocol/core`
+and `/node` are not imported directly. `zod` moved to `^4.2.0` — the v2
+packages require it, and `registerTool` now takes a Standard Schema
+(`z.object({…})`) rather than a raw shape.
+
+_Types._ `src/mrtr/protocol.ts` no longer defines wire types. It re-exports
+the SDK's `InputRequiredResult`, `InputRequest(s)`, `InputResponse(s)`,
+`InputResponseView`, `ContentBlock`, `CallToolResult` and `ProtocolEra`, plus
+the `inputRequired()` / `inputResponse()` / `acceptedContent()` /
+`isInputRequiredResult()` helpers; `ToolCallResult` is now literally the
+SDK's `HandlerResultTypeMap['tools/call']`. Three things stay local because
+the SDK does not provide them: `APPROVAL_SCHEMA` (a product decision, typed
+as the SDK's restricted elicitation schema so no cast is needed),
+`MRTR_PROTOCOL_REVISION` (the SDK's `LATEST_PROTOCOL_VERSION` /
+`SUPPORTED_PROTOCOL_VERSIONS` cover the legacy family only — 2026-07-28 is
+modelled as an era, not a version constant), and `supportsMrtr`. The
+locally-invented `CompleteResult`, `ElicitationRequest`, `ElicitationResponse`
+and `ResultType` are deleted; suspensions are built with `inputRequired()` and
+verdicts read with `inputResponse()`.
+
+_The blocker._ `registerOn` registered `execute_machine` through an `as never`
+cast and read `extra.protocolVersion`, a field `RequestHandlerExtra` never
+had. `deps.protocolVersion` was therefore always `undefined`, `supportsMrtr()`
+always false, and every gated call answered `phase: "protocol"` instead of
+suspending — the headline feature was dead through its own documented entry
+point. The fix follows how v2 actually models era: it is **instance state, not
+a per-request field**. `createMcpHandler` / `serveStdio` call a server factory
+with `McpRequestContext.era`, so the facade's primary shape is now
+`facade.serverFactory`, and `createServer(ctx)` closes over the era before
+registering the handler. `supportsMrtr` takes a `ProtocolEra` and returns
+`era === 'modern'`. A hand-built `McpServer` is legacy by construction, which
+is why `registerOn(server, { era })` defaults to legacy — fail-safe.
+
+_R28 both ways._ A modern client (`versionNegotiation: { mode: { pin:
+'2026-07-28' } }`) suspends; a legacy client gets the fail-fast `protocol`
+error. Note that v2 would otherwise fulfil an `input_required` return on a
+legacy connection through its own server→client elicitation shim. McCircuit
+refuses that on purpose: R28 mandates the fail-fast, and the shim's push-style
+round trips hold a connection open, which is the statelessness (R27) MRTR
+exists to buy.
+
+_R29._ `Server` accepts `instructions` only in its constructor, so `registerOn`
+could never deliver the code-mode preamble and the model never saw it.
+`createServer` constructs the `McpServer` with `instructions` and registers
+everything; `serverFactory` is that function bound for `createMcpHandler`. An
+integration test asserts a real `Client.getInstructions()` equals
+`facade.instructions` on both eras.
+
+_Forced behavioural changes._ Two, both verified against the SDK's wire codec
+rather than assumed:
+
+1. The 2026-07-28 elicitation params have no `title` (only `message`,
+   `requestedSchema`, `mode`). `ElicitationCopy.title` is now the first line
+   of the message rather than a dropped field.
+2. An `InputRequiredResult` carries `resultType`, `inputRequests` and
+   `requestState` and nothing else — the encode seam strips `content` **and**
+   `_meta`. So R31's "logs ship alongside `input_required` suspensions" clause
+   is not deliverable on this wire. Logs still ship with every completion,
+   every `isError` result and every resumed segment; only the suspending
+   segment's console output is lost. It is deliberately not smuggled into the
+   elicitation prompt, because S6 requires that copy to be server-derived and
+   logs are model-authored. Locked by a test so the day the spec grows a
+   vehicle, the fix has an address.
+
+_Testing._ The SDK has no in-memory serving entry for the modern era
+(`InMemoryTransport.createLinkedPair()` connects legacy instances only), which
+is exactly why the wired path went untested and the blocker survived review.
+`test/integration/code-mode-server.test.ts` drives a real `Client` against
+`createMcpHandler(facade.serverFactory)` over a `StreamableHTTPClientTransport`
+whose `fetch` is the handler itself — real JSON-RPC, no network. Three of its
+seven tests fail if the era stops reaching the handler.
 
 ## D2 — Toolchain (2026-08-08)
 

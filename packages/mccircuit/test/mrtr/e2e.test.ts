@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { executeMachine, MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
-import type {
-  CompleteResult,
-  ExecuteMachineDeps,
-  InputRequiredResult,
-  ToolCallResult,
-} from '../../src/mrtr/index.js';
+import { APPROVAL_SCHEMA, executeMachine, MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
+import type { ExecuteMachineDeps, ToolCallResult } from '../../src/mrtr/index.js';
 import type { BlobSealerConfig, StructuredError } from '../../src/types.js';
 import { BRIDGE_SOURCE, CATALOG, FakeExecutor } from '../machine-host/fixtures.js';
+import {
+  ACCEPT,
+  completed,
+  decline,
+  elicitation,
+  isSuspended,
+  requestKeys,
+  sealedState,
+  structured,
+  suspension,
+} from './helpers.js';
 
 const BLOB: BlobSealerConfig = { key: new Uint8Array(32).fill(3) };
 
@@ -17,19 +23,14 @@ function deps(overrides: Partial<ExecuteMachineDeps> = {}): ExecuteMachineDeps {
     bridgeSource: BRIDGE_SOURCE,
     executor: new FakeExecutor(),
     blob: BLOB,
-    protocolVersion: MRTR_PROTOCOL_REVISION,
+    protocolEra: 'modern',
     ...overrides,
   };
 }
 
-function isSuspended(result: ToolCallResult): result is InputRequiredResult {
-  return 'resultType' in result && result.resultType === 'input_required';
-}
-
 function structuredError(result: ToolCallResult): StructuredError {
-  const complete = result as CompleteResult;
-  expect(complete.isError).toBe(true);
-  return complete.structuredContent as unknown as StructuredError;
+  expect(completed(result).isError).toBe(true);
+  return structured(result) as unknown as StructuredError;
 }
 
 const WRITE_MACHINE = `
@@ -77,9 +78,9 @@ describe('execute_machine over MRTR', () => {
   it('completes read-only work in one call (PRD §8 happy path)', async () => {
     const result = await executeMachine({ code: READ_MACHINE }, deps());
     expect(isSuspended(result)).toBe(false);
-    const complete = result as CompleteResult;
-    expect(complete.isError).toBeUndefined();
-    expect(complete.structuredContent?.['output']).toEqual({ text: 'read_file-ok' });
+    const complete = structured(result);
+    expect(completed(result).isError).toBeUndefined();
+    expect(complete['output']).toEqual({ text: 'read_file-ok' });
   });
 
   it('suspends with an elicitation and a sealed requestState', async () => {
@@ -87,17 +88,35 @@ describe('execute_machine over MRTR', () => {
     const result = await executeMachine({ code: WRITE_MACHINE }, deps({ executor }));
 
     expect(isSuspended(result)).toBe(true);
-    if (!isSuspended(result)) return;
-    expect(Object.keys(result.inputRequests)).toEqual(['w1']);
-    const request = result.inputRequests['w1'];
-    expect(request?.type).toBe('elicitation');
-    expect(request?.message).toContain('write_file');
-    expect(request?.message).toContain('/notes.txt');
+    expect(requestKeys(result)).toEqual(['w1']);
+    const request = elicitation(result, 'w1');
+    expect(request.message).toContain('write_file');
+    expect(request.message).toContain('/notes.txt');
+    expect(request.requestedSchema).toEqual(APPROVAL_SCHEMA);
     // Nothing executed while waiting for approval.
     expect(executor.calls).toEqual([]);
     // The blob is opaque: machine context does not travel in the clear.
-    expect(result.requestState).not.toContain('notes.txt');
-    expect(result.requestState.startsWith('mcc1.')).toBe(true);
+    expect(sealedState(result)).not.toContain('notes.txt');
+    expect(sealedState(result).startsWith('mcc1.')).toBe(true);
+  });
+
+  it('emits a suspension carrying only the three fields the wire allows (R31 caveat)', async () => {
+    const noisy = WRITE_MACHINE.replace(
+      "import { toolCall } from '@mccircuit/tools';",
+      "import { toolCall } from '@mccircuit/tools';\nconsole.log('about to ask');",
+    );
+    const result = await executeMachine({ code: noisy }, deps());
+    const suspended = suspension(result);
+
+    // The 2026-07-28 `InputRequiredResult` has no slot for content or _meta,
+    // and the SDK's encode seam drops both, so the suspending segment's
+    // console output has nowhere to ride. Asserted so the day the spec grows
+    // a vehicle for it, this test says where to put it back.
+    expect(Object.keys(suspended).toSorted()).toEqual([
+      'inputRequests',
+      'requestState',
+      'resultType',
+    ]);
   });
 
   it('executes the write and completes on an accepted retry', async () => {
@@ -108,19 +127,19 @@ describe('execute_machine over MRTR', () => {
     const retry = await executeMachine(
       {
         code: WRITE_MACHINE,
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
       deps({ executor }),
     );
 
-    const complete = retry as CompleteResult;
-    expect(complete.isError).toBeUndefined();
-    expect(complete.structuredContent?.['output']).toEqual({ status: 'written' });
+    const complete = structured(retry);
+    expect(completed(retry).isError).toBeUndefined();
+    expect(complete['output']).toEqual({ status: 'written' });
     expect(executor.calls).toEqual([
       { name: 'write_file', args: { path: '/notes.txt', content: 'hello' } },
     ]);
-    expect(complete.structuredContent?.['approvals']).toEqual([
+    expect(complete['approvals']).toEqual([
       {
         callId: 'w1',
         tool: 'write_file',
@@ -138,16 +157,16 @@ describe('execute_machine over MRTR', () => {
     const retry = await executeMachine(
       {
         code: WRITE_MACHINE,
-        requestState: first.requestState,
+        requestState: sealedState(first),
         inputResponses: {
-          w1: { type: 'elicitation', action: 'decline', content: { reason: 'not today' } },
+          w1: decline('not today'),
         },
       },
       deps({ executor }),
     );
 
-    const complete = retry as CompleteResult;
-    expect(complete.structuredContent?.['output']).toEqual({ status: 'skipped' });
+    const complete = structured(retry);
+    expect(complete['output']).toEqual({ status: 'skipped' });
     expect(executor.calls).toEqual([]);
   });
 
@@ -157,10 +176,10 @@ describe('execute_machine over MRTR', () => {
 
     const executor = new FakeExecutor();
     const retry = await executeMachine(
-      { code: WRITE_MACHINE, requestState: first.requestState, inputResponses: {} },
+      { code: WRITE_MACHINE, requestState: sealedState(first), inputResponses: {} },
       deps({ executor }),
     );
-    expect((retry as CompleteResult).structuredContent?.['output']).toEqual({ status: 'skipped' });
+    expect(structured(retry)['output']).toEqual({ status: 'skipped' });
     expect(executor.calls).toEqual([]);
   });
 });
@@ -170,7 +189,7 @@ describe('blob verification on retry (R21, S3, S4)', () => {
     const first = await executeMachine({ code: WRITE_MACHINE }, deps());
     if (!isSuspended(first)) throw new Error('expected suspension');
 
-    const parts = first.requestState.split('.');
+    const parts = sealedState(first).split('.');
     // Flip a character in the ciphertext.
     const ciphertext = parts[3] as string;
     parts[3] = (ciphertext[0] === 'A' ? 'B' : 'A') + ciphertext.slice(1);
@@ -180,7 +199,7 @@ describe('blob verification on retry (R21, S3, S4)', () => {
       {
         code: WRITE_MACHINE,
         requestState: parts.join('.'),
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        inputResponses: { w1: ACCEPT },
       },
       deps({ executor }),
     );
@@ -198,8 +217,8 @@ describe('blob verification on retry (R21, S3, S4)', () => {
     const retry = await executeMachine(
       {
         code: WRITE_MACHINE.replace('/notes.txt', '/etc/passwd'),
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
       deps({ executor }),
     );
@@ -218,8 +237,8 @@ describe('blob verification on retry (R21, S3, S4)', () => {
     const retry = await executeMachine(
       {
         code: WRITE_MACHINE,
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
       deps({ executor, catalog: { ...CATALOG, identity: 'someone-else@2.0.0' } }),
     );
@@ -236,8 +255,8 @@ describe('blob verification on retry (R21, S3, S4)', () => {
     const retry = await executeMachine(
       {
         code: WRITE_MACHINE,
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
       deps({ executor, blob: { key: new Uint8Array(32).fill(9) } }),
     );
@@ -256,24 +275,21 @@ describe('blob verification on retry (R21, S3, S4)', () => {
     const retry = await executeMachine(
       {
         code: WRITE_MACHINE,
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
       deps({ executor, blob: { key: newKey, previousKeys: [oldKey] } }),
     );
 
-    expect((retry as CompleteResult).structuredContent?.['output']).toEqual({ status: 'written' });
+    expect(structured(retry)['output']).toEqual({ status: 'written' });
     expect(executor.calls).toHaveLength(1);
   });
 });
 
 describe('down-negotiation (R28)', () => {
   it('runs read-only machines on a pre-MRTR client', async () => {
-    const result = await executeMachine(
-      { code: READ_MACHINE },
-      deps({ protocolVersion: '2025-06-18' }),
-    );
-    expect((result as CompleteResult).structuredContent?.['output']).toEqual({
+    const result = await executeMachine({ code: READ_MACHINE }, deps({ protocolEra: 'legacy' }));
+    expect(structured(result)['output']).toEqual({
       text: 'read_file-ok',
     });
   });
@@ -282,7 +298,7 @@ describe('down-negotiation (R28)', () => {
     const executor = new FakeExecutor();
     const result = await executeMachine(
       { code: WRITE_MACHINE },
-      deps({ executor, protocolVersion: '2025-06-18' }),
+      deps({ executor, protocolEra: 'legacy' }),
     );
 
     const error = structuredError(result);
@@ -332,8 +348,8 @@ export default setup({}).createMachine({
     const retry = await executeMachine(
       {
         code: twoWrites,
-        requestState: first.requestState,
-        inputResponses: { one: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { one: ACCEPT },
       },
       deps({ caps }),
     );
@@ -370,7 +386,7 @@ export default setup({}).createMachine({
     );
 
     if (!isSuspended(result)) throw new Error('expected suspension');
-    const message = result.inputRequests['w1']?.message ?? '';
+    const message = elicitation(result, 'w1').message;
     expect(message).toContain('Write a file.');
     expect(message).toContain('"path": "/n"');
     expect(message).toContain('[redacted]');
@@ -396,8 +412,10 @@ export default setup({}).createMachine({
 `;
     const result = await executeMachine({ code }, deps());
     if (!isSuspended(result)) throw new Error('expected suspension');
-    const request = result.inputRequests['d1'];
-    expect(request?.title).toContain('DESTRUCTIVE');
-    expect(request?.message.startsWith('WARNING:')).toBe(true);
+    // The 2026-07-28 elicitation has no `title` field, so the summary line
+    // opens the message and the destructive warning follows it.
+    const request = elicitation(result, 'd1');
+    expect(request.message.split('\n')[0]).toContain('DESTRUCTIVE');
+    expect(request.message).toContain('WARNING:');
   });
 });

@@ -8,12 +8,20 @@
  * MRTR adapter.
  */
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer } from '@modelcontextprotocol/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { wrapMcpServer, type McCircuitFacade } from '../../src/index.js';
-import { MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
-import type { CompleteResult, InputRequiredResult, ToolCallResult } from '../../src/mrtr/index.js';
+import type { CallToolResult, ToolCallResult } from '../../src/mrtr/index.js';
+import {
+  ACCEPT,
+  completed,
+  decline,
+  elicitation,
+  isSuspended,
+  sealedState,
+  structured,
+} from '../mrtr/helpers.js';
 
 const KEY = new Uint8Array(32).fill(5);
 
@@ -31,7 +39,7 @@ function buildWrappedServer(): McpServer {
     'read_file',
     {
       description: 'Read a file from disk.',
-      inputSchema: { path: z.string().describe('Absolute path to read.') },
+      inputSchema: z.object({ path: z.string().describe('Absolute path to read.') }),
       annotations: { readOnlyHint: true },
     },
     ({ path }) => ({
@@ -43,7 +51,7 @@ function buildWrappedServer(): McpServer {
     'list_files',
     {
       description: 'List known file paths.',
-      inputSchema: {},
+      inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
     () => ({ content: [{ type: 'text' as const, text: Object.keys(files).sort().join(',') }] }),
@@ -53,7 +61,7 @@ function buildWrappedServer(): McpServer {
     'write_file',
     {
       description: 'Write content to a file.',
-      inputSchema: { path: z.string(), content: z.string() },
+      inputSchema: z.object({ path: z.string(), content: z.string() }),
     },
     ({ path, content }) => {
       files[path] = content;
@@ -65,7 +73,7 @@ function buildWrappedServer(): McpServer {
     'delete_file',
     {
       description: 'Delete a file permanently.',
-      inputSchema: { path: z.string() },
+      inputSchema: z.object({ path: z.string() }),
       annotations: { destructiveHint: true },
     },
     ({ path }) => {
@@ -78,16 +86,12 @@ function buildWrappedServer(): McpServer {
   return server;
 }
 
-function isSuspended(result: ToolCallResult): result is InputRequiredResult {
-  return 'resultType' in result && result.resultType === 'input_required';
-}
-
 function output(result: ToolCallResult): unknown {
-  const complete = result as CompleteResult;
+  const complete = completed(result);
   if (complete.isError === true) {
     throw new Error(`unexpected error result: ${JSON.stringify(complete.structuredContent)}`);
   }
-  return complete.structuredContent?.['output'];
+  return structured(result)['output'];
 }
 
 describe('wrapMcpServer against a real MCP server', () => {
@@ -144,7 +148,7 @@ export default setup({}).createMachine({
   output: ({ context }) => context,
 });
 `;
-    const result = await facade.executeMachine({ code }, MRTR_PROTOCOL_REVISION);
+    const result = await facade.executeMachine({ code }, 'modern');
     expect(output(result)).toEqual({
       listing: '/notes.txt,/readme.md',
       notes: 'original notes',
@@ -173,20 +177,20 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ status: context.status }),
 });
 `;
-    const first = await facade.executeMachine({ code }, MRTR_PROTOCOL_REVISION);
+    const first = await facade.executeMachine({ code }, 'modern');
     expect(isSuspended(first)).toBe(true);
     if (!isSuspended(first)) return;
     // Nothing was written while waiting for the human.
     expect(files['/notes.txt']).toBe('original notes');
-    expect(first.inputRequests['w1']?.message).toContain('Write content to a file.');
+    expect(elicitation(first, 'w1').message).toContain('Write content to a file.');
 
     const retry = await facade.executeMachine(
       {
         code,
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
-      MRTR_PROTOCOL_REVISION,
+      'modern',
     );
 
     expect(output(retry)).toEqual({ status: 'wrote 18 bytes' });
@@ -215,17 +219,17 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ status: context.status }),
 });
 `;
-    const first = await facade.executeMachine({ code }, MRTR_PROTOCOL_REVISION);
+    const first = await facade.executeMachine({ code }, 'modern');
     if (!isSuspended(first)) throw new Error('expected suspension');
-    expect(first.inputRequests['d1']?.title).toContain('DESTRUCTIVE');
+    expect(elicitation(first, 'd1').message.split('\n')[0]).toContain('DESTRUCTIVE');
 
     const retry = await facade.executeMachine(
       {
         code,
-        requestState: first.requestState,
-        inputResponses: { d1: { type: 'elicitation', action: 'decline' } },
+        requestState: sealedState(first),
+        inputResponses: { d1: decline() },
       },
-      MRTR_PROTOCOL_REVISION,
+      'modern',
     );
 
     expect(output(retry)).toEqual({ status: 'kept' });
@@ -259,19 +263,19 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ status: context.status, source: context.source }),
 });
 `;
-    const first = await facade.executeMachine({ code }, MRTR_PROTOCOL_REVISION);
+    const first = await facade.executeMachine({ code }, 'modern');
     if (!isSuspended(first)) throw new Error('expected suspension');
     // The read already ran; the prompt shows the resolved content it read.
-    expect(first.inputRequests['w1']?.message).toContain('# demo');
+    expect(elicitation(first, 'w1').message).toContain('# demo');
     expect(files['/copy.md']).toBeUndefined();
 
     const retry = await facade.executeMachine(
       {
         code,
-        requestState: first.requestState,
-        inputResponses: { w1: { type: 'elicitation', action: 'accept' } },
+        requestState: sealedState(first),
+        inputResponses: { w1: ACCEPT },
       },
-      MRTR_PROTOCOL_REVISION,
+      'modern',
     );
 
     expect(output(retry)).toEqual({ status: 'copied', source: '# demo' });
@@ -291,10 +295,7 @@ export default setup({
   states: { reading: { invoke: { src: 'read', onDone: 'done' } }, done: { type: 'final' } },
 });
 `;
-    const failure = (await facade.executeMachine(
-      { code: broken },
-      MRTR_PROTOCOL_REVISION,
-    )) as CompleteResult;
+    const failure = (await facade.executeMachine({ code: broken }, 'modern')) as CallToolResult;
     expect(failure.isError).toBe(true);
     const error = failure.structuredContent as unknown as { phase: string; hint: string };
     expect(error.phase).toBe('validate');
@@ -319,7 +320,7 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ text: context.text }),
 });
 `;
-    const success = await facade.executeMachine({ code: fixed }, MRTR_PROTOCOL_REVISION);
+    const success = await facade.executeMachine({ code: fixed }, 'modern');
     expect(output(success)).toEqual({ text: 'original notes' });
   });
 

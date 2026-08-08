@@ -13,7 +13,11 @@ See [docs/PRD.md](docs/PRD.md) for the full product requirements and [docs/DECIS
 
 ## Usage
 
+McCircuit is built on the MCP TypeScript SDK v2 (`@modelcontextprotocol/server`)
+and serves the 2026-07-28 protocol revision, where MRTR lives.
+
 ```ts
+import { createMcpHandler } from '@modelcontextprotocol/server';
 import { wrapMcpServer } from 'mccircuit';
 
 const facade = await wrapMcpServer(myMcpServer, {
@@ -22,8 +26,36 @@ const facade = await wrapMcpServer(myMcpServer, {
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
 
-facade.registerOn(codeModeServer); // exposes exactly the two tools
+// Serves exactly the two tools, with the code-mode instructions attached.
+export default createMcpHandler(facade.serverFactory);
 ```
+
+`serverFactory` is the shape the SDK asks for, and it is the shape McCircuit
+needs: `createMcpHandler` (and `serveStdio`) call it once per served request
+or connection with the negotiated **protocol era**. That is the only place the
+era is available, and it decides two things — whether a gated call may suspend
+over MRTR or must fail fast (R28), and the `instructions` the server
+advertises, which an SDK `Server` accepts only at construction (R29).
+
+Building the `McpServer` yourself works too, as long as you say which era it
+serves:
+
+```ts
+const server = facade.createServer({ era: 'modern' }); // instructions included
+facade.registerOn(myOwnServer, { era: 'modern' }); // or register onto your own
+```
+
+A client reaches the MRTR path by opting into the modern era:
+
+```ts
+const client = new Client(info, {
+  capabilities: { elicitation: {} },
+  versionNegotiation: { mode: 'auto' }, // or { pin: '2026-07-28' }
+});
+```
+
+A client that stays on the 2025 era still runs read-only machines; the moment a
+machine needs approval it gets a structured error naming the revision it needs.
 
 The wrapped server's tools are never exposed directly. A model calls `discover_apis`, authors a machine, and runs it:
 

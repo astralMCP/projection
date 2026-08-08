@@ -4,15 +4,23 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { executeMachine, MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
+import { executeMachine } from '../../src/mrtr/index.js';
 import type {
-  CompleteResult,
+  CallToolResult,
   ExecuteMachineDeps,
   InputRequiredResult,
   ToolCallResult,
 } from '../../src/mrtr/index.js';
 import { clampCaps, type AuditEntry, type BlobSealerConfig } from '../../src/types.js';
 import { BRIDGE_SOURCE, CATALOG, FakeExecutor } from '../machine-host/fixtures.js';
+import {
+  ACCEPT,
+  isSuspended,
+  requestKeys,
+  sealedState,
+  completed as unwrap,
+  structured as structuredOf,
+} from './helpers.js';
 
 const BLOB: BlobSealerConfig = { key: new Uint8Array(32).fill(7) };
 
@@ -22,17 +30,13 @@ function deps(overrides: Partial<ExecuteMachineDeps> = {}): ExecuteMachineDeps {
     bridgeSource: BRIDGE_SOURCE,
     executor: new FakeExecutor(),
     blob: BLOB,
-    protocolVersion: MRTR_PROTOCOL_REVISION,
+    protocolEra: 'modern',
     ...overrides,
   };
 }
 
-function isSuspended(result: ToolCallResult): result is InputRequiredResult {
-  return 'resultType' in result && result.resultType === 'input_required';
-}
-
-function completed(result: ToolCallResult): CompleteResult {
-  const complete = result as CompleteResult;
+function completed(result: ToolCallResult): CallToolResult {
+  const complete = unwrap(result);
   if (complete.isError === true) {
     throw new Error(`unexpected error: ${JSON.stringify(complete.structuredContent)}`);
   }
@@ -75,13 +79,8 @@ async function approveAll(
   suspension: InputRequiredResult,
   d: ExecuteMachineDeps,
 ): Promise<ToolCallResult> {
-  const inputResponses = Object.fromEntries(
-    Object.keys(suspension.inputRequests).map((key) => [
-      key,
-      { type: 'elicitation' as const, action: 'accept' as const },
-    ]),
-  );
-  return await executeMachine({ code, requestState: suspension.requestState, inputResponses }, d);
+  const inputResponses = Object.fromEntries(requestKeys(suspension).map((key) => [key, ACCEPT]));
+  return await executeMachine({ code, requestState: sealedState(suspension), inputResponses }, d);
 }
 
 describe('the approval audit trail survives every round trip (PRD §8)', () => {
@@ -95,8 +94,8 @@ describe('the approval audit trail survives every round trip (PRD §8)', () => {
     if (!isSuspended(second)) throw new Error('expected second suspension');
     const final = completed(await approveAll(TWO_WRITES, second, d));
 
-    expect(final.structuredContent?.['output']).toEqual({ a: 'ok', b: 'ok' });
-    const approvals = final.structuredContent?.['approvals'] as AuditEntry[];
+    expect(structuredOf(final)['output']).toEqual({ a: 'ok', b: 'ok' });
+    const approvals = structuredOf(final)['approvals'] as AuditEntry[];
     expect(approvals.map((entry) => entry.callId)).toEqual(['one', 'two']);
     expect(approvals.every((entry) => entry.decision === 'approved')).toBe(true);
     expect(executor.calls.map((call) => call.args['path'])).toEqual(['/1', '/2']);
@@ -116,7 +115,7 @@ describe('round-trip cap counts round trips exactly (R18)', () => {
     // Previously the second approval — already shown to and accepted by the
     // user — was rejected as over the cap.
     const final = completed(await approveAll(TWO_WRITES, second, d));
-    expect(final.structuredContent?.['output']).toEqual({ a: 'ok', b: 'ok' });
+    expect(structuredOf(final)['output']).toEqual({ a: 'ok', b: 'ok' });
   });
 
   it('refuses the N+1th suspension before prompting the user', async () => {
@@ -126,7 +125,7 @@ describe('round-trip cap counts round trips exactly (R18)', () => {
     const first = await executeMachine({ code: TWO_WRITES }, d);
     if (!isSuspended(first)) throw new Error('expected first suspension');
 
-    const retry = (await approveAll(TWO_WRITES, first, d)) as CompleteResult;
+    const retry = (await approveAll(TWO_WRITES, first, d)) as CallToolResult;
     expect(retry.isError).toBe(true);
     const error = retry.structuredContent as unknown as { phase: string; message: string };
     expect(error.phase).toBe('terminal');
@@ -187,13 +186,13 @@ export default setup({}).createMachine({
     if (!isSuspended(first)) throw new Error('expected suspension');
     // Both reads ran inline; only the write is gated.
     expect(executor.calls.map((call) => call.args['path'])).toEqual(['/r1', '/r2']);
-    expect(Object.keys(first.inputRequests)).toEqual(['w']);
+    expect(requestKeys(first)).toEqual(['w']);
 
     // Previously the second read was spliced out of the in-VM queue and
     // lost, so the approved write executed and the workflow then died as
     // "stuck", blaming the model for a host bug.
     const final = completed(await approveAll(MIXED, first, d));
-    expect(final.structuredContent?.['output']).toEqual({ r1: 'ok', r2: 'ok', w: 'ok' });
+    expect(structuredOf(final)['output']).toEqual({ r1: 'ok', r2: 'ok', w: 'ok' });
   });
 });
 
@@ -229,8 +228,8 @@ export default setup({}).createMachine({
     });
     const final = completed(await approveAll(code, first, deps({ executor })));
 
-    expect(final.structuredContent?.['output']).toEqual({ status: 'failed: disk full' });
-    const approvals = final.structuredContent?.['approvals'] as AuditEntry[];
+    expect(structuredOf(final)['output']).toEqual({ status: 'failed: disk full' });
+    const approvals = structuredOf(final)['approvals'] as AuditEntry[];
     expect(approvals[0]?.decision).toBe('error');
   });
 });

@@ -1,8 +1,8 @@
 /**
  * MRTR adapter and the exposed tool surface (PRD §7, R1–R3, R15–R18, R27–R29).
  *
- * This is the only component that touches MCP wire types. The MRTR shapes
- * are defined locally because the released SDK line does not carry them yet
+ * This is the only component that touches MCP wire types, and it takes them
+ * from `@modelcontextprotocol/server@2.x` rather than defining its own
  * (docs/DECISIONS.md D1).
  */
 
@@ -18,15 +18,22 @@ export {
   type McCircuitResource,
 } from './discover.js';
 export {
+  acceptedContent,
+  inputRequired,
+  inputResponse,
+  isInputRequiredResult,
   APPROVAL_SCHEMA,
   MRTR_PROTOCOL_REVISION,
   supportsMrtr,
-  type CompleteResult,
+  type CallToolResult,
   type ContentBlock,
-  type ElicitationRequest,
-  type ElicitationResponse,
+  type InputRequest,
+  type InputRequests,
   type InputRequiredResult,
-  type ResultType,
+  type InputResponse,
+  type InputResponses,
+  type InputResponseView,
+  type ProtocolEra,
   type RetryEnvelope,
   type ToolCallResult,
 } from './protocol.js';

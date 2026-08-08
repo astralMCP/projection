@@ -6,7 +6,7 @@
  *
  * Two source kinds are supported (R4):
  *
- * - **In-process instance**: an `McpServer` from `@modelcontextprotocol/sdk`.
+ * - **In-process instance**: an `McpServer` from `@modelcontextprotocol/server`.
  *   The introspector connects it to an in-memory transport pair and talks to
  *   it with a real MCP client, so introspection and execution exercise the
  *   exact same code path as a remote server. The instance must be dedicated
@@ -16,10 +16,14 @@
  *   its lifecycle; `close()` will not touch it.
  */
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ErrorCode, McpError, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Client } from '@modelcontextprotocol/client';
+import {
+  InMemoryTransport,
+  McpServer,
+  ProtocolError,
+  ProtocolErrorCode,
+  type Tool,
+} from '@modelcontextprotocol/server';
 import { McCircuitError } from '../errors.js';
 import type {
   ServerAlias,
@@ -124,7 +128,7 @@ async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]>
     // A server with zero registered tools never declares the `tools`
     // capability (client-side assertion) and answers tools/list with
     // Method not found; treat both as an empty catalog, not a failure.
-    if (err instanceof McpError && err.code === ErrorCode.MethodNotFound) {
+    if (err instanceof ProtocolError && err.code === ProtocolErrorCode.MethodNotFound) {
       return [];
     }
     if (err instanceof Error && /does not support tools/i.test(err.message)) {

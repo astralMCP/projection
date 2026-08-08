@@ -6,19 +6,34 @@
  * `execute_machine` and `discover_apis` — plus the resources backing
  * discovery. The wrapped server's own tools are never exposed (R1).
  *
+ * The facade's primary shape is an SDK **server factory**, because that is
+ * the only place the SDK tells a server which protocol era it is serving:
+ *
  * ```ts
+ * import { createMcpHandler } from '@modelcontextprotocol/server';
+ *
  * const facade = await wrapMcpServer(myServer, { blob: { key } });
- * facade.registerOn(codeModeServer);           // registers the two tools
+ * export default createMcpHandler(facade.serverFactory);
  * ```
  *
- * `registerOn` is a convenience for the common `McpServer` case. Anything
- * more exotic (a custom transport, a hand-rolled handler) can drive
- * `facade.executeMachine` / `facade.discoverApis` directly — the facade is
- * plain data and functions, holding no cross-request state (R27).
+ * `createMcpHandler` (and `serveStdio`) call the factory once per serving
+ * unit with `McpRequestContext.era`, so `createServer` can both apply the
+ * code-mode `instructions` (R29 — `Server` only accepts them in its
+ * constructor) and hand the era to the MRTR adapter for down-negotiation
+ * (R28). `registerOn` remains for callers who build the `McpServer`
+ * themselves, and takes the era explicitly for the same reason.
+ *
+ * Anything more exotic can drive `facade.executeMachine` /
+ * `facade.discoverApis` directly — the facade is plain data and functions,
+ * holding no cross-request state (R27).
  */
 
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { Client } from '@modelcontextprotocol/client';
+import {
+  McpServer,
+  type Implementation,
+  type McpServerFactory,
+} from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { createIntrospector, type Introspector } from './introspector/index.js';
 import {
@@ -26,8 +41,10 @@ import {
   buildResources,
   discoverApis,
   executeMachine,
+  type CallToolResult,
   type ExecuteMachineArgs,
   type McCircuitResource,
+  type ProtocolEra,
   type ToolCallResult,
 } from './mrtr/index.js';
 import { generateToolTypes } from './typegen/index.js';
@@ -52,6 +69,18 @@ export interface WrapOptions {
   redact?: RedactionHook;
   /** Replaces the library's code-mode preamble (R29). */
   codeModePreamble?: string;
+  /** Identity the servers built by `createServer` advertise. */
+  serverInfo?: Implementation;
+}
+
+/** Options for registering the code-mode surface on a server the caller built. */
+export interface RegisterOptions {
+  /**
+   * The protocol era this server instance serves (R28). Omitted means
+   * `'legacy'`: a hand-connected `McpServer` never negotiates 2026-07-28, so
+   * defaulting to legacy is the honest — and fail-safe — reading.
+   */
+  era?: ProtocolEra;
 }
 
 export interface McCircuitFacade {
@@ -63,13 +92,21 @@ export interface McCircuitFacade {
   readonly dts: string;
   /** Resources served at stable `mccircuit://` URIs (R3). */
   readonly resources: McCircuitResource[];
+  /**
+   * Server factory to hand to `createMcpHandler` or `serveStdio` (R28, R29).
+   * Every instance it builds carries the code-mode `instructions` and knows
+   * the era it is serving.
+   */
+  readonly serverFactory: McpServerFactory;
 
   /** Run `execute_machine` for one `tools/call`, first attempt or retry. */
-  executeMachine(args: ExecuteMachineArgs, protocolVersion?: string): Promise<ToolCallResult>;
+  executeMachine(args: ExecuteMachineArgs, era?: ProtocolEra): Promise<ToolCallResult>;
   /** Run `discover_apis`. */
-  discoverApis(): ToolCallResult;
-  /** Register both tools and the resources on an `McpServer`. */
-  registerOn(server: McpServer): void;
+  discoverApis(): CallToolResult;
+  /** Build an `McpServer` carrying the instructions, both tools and the resources. */
+  createServer(ctx?: RegisterOptions): McpServer;
+  /** Register both tools and the resources on an `McpServer` the caller built. */
+  registerOn(server: McpServer, options?: RegisterOptions): void;
   /** Close the connection to the wrapped server. */
   close(): Promise<void>;
 }
@@ -79,6 +116,8 @@ const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine
 Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@mccircuit/tools'. Read-only tools run immediately; every other tool pauses the machine and asks the user to approve that exact call before it runs, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
 
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
+
+const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
 /**
  * Wrap an MCP server (an in-process instance or a connected client) into a
@@ -132,6 +171,7 @@ class Facade implements McCircuitFacade {
   readonly instructions: string;
   readonly dts: string;
   readonly resources: McCircuitResource[];
+  readonly serverFactory: McpServerFactory;
   private readonly deps: FacadeDeps;
 
   constructor(deps: FacadeDeps) {
@@ -140,9 +180,11 @@ class Facade implements McCircuitFacade {
     this.instructions = deps.instructions;
     this.dts = deps.dts;
     this.resources = deps.resources;
+    // Bound so it can be handed to `createMcpHandler` detached.
+    this.serverFactory = (ctx) => this.createServer(ctx);
   }
 
-  executeMachine(args: ExecuteMachineArgs, protocolVersion?: string): Promise<ToolCallResult> {
+  executeMachine(args: ExecuteMachineArgs, era?: ProtocolEra): Promise<ToolCallResult> {
     const { options } = this.deps;
     return executeMachine(args, {
       catalog: this.deps.catalog,
@@ -152,15 +194,35 @@ class Facade implements McCircuitFacade {
       ...(options.caps !== undefined ? { caps: options.caps } : {}),
       ...(options.policy !== undefined ? { policy: options.policy } : {}),
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
-      ...(protocolVersion !== undefined ? { protocolVersion } : {}),
+      ...(era !== undefined ? { protocolEra: era } : {}),
     });
   }
 
-  discoverApis(): ToolCallResult {
+  discoverApis(): CallToolResult {
     return discoverApis(this.deps.catalog, this.deps.overview);
   }
 
-  registerOn(server: McpServer): void {
+  /**
+   * R29: `Server` accepts `instructions` only in its constructor, so the
+   * code-mode preamble can be delivered from here and nowhere else. This is
+   * also where the era arrives, which is why the factory shape is the
+   * library's recommended entry point.
+   */
+  createServer(ctx?: RegisterOptions): McpServer {
+    const server = new McpServer(
+      this.deps.options.serverInfo ?? {
+        name: `mccircuit-${this.deps.catalog.alias}`,
+        version: '0.1.0',
+      },
+      { instructions: this.instructions },
+    );
+    this.registerOn(server, ctx);
+    return server;
+  }
+
+  registerOn(server: McpServer, options?: RegisterOptions): void {
+    const era = options?.era;
+
     server.registerTool(
       'execute_machine',
       {
@@ -168,22 +230,38 @@ class Facade implements McCircuitFacade {
         description: EXECUTE_MACHINE_DESCRIPTION,
         inputSchema: EXECUTE_MACHINE_INPUT_SCHEMA,
       },
-      // The SDK's tool-callback types are built around its own result shape;
-      // MRTR's input_required result is not in that union yet (D1), so the
-      // handler is registered through a structural cast.
-      (async (args: ExecuteMachineArgs, extra: { protocolVersion?: string }) =>
-        await this.executeMachine(args, extra?.protocolVersion)) as never,
+      async (args, ctx) =>
+        await this.executeMachine(
+          {
+            code: args.code,
+            // `exactOptionalPropertyTypes`: an absent optional argument must
+            // stay absent rather than becoming an explicit `undefined`.
+            ...(args.lang !== undefined ? { lang: args.lang } : {}),
+            ...(args.input !== undefined ? { input: args.input } : {}),
+            // MRTR's retry fields are request params, not tool arguments:
+            // the SDK lifts them off `params` before the handler runs, so
+            // they are read from the context rather than from `args`. The
+            // raw wire string is what we want — `openBlob` performs the full
+            // R21 verification, including the `codeHash` binding that a
+            // `requestState.verify` hook could not check (it never sees the
+            // re-sent `code`).
+            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
+            ...(ctx.mcpReq.inputResponses !== undefined
+              ? { inputResponses: ctx.mcpReq.inputResponses }
+              : {}),
+          },
+          era,
+        ),
     );
 
     server.registerTool(
       'discover_apis',
       {
         title: 'Discover the tool API',
-        description:
-          "Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.",
-        inputSchema: {},
+        description: DISCOVER_APIS_DESCRIPTION,
+        inputSchema: z.object({}),
       },
-      (() => this.discoverApis()) as never,
+      () => this.discoverApis(),
     );
 
     for (const resource of this.resources) {
@@ -204,25 +282,28 @@ class Facade implements McCircuitFacade {
 }
 
 /**
- * `execute_machine` arguments (R2), as the Zod raw shape the SDK expects.
- *
- * The MRTR retry fields (`requestState`, `inputResponses`) are declared
- * here too: the spec re-sends the original arguments on retry, and the
- * client adds these alongside them.
+ * `ctx.mcpReq.requestState()` is typed as a caller-asserted cast, so it is
+ * read as `unknown` and narrowed here: without a configured
+ * `ServerOptions.requestState.verify` hook the SDK hands back the raw wire
+ * string, and anything else means someone wired a decoding hook McCircuit
+ * does not own.
  */
-const EXECUTE_MACHINE_INPUT_SCHEMA = {
+function maybeRequestState(state: unknown): { requestState?: string } {
+  return typeof state === 'string' ? { requestState: state } : {};
+}
+
+/**
+ * `execute_machine` arguments (R2).
+ *
+ * The MRTR retry fields are deliberately absent: `requestState` and
+ * `inputResponses` are siblings of `arguments` in a `tools/call`, not
+ * members of it, and the SDK surfaces them on the handler context.
+ */
+const EXECUTE_MACHINE_INPUT_SCHEMA = z.object({
   code: z.string().describe('The machine module source: a default-exported XState v5 machine.'),
   lang: z
     .enum(['ts', 'js'])
     .optional()
     .describe('Language of `code`. Defaults to TypeScript-compatible parsing.'),
   input: z.unknown().optional().describe('Passed to the machine as its `input`.'),
-  requestState: z
-    .string()
-    .optional()
-    .describe('MRTR: the opaque state echoed back verbatim when retrying after approval.'),
-  inputResponses: z
-    .record(z.string(), z.unknown())
-    .optional()
-    .describe('MRTR: the answers collected for the elicitations of the previous call.'),
-};
+});

@@ -26,11 +26,13 @@ import {
 import {
   APPROVAL_SCHEMA,
   MRTR_PROTOCOL_REVISION,
+  inputRequired,
+  inputResponse,
   supportsMrtr,
-  type CompleteResult,
+  type CallToolResult,
   type ContentBlock,
-  type ElicitationRequest,
-  type InputRequiredResult,
+  type InputRequests,
+  type ProtocolEra,
   type RetryEnvelope,
   type ToolCallResult,
 } from './protocol.js';
@@ -51,8 +53,12 @@ export interface ExecuteMachineDeps {
   caps?: Partial<ResourceCaps>;
   policy?: PolicyOverrides;
   redact?: RedactionHook;
-  /** Protocol revision the client negotiated, for down-negotiation (R28). */
-  protocolVersion?: string;
+  /**
+   * Protocol era this request is being served on, for down-negotiation
+   * (R28). The SDK hands it to the server factory as
+   * `McpRequestContext.era`; `undefined` is treated as legacy.
+   */
+  protocolEra?: ProtocolEra;
 }
 
 /**
@@ -141,10 +147,13 @@ function openResume(
 
   const verdicts: Record<string, ApprovalVerdict> = {};
   for (const key of Object.keys(payload.pending)) {
-    const response = args.inputResponses?.[key];
-    // R17: absent, declined and cancelled all count as declined.
-    if (response === undefined || response.action !== 'accept') {
-      const reason = readReason(response?.content);
+    // The SDK's discriminated reader covers every non-approval outcome in
+    // one place: a missing key, a response of another kind (sampling,
+    // roots), and the decline/cancel actions. R17 treats all of them as a
+    // decline, so only an accepted elicitation approves the call.
+    const view = inputResponse(args.inputResponses, key);
+    if (view.kind !== 'elicit' || view.action !== 'accept') {
+      const reason = view.kind === 'elicit' ? readReason(view.content) : undefined;
       verdicts[key] = reason !== undefined ? { kind: 'declined', reason } : { kind: 'declined' };
       continue;
     }
@@ -179,8 +188,10 @@ function toToolCallResult(
 ): ToolCallResult {
   switch (outcome.status) {
     case 'completed':
+      // A finished result is a plain `CallToolResult`: the `resultType`
+      // discriminator only ever appears on the input-required branch, and
+      // the SDK lifts complete results before the client sees them.
       return {
-        resultType: 'complete',
         content: [
           { type: 'text', text: JSON.stringify(outcome.output ?? null, null, 2) },
           ...logBlocks(outcome.logs),
@@ -208,12 +219,19 @@ function suspendResult(
 ): ToolCallResult {
   // R28: a client that cannot carry MRTR must fail here rather than silently
   // executing an unapproved write or hanging.
-  if (!supportsMrtr(deps.protocolVersion)) {
+  //
+  // The SDK would otherwise fulfil an `input_required` return on a legacy
+  // connection through its server→client elicitation shim. McCircuit refuses
+  // that path deliberately: R28 mandates a fail-fast error naming the
+  // required revision, and the shim's push-style round trips hold a
+  // connection open, which is exactly the statelessness (R27) the MRTR
+  // design buys us.
+  if (!supportsMrtr(deps.protocolEra)) {
     return errorResult({
       phase: 'protocol',
-      message: `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (the client negotiated ${deps.protocolVersion ?? 'an earlier revision'})`,
+      message: `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
       diagnostics: [],
-      hint: 'Author a machine that only calls read-only tools, or connect with a client supporting Multi Round-Trip Requests.',
+      hint: 'Author a machine that only calls read-only tools, or connect with a client that negotiates the 2026-07-28 revision (SDK v2: `versionNegotiation: { mode: "auto" }`).',
       logs: outcome.logs,
     });
   }
@@ -230,7 +248,7 @@ function suspendResult(
     });
   }
 
-  const inputRequests: Record<string, ElicitationRequest> = {};
+  const inputRequests: InputRequests = {};
   for (const [key, call] of Object.entries(outcome.pending)) {
     const entry = deps.catalog.tools.find((tool) => tool.name === call.name);
     if (entry === undefined) {
@@ -249,12 +267,13 @@ function suspendResult(
       entry,
       deps.redact !== undefined ? { redact: deps.redact } : {},
     );
-    inputRequests[key] = {
-      type: 'elicitation',
-      title: copy.title,
-      message: copy.message,
+    // The 2026-07-28 elicitation params dropped `title` (the revision carries
+    // `message` and `requestedSchema` only), so the summary line becomes the
+    // first line of the message rather than being silently lost.
+    inputRequests[key] = inputRequired.elicit({
+      message: `${copy.title}\n\n${copy.message}`,
       requestedSchema: APPROVAL_SCHEMA,
-    };
+    });
   }
 
   const payload = buildBlobPayload({
@@ -278,20 +297,22 @@ function suspendResult(
     return errorResult({ ...structured, logs: outcome.logs });
   }
 
-  const result: InputRequiredResult = {
-    resultType: 'input_required',
-    inputRequests,
-    requestState,
-  };
-  const logs = logBlocks(outcome.logs);
-  // R31: logs ship alongside suspensions too.
-  return logs.length > 0 ? { ...result, content: logs } : result;
+  // The SDK's builder enforces the spec's at-least-one rule and stamps the
+  // `resultType` discriminator, so the suspension is never hand-assembled.
+  //
+  // R31 caveat, verified against the SDK's wire codec: an `InputRequiredResult`
+  // carries `resultType`, `inputRequests` and `requestState` and nothing else
+  // — the 2026-07-28 encode seam drops `content` and `_meta` alike. So the
+  // suspending segment's console output cannot ride this leg. It is not
+  // smuggled into the elicitation prompt either: that copy is server-derived
+  // by S6, and logs are model-authored. Every other response (completion,
+  // `isError`, and each resumed segment) still carries its own logs.
+  return inputRequired({ inputRequests, requestState });
 }
 
 /** Every failure is a normal result with `isError: true` and a structured body (R25). */
-function errorResult(error: StructuredError): CompleteResult {
+function errorResult(error: StructuredError): CallToolResult {
   return {
-    resultType: 'complete',
     isError: true,
     content: [{ type: 'text', text: JSON.stringify(error, null, 2) }],
     structuredContent: { ...error },

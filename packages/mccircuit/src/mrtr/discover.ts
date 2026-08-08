@@ -10,7 +10,7 @@
 import { AUTHORING_CONTRACT } from '../machine-host/index.js';
 import { XSTATE_VERSION } from '../blob/index.js';
 import type { ServerCatalog } from '../types.js';
-import type { CompleteResult, ContentBlock } from './protocol.js';
+import type { CallToolResult, ContentBlock } from './protocol.js';
 
 /** Stable URIs the server serves via `resources/read` (R3). */
 export const RESOURCE_URIS = {
@@ -142,7 +142,7 @@ export function buildResources(catalog: ServerCatalog, dts: string): McCircuitRe
  * The `discover_apis` result: an inline overview sufficient to author a
  * simple machine unaided, plus resource links for the full artifacts.
  */
-export function discoverApis(catalog: ServerCatalog, overview: string): CompleteResult {
+export function discoverApis(catalog: ServerCatalog, overview: string): CallToolResult {
   const inline = [
     `McCircuit code mode over "${catalog.identity}".`,
     '',
@@ -162,7 +162,6 @@ export function discoverApis(catalog: ServerCatalog, overview: string): Complete
   }));
 
   return {
-    resultType: 'complete',
     content: [{ type: 'text', text: inline }, ...links],
   };
 }

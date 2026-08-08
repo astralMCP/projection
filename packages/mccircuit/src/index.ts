@@ -24,13 +24,18 @@
  *   bridgeSource,
  *   executor: introspector,
  *   blob: { key: myThirtyTwoByteKey },
- *   protocolVersion: negotiatedRevision,
+ *   protocolEra: 'modern',
  * });
  * ```
  */
 
 // Entry point
-export { wrapMcpServer, type McCircuitFacade, type WrapOptions } from './wrap.js';
+export {
+  wrapMcpServer,
+  type McCircuitFacade,
+  type RegisterOptions,
+  type WrapOptions,
+} from './wrap.js';
 
 // Shared contract
 export * from './types.js';
@@ -89,10 +94,14 @@ export { runSegment, AUTHORING_CONTRACT, type RunSegmentOptions } from './machin
 
 // MRTR adapter — the exposed tool surface
 export {
+  acceptedContent,
   buildInstructions,
   buildResources,
   discoverApis,
   executeMachine,
+  inputRequired,
+  inputResponse,
+  isInputRequiredResult,
   supportsMrtr,
   APPROVAL_SCHEMA,
   DEFAULT_CODE_MODE_PREAMBLE,
@@ -100,14 +109,18 @@ export {
   EXAMPLE_HAPPY_PATH,
   MRTR_PROTOCOL_REVISION,
   RESOURCE_URIS,
-  type CompleteResult,
+  type CallToolResult,
   type ContentBlock,
-  type ElicitationRequest,
-  type ElicitationResponse,
   type ExecuteMachineArgs,
   type ExecuteMachineDeps,
+  type InputRequest,
+  type InputRequests,
   type InputRequiredResult,
+  type InputResponse,
+  type InputResponses,
+  type InputResponseView,
   type McCircuitResource,
+  type ProtocolEra,
   type RetryEnvelope,
   type ToolCallResult,
 } from './mrtr/index.js';
