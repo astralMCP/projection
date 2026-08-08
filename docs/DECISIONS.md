@@ -1,22 +1,46 @@
 # Engineering decisions
 
-## D1 — MRTR wire types are defined locally (2026-08-08)
+## D1 — Use the SDK's MRTR types; keep our own AEAD requestState sealer (2026-08-08, corrected)
 
 The PRD targets MCP 2026-07-28 MRTR (SEP-2322): `tools/call` may return
 `resultType: "input_required"` with an `inputRequests` map and an opaque
 `requestState` blob, and the client retries the original call with
 `inputResponses` + the echoed state.
 
-The currently installed `@modelcontextprotocol/sdk` (1.30.0) tops out at
-protocol `2025-11-25`. It ships an _experimental tasks_ feature that uses an
-`input_required` task status, but not the MRTR result shape the PRD specifies.
+**Superseded first attempt.** This entry originally concluded that no
+released SDK carried MRTR, and `src/mrtr/protocol.ts` hand-rolled the wire
+types. That conclusion was wrong: it was reached by checking only the
+legacy monolithic `@modelcontextprotocol/sdk` (1.30.0, protocol
+`2025-11-25`) and `@modelcontextprotocol/core@2.0.0`. The SDK v2 release
+split the monolith into scoped packages, and MRTR lives in
+**`@modelcontextprotocol/server@2.x`**, which was never checked.
 
-Decision: `src/mrtr/protocol.ts` defines the MRTR wire types exactly as the
-PRD describes them. The MRTR adapter is the only component that touches these
-types (PRD §7), so when the SDK ships official MRTR support we replace one
-module. Down-negotiation (R28) already requires us to detect a client that
-can't speak MRTR and fail gated flows fast; until the SDK stable line catches
-up, that path is also what real clients exercise.
+**What v2 actually provides.** `@modelcontextprotocol/server@2.0.0` exports
+the full MRTR surface as stable (not experimental): `InputRequiredResult`,
+`InputRequest(s)`, `InputResponse(s)`, `InputResponseView`, the
+`inputRequired()` result helper with `inputRequired.elicit()`, the
+`inputResponse()` / `acceptedContent()` readers, `isInputRequiredResult()`,
+and `ProtocolEra`. The 2026-07-28 era is served alongside the legacy era
+from one entry point; clients opt in via `versionNegotiation`.
+
+Decision: adopt the SDK's types and helpers. Hand-rolling a parallel
+definition of a stable wire format is duplication that will silently drift.
+
+**But keep our blob sealer.** The SDK also ships
+`createRequestStateCodec`, which is deliberately **signed, not encrypted** —
+its own docs say the client "can base64url-decode it and read the payload
+in clear. Do not put secrets in the payload; use an AEAD construction if
+confidentiality is required", and note that HKDF sub-key derivation and an
+encrypted mode are out of scope for the initial release.
+
+PRD R19 requires encryption specifically because machine context may hold
+data returned by read-only tool calls that would otherwise never transit to
+the client in code mode. So `src/blob/` stays: AES-256-GCM under a per-blob
+HKDF-derived key is exactly the AEAD construction the SDK tells integrators
+to bring. Our sealer additionally carries the fields MRTR does not model —
+`codeHash` (S4), `serverIdentity` (R30), the `pending` map (S2) and `trip`
+(R18) — and supports key rotation (R22). The SDK's `bind` concept is worth
+adopting later for principal binding.
 
 ## D2 — Toolchain (2026-08-08)
 
