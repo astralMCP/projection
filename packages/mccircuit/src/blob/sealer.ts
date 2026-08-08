@@ -57,6 +57,7 @@ import { McCircuitError } from '../errors.js';
 import {
   BLOB_SCHEMA_VERSION,
   type BlobPayload,
+  type AuditEntry,
   type BlobSealerConfig,
   type PendingToolCall,
 } from '../types.js';
@@ -273,6 +274,9 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
       throw malformed(`pending["${key}"]`);
     }
   }
+  if (!Array.isArray(payload['audit'])) {
+    throw malformed('audit');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +297,8 @@ export interface BuildBlobPayloadInput {
   snapshot: unknown;
   /** inputRequest key -> gated tool call awaiting a verdict (S2). */
   pending: Record<string, PendingToolCall>;
+  /** Approval audit accumulated so far in this workflow (PRD §8). */
+  audit?: AuditEntry[] | undefined;
   /** Round-trip counter (R18). */
   trip: number;
   /** Blob TTL in ms. Default {@link DEFAULT_TTL_MS} (15 minutes). */
@@ -316,6 +322,7 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
     serverIdentity: input.serverIdentity,
     snapshot: input.snapshot,
     pending: input.pending,
+    audit: input.audit ?? [],
     trip: input.trip,
     nonce: randomBytes(16).toString('base64url'),
     iat,

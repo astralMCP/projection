@@ -11,6 +11,7 @@ import { buildElicitationCopy } from '../policy/index.js';
 import {
   clampCaps,
   type ApprovalVerdict,
+  type AuditEntry,
   type BlobSealerConfig,
   type LogEntry,
   type PendingToolCall,
@@ -99,6 +100,7 @@ interface ResumeState {
   snapshot: unknown;
   pending: Record<string, PendingToolCall>;
   verdicts: Record<string, ApprovalVerdict>;
+  audit: AuditEntry[];
   trip: number;
 }
 
@@ -122,7 +124,12 @@ function openResume(
 
   // R18: the trip cap bounds a workflow's total round trips. The counter is
   // authenticated inside the blob, so a client cannot wind it back.
-  if (payload.trip >= caps.maxRoundTrips) {
+  //
+  // `trip` is 1 on the first suspension, so a blob carrying trip === N is
+  // the Nth round trip and must be allowed; only N+1 is over the cap. The
+  // cap is also enforced at suspension time, which is what actually refuses
+  // the workflow — this arm only catches a blob minted before a cap change.
+  if (payload.trip > caps.maxRoundTrips) {
     throw new McCircuitError(
       'terminal',
       `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
@@ -148,6 +155,9 @@ function openResume(
     snapshot: payload.snapshot,
     pending: payload.pending,
     verdicts,
+    // PRD §8: the audit trail spans the whole workflow, so it rides in the
+    // blob — the library keeps no state between round trips (R27).
+    audit: payload.audit,
     trip: payload.trip,
   };
 }
@@ -252,14 +262,26 @@ function suspendResult(
     serverIdentity: deps.catalog.identity,
     snapshot: outcome.snapshot,
     pending: outcome.pending,
+    audit: outcome.audit,
     trip: outcome.trip,
     ...(deps.blob.ttlMs !== undefined ? { ttlMs: deps.blob.ttlMs } : {}),
   });
 
+  let requestState: string;
+  try {
+    requestState = sealBlob(payload, deps.blob);
+  } catch (err) {
+    // R23 (blob over the size ceiling) is a failure the model can act on, so
+    // it must keep this segment's console output (R31) rather than losing it
+    // to the generic catch in executeMachine.
+    const structured = toStructuredError(err, outcome.logs);
+    return errorResult({ ...structured, logs: outcome.logs });
+  }
+
   const result: InputRequiredResult = {
     resultType: 'input_required',
     inputRequests,
-    requestState: sealBlob(payload, deps.blob),
+    requestState,
   };
   const logs = logBlocks(outcome.logs);
   // R31: logs ship alongside suspensions too.

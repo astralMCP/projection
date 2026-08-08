@@ -181,13 +181,33 @@ export const MAX_CAPS: ResourceCaps = {
   maxConsoleBytes: 256 * 1024,
 };
 
-/** Clamp requested caps at the hard maxima (R12). */
+/**
+ * Smallest value each cap may be configured down to.
+ *
+ * Caps are "configurable downward" (R12), but zero or negative would brick
+ * the flow rather than restrict it — a `maxRoundTrips` of 0 makes every
+ * gated workflow terminal, and a `segmentWallClockMs` of 0 fails every
+ * execution. Misconfiguration should not look like a library bug.
+ */
+const MIN_CAPS: ResourceCaps = {
+  segmentWallClockMs: 100,
+  wasmMemoryBytes: 1024 * 1024,
+  maxCodeBytes: 1024,
+  maxReadCallsPerSegment: 1,
+  maxRoundTrips: 1,
+  maxEventsPerSegment: 1,
+  maxResultBytes: 1024,
+  maxStateNodes: 1,
+  maxConsoleBytes: 1024,
+};
+
+/** Clamp requested caps into [MIN_CAPS, MAX_CAPS] (R12). */
 export function clampCaps(requested: Partial<ResourceCaps>): ResourceCaps {
   const caps = { ...DEFAULT_CAPS };
   for (const key of Object.keys(caps) as (keyof ResourceCaps)[]) {
     const value = requested[key];
-    if (value !== undefined) {
-      caps[key] = Math.min(value, MAX_CAPS[key]);
+    if (value !== undefined && Number.isFinite(value)) {
+      caps[key] = Math.max(MIN_CAPS[key], Math.min(value, MAX_CAPS[key]));
     }
   }
   return caps;
@@ -214,6 +234,14 @@ export interface BlobPayload {
   snapshot: unknown;
   /** inputRequest key -> gated tool call awaiting a verdict (S2). */
   pending: Record<string, PendingToolCall>;
+  /**
+   * Approval audit accumulated in earlier segments (PRD §8).
+   *
+   * Carried in the blob because the library holds no cross-request state
+   * (R27): without it a completed workflow would report only the approvals
+   * of its final segment.
+   */
+  audit: AuditEntry[];
   /** Round-trip counter (R18). */
   trip: number;
   /** Random nonce for replay scoping. */

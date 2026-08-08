@@ -270,6 +270,10 @@ class SegmentRunner {
       drained = await this.send(events);
     }
 
+    // Gated calls accumulate across settle passes so that everything reached
+    // before the machine goes quiet lands in ONE suspension (R15).
+    const gatedBatch: PendingToolCall[] = [];
+
     // Settle: process requests until the machine either finishes, errors,
     // or is waiting on gated calls that need approval.
     for (;;) {
@@ -281,6 +285,10 @@ class SegmentRunner {
 
       const requests = this.collectRequests(drained);
       if (requests.length === 0) {
+        // Nothing more to run: suspend on whatever accumulated, if anything.
+        if (gatedBatch.length > 0) {
+          return await this.suspend(gatedBatch);
+        }
         if (drained.status === 'done' || drained.status === 'stopped') {
           return this.complete(drained);
         }
@@ -296,11 +304,20 @@ class SegmentRunner {
       }
 
       const { events, gated } = await this.classify(requests, drained.value);
-      if (gated.length > 0) {
-        // R15: batch every gated call reached at this point into one
-        // suspension, including calls from parallel regions.
-        return await this.suspend(gated, events);
+      gatedBatch.push(...gated);
+
+      if (events.length === 0) {
+        // Only gated calls remain, so the machine cannot advance further
+        // without a human. Snapshot now.
+        return await this.suspend(gatedBatch);
       }
+
+      // Deliver auto/denied results before snapshotting. This must go
+      // through the settle loop rather than a send-and-forget inside
+      // `suspend`: `drain()` splices the in-VM request queue, so any call
+      // the machine queues in response to these events would be consumed
+      // and lost — and an already-approved write could then execute against
+      // a workflow that resumes with nowhere to go.
       drained = await this.send(events);
     }
   }
@@ -455,17 +472,14 @@ class SegmentRunner {
     return entry;
   }
 
-  /** Suspend for approval, sealing the exact calls that were requested. */
-  private async suspend(
-    gated: PendingToolCall[],
-    pendingEvents: HostEvent[],
-  ): Promise<SegmentOutcome> {
-    // Auto-executed and policy-denied results from this same step are
-    // delivered before snapshotting, so the resumed machine does not
-    // re-request them.
-    if (pendingEvents.length > 0) {
-      await this.send(pendingEvents);
-    }
+  /**
+   * Suspend for approval, sealing the exact calls that were requested.
+   *
+   * Every event the machine could act on has already been delivered by the
+   * settle loop, so the in-VM request queue is empty and the snapshot taken
+   * here is complete.
+   */
+  private async suspend(gated: PendingToolCall[]): Promise<SegmentOutcome> {
     const { snapshot } = (await this.deps.session.evaluate(SNAPSHOT_DRIVER)) as {
       snapshot: unknown;
     };
