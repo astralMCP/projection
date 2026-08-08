@@ -13,10 +13,10 @@ See [docs/PRD.md](docs/PRD.md) for the full product requirements.
 
 ## Repository layout
 
-| Path | What |
-| --- | --- |
+| Path                 | What                           |
+| -------------------- | ------------------------------ |
 | `packages/mccircuit` | The library (npm: `mccircuit`) |
-| `docs/PRD.md` | Product requirements document |
+| `docs/PRD.md`        | Product requirements document  |
 
 ## Development
 

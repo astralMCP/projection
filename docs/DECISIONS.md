@@ -8,7 +8,7 @@ The PRD targets MCP 2026-07-28 MRTR (SEP-2322): `tools/call` may return
 `inputResponses` + the echoed state.
 
 The currently installed `@modelcontextprotocol/sdk` (1.30.0) tops out at
-protocol `2025-11-25`. It ships an *experimental tasks* feature that uses an
+protocol `2025-11-25`. It ships an _experimental tasks_ feature that uses an
 `input_required` task status, but not the MRTR result shape the PRD specifies.
 
 Decision: `src/mrtr/protocol.ts` defines the MRTR wire types exactly as the

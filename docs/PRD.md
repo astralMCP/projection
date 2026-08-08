@@ -90,17 +90,17 @@ R11. `allowFetch` is hard-disabled. This is an invariant, not a configuration de
 
 R12. Default resource caps, all configurable downward and clamped at the stated maxima:
 
-| Cap | Default | Hard max |
-|---|---|---|
-| Wall-clock per execution segment (per round trip) | 30 s | 60 s |
-| WASM memory | 128 MB | 256 MB |
-| Submitted code size | 128 KB | 256 KB |
-| Read-only tool calls per segment | 50 | 200 |
-| MRTR round trips per workflow | 8 | 16 |
-| Machine events processed per segment | 10 000 | 50 000 |
-| Final result payload | 256 KB | 1 MB |
-| Machine state nodes (static count at validation) | 100 | 1 000 |
-| Captured console output per segment | 64 KB | 256 KB |
+| Cap                                               | Default | Hard max |
+| ------------------------------------------------- | ------- | -------- |
+| Wall-clock per execution segment (per round trip) | 30 s    | 60 s     |
+| WASM memory                                       | 128 MB  | 256 MB   |
+| Submitted code size                               | 128 KB  | 256 KB   |
+| Read-only tool calls per segment                  | 50      | 200      |
+| MRTR round trips per workflow                     | 8       | 16       |
+| Machine events processed per segment              | 10 000  | 50 000   |
+| Final result payload                              | 256 KB  | 1 MB     |
+| Machine state nodes (static count at validation)  | 100     | 1 000    |
+| Captured console output per segment               | 64 KB   | 256 KB   |
 
 R13. Interrupt handlers enforce the wall-clock budget inside the VM (not only around it), so tight loops cannot outrun the host timer. Each MRTR resume gets a fresh segment budget.
 
@@ -122,15 +122,15 @@ R19. The blob is versioned, authenticated, and encrypted (AEAD, e.g. AES-256-GCM
 
 R20. Blob payload fields:
 
-| Field | Purpose |
-|---|---|
-| `v` | Blob schema version; unknown versions are rejected with a terminal error |
-| `libv` / `xstatev` | Library and XState versions that produced the snapshot |
-| `codeHash` | SHA-256 of the original `code` argument; the retried call's code must match |
-| `snapshot` | `getPersistedSnapshot()` output of the machine actor |
-| `pending` | Map of inputRequest key → gated tool call (name, args) awaiting a verdict |
-| `trip` | Round-trip counter for R18 |
-| `nonce`, `iat`, `exp` | Replay scoping and expiry (default TTL 15 min, configurable) |
+| Field                 | Purpose                                                                     |
+| --------------------- | --------------------------------------------------------------------------- |
+| `v`                   | Blob schema version; unknown versions are rejected with a terminal error    |
+| `libv` / `xstatev`    | Library and XState versions that produced the snapshot                      |
+| `codeHash`            | SHA-256 of the original `code` argument; the retried call's code must match |
+| `snapshot`            | `getPersistedSnapshot()` output of the machine actor                        |
+| `pending`             | Map of inputRequest key → gated tool call (name, args) awaiting a verdict   |
+| `trip`                | Round-trip counter for R18                                                  |
+| `nonce`, `iat`, `exp` | Replay scoping and expiry (default TTL 15 min, configurable)                |
 
 R21. On resume the library MUST verify, in order: decrypt/authenticate, version compatibility, expiry, and `codeHash` equality against the re-sent code — then re-evaluate the module, restore the actor from `snapshot`, and inject verdict events. Any verification failure is a terminal structured error; the library never executes gated calls from an unverified blob.
 
@@ -215,7 +215,7 @@ Expose the sandbox's virtual FS to authored code as ephemeral per-segment scratc
 2. **GitHub MCP server** — large remote API surface, rich JSON Schemas, mixed read/write. Stresses typegen fidelity, catalog size, and batched approvals (e.g. "label these 4 issues").
 3. **A Postgres/database server** — the adversarial policy case: a `query` tool whose arguments are opaque SQL, where `readOnlyHint` can't be trusted to bound behavior. Exercises developer overrides (force `ask`) and proves the policy engine handles tools whose safety isn't knowable from annotations.
 
-Additionally, one deliberately *unannotated* server (any small community server) verifies the default-`ask` posture (R14, S5).
+Additionally, one deliberately _unannotated_ server (any small community server) verifies the default-`ask` posture (R14, S5).
 
 **Automated harness.** A test harness drives the wrapped server end-to-end using the Anthropic TypeScript SDK as the reasoning loop and the MCP TypeScript SDK as the client: scripted task prompts → model authors machines → harness auto-answers elicitations per scenario script (approve all / deny one / ignore one / tamper with blob / replay expired blob). Assertions cover the S1–S6 invariants, self-heal attempt counts (Section 10 metrics), and blob-size budgets. Runs in CI against the pinned smoke-test servers with recorded fixtures where upstreams are flaky.
 

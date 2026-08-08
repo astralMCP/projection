@@ -59,8 +59,7 @@ export interface ToolExecutor {
 }
 
 export type ToolCallOutcome =
-  | { ok: true; result: unknown }
-  | { ok: false; error: { message: string; detail?: unknown } };
+  { ok: true; result: unknown } | { ok: false; error: { message: string; detail?: unknown } };
 
 // ---------------------------------------------------------------------------
 // Policy engine (PRD R14)
@@ -241,9 +240,7 @@ export interface BlobSealerConfig {
 // ---------------------------------------------------------------------------
 
 /** Verdict delivered on retry for a pending gated call. */
-export type ApprovalVerdict =
-  | { kind: 'approved' }
-  | { kind: 'declined'; reason?: string };
+export type ApprovalVerdict = { kind: 'approved' } | { kind: 'declined'; reason?: string };
 
 /** Outcome of running one execution segment. */
 export type SegmentOutcome =
