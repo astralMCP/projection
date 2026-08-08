@@ -86,16 +86,41 @@ function toCatalogEntry(tool: Tool): ToolCatalogEntry {
   return entry;
 }
 
+/**
+ * Bounds on `tools/list` introspection. A wrapped server is untrusted (S5)
+ * and could return an endless chain of `nextCursor` pages, or a tool count
+ * large enough to blow up the generated artifacts; either would hang or
+ * exhaust the process before any workflow runs.
+ */
+const MAX_TOOL_LIST_PAGES = 100;
+const MAX_TOOLS = 2_000;
+
 async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]> {
   const tools: Tool[] = [];
   let cursor: string | undefined;
+  let pages = 0;
   try {
     do {
       const page = await client.listTools(cursor !== undefined ? { cursor } : undefined);
       tools.push(...page.tools);
       cursor = page.nextCursor;
+      pages += 1;
+      if (pages >= MAX_TOOL_LIST_PAGES || tools.length >= MAX_TOOLS) {
+        if (cursor !== undefined) {
+          throw new McCircuitError(
+            'protocol',
+            `wrapped server "${alias}" exceeded introspection limits (${pages} pages, ${tools.length} tools)`,
+            {
+              hint: `McCircuit reads at most ${MAX_TOOL_LIST_PAGES} tools/list pages and ${MAX_TOOLS} tools. Wrap a server with a bounded tool surface.`,
+            },
+          );
+        }
+        break;
+      }
     } while (cursor !== undefined);
   } catch (err) {
+    // Our own limit breach already carries the right phase and hint.
+    if (err instanceof McCircuitError) throw err;
     // A server with zero registered tools never declares the `tools`
     // capability (client-side assertion) and answers tools/list with
     // Method not found; treat both as an empty catalog, not a failure.

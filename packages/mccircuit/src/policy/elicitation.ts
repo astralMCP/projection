@@ -66,9 +66,9 @@ const ARGS_INDENT = '    ';
 // eslint-disable-next-line no-control-regex
 const HOSTILE_INLINE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 /** Same class minus \n, for blocks whose formatting newlines are legitimate. */
+// prettier-ignore
 // eslint-disable-next-line no-control-regex
-const HOSTILE_BLOCK_CHARS =
-  /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const HOSTILE_BLOCK_CHARS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
 /** Neutralize control/bidi characters in a single-line field. */
 function neutralizeInline(text: string): string {

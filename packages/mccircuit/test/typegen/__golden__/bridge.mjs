@@ -12,7 +12,7 @@
 
 function bindTool(name) {
   return function (args) {
-    const hook = globalThis['__mccircuit_toolcall'];
+    const hook = globalThis["__mccircuit_toolcall"];
     if (typeof hook !== 'function') {
       throw new Error(
         'McCircuit tools bridge: missing host hook globalThis.__mccircuit_toolcall. ' +
@@ -23,12 +23,13 @@ function bindTool(name) {
   };
 }
 
-export const tools = Object.freeze({
-  get_weather: bindTool('get_weather'),
-  'create-ticket!': bindTool('create-ticket!'),
-  search: bindTool('search'),
-  noargs: bindTool('noargs'),
-  '123 spaced name': bindTool('123 spaced name'),
-});
+const tools = Object.create(null);
+tools["get_weather"] = bindTool("get_weather");
+tools["create-ticket!"] = bindTool("create-ticket!");
+tools["search"] = bindTool("search");
+tools["noargs"] = bindTool("noargs");
+tools["123 spaced name"] = bindTool("123 spaced name");
+Object.freeze(tools);
 
+export { tools };
 export default tools;

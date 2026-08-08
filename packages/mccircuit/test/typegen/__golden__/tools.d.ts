@@ -13,7 +13,7 @@ export type GetWeatherInput = {
   /** City name */
   city: string;
   /** Temperature units */
-  units?: 'c' | 'f';
+  units?: "c" | "f";
 };
 
 /** Output of tool "get_weather". */
@@ -31,7 +31,7 @@ export type CreateTicketInput = {
     priority?: 1 | 2 | 3;
     /** Login, or null to unassign */
     assignee?: string | null;
-    'weird key!'?: boolean;
+    "weird key!"?: boolean;
   };
   dryRun?: true;
 };
@@ -39,12 +39,10 @@ export type CreateTicketInput = {
 /** Input for tool "search". */
 export type SearchInput = {
   /** Plain text or a structured query */
-  query:
-    | string
-    | {
-        text: string;
-        fuzzy?: boolean;
-      };
+  query: string | {
+    text: string;
+    fuzzy?: boolean;
+  };
   limit?: number;
   filters?: Record<string, string>;
   range?: [number, number];
@@ -52,20 +50,18 @@ export type SearchInput = {
   /** Start from this item */
   anchor?: {
     id: string;
-    kind?: 'item';
+    kind?: "item";
     parent?: unknown;
   };
 };
 
 /** Output of tool "search". */
 export type SearchOutput = {
-  results: Array<
-    {
-      id: string;
-    } & {
-      score?: number;
-    }
-  >;
+  results: Array<{
+    id: string;
+  } & {
+    score?: number;
+  }>;
 };
 
 /** Input for tool "noargs". */
@@ -90,7 +86,7 @@ export declare const tools: {
    *
    * DESTRUCTIVE write: pauses the machine for user approval before executing.
    */
-  'create-ticket!': (args: CreateTicketInput) => Promise<unknown>;
+  "create-ticket!": (args: CreateTicketInput) => Promise<unknown>;
   /**
    * Search things. Unannotated, so it defaults to approval-gated.
    *
@@ -104,7 +100,7 @@ export declare const tools: {
    */
   noargs: (args?: NoargsInput) => Promise<unknown>;
   /** Write (or unannotated): pauses the machine for user approval before executing. */
-  '123 spaced name': (args?: Tool123SpacedNameInput) => Promise<unknown>;
+  "123 spaced name": (args?: Tool123SpacedNameInput) => Promise<unknown>;
 };
 
 export default tools;
