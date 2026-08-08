@@ -26,6 +26,22 @@ declarations; oxlint (correctness=error) + prettier; vitest; strict TS with
 exactly at 5.32.5 and `@sebastianwessel/quickjs` pinned at 3.1.0 per PRD §7
 dependency notes.
 
+## D4 — In-TTL replay is an MRTR-adapter obligation (2026-08-08)
+
+The blob sealer is stateless by design (R27/N4): the same sealed blob opens
+successfully any number of times within its TTL, and the authenticated
+`trip` counter cannot advance under replay. Security review conclusion: a
+malicious client replaying a captured approved retry would re-execute the
+gated call once per replay unless the layer above prevents it. Normative
+obligation on the MRTR adapter: after executing the gated calls of a resume,
+the workflow must move forward (fresh blob, fresh nonce, incremented trip)
+and the adapter must never execute gated calls from a blob whose `pending`
+verdicts it has already consumed in the same process without producing a new
+suspension; deployments needing hard cross-instance replay prevention can
+plug a replay cache keyed on the blob `nonce` (hook reserved; the `nonce`
+field exists for exactly this). Documented as a known limitation of the
+stateless target rather than silently ignored.
+
 ## D3 — Parallel-agent conventions (2026-08-08)
 
 Component code lives under `src/<component>/` with a local `index.ts`.
