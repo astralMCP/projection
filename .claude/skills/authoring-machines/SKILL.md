@@ -56,9 +56,10 @@ export default setup({}).createMachine({
 ## Errors come back structured (R25)
 
 Every failure is `isError: true` with `structuredContent` carrying
-`phase` (`transpile | validate | cap_exceeded | runtime | tool | protocol |
-terminal`), `message`, `hint`, and `logs`. `transpile`/`validate` mean the
-machine never ran — that's the §10 "invalid machine" definition the
+`phase` (`transpile | validate | runtime | cap_exceeded | blob_verification |
+protocol | terminal`), `message`, `hint`, and `logs` (tool failures are not a
+phase — they surface to the machine as `TOOL_ERROR` events).
+`transpile`/`validate` mean the machine never ran — that's the §10 "invalid machine" definition the
 benchmark counts.
 
 ## Testing machines
@@ -83,7 +84,9 @@ await facade.close();
 - `createFileServer` — the standard fixture: `read_file`/`list_files`
   (read-only), `write_file` (gated), `delete_file` (destructive).
 - Verdict scripts: `approveAll`, `declineAll`, `denyKeys`, `ignoreKeys`
-  (omission = decline, R17), plus `tamper`/`tamperRounds` for hostile blobs.
+  (omission = decline, R17). For hostile blobs, import the mutators
+  `tamperCiphertext` / `truncateState` and pass one via the scenario's
+  `tamper` field (scope to specific rounds with `tamperRounds`).
 - For model-in-the-loop shapes use `createScriptedAuthor` (deterministic
   attempt sequence) with `runReasoningTask` — see
   `packages/harness/test/reasoning.test.ts`.
