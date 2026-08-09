@@ -9,6 +9,7 @@
  */
 
 import { McCircuitError } from '../errors.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
 import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
 import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
 
@@ -73,16 +74,8 @@ const MAX_IDENTITY_CHARS = 200;
  * `JSON.stringify` escapes newlines and quotes; the control/bidi pass covers
  * the separators JSON leaves raw, and the length cap bounds the artifact.
  */
-// eslint-disable-next-line no-control-regex
-const HOSTILE_IDENTITY_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e]/g;
-
 function commentSafe(text: string): string {
-  const neutralized = text.replaceAll(HOSTILE_IDENTITY_CHARS, '\ufffd');
-  const capped =
-    neutralized.length > MAX_IDENTITY_CHARS
-      ? `${neutralized.slice(0, MAX_IDENTITY_CHARS)}…`
-      : neutralized;
-  return JSON.stringify(capped);
+  return JSON.stringify(neutralizeControlChars(capLength(text, MAX_IDENTITY_CHARS)));
 }
 
 /** Derive a unique PascalCase type-name base from a tool name. */
@@ -154,21 +147,23 @@ function generateDts(server: ServerCatalog): string {
     };
     names.set(tool.name, typeNames);
 
-    const inputParts: string[] = [docComment(`Input for tool "${tool.name}".`, '')];
-    inputParts.push(`export type ${typeNames.input} = ${schemaToTsType(tool.inputSchema)};`);
-    sections.push(inputParts.join('\n'));
-
+    sections.push(
+      `${docComment(`Input for tool "${tool.name}".`, '')}\n` +
+        `export type ${typeNames.input} = ${schemaToTsType(tool.inputSchema)};`,
+    );
     if (typeNames.output !== undefined) {
-      const outputParts: string[] = [docComment(`Output of tool "${tool.name}".`, '')];
-      outputParts.push(`export type ${typeNames.output} = ${schemaToTsType(tool.outputSchema)};`);
-      sections.push(outputParts.join('\n'));
+      sections.push(
+        `${docComment(`Output of tool "${tool.name}".`, '')}\n` +
+          `export type ${typeNames.output} = ${schemaToTsType(tool.outputSchema)};`,
+      );
     }
   }
 
   const memberLines: string[] = [];
   for (const tool of server.tools) {
-    const typeNames = names.get(tool.name);
-    if (typeNames === undefined) continue;
+    // Names are set for every tool in the loop above (dedupeToolNames ran
+    // first), so the lookup is always present.
+    const typeNames = names.get(tool.name) as ToolTypeNames;
     memberLines.push(docComment(toolDoc(tool), '  '));
     const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
     const returnType = typeNames.output ?? 'unknown';

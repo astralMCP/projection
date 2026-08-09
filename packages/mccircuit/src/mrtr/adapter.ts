@@ -10,6 +10,7 @@ import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
 import {
   clampCaps,
+  findTool,
   type ApprovalVerdict,
   type AuditEntry,
   type BlobSealerConfig,
@@ -17,6 +18,7 @@ import {
   type PendingToolCall,
   type PolicyOverrides,
   type RedactionHook,
+  type ErrorPhase,
   type ResourceCaps,
   type SegmentOutcome,
   type ServerCatalog,
@@ -217,6 +219,10 @@ function suspendResult(
   deps: ExecuteMachineDeps,
   caps: ResourceCaps,
 ): ToolCallResult {
+  // This segment's console output rides on every failure below (R31).
+  const fail = (phase: ErrorPhase, message: string, hint: string): ToolCallResult =>
+    errorResult({ phase, message, diagnostics: [], hint, logs: outcome.logs });
+
   // R28: a client that cannot carry MRTR must fail here rather than silently
   // executing an unapproved write or hanging.
   //
@@ -227,38 +233,32 @@ function suspendResult(
   // connection open, which is exactly the statelessness (R27) the MRTR
   // design buys us.
   if (!supportsMrtr(deps.protocolEra)) {
-    return errorResult({
-      phase: 'protocol',
-      message: `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
-      diagnostics: [],
-      hint: 'Author a machine that only calls read-only tools, or connect with a client that negotiates the 2026-07-28 revision (SDK v2: `versionNegotiation: { mode: "auto" }`).',
-      logs: outcome.logs,
-    });
+    return fail(
+      'protocol',
+      `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
+      'Author a machine that only calls read-only tools, or connect with a client that negotiates the 2026-07-28 revision (SDK v2: `versionNegotiation: { mode: "auto" }`).',
+    );
   }
 
   // R18: refuse to suspend again once the cap is reached, rather than
   // minting a blob the retry would reject.
   if (outcome.trip > caps.maxRoundTrips) {
-    return errorResult({
-      phase: 'terminal',
-      message: `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
-      diagnostics: [],
-      hint: `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips.`,
-      logs: outcome.logs,
-    });
+    return fail(
+      'terminal',
+      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
+      `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips.`,
+    );
   }
 
   const inputRequests: InputRequests = {};
   for (const [key, call] of Object.entries(outcome.pending)) {
-    const entry = deps.catalog.tools.find((tool) => tool.name === call.name);
+    const entry = findTool(deps.catalog, call.name);
     if (entry === undefined) {
-      return errorResult({
-        phase: 'validate',
-        message: `the machine requested approval for unknown tool "${call.name}"`,
-        diagnostics: [],
-        hint: 'Call only tools listed by discover_apis.',
-        logs: outcome.logs,
-      });
+      return fail(
+        'validate',
+        `the machine requested approval for unknown tool "${call.name}"`,
+        'Call only tools listed by discover_apis.',
+      );
     }
     // S6: copy is built from catalog data and redacted args only — never
     // from model-authored free text.

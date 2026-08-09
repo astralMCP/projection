@@ -6,11 +6,12 @@
 
 import { McCircuitError, toStructuredError } from '../errors.js';
 import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
-import { decidePolicy, policyDeniedReason } from '../policy/index.js';
+import { policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
   type ApprovalVerdict,
   type AuditEntry,
+  type ErrorPhase,
   type HostEvent,
   type LogEntry,
   type PendingToolCall,
@@ -18,7 +19,6 @@ import {
   type ResourceCaps,
   type SegmentOutcome,
   type ServerCatalog,
-  type ToolCatalogEntry,
   type ToolExecutor,
 } from '../types.js';
 import { TOOL_CALL_MODULE_SOURCE } from './contract.js';
@@ -170,62 +170,69 @@ async function validate(session: SandboxSession, caps: ResourceCaps): Promise<vo
   throw validationError(result, caps);
 }
 
+/** Each validation failure code maps to a phase, a message, and a fix hint. */
+interface ValidationSpec {
+  phase: ErrorPhase;
+  message: (detail: string, caps: ResourceCaps) => string;
+  hint: (caps: ResourceCaps) => string;
+}
+
+const VALIDATION_SPECS: Record<string, ValidationSpec> = {
+  no_default_export: {
+    phase: 'validate',
+    message: () => 'the submitted module has no default export',
+    hint: () =>
+      'Default-export a machine: `export default setup({}).createMachine({ ... })`. See discover_apis.',
+  },
+  xstate_v4_machine: {
+    phase: 'validate',
+    message: () => 'the default export is an XState v4 machine, not a v5 machine',
+    hint: () =>
+      'Rewrite for XState v5: `import { setup } from "xstate"` then `setup({}).createMachine({ ... })` — v4 Machine(...) is not supported.',
+  },
+  default_export_not_machine: {
+    phase: 'validate',
+    message: (detail) =>
+      `the default export is not an XState v5 machine${detail ? ` (got ${detail})` : ''}`,
+    hint: () =>
+      'Default-export the machine itself, not an actor or a factory: `export default setup({}).createMachine({ ... })`.',
+  },
+  too_many_state_nodes: {
+    phase: 'cap_exceeded',
+    message: (detail, caps) =>
+      `the machine has ${detail} state nodes, exceeding the limit of ${caps.maxStateNodes}`,
+    hint: (caps) =>
+      `Simplify the machine to at most ${caps.maxStateNodes} state nodes, or split the work across separate execute_machine calls.`,
+  },
+  invoke_banned: {
+    phase: 'validate',
+    message: (detail) =>
+      `the machine uses invoke (at ${detail || 'the machine root'}), which is not allowed`,
+    hint: () =>
+      'Tool calls must use the toolCall action, not fromPromise/invoke: restored snapshots restart invoked actors and would re-execute approved writes. See discover_apis.',
+  },
+  context_not_serializable: {
+    phase: 'validate',
+    message: (detail) => `machine context is not JSON-serializable at ${detail}`,
+    hint: () =>
+      'Keep context to plain JSON values — no Map, Set, Date, class instances, functions or undefined. Store a string or number instead.',
+  },
+  machine_init_threw: {
+    phase: 'validate',
+    message: (detail) => `creating the machine actor threw: ${detail}`,
+    hint: () => 'Fix the error thrown while building the machine context or initial state.',
+  },
+};
+
 function validationError(result: ValidationFailure, caps: ResourceCaps): McCircuitError {
   const detail = result.detail === null ? '' : String(result.detail);
-  switch (result.code) {
-    case 'no_default_export':
-      return new McCircuitError('validate', 'the submitted module has no default export', {
-        hint: 'Default-export a machine: `export default setup({}).createMachine({ ... })`. See discover_apis.',
-      });
-    case 'xstate_v4_machine':
-      return new McCircuitError(
-        'validate',
-        'the default export is an XState v4 machine, not a v5 machine',
-        {
-          hint: 'Rewrite for XState v5: `import { setup } from "xstate"` then `setup({}).createMachine({ ... })` — v4 Machine(...) is not supported.',
-        },
-      );
-    case 'default_export_not_machine':
-      return new McCircuitError(
-        'validate',
-        `the default export is not an XState v5 machine${detail ? ` (got ${detail})` : ''}`,
-        {
-          hint: 'Default-export the machine itself, not an actor or a factory: `export default setup({}).createMachine({ ... })`.',
-        },
-      );
-    case 'too_many_state_nodes':
-      return new McCircuitError(
-        'cap_exceeded',
-        `the machine has ${detail} state nodes, exceeding the limit of ${caps.maxStateNodes}`,
-        {
-          hint: `Simplify the machine to at most ${caps.maxStateNodes} state nodes, or split the work across separate execute_machine calls.`,
-        },
-      );
-    case 'invoke_banned':
-      return new McCircuitError(
-        'validate',
-        `the machine uses invoke (at ${detail || 'the machine root'}), which is not allowed`,
-        {
-          hint: 'Tool calls must use the toolCall action, not fromPromise/invoke: restored snapshots restart invoked actors and would re-execute approved writes. See discover_apis.',
-        },
-      );
-    case 'context_not_serializable':
-      return new McCircuitError(
-        'validate',
-        `machine context is not JSON-serializable at ${detail}`,
-        {
-          hint: 'Keep context to plain JSON values — no Map, Set, Date, class instances, functions or undefined. Store a string or number instead.',
-        },
-      );
-    case 'machine_init_threw':
-      return new McCircuitError('validate', `creating the machine actor threw: ${detail}`, {
-        hint: 'Fix the error thrown while building the machine context or initial state.',
-      });
-    default:
-      return new McCircuitError('validate', `machine validation failed: ${result.code}`, {
-        hint: 'Review the authoring contract from discover_apis and resubmit.',
-      });
+  const spec = VALIDATION_SPECS[result.code];
+  if (spec === undefined) {
+    return new McCircuitError('validate', `machine validation failed: ${result.code}`, {
+      hint: 'Review the authoring contract from discover_apis and resubmit.',
+    });
   }
+  return new McCircuitError(spec.phase, spec.message(detail, caps), { hint: spec.hint(caps) });
 }
 
 // ---------------------------------------------------------------------------
@@ -341,10 +348,18 @@ class SegmentRunner {
     const stateName = describeState(stateValue);
 
     for (const request of requests) {
-      const entry = this.lookup(request.name);
-      const decision = decidePolicy(entry, this.deps.policy);
+      const call: PendingToolCall = {
+        id: request.id,
+        name: request.name,
+        args: request.args,
+        stateName,
+      };
+      // Single resolution path shared with the MRTR adapter: catalog lookup,
+      // unknown-tool error, and policy decision in one place.
+      const resolved = resolveCallPolicy(call, this.deps.catalog, this.deps.policy);
+      if (!resolved.ok) throw resolved.error;
 
-      if (decision === 'deny') {
+      if (resolved.decision === 'deny') {
         const reason = policyDeniedReason(request.name);
         events.push({ type: 'TOOL_DENIED', callId: request.id, reason });
         this.deps.audit.push({
@@ -357,13 +372,8 @@ class SegmentRunner {
         continue;
       }
 
-      if (decision === 'ask') {
-        gated.push({
-          id: request.id,
-          name: request.name,
-          args: request.args,
-          stateName,
-        });
+      if (resolved.decision === 'ask') {
+        gated.push(call);
         continue;
       }
 
@@ -460,16 +470,6 @@ class SegmentRunner {
       );
     }
     return (await this.deps.session.evaluate(sendDriver(events))) as DrainResult;
-  }
-
-  private lookup(name: string): ToolCatalogEntry {
-    const entry = this.deps.catalog.tools.find((tool) => tool.name === name);
-    if (entry === undefined) {
-      throw new McCircuitError('validate', `the machine called an unknown tool "${name}"`, {
-        hint: 'Call only tools listed by discover_apis; check the spelling against the generated types.',
-      });
-    }
-    return entry;
   }
 
   /**

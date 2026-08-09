@@ -56,6 +56,7 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { McCircuitError } from '../errors.js';
 import {
   BLOB_SCHEMA_VERSION,
+  isRecord,
   type BlobPayload,
   type AuditEntry,
   type BlobSealerConfig,
@@ -220,10 +221,6 @@ function decryptWithAnyKey(envelope: ParsedEnvelope, config: BlobSealerConfig): 
 // ---------------------------------------------------------------------------
 // Payload shape validation
 // ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function malformed(field: string): McCircuitError {
   return verificationError(

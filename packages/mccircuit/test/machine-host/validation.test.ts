@@ -141,7 +141,7 @@ export default setup({}).createMachine({
 });
 `);
     expect(error.phase).toBe('validate');
-    expect(error.message).toContain('unknown tool');
+    expect(error.message).toContain('Unknown tool "no_such_tool"');
     expect(error.hint).toContain('discover_apis');
   });
 
