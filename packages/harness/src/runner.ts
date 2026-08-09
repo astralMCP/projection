@@ -12,6 +12,13 @@ import {
   type ToolCallResult,
 } from 'mccircuit';
 import type { RecordingServer } from './recording-server.js';
+
+/**
+ * All the runner needs from a recording server is the calls log. A smoke
+ * test against a real external server (whose executions we cannot observe
+ * server-side) passes `{ calls: [] }` and asserts side effects out of band.
+ */
+export type SideEffectLog = Pick<RecordingServer, 'calls'>;
 import type { RoundRecord, Scenario, ScenarioResult, SideEffect } from './types.js';
 
 /** Default: approve every prompt. */
@@ -61,7 +68,7 @@ interface TerminalResult {
  */
 export async function runScenario(
   facade: McCircuitFacade,
-  recording: RecordingServer,
+  recording: SideEffectLog,
   scenario: Scenario,
 ): Promise<ScenarioResult> {
   const maxRounds = scenario.maxRounds ?? DEFAULT_MAX_ROUNDS;
@@ -143,7 +150,7 @@ function finish(
   scenario: Scenario,
   roundRecords: RoundRecord[],
   maxBlobBytes: number,
-  recording: RecordingServer,
+  recording: SideEffectLog,
   terminal: TerminalResult,
   isError: boolean,
 ): ScenarioResult {

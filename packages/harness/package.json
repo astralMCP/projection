@@ -23,6 +23,8 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server-filesystem": "2026.7.10",
     "@types/node": "^22.15.0",
     "tsdown": "^0.22.14",
     "unrun": "^0.3.1",

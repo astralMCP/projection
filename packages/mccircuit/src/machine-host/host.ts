@@ -130,7 +130,7 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
     }
 
     if (options.resume === undefined) {
-      await validate(session, caps);
+      await validate(session, caps, options.input);
     }
 
     const runner = new SegmentRunner({
@@ -164,8 +164,14 @@ interface ValidationFailure {
 }
 type ValidationResult = { ok: true; stateNodes: number } | ValidationFailure;
 
-async function validate(session: SandboxSession, caps: ResourceCaps): Promise<void> {
-  const result = (await session.evaluate(validationDriver(caps.maxStateNodes))) as ValidationResult;
+async function validate(
+  session: SandboxSession,
+  caps: ResourceCaps,
+  input: unknown,
+): Promise<void> {
+  const result = (await session.evaluate(
+    validationDriver(caps.maxStateNodes, input),
+  )) as ValidationResult;
   if (result.ok) return;
   throw validationError(result, caps);
 }

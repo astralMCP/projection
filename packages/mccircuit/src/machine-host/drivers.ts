@@ -15,8 +15,17 @@
  * validation, or a `toolCall` in the initial state would register a request
  * before policy has been consulted. `createActor(m).getSnapshot()` yields
  * the initial snapshot with actions resolved but not executed.
+ *
+ * The caller's `input` is passed to the probe actor exactly as the
+ * bootstrap will pass it: a machine whose context factory dereferences
+ * `input` (`context: ({ input }) => ({ path: input.path })`) must validate
+ * against the input it will actually run with, not against `undefined`.
  */
-export function validationDriver(maxStateNodes: number): string {
+export function validationDriver(maxStateNodes: number, input: unknown): string {
+  const probeActor =
+    input === undefined
+      ? 'createActor(machine)'
+      : `createActor(machine, { input: ${JSON.stringify(input)} })`;
   return `
 import { createActor } from 'xstate';
 
@@ -87,7 +96,7 @@ function run() {
   // a throw, then round-trip to catch anything left (e.g. cycles).
   let snapshot;
   try {
-    snapshot = createActor(machine).getSnapshot();
+    snapshot = ${probeActor}.getSnapshot();
   } catch (err) {
     return fail('machine_init_threw', String(err && err.message ? err.message : err));
   }
