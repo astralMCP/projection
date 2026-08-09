@@ -3,7 +3,7 @@
  * (PRD §13: approve all / deny one / ignore one / tamper / replay).
  */
 
-import type { InputResponse } from 'mccircuit';
+import type { InputResponse } from '@astral-mcp/projection';
 import type { StateMutator, VerdictPolicy } from './types.js';
 
 /** Approve every prompt. */
@@ -31,7 +31,7 @@ export function ignoreKeys(...keys: string[]): VerdictPolicy {
 
 /**
  * Flip one character of the sealed blob's ciphertext field, modelling an
- * on-the-wire tamper (S3). The envelope is `mcc1.salt.iv.ciphertext.tag`.
+ * on-the-wire tamper (S3). The envelope is `proj1.salt.iv.ciphertext.tag`.
  */
 export const tamperCiphertext: StateMutator = (state) => {
   const parts = state.split('.');

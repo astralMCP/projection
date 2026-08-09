@@ -1,9 +1,9 @@
-# McCircuit
+# Projection
 
-TypeScript monorepo: `mccircuit` (the library — wraps any MCP server into a
+TypeScript monorepo: `@astral-mcp/projection` (the library — wraps any MCP server into a
 code-mode server with human-approved side effects, on MCP 2026-07-28 MRTR +
-XState v5), `@mccircuit/harness` (scenario tests + reasoning-loop benchmark),
-`@mccircuit/tui` (Ink demo client).
+XState v5), `@astral-mcp/harness` (scenario tests + reasoning-loop benchmark),
+`@astral-mcp/tui` (Ink demo client).
 
 ## Commands
 

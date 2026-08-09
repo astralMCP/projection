@@ -1,5 +1,5 @@
 {
-  "name": "mccircuit-monorepo",
+  "name": "projection-monorepo",
   "private": true,
   "packageManager": "pnpm@11.20.0",
   "engines": {

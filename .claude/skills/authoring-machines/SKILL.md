@@ -1,20 +1,20 @@
 ---
 name: authoring-machines
-description: Cheat sheet for writing XState machine modules that run under McCircuit's execute_machine — the authoring contract, the toolCall event protocol, banned patterns, and how to test machines with the harness. Use when writing test fixtures, scenarios, or benchmark tasks.
+description: Cheat sheet for writing XState machine modules that run under Projection's execute_machine — the authoring contract, the toolCall event protocol, banned patterns, and how to test machines with the harness. Use when writing test fixtures, scenarios, or benchmark tasks.
 ---
 
 # Authoring machines for execute_machine
 
 The canonical contract is generated at runtime (`discover_apis` /
-`mccircuit://docs/authoring-contract.md`, built from
-`packages/mccircuit/src/machine-host/contract.ts`); PRD §6.2 (R5–R9) is the
+`projection://docs/authoring-contract.md`, built from
+`packages/projection/src/machine-host/contract.ts`); PRD §6.2 (R5–R9) is the
 normative source. This is the working cheat sheet.
 
 ## Shape
 
 ```ts
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'writeNotes',
@@ -44,7 +44,7 @@ export default setup({}).createMachine({
 - **Never** `invoke` / `fromPromise` (R7): restored snapshots restart
   invoked actors, which would re-execute approved writes. Use `toolCall` +
   the three events; the host does all I/O.
-- Only `xstate` and `@mccircuit/tools` resolve as imports (R8). No fs, no
+- Only `xstate` and `@astral-mcp/tools` resolve as imports (R8). No fs, no
   fetch, no other modules.
 - Read-only tools (annotation `readOnlyHint: true`) run inline; everything
   else suspends for approval. Handle `TOOL_DENIED` as an ordinary
@@ -67,8 +67,8 @@ benchmark counts.
 Deterministic, no model, no network — this is how all CI tests work:
 
 ```ts
-import { wrapMcpServer } from 'mccircuit';
-import { createFileServer, runScenario, denyKeys } from '@mccircuit/harness';
+import { wrapMcpServer } from '@astral-mcp/projection';
+import { createFileServer, runScenario, denyKeys } from '@astral-mcp/harness';
 
 const file = createFileServer({ '/notes.txt': 'seed' });
 const facade = await wrapMcpServer(file.server, { blob: { key: randomBytes(32) } });
@@ -90,8 +90,8 @@ await facade.close();
 - For model-in-the-loop shapes use `createScriptedAuthor` (deterministic
   attempt sequence) with `runReasoningTask` — see
   `packages/harness/test/reasoning.test.ts`.
-- Interactive/manual: `pnpm --filter @mccircuit/tui start`.
+- Interactive/manual: `pnpm --filter @astral-mcp/tui start`.
 
 Reference machines: `EXAMPLE_HAPPY_PATH` / `EXAMPLE_DENIAL_FALLBACK` in
-`packages/mccircuit/src/mrtr/discover.ts`, and the fixtures in
+`packages/projection/src/mrtr/discover.ts`, and the fixtures in
 `packages/harness/test/` and `packages/tui/test/`.

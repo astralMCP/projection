@@ -1,8 +1,8 @@
 {
-  "name": "@mccircuit/harness",
+  "name": "@astral-mcp/harness",
   "version": "0.1.0",
   "private": true,
-  "description": "Scenario-driven test harness for McCircuit: drives execute_machine through scripted approval scenarios and asserts the S1–S6 invariants.",
+  "description": "Scenario-driven test harness for Projection: drives execute_machine through scripted approval scenarios and asserts the S1–S6 invariants.",
   "type": "module",
   "exports": {
     ".": {
@@ -19,7 +19,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "mccircuit": "workspace:*",
+    "@astral-mcp/projection": "workspace:*",
     "zod": "^4.2.0"
   },
   "devDependencies": {

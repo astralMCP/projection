@@ -20,9 +20,9 @@ export interface AnthropicAuthorOptions {
   client?: Anthropic;
 }
 
-const SYSTEM_PROMPT = `You author XState v5 state machine modules for McCircuit's execute_machine tool.
+const SYSTEM_PROMPT = `You author XState v5 state machine modules for Projection's execute_machine tool.
 
-Reply with exactly one fenced TypeScript code block containing the complete module and nothing else after it. The module must follow the authoring contract in the API documentation below: default-export a machine built with setup(...).createMachine(...), request tools only via the toolCall action from '@mccircuit/tools', handle TOOL_RESULT / TOOL_ERROR / TOOL_DENIED, keep context JSON-serializable, and never use invoke or fromPromise.
+Reply with exactly one fenced TypeScript code block containing the complete module and nothing else after it. The module must follow the authoring contract in the API documentation below: default-export a machine built with setup(...).createMachine(...), request tools only via the toolCall action from '@astral-mcp/tools', handle TOOL_RESULT / TOOL_ERROR / TOOL_DENIED, keep context JSON-serializable, and never use invoke or fromPromise.
 
 When you receive a structured error from a previous attempt, fix exactly what it describes and return the corrected complete module.`;
 

@@ -1,24 +1,24 @@
-# McCircuit
+# Projection
 
 Turn any MCP server into a **code-mode** server with **human-approved side effects**, built on MCP MRTR (Multi Round-Trip Requests) and XState v5.
 
-McCircuit wraps an existing MCP server and exposes two tools:
+Projection wraps an existing MCP server and exposes two tools:
 
 - **`execute_machine`** — runs an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox. Read-only tool calls execute immediately; any write suspends the machine into a sealed, encrypted blob and asks the human for approval via MRTR elicitation.
 - **`discover_apis`** — returns generated TypeScript type definitions and the authoring contract for the wrapped server's tools.
 
-Because all suspension state travels in the MRTR `requestState` payload, McCircuit is fully stateless: any server instance can resume any workflow.
+Because all suspension state travels in the MRTR `requestState` payload, Projection is fully stateless: any server instance can resume any workflow.
 
 See [docs/server-authors.md](docs/server-authors.md) for the integration guide, [docs/PRD.md](docs/PRD.md) for the full product requirements, and [docs/DECISIONS.md](docs/DECISIONS.md) for engineering decisions.
 
 ## Usage
 
-McCircuit is built on the MCP TypeScript SDK v2 (`@modelcontextprotocol/server`)
+Projection is built on the MCP TypeScript SDK v2 (`@modelcontextprotocol/server`)
 and serves the 2026-07-28 protocol revision, where MRTR lives.
 
 ```ts
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { wrapMcpServer } from 'mccircuit';
+import { wrapMcpServer } from '@astral-mcp/projection';
 
 const facade = await wrapMcpServer(myMcpServer, {
   blob: { key: myThirtyTwoByteKey }, // shared across instances
@@ -30,7 +30,7 @@ const facade = await wrapMcpServer(myMcpServer, {
 export default createMcpHandler(facade.serverFactory);
 ```
 
-`serverFactory` is the shape the SDK asks for, and it is the shape McCircuit
+`serverFactory` is the shape the SDK asks for, and it is the shape Projection
 needs: `createMcpHandler` (and `serveStdio`) call it once per served request
 or connection with the negotiated **protocol era**. That is the only place the
 era is available, and it decides two things — whether a gated call may suspend
@@ -61,7 +61,7 @@ The wrapped server's tools are never exposed directly. A model calls `discover_a
 
 ```ts
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'writeNotes',
@@ -86,22 +86,22 @@ The `write_file` call suspends the machine, seals its state into an encrypted bl
 
 ## Security model
 
-| Invariant                                               | How it holds                                                                                        |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@mccircuit/tools` resolve as imports |
-| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                      |
-| Clients are untrusted couriers                          | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                 |
-| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code`                                                |
-| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                 |
-| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                           |
+| Invariant                                               | How it holds                                                                                         |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` resolve as imports |
+| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                       |
+| Clients are untrusted couriers                          | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                  |
+| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code`                                                 |
+| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                  |
+| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                            |
 
 ## Repository layout
 
 | Path                     | What                                                                       |
 | ------------------------ | -------------------------------------------------------------------------- |
-| `packages/mccircuit`     | The library (npm: `mccircuit`)                                             |
+| `packages/projection`    | The library (npm: `@astral-mcp/projection`)                                |
 | `packages/harness`       | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark |
-| `packages/tui`           | `mccircuit-tui` — interactive Ink demo client (approve/deny with y/n/i)    |
+| `packages/tui`           | `projection-tui` — interactive Ink demo client (approve/deny with y/n/i)   |
 | `docs/server-authors.md` | Integration guide for wrapping your server                                 |
 | `docs/PRD.md`            | Product requirements document                                              |
 | `docs/DECISIONS.md`      | Engineering decisions and their rationale                                  |
@@ -114,7 +114,7 @@ machines while you approve each write with a single key. It needs
 automatically):
 
 ```bash
-pnpm --filter @mccircuit/tui start
+pnpm --filter @astral-mcp/tui start
 ```
 
 The §10 self-heal benchmark (a model authors machines for scripted tasks and
@@ -122,7 +122,7 @@ heals from structured errors) is explicit opt-in so plain test runs never
 spend tokens:
 
 ```bash
-MCC_LIVE_BENCH=1 pnpm --filter @mccircuit/harness exec vitest run test/reasoning.live.test.ts
+PROJ_LIVE_BENCH=1 pnpm --filter @astral-mcp/harness exec vitest run test/reasoning.live.test.ts
 ```
 
 ## Development

@@ -8,7 +8,7 @@
  * record is what the §10 self-heal metrics are computed from.
  */
 
-import type { McCircuitFacade } from 'mccircuit';
+import type { ProjectionFacade } from '@astral-mcp/projection';
 import type { RecordingServer } from '../recording-server.js';
 import { runScenario } from '../runner.js';
 import type { ScenarioResult, VerdictPolicy } from '../types.js';
@@ -79,7 +79,7 @@ function errorView(result: ScenarioResult): AttemptErrorView | undefined {
  * `recording`, which must back the facade's wrapped server.
  */
 export async function runReasoningTask(
-  facade: McCircuitFacade,
+  facade: ProjectionFacade,
   recording: RecordingServer,
   author: MachineAuthor,
   task: BenchmarkTask,

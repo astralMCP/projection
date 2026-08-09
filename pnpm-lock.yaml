@@ -26,12 +26,12 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.116.0
         version: 0.116.0(zod@4.4.3)
+      '@astral-mcp/projection':
+        specifier: workspace:*
+        version: link:../projection
       '@modelcontextprotocol/server':
         specifier: 2.0.0
         version: 2.0.0
-      mccircuit:
-        specifier: workspace:*
-        version: link:../mccircuit
       zod:
         specifier: ^4.2.0
         version: 4.4.3
@@ -61,7 +61,7 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@22.20.1)
 
-  packages/mccircuit:
+  packages/projection:
     dependencies:
       '@jitl/quickjs-ng-wasmfile-release-sync':
         specifier: 0.32.0
@@ -100,18 +100,18 @@ importers:
 
   packages/tui:
     dependencies:
-      '@mccircuit/harness':
+      '@astral-mcp/harness':
         specifier: workspace:*
         version: link:../harness
+      '@astral-mcp/projection':
+        specifier: workspace:*
+        version: link:../projection
       ink:
         specifier: ^5.2.0
         version: 5.2.1(@types/react@18.3.31)(react@18.3.1)
       ink-text-input:
         specifier: ^6.0.0
         version: 6.0.0(ink@5.2.1(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)
-      mccircuit:
-        specifier: workspace:*
-        version: link:../mccircuit
       react:
         specifier: ^18.3.1
         version: 18.3.1

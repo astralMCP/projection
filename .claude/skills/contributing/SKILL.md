@@ -1,9 +1,9 @@
 ---
 name: contributing
-description: The McCircuit contribution workflow — branch/PR conventions, the review→fix→merge subagent cycle, toolchain commands, and repo gotchas. Read before making any change in this repo.
+description: The Projection contribution workflow — branch/PR conventions, the review→fix→merge subagent cycle, toolchain commands, and repo gotchas. Read before making any change in this repo.
 ---
 
-# Contributing to McCircuit
+# Contributing to Projection
 
 ## The cycle (non-negotiable)
 
@@ -30,8 +30,8 @@ Trivial one-liners still get at least a quick synchronous review agent.
 pnpm install
 pnpm run check          # build + typecheck + lint + test (turbo, all packages)
 pnpm run format         # prettier --write; CI runs format:check and FAILS on drift
-pnpm --filter mccircuit test            # one package
-pnpm --filter @mccircuit/tui start      # demo TUI (builds deps via turbo first)
+pnpm --filter @astral-mcp/projection test            # one package
+pnpm --filter @astral-mcp/tui start      # demo TUI (builds deps via turbo first)
 ```
 
 CI = `pnpm run check` + `pnpm run format:check`. Formatting drift in ANY
@@ -50,11 +50,11 @@ committed file (including `.claude/*.json`) fails CI — always run
 - **`.env` is off-limits to agents** — deny rules + a PreToolUse hook in
   `.claude/settings.json` block reading it; it holds real secrets. Tests
   that need env files create their own under a temp dir at runtime.
-- **Golden files** under `packages/mccircuit/test/typegen/__golden__/` are
+- **Golden files** under `packages/projection/test/typegen/__golden__/` are
   intentionally excluded from prettier (`.prettierignore`). Regenerate them
   via the typegen tests, don't hand-edit or format them.
 - **Live-spend gates**: anything that calls the Anthropic API must be
-  explicit opt-in (`MCC_LIVE_BENCH=1` + non-empty `ANTHROPIC_API_KEY`), so a
+  explicit opt-in (`PROJ_LIVE_BENCH=1` + non-empty `ANTHROPIC_API_KEY`), so a
   plain `pnpm test` never spends tokens. Preserve this on new live tests.
 - **XState is pinned exactly** (5.32.5) and `@sebastianwessel/quickjs` at
   3.1.0 (PRD §7). Don't bump casually — blobs bind to the XState version.

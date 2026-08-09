@@ -1,8 +1,8 @@
-# McCircuit for server authors
+# Projection for server authors
 
 You have an MCP server. `wrapMcpServer` turns it into a code-mode server:
 clients see exactly two tools — `discover_apis` and `execute_machine` — plus
-`mccircuit://` resources. Models author XState v5 machines against generated
+`projection://` resources. Models author XState v5 machines against generated
 types; read-only calls run inline; everything else pauses for human approval
 over MRTR (MCP 2026-07-28).
 
@@ -10,10 +10,10 @@ over MRTR (MCP 2026-07-28).
 
 ```ts
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
-import { wrapMcpServer } from 'mccircuit';
+import { wrapMcpServer } from '@astral-mcp/projection';
 
 // Your existing server, built normally with registerTool(...).
-// Pass it UNCONNECTED — McCircuit owns its transport from here on.
+// Pass it UNCONNECTED — Projection owns its transport from here on.
 const myServer = new McpServer({ name: 'acme-files', version: '1.0.0' });
 
 const facade = await wrapMcpServer(myServer, {
@@ -35,7 +35,7 @@ negotiation for free, and a hand-built server defaults to `legacy`
 (fail-safe).
 
 You can also wrap a **connected SDK `Client`** instead of an in-process
-instance — McCircuit in front of a server you don't own. The smoke tests in
+instance — Projection in front of a server you don't own. The smoke tests in
 `packages/harness/test/smoke/` wrap the official filesystem, GitHub, and a
 community SQLite server exactly this way.
 
@@ -112,7 +112,7 @@ self-heal within the same run, only be restructured and resubmitted.
 
 ## Lifecycle and operations
 
-- `facade.close()` on shutdown. It closes the connection McCircuit opened
+- `facade.close()` on shutdown. It closes the connection Projection opened
   for an in-process server; a `Client` you passed in stays yours.
 - Every failure is a normal `isError` result with a structured body
   (`phase`, `message`, `hint`, `logs`) — nothing throws across the wire.
@@ -125,5 +125,5 @@ self-heal within the same run, only be restructured and resubmitted.
 Point the harness at your server for scripted approval scenarios
 (`runScenario` with approve/deny/tamper scripts — see
 `packages/harness/README.md`), or the TUI for interactive testing:
-`pnpm --filter @mccircuit/tui start` wraps the demo server; swap in your own
+`pnpm --filter @astral-mcp/tui start` wraps the demo server; swap in your own
 via `wrapMcpServer` + the exported `App`/`driveTask` pieces.

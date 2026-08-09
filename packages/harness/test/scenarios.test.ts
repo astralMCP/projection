@@ -1,4 +1,4 @@
-import { wrapMcpServer, type McCircuitFacade } from 'mccircuit';
+import { wrapMcpServer, type ProjectionFacade } from '@astral-mcp/projection';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   approveAll,
@@ -16,7 +16,7 @@ const KEY = new Uint8Array(32).fill(11);
 /** A machine that gates a single write and branches on the verdict. */
 const WRITE_MACHINE = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'write',
@@ -39,7 +39,7 @@ export default setup({}).createMachine({
 
 describe('scenario harness against a real wrapped server', () => {
   let file: ReturnType<typeof createFileServer>;
-  let facade: McCircuitFacade;
+  let facade: ProjectionFacade;
 
   beforeEach(async () => {
     file = createFileServer({ '/notes.txt': 'original' });
@@ -139,7 +139,7 @@ describe('scenario harness against a real wrapped server', () => {
   it('a destructive tool gets stronger warning copy than a plain write (S5, R14)', async () => {
     const deleteMachine = `
 import { setup } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 export default setup({}).createMachine({
   id: 'del', initial: 'deleting',
   states: {
@@ -169,7 +169,7 @@ export default setup({}).createMachine({
     const facade2 = await wrapMcpServer(file2.server, { blob: { key: KEY } });
     const twoWrites = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 export default setup({}).createMachine({
   id: 'two', context: { a: null, b: null }, initial: 'first',
   states: {
@@ -221,7 +221,7 @@ describe('multi-round and batched scenarios', () => {
 
   const TWO_WRITES = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'two',

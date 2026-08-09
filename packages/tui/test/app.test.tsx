@@ -7,13 +7,13 @@
 import { randomBytes } from 'node:crypto';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { wrapMcpServer, type McCircuitFacade } from 'mccircuit';
-import { buildApiDocs, createFileServer, createScriptedAuthor } from '@mccircuit/harness';
+import { wrapMcpServer, type ProjectionFacade } from '@astral-mcp/projection';
+import { buildApiDocs, createFileServer, createScriptedAuthor } from '@astral-mcp/harness';
 import { App } from '../src/app.js';
 
 const WRITE_OUT = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'writeOut',
@@ -40,7 +40,7 @@ afterEach(async () => {
 });
 
 async function setup(): Promise<{
-  facade: McCircuitFacade;
+  facade: ProjectionFacade;
   recording: ReturnType<typeof createFileServer>;
   apiDocs: string;
 }> {
@@ -86,7 +86,7 @@ describe('App', () => {
         <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
       );
 
-      expect(lastFrame()).toContain('McCircuit TUI');
+      expect(lastFrame()).toContain('Projection TUI');
       expect(lastFrame()).toContain('demo-files');
       expect(lastFrame()).toContain('scripted-model');
 

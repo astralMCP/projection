@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { wrapMcpServer, type McCircuitFacade } from 'mccircuit';
+import { wrapMcpServer, type ProjectionFacade } from '@astral-mcp/projection';
 import { runScenario, declineAll } from '../../src/index.js';
 
 const require = createRequire(import.meta.url);
@@ -35,7 +35,7 @@ const require = createRequire(import.meta.url);
 /** Read via the record API — semantically read-only, but unannotated. */
 const READ_RECORDS = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'readRecords',
@@ -59,7 +59,7 @@ export default setup({}).createMachine({
 /** Raw SQL through the opaque query tool. */
 const RAW_QUERY = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'rawQuery',
@@ -82,7 +82,7 @@ export default setup({}).createMachine({
 
 const LIST_TABLES = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'listTables',
@@ -106,9 +106,9 @@ export default setup({}).createMachine({
 let dir: string;
 let client: Client;
 /** Default policy: unannotated server, so everything asks (S5). */
-let facade: McCircuitFacade;
+let facade: ProjectionFacade;
 /** Developer overrides: vouch for list_tables, ban raw SQL outright. */
-let overridden: McCircuitFacade;
+let overridden: ProjectionFacade;
 
 async function countUsers(): Promise<number> {
   const result = (await client.callTool({
@@ -120,7 +120,7 @@ async function countUsers(): Promise<number> {
 }
 
 beforeAll(async () => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), 'mcc-smoke-sqlite-')));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), 'proj-smoke-sqlite-')));
   const serverEntry = join(
     dirname(require.resolve('mcp-sqlite/package.json')),
     'mcp-sqlite-server.js',
@@ -132,7 +132,7 @@ beforeAll(async () => {
     // stderr; the one-line startup banner is acceptable log noise.
     stderr: 'inherit',
   });
-  client = new Client({ name: 'mcc-smoke', version: '0.0.0' }, { capabilities: {} });
+  client = new Client({ name: 'proj-smoke', version: '0.0.0' }, { capabilities: {} });
   await client.connect(transport);
 
   // Seed outside the gate: this is fixture setup, not the system under test.
@@ -163,7 +163,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('mcp-sqlite through McCircuit (PRD §13 matrix #3: opaque SQL, unannotated)', () => {
+describe('mcp-sqlite through Projection (PRD §13 matrix #3: opaque SQL, unannotated)', () => {
   it('introspects a fully unannotated catalog and generates types', () => {
     const names = facade.catalog.tools.map((t) => t.name);
     expect(names).toContain('query');

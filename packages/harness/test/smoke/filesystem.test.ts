@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { wrapMcpServer, type McCircuitFacade } from 'mccircuit';
+import { wrapMcpServer, type ProjectionFacade } from '@astral-mcp/projection';
 import { runScenario, declineAll } from '../../src/index.js';
 
 const require = createRequire(import.meta.url);
@@ -40,7 +40,7 @@ const require = createRequire(import.meta.url);
 /** Read machine: read_text_file is readOnlyHint: true → completes inline. */
 const READ_NOTES = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'readNotes',
@@ -64,7 +64,7 @@ export default setup({}).createMachine({
 /** Write machine: write_file is destructiveHint: true → suspends for approval. */
 const WRITE_FILE = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'writeFile',
@@ -87,12 +87,12 @@ export default setup({}).createMachine({
 
 let dir: string;
 let client: Client;
-let facade: McCircuitFacade;
+let facade: ProjectionFacade;
 
 beforeAll(async () => {
   // realpath: macOS tmpdir is a /var symlink; the server resolves and
   // compares real paths when enforcing its allowed-directory sandbox.
-  dir = realpathSync(mkdtempSync(join(tmpdir(), 'mcc-smoke-fs-')));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), 'proj-smoke-fs-')));
   writeFileSync(join(dir, 'notes.txt'), 'hello from the real filesystem');
 
   const serverEntry = join(
@@ -106,7 +106,7 @@ beforeAll(async () => {
     // banner is acceptable log noise.
     stderr: 'inherit',
   });
-  client = new Client({ name: 'mcc-smoke', version: '0.0.0' }, { capabilities: {} });
+  client = new Client({ name: 'proj-smoke', version: '0.0.0' }, { capabilities: {} });
   await client.connect(transport);
 
   facade = await wrapMcpServer(client, { blob: { key: randomBytes(32) } });
@@ -118,7 +118,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('official filesystem server through McCircuit (PRD §13 matrix #1)', () => {
+describe('official filesystem server through Projection (PRD §13 matrix #1)', () => {
   it('introspects the live catalog and generates types for foreign schemas', () => {
     const names = facade.catalog.tools.map((t) => t.name);
     expect(names).toContain('read_text_file');

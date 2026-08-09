@@ -28,7 +28,7 @@ export interface RecordingServer {
  * Build a wrapped server from tool specs, recording every invocation.
  *
  * The recorder captures calls at the server's own handlers, so it sees a
- * side effect only when McCircuit actually executes a tool — never for a
+ * side effect only when Projection actually executes a tool — never for a
  * gated call that was declined or awaiting approval.
  */
 export function createRecordingServer(

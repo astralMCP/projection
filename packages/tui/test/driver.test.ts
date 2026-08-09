@@ -5,20 +5,20 @@
 
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { wrapMcpServer, type InputResponse, type McCircuitFacade } from 'mccircuit';
+import { wrapMcpServer, type InputResponse, type ProjectionFacade } from '@astral-mcp/projection';
 import {
   buildApiDocs,
   createFileServer,
   createScriptedAuthor,
   type MachineAuthor,
-} from '@mccircuit/harness';
+} from '@astral-mcp/harness';
 import { driveTask, type DriveState, type SuspensionInfo } from '../src/driver.js';
 
 const INVALID_MODULE = `export default { not: 'a machine' };`;
 
 const WRITE_OUT = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'writeOut',
@@ -45,7 +45,7 @@ export default setup({}).createMachine({
  */
 const TWO_WRITES = `
 import { setup } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'twoWrites',
@@ -72,7 +72,7 @@ afterEach(async () => {
 });
 
 async function setup(): Promise<{
-  facade: McCircuitFacade;
+  facade: ProjectionFacade;
   recording: ReturnType<typeof createFileServer>;
   apiDocs: string;
 }> {

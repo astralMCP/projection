@@ -1,5 +1,5 @@
 /**
- * @mccircuit/harness — a scenario-driven test harness for McCircuit.
+ * @astral-mcp/harness — a scenario-driven test harness for Projection.
  *
  * Drives `execute_machine` through the full MRTR round-trip loop under a
  * scripted answer policy, records the side effects that actually reached the

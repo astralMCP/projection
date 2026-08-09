@@ -8,12 +8,16 @@
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { useCallback, useRef, useState } from 'react';
-import { neutralizeControlChars, type InputResponse, type McCircuitFacade } from 'mccircuit';
-import type { MachineAuthor } from '@mccircuit/harness';
+import {
+  neutralizeControlChars,
+  type InputResponse,
+  type ProjectionFacade,
+} from '@astral-mcp/projection';
+import type { MachineAuthor } from '@astral-mcp/harness';
 import { driveTask, type DriveState, type SuspensionInfo } from './driver.js';
 
 export interface AppProps {
-  facade: McCircuitFacade;
+  facade: ProjectionFacade;
   author: MachineAuthor;
   apiDocs: string;
   /** Wrapped-server label shown in the header. */
@@ -121,7 +125,7 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
     <Box flexDirection="column" gap={1}>
       <Text>
         <Text bold color="cyan">
-          McCircuit TUI
+          Projection TUI
         </Text>
         {'  '}wrapped server: <Text color="green">{serverLabel}</Text>
         {'  '}model: <Text color="green">{author.name}</Text>
