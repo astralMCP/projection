@@ -1,0 +1,216 @@
+/**
+ * Interactive drive loop (PRD §13 "Manual TUI").
+ *
+ * The harness's `runScenario` answers approval prompts from a scripted
+ * policy; this driver instead PAUSES on every suspension and asks the UI
+ * for verdicts, while keeping the same self-heal shape as the reasoning
+ * loop: structured errors are fed back to the author for another attempt.
+ *
+ * The driver is UI-agnostic — it talks to the surface through two
+ * callbacks (`onUpdate` for state, `approve` for verdicts) so the Ink app
+ * stays a thin renderer and the loop is testable without a terminal.
+ */
+
+import {
+  isInputRequiredResult,
+  type ExecuteMachineArgs,
+  type InputRequiredResult,
+  type InputResponse,
+  type LogEntry,
+  type McCircuitFacade,
+} from 'mccircuit';
+import type { AttemptErrorView, AuthoringContext, MachineAuthor } from '@mccircuit/harness';
+
+export type DrivePhase =
+  'authoring' | 'running' | 'awaiting_approval' | 'healing' | 'completed' | 'failed';
+
+export interface ApprovalPrompt {
+  /** inputRequest key (also the pending call id). */
+  key: string;
+  /** Full human-readable elicitation message (server-derived, S6). */
+  message: string;
+}
+
+/** What the UI shows for one suspension (R18/R23 numbers included). */
+export interface SuspensionInfo {
+  /** 1-based round-trip count for this attempt. */
+  trip: number;
+  /** Sealed blob size in bytes. */
+  blobBytes: number;
+  prompts: ApprovalPrompt[];
+}
+
+export interface DriveState {
+  phase: DrivePhase;
+  /** 1-based authoring attempt. */
+  attempt: number;
+  /** Latest authored module source. */
+  code?: string | undefined;
+  error?: AttemptErrorView | undefined;
+  /** Captured console output from the latest terminal result (R31). */
+  logs: LogEntry[];
+  suspension?: SuspensionInfo | undefined;
+  output?: unknown;
+}
+
+export interface DriveCallbacks {
+  /** Called on every state change; the UI re-renders from this. */
+  onUpdate(state: DriveState): void;
+  /**
+   * Called on every suspension. Resolves with the user's verdicts, keyed by
+   * prompt key; an omitted key is a decline (R17).
+   */
+  approve(info: SuspensionInfo): Promise<Record<string, InputResponse>>;
+}
+
+export interface DriveOptions {
+  /** Self-heal ceiling, counting the first attempt. Default 3. */
+  maxAttempts?: number;
+  /** Hard ceiling on round trips per attempt. Default 32. */
+  maxRounds?: number;
+}
+
+interface TerminalView {
+  isError: boolean;
+  error?: AttemptErrorView;
+  logs: LogEntry[];
+  output?: unknown;
+}
+
+function readPrompts(suspension: InputRequiredResult): ApprovalPrompt[] {
+  const requests = suspension.inputRequests ?? {};
+  return Object.entries(requests).map(([key, request]) => {
+    if (request.method === 'elicitation/create' && 'message' in request.params) {
+      return { key, message: request.params.message };
+    }
+    return { key, message: '(no message)' };
+  });
+}
+
+function readTerminal(result: {
+  isError?: boolean | undefined;
+  structuredContent?: Record<string, unknown> | undefined;
+}): TerminalView {
+  const structured = result.structuredContent ?? {};
+  const logs = Array.isArray(structured['logs']) ? (structured['logs'] as LogEntry[]) : [];
+  if (result.isError === true) {
+    return {
+      isError: true,
+      error: {
+        phase: String(structured['phase'] ?? 'unknown'),
+        message: String(structured['message'] ?? ''),
+        hint: String(structured['hint'] ?? ''),
+      },
+      logs,
+    };
+  }
+  return { isError: false, logs, output: structured['output'] };
+}
+
+/**
+ * Run one task interactively: author → execute → pause on approvals →
+ * self-heal on structured errors. Resolves with the final state
+ * (`completed` or `failed`).
+ */
+export async function driveTask(
+  facade: McCircuitFacade,
+  author: MachineAuthor,
+  task: string,
+  apiDocs: string,
+  callbacks: DriveCallbacks,
+  options: DriveOptions = {},
+): Promise<DriveState> {
+  const maxAttempts = options.maxAttempts ?? 3;
+  const maxRounds = options.maxRounds ?? 32;
+  let previous: AuthoringContext['previous'];
+  let state: DriveState = { phase: 'authoring', attempt: 1, logs: [] };
+
+  const update = (next: Partial<DriveState>): DriveState => {
+    state = { ...state, ...next };
+    callbacks.onUpdate(state);
+    return state;
+  };
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    update({ phase: 'authoring', attempt, suspension: undefined, error: undefined });
+    const code = await author.author({
+      task,
+      apiDocs,
+      attempt,
+      ...(previous !== undefined ? { previous } : {}),
+    });
+    update({ code });
+
+    let args: ExecuteMachineArgs = { code };
+    let trips = 0;
+    let terminal: TerminalView | undefined;
+
+    while (trips < maxRounds) {
+      update({ phase: 'running' });
+      const result = await facade.executeMachine(args, 'modern');
+
+      if (!isInputRequiredResult(result)) {
+        // Same narrowing the harness runner performs: a terminal result's
+        // relevant fields are isError + structuredContent.
+        terminal = readTerminal(
+          result as { isError?: boolean; structuredContent?: Record<string, unknown> },
+        );
+        break;
+      }
+
+      trips += 1;
+      const requestState = result.requestState;
+      if (requestState === undefined) {
+        terminal = {
+          isError: true,
+          error: {
+            phase: 'protocol',
+            message: 'suspension carried no requestState',
+            hint: 'This is a server bug; the sealed blob is mandatory on suspensions.',
+          },
+          logs: [],
+        };
+        break;
+      }
+      const info: SuspensionInfo = {
+        trip: trips,
+        blobBytes: Buffer.byteLength(requestState, 'utf8'),
+        prompts: readPrompts(result),
+      };
+      update({ phase: 'awaiting_approval', suspension: info });
+      const inputResponses = await callbacks.approve(info);
+      args = { code, requestState, inputResponses };
+    }
+
+    if (terminal === undefined) {
+      return update({
+        phase: 'failed',
+        error: {
+          phase: 'terminal',
+          message: `aborted after ${maxRounds} round trips`,
+          hint: 'The machine kept suspending; restructure it to need fewer approvals.',
+        },
+        suspension: undefined,
+      });
+    }
+
+    if (!terminal.isError) {
+      return update({
+        phase: 'completed',
+        output: terminal.output,
+        logs: terminal.logs,
+        suspension: undefined,
+      });
+    }
+
+    const error = terminal.error as AttemptErrorView;
+    if (attempt === maxAttempts) {
+      return update({ phase: 'failed', error, logs: terminal.logs, suspension: undefined });
+    }
+    previous = { code, error };
+    update({ phase: 'healing', error, logs: terminal.logs, suspension: undefined });
+  }
+
+  // Unreachable: the loop always returns on its last attempt.
+  return state;
+}
