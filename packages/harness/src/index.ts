@@ -16,6 +16,7 @@
  */
 
 export { runScenario, type SideEffectLog } from './runner.js';
+export { loadNearestDotEnv } from './env.js';
 export {
   createRecordingServer,
   createFileServer,

@@ -62,6 +62,25 @@ describe('loadNearestDotEnv', () => {
     expect(process.env[VAR]).toBe('from-file');
   });
 
+  it('walks past a linked git worktree (.git file) to the main repo root .env', () => {
+    const { root } = makeTree();
+    // Layout mirrors .claude/worktrees: main repo root (.git DIR) holds the
+    // .env; the worktree checkout has a .git FILE plus the workspace
+    // manifest, and must not terminate the walk.
+    mkdirSync(join(root, '.git'), { recursive: true });
+    writeFileSync(join(root, '.env'), `${VAR}=from-main-repo\n`);
+    const worktree = join(root, '.claude', 'worktrees', 'wt');
+    const start = join(worktree, 'packages', 'harness');
+    mkdirSync(start, { recursive: true });
+    writeFileSync(join(worktree, '.git'), 'gitdir: elsewhere\n');
+    writeFileSync(join(worktree, 'pnpm-workspace.yaml'), 'packages:\n');
+
+    const loaded = loadNearestDotEnv(start);
+
+    expect(loaded).toBe(join(root, '.env'));
+    expect(process.env[VAR]).toBe('from-main-repo');
+  });
+
   it('never overrides a variable already exported in the environment', () => {
     const { root, nested } = makeTree();
     writeFileSync(join(root, '.env'), `${VAR}=from-file\n`);
