@@ -104,7 +104,9 @@ describe.skipIf(!optedIn || token === '')('github-mcp-server live (PRD §13 matr
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [serverEntry],
-      // Minimal child environment: the token and nothing else of ours.
+      // The token plus the SDK's default inherited basics: the transport
+      // always merges getDefaultEnvironment() (HOME/LOGNAME/PATH/SHELL/
+      // TERM/USER) into this env. No secrets from our process env.
       env: { GITHUB_PERSONAL_ACCESS_TOKEN: token },
       // Native-binding-free, but keep startup diagnostics visible anyway.
       stderr: 'inherit',
@@ -130,12 +132,14 @@ describe.skipIf(!optedIn || token === '')('github-mcp-server live (PRD §13 matr
     expect(facade.catalog.tools.every((t) => t.annotations === undefined)).toBe(true);
 
     // Typegen produced a substantial surface from schemas we never authored
-    // (nested objects, arrays of objects, enums) without falling back to a
-    // single `unknown` blob per tool.
+    // (nested objects, arrays of objects, enums) without collapsing to
+    // `unknown` blobs: search_repositories gets a named Input type whose
+    // required `query` property is typed as a string.
     expect(facade.dts).toContain('search_repositories');
     expect(facade.dts).toContain('create_pull_request');
+    expect(facade.dts).toContain('export type SearchRepositoriesInput =');
+    expect(facade.dts).toMatch(/^\s*query: string;$/m);
     expect(facade.dts.length).toBeGreaterThan(10_000);
-    expect(facade.dts).not.toContain('any;');
   });
 
   it(
