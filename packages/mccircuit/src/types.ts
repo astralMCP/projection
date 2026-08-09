@@ -176,6 +176,8 @@ export interface ResourceCaps {
   wasmMemoryBytes: number;
   /** Submitted code size, bytes. */
   maxCodeBytes: number;
+  /** Submitted machine input, bytes of its JSON serialization. */
+  maxInputBytes: number;
   /** Read-only tool calls per segment. */
   maxReadCallsPerSegment: number;
   /** MRTR round trips per workflow. */
@@ -194,6 +196,7 @@ export const DEFAULT_CAPS: ResourceCaps = {
   segmentWallClockMs: 30_000,
   wasmMemoryBytes: 128 * 1024 * 1024,
   maxCodeBytes: 128 * 1024,
+  maxInputBytes: 128 * 1024,
   maxReadCallsPerSegment: 50,
   maxRoundTrips: 8,
   maxEventsPerSegment: 10_000,
@@ -206,6 +209,7 @@ export const MAX_CAPS: ResourceCaps = {
   segmentWallClockMs: 60_000,
   wasmMemoryBytes: 256 * 1024 * 1024,
   maxCodeBytes: 256 * 1024,
+  maxInputBytes: 256 * 1024,
   maxReadCallsPerSegment: 200,
   maxRoundTrips: 16,
   maxEventsPerSegment: 50_000,
@@ -226,6 +230,7 @@ const MIN_CAPS: ResourceCaps = {
   segmentWallClockMs: 100,
   wasmMemoryBytes: 1024 * 1024,
   maxCodeBytes: 1024,
+  maxInputBytes: 1024,
   maxReadCallsPerSegment: 1,
   maxRoundTrips: 1,
   maxEventsPerSegment: 1,

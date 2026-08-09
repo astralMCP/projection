@@ -95,6 +95,7 @@ R12. Default resource caps, all configurable downward and clamped at the stated 
 | Wall-clock per execution segment (per round trip) | 30 s    | 60 s     |
 | WASM memory                                       | 128 MB  | 256 MB   |
 | Submitted code size                               | 128 KB  | 256 KB   |
+| Machine input (JSON serialization size)           | 128 KB  | 256 KB   |
 | Read-only tool calls per segment                  | 50      | 200      |
 | MRTR round trips per workflow                     | 8       | 16       |
 | Machine events processed per segment              | 10 000  | 50 000   |

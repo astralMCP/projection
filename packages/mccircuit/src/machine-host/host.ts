@@ -88,6 +88,10 @@ export interface RunSegmentOptions {
  * fresh logs. On the first segment the module is validated (R24) before the
  * actor starts; on a resume the module is re-evaluated from the re-sent code
  * and the actor is restored from the sealed snapshot.
+ *
+ * Note: `runSegment` interpolates `input` into driver source without a size
+ * check of its own — `executeMachine` enforces `maxInputBytes` before calling
+ * it. Callers invoking `runSegment` directly must bound `input` themselves.
  */
 export async function runSegment(options: RunSegmentOptions): Promise<SegmentOutcome> {
   const caps = clampCaps(options.caps ?? {});
