@@ -317,6 +317,29 @@ describe('caps at the tool boundary', () => {
     expect(error.message).toContain('submitted code');
   });
 
+  it('rejects oversized input before executing anything', async () => {
+    const executor = new FakeExecutor();
+    const input = { padding: 'x'.repeat(2000) };
+    const result = await executeMachine(
+      { code: READ_MACHINE, input },
+      deps({ executor, caps: { maxInputBytes: 1024 } }),
+    );
+    const error = structuredError(result);
+    expect(error.phase).toBe('cap_exceeded');
+    expect(error.message).toContain('submitted input');
+    expect(error.message).toContain('1024');
+    expect(error.hint.length).toBeGreaterThan(0);
+    expect(executor.calls).toEqual([]);
+  });
+
+  it('accepts input under the cap', async () => {
+    const result = await executeMachine(
+      { code: READ_MACHINE, input: { padding: 'x'.repeat(100) } },
+      deps({ caps: { maxInputBytes: 1024 } }),
+    );
+    expect(structured(result)['output']).toEqual({ text: 'read_file-ok' });
+  });
+
   it('terminates a workflow that exceeds the round-trip cap (R18)', async () => {
     // A machine that needs two approvals, with the cap set to one.
     const twoWrites = `

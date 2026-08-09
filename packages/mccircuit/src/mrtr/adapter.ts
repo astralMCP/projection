@@ -78,6 +78,7 @@ export async function executeMachine(
 
   try {
     assertCodeSize(args.code, caps);
+    assertInputSize(args.input, caps);
 
     const resume = args.requestState !== undefined ? openResume(args, deps, caps) : undefined;
 
@@ -333,6 +334,26 @@ function assertCodeSize(code: string, caps: ResourceCaps): void {
       `submitted code is ${size} bytes, exceeding the limit of ${caps.maxCodeBytes}`,
       {
         hint: `Shorten the machine to at most ${caps.maxCodeBytes} bytes.`,
+      },
+    );
+  }
+}
+
+/**
+ * The input is interpolated into the validation and bootstrap driver sources
+ * as a JSON literal, so its serialized size — not the wire size of the raw
+ * value — is what the sandbox actually pays for. Bounding it here yields a
+ * structured cap_exceeded error instead of an opaque WASM memory failure.
+ */
+function assertInputSize(input: unknown, caps: ResourceCaps): void {
+  if (input === undefined) return;
+  const size = Buffer.byteLength(JSON.stringify(input), 'utf8');
+  if (size > caps.maxInputBytes) {
+    throw new McCircuitError(
+      'cap_exceeded',
+      `submitted input serializes to ${size} bytes, exceeding the limit of ${caps.maxInputBytes}`,
+      {
+        hint: `Shrink the machine input to at most ${caps.maxInputBytes} bytes of JSON.`,
       },
     );
   }
