@@ -133,10 +133,28 @@ function getQuickJs(): Promise<QuickJsRuntime> {
 }
 
 function getTsSupport(): Promise<TsSupport> {
-  tsSupportPromise ??= getTypescriptSupport(true).catch((cause: unknown) => {
+  tsSupportPromise ??= (async () => {
+    // `typescript` is a real dependency (the generated tools bridge is
+    // always TypeScript), but guard against a consumer force-resolving an
+    // incompatible major: TS 7 removed the `ts.transpile` API the QuickJS
+    // support layer calls, which would otherwise surface as an opaque
+    // "ts.transpile is not a function" at machine run time.
+    const ts = (await import('typescript')) as { transpile?: unknown; version?: string };
+    if (typeof ts.transpile !== 'function') {
+      throw new McCircuitError(
+        'transpile',
+        `the installed typescript@${ts.version ?? 'unknown'} does not provide ts.transpile`,
+        {
+          hint: 'mccircuit requires typescript ^5 (TS 6+/7+ removed the transpile API). Pin typescript to ^5.7.0.',
+        },
+      );
+    }
+    return getTypescriptSupport(true);
+  })().catch((cause: unknown) => {
     tsSupportPromise = undefined;
+    if (cause instanceof McCircuitError) throw cause;
     throw new McCircuitError('transpile', 'TypeScript transpiler is not available', {
-      hint: 'Install the optional `typescript` dependency, or submit JavaScript with lang: "js"',
+      hint: 'Reinstall dependencies: mccircuit depends on typescript ^5 for machine and bridge transpilation.',
       cause,
     });
   });
