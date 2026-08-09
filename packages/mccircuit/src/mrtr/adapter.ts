@@ -347,7 +347,19 @@ function assertCodeSize(code: string, caps: ResourceCaps): void {
  */
 function assertInputSize(input: unknown, caps: ResourceCaps): void {
   if (input === undefined) return;
-  const size = Buffer.byteLength(JSON.stringify(input), 'utf8');
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(input);
+  } catch (err) {
+    throw new McCircuitError('validate', 'machine input is not JSON-serializable', {
+      hint: 'Remove circular references from the input; it must serialize to plain JSON.',
+      cause: err,
+    });
+  }
+  // A top-level function or symbol stringifies to undefined. Unreachable over
+  // the wire (JSON transport); leave it to downstream handling as before.
+  if (json === undefined) return;
+  const size = Buffer.byteLength(json, 'utf8');
   if (size > caps.maxInputBytes) {
     throw new McCircuitError(
       'cap_exceeded',

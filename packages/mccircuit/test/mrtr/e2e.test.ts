@@ -332,6 +332,21 @@ describe('caps at the tool boundary', () => {
     expect(executor.calls).toEqual([]);
   });
 
+  it('rejects circular input with a structured validate error', async () => {
+    const executor = new FakeExecutor();
+    const circular: Record<string, unknown> = {};
+    circular['self'] = circular;
+    const result = await executeMachine(
+      { code: READ_MACHINE, input: circular },
+      deps({ executor }),
+    );
+    const error = structuredError(result);
+    expect(error.phase).toBe('validate');
+    expect(error.message).toContain('not JSON-serializable');
+    expect(error.hint.length).toBeGreaterThan(0);
+    expect(executor.calls).toEqual([]);
+  });
+
   it('accepts input under the cap', async () => {
     const result = await executeMachine(
       { code: READ_MACHINE, input: { padding: 'x'.repeat(100) } },
