@@ -21,11 +21,12 @@ const facade = await wrapMcpServer(myServer, {
 });
 
 export default createMcpHandler(facade.serverFactory); // HTTP
-// or: serveStdio(facade.serverFactory)
+// or: serveStdio(facade.serverFactory) — from '@modelcontextprotocol/server/stdio'
 ```
 
-`serverFactory` is the load-bearing line: the SDK calls it per connection
-with the negotiated **protocol era**, which decides whether a gated call may
+`serverFactory` is the load-bearing line: the SDK calls it per serving unit
+(per request over HTTP, per connection over stdio) with the negotiated
+**protocol era**, which decides whether a gated call may
 suspend over MRTR (modern clients) or must fail fast with an error naming
 the required revision (legacy clients still run read-only machines). If you
 build the `McpServer` yourself, use `facade.createServer({ era: 'modern' })`
@@ -95,7 +96,7 @@ nothing between round trips, so:
 
 All optional, clamped to sane floors/ceilings (`clampCaps`):
 
-| Cap                      | Default | Bounds                            |
+| Cap                      | Default | What it bounds                    |
 | ------------------------ | ------- | --------------------------------- |
 | `maxCodeBytes`           | 128 KB  | submitted machine source          |
 | `maxInputBytes`          | 128 KB  | machine `input`, JSON-encoded     |
@@ -105,7 +106,9 @@ All optional, clamped to sane floors/ceilings (`clampCaps`):
 | `maxStateNodes`          | 100     | state nodes in the machine        |
 
 Breaches return structured `cap_exceeded` errors with self-heal hints — the
-model can read them and restructure.
+model can read them and restructure. The exception is `maxRoundTrips`: a
+trip-cap breach is phase `terminal`, by design — the workflow cannot
+self-heal within the same run, only be restructured and resubmitted.
 
 ## Lifecycle and operations
 
