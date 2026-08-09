@@ -9,7 +9,7 @@ McCircuit wraps an existing MCP server and exposes two tools:
 
 Because all suspension state travels in the MRTR `requestState` payload, McCircuit is fully stateless: any server instance can resume any workflow.
 
-See [docs/PRD.md](docs/PRD.md) for the full product requirements and [docs/DECISIONS.md](docs/DECISIONS.md) for engineering decisions.
+See [docs/server-authors.md](docs/server-authors.md) for the integration guide, [docs/PRD.md](docs/PRD.md) for the full product requirements, and [docs/DECISIONS.md](docs/DECISIONS.md) for engineering decisions.
 
 ## Usage
 
@@ -97,13 +97,14 @@ The `write_file` call suspends the machine, seals its state into an encrypted bl
 
 ## Repository layout
 
-| Path                 | What                                                                       |
-| -------------------- | -------------------------------------------------------------------------- |
-| `packages/mccircuit` | The library (npm: `mccircuit`)                                             |
-| `packages/harness`   | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark |
-| `packages/tui`       | `mccircuit-tui` — interactive Ink demo client (approve/deny with y/n/i)    |
-| `docs/PRD.md`        | Product requirements document                                              |
-| `docs/DECISIONS.md`  | Engineering decisions and their rationale                                  |
+| Path                     | What                                                                       |
+| ------------------------ | -------------------------------------------------------------------------- |
+| `packages/mccircuit`     | The library (npm: `mccircuit`)                                             |
+| `packages/harness`       | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark |
+| `packages/tui`           | `mccircuit-tui` — interactive Ink demo client (approve/deny with y/n/i)    |
+| `docs/server-authors.md` | Integration guide for wrapping your server                                 |
+| `docs/PRD.md`            | Product requirements document                                              |
+| `docs/DECISIONS.md`      | Engineering decisions and their rationale                                  |
 
 ## Try it
 
