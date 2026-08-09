@@ -67,6 +67,36 @@ export default setup({
     expect(error.hint).toContain('re-execute approved writes');
   });
 
+  it('validates against the provided input, not undefined (real-server regression)', async () => {
+    // A context factory dereferencing input directly is the natural
+    // authoring style; validation must probe with the same input the
+    // bootstrap will run with.
+    const outcome = await runSegment({
+      ...baseOptions,
+      code: `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@mccircuit/tools';
+
+export default setup({}).createMachine({
+  id: 'needsInput',
+  context: ({ input }) => ({ path: input.path, text: null }),
+  initial: 'reading',
+  states: {
+    reading: {
+      entry: toolCall('read_file', ({ context }) => ({ path: context.path })),
+      on: { TOOL_RESULT: { target: 'done', actions: assign({ text: ({ event }) => event.result }) } },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => ({ text: context.text }),
+});
+`,
+      input: { path: '/from-input.txt' },
+      executor: new FakeExecutor(),
+    });
+    expect(outcome.status).toBe('completed');
+  });
+
   it('rejects non-serializable machine context (R6)', async () => {
     const error = await failWith(`
 import { setup } from 'xstate';

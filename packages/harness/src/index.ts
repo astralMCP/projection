@@ -15,7 +15,7 @@
  * from structured errors; `summarizeSelfHeal` computes the §10 metrics.
  */
 
-export { runScenario } from './runner.js';
+export { runScenario, type SideEffectLog } from './runner.js';
 export {
   createRecordingServer,
   createFileServer,
