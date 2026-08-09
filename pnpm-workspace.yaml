@@ -3,3 +3,6 @@ packages:
   - apps/*
 allowBuilds:
   esbuild: true
+  # The sqlite3 native binding behind the mcp-sqlite smoke-test server.
+  sqlite3: true
+  mcp-sqlite: false
