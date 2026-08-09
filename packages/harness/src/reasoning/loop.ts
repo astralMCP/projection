@@ -87,6 +87,9 @@ export async function runReasoningTask(
   options: ReasoningOptions = {},
 ): Promise<ReasoningResult> {
   const maxAttempts = options.maxAttempts ?? 3;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error(`maxAttempts must be a positive integer, got ${maxAttempts}`);
+  }
   const attempts: AttemptRecord[] = [];
   let previous: AuthoringContext['previous'];
 
@@ -114,6 +117,7 @@ export async function runReasoningTask(
     previous = { code, error };
   }
 
+  // Safe: maxAttempts >= 1 is enforced above, so the loop ran at least once.
   const last = attempts[attempts.length - 1] as AttemptRecord;
   const firstValid = attempts.find((a) => a.machineValid);
   return {

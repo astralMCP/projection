@@ -2,9 +2,11 @@
  * Live self-heal benchmark (PRD §13, §10) — a real model authors machines
  * for the FILE_SERVER_TASKS suite and heals from structured errors.
  *
- * Skipped without ANTHROPIC_API_KEY (never runs in CI). Run it with:
+ * Explicit opt-in only: needs MCC_LIVE_BENCH=1 AND a non-empty
+ * ANTHROPIC_API_KEY, so a developer with the key exported never triggers
+ * real model spend from a plain `pnpm test`. Run it with:
  *
- *   ANTHROPIC_API_KEY=... pnpm --filter @mccircuit/harness exec vitest run test/reasoning.live.test.ts
+ *   MCC_LIVE_BENCH=1 pnpm --filter @mccircuit/harness exec vitest run test/reasoning.live.test.ts
  *
  * Set MCC_BENCH_MODEL to benchmark another model (default claude-opus-5);
  * §10 asks for the metric across 3 frontier models, so run once per model.
@@ -25,9 +27,12 @@ import {
   type ReasoningResult,
 } from '../src/index.js';
 
-const hasKey = typeof process.env['ANTHROPIC_API_KEY'] === 'string';
+// Both gates: key presence alone must never trigger live spend, and an
+// empty-string key is absent, not present.
+const hasKey = (process.env['ANTHROPIC_API_KEY'] ?? '') !== '';
+const optedIn = process.env['MCC_LIVE_BENCH'] === '1';
 
-describe.skipIf(!hasKey)('live self-heal benchmark (§10)', () => {
+describe.skipIf(!optedIn || !hasKey)('live self-heal benchmark (§10)', () => {
   it('runs the task suite and reports the self-heal metrics', { timeout: 600_000 }, async () => {
     const model = process.env['MCC_BENCH_MODEL'];
     const author = createAnthropicAuthor(model !== undefined ? { model } : {});

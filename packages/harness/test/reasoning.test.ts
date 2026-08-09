@@ -229,4 +229,26 @@ describe('extractModuleSource', () => {
   it('accepts unfenced replies verbatim', () => {
     expect(extractModuleSource('  export default 3;\n')).toBe('export default 3;');
   });
+
+  it('ignores inline ``` in prose (fences must start a line)', () => {
+    const reply = 'Use ``` to fence.\nLike ```\nso:\n```ts\nexport default 1;\n```\n';
+    expect(extractModuleSource(reply)).toBe('export default 1;');
+  });
+
+  it('accepts any info-string tag, not just ts/js', () => {
+    const reply = '```tsx\nexport default 4;\n```';
+    expect(extractModuleSource(reply)).toBe('export default 4;');
+  });
+});
+
+describe('runReasoningTask input validation', () => {
+  it('rejects a non-positive maxAttempts up front', async () => {
+    const { facade, recording, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted', [READ_NOTES]);
+    await expect(
+      runReasoningTask(facade, recording, author, { name: 'x', prompt: 'x' }, apiDocs, {
+        maxAttempts: 0,
+      }),
+    ).rejects.toThrow(/positive integer/);
+  });
 });

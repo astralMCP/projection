@@ -11,7 +11,10 @@ import { extractModuleSource, type AuthoringContext, type MachineAuthor } from '
 export interface AnthropicAuthorOptions {
   /** Model id. Default: `claude-opus-5`. */
   model?: string;
-  /** Max output tokens per attempt. Default: 16000. */
+  /**
+   * Max output tokens per attempt. Default: 64000 — adaptive thinking
+   * spends from the same budget, so a low ceiling truncates code mid-fence.
+   */
   maxTokens?: number;
   /** Injected client (tests); defaults to `new Anthropic()` reading the env key. */
   client?: Anthropic;
@@ -48,12 +51,21 @@ export function createAnthropicAuthor(options: AnthropicAuthorOptions = {}): Mac
       const message = await client.messages
         .stream({
           model,
-          max_tokens: options.maxTokens ?? 16000,
+          max_tokens: options.maxTokens ?? 64000,
           thinking: { type: 'adaptive' },
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: attemptPrompt(ctx) }],
         })
         .finalMessage();
+      // A truncated or refused reply is a harness failure, not an authoring
+      // failure — booking it as an invalid machine would corrupt the §10
+      // valid-machine metric, so fail the run loudly instead.
+      if (message.stop_reason !== 'end_turn') {
+        throw new Error(
+          `authoring reply ended with stop_reason "${message.stop_reason}" (model ${model}); ` +
+            'raise maxTokens or inspect the refusal before trusting benchmark numbers',
+        );
+      }
       const reply = message.content
         .flatMap((block) => (block.type === 'text' ? [block.text] : []))
         .join('\n');

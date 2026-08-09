@@ -78,9 +78,13 @@ export function createScriptedAuthor(name: string, attempts: readonly string[]):
  * Extract machine module source from a model reply: the LAST fenced code
  * block (models often restate the docs' examples first), else the whole
  * reply trimmed.
+ *
+ * Both fences are anchored to line start so an inline ``` in prose can
+ * never pair with a real block's opener, and the info string accepts any
+ * tag (tsx, mjs, ...) rather than an allow-list.
  */
 export function extractModuleSource(reply: string): string {
-  const fences = [...reply.matchAll(/```(?:ts|typescript|js|javascript)?\s*\n([\s\S]*?)```/g)];
+  const fences = [...reply.matchAll(/^[ \t]*```[^\n]*\n([\s\S]*?)^[ \t]*```/gm)];
   const last = fences[fences.length - 1];
   if (last?.[1] !== undefined) return last[1].trim();
   return reply.trim();
