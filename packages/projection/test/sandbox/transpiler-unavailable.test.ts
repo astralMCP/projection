@@ -37,11 +37,11 @@ describe('transpiler availability (environment errors pass through)', () => {
     );
 
     expect(err).toBeInstanceOf(ProjectionError);
-    const mccError = err as ProjectionError;
+    const projError = err as ProjectionError;
     // The environment diagnosis, not the bridge-integration rewrap:
-    expect(mccError.phase).toBe('transpile');
-    expect(mccError.message).toContain('typescript@7.0.0 does not provide ts.transpile');
-    expect(mccError.message).not.toContain('bridge module failed to transpile');
-    expect(mccError.hint).toContain('typescript ^5');
+    expect(projError.phase).toBe('transpile');
+    expect(projError.message).toContain('typescript@7.0.0 does not provide ts.transpile');
+    expect(projError.message).not.toContain('bridge module failed to transpile');
+    expect(projError.hint).toContain('typescript ^5');
   });
 });

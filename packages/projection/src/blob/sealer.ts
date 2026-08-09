@@ -68,7 +68,7 @@ import { LIB_VERSION, XSTATE_VERSION } from './versions.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Envelope format version prefix. Bump (mcc2, …) on any wire-format change. */
+/** Envelope format version prefix. Bump (proj2, …) on any wire-format change. */
 export const ENVELOPE_PREFIX = 'proj1';
 
 /** Default blob TTL: 15 minutes (R20). */

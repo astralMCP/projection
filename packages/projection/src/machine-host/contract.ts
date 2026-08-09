@@ -40,13 +40,13 @@ if (typeof globalThis.__projection_toolcall !== 'function') {
   };
 }
 
-function __mccQueue() {
+function __projQueue() {
   const state = globalThis.__projection.state;
   if (!state.queue) state.queue = [];
   return state.queue;
 }
 
-let __mccSeq = 0;
+let __projSeq = 0;
 
 /**
  * Request a tool call from a machine action.
@@ -74,9 +74,9 @@ export function toolCall(name, args, options) {
     if (typeof resolved !== 'object' || Array.isArray(resolved)) {
       throw new Error('toolCall("' + name + '") arguments must resolve to a plain object');
     }
-    __mccSeq += 1;
-    const id = options && options.id !== undefined ? String(options.id) : name + '#' + __mccSeq;
-    __mccQueue().push({ id: id, name: name, args: resolved });
+    __projSeq += 1;
+    const id = options && options.id !== undefined ? String(options.id) : name + '#' + __projSeq;
+    __projQueue().push({ id: id, name: name, args: resolved });
   };
 }
 
