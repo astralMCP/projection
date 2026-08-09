@@ -20,8 +20,7 @@ async function main(): Promise<void> {
   if ((process.env['ANTHROPIC_API_KEY'] ?? '') === '') {
     console.error(
       'mccircuit-tui needs ANTHROPIC_API_KEY (the model authors the machines).\n' +
-        'Export it, or put ANTHROPIC_API_KEY=... in a .env at the repo root\n' +
-        '(KEY=value, no spaces around the equals sign).',
+        'Export it, or put ANTHROPIC_API_KEY=... in a .env at the repo root (KEY=value).',
     );
     process.exitCode = 1;
     return;

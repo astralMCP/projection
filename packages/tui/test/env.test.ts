@@ -36,6 +36,32 @@ describe('loadNearestDotEnv', () => {
     expect(process.env[VAR]).toBe('from-file');
   });
 
+  it('does not load a .env above a repo-root marker (pnpm-workspace.yaml)', () => {
+    const { root } = makeTree();
+    const repo = join(root, 'repo');
+    const start = join(repo, 'packages', 'tui');
+    mkdirSync(start, { recursive: true });
+    writeFileSync(join(root, '.env'), `${VAR}=from-ancestor\n`);
+    writeFileSync(join(repo, 'pnpm-workspace.yaml'), 'packages:\n');
+
+    const loaded = loadNearestDotEnv(start);
+
+    expect(loaded).toBeUndefined();
+    expect(process.env[VAR]).toBeUndefined();
+  });
+
+  it('still reaches the repo-root .env past a workspace package.json', () => {
+    const { root, nested } = makeTree();
+    writeFileSync(join(root, '.env'), `${VAR}=from-file\n`);
+    writeFileSync(join(root, 'pnpm-workspace.yaml'), 'packages:\n');
+    writeFileSync(join(nested, 'package.json'), '{"name":"member"}\n');
+
+    const loaded = loadNearestDotEnv(nested);
+
+    expect(loaded).toBe(join(root, '.env'));
+    expect(process.env[VAR]).toBe('from-file');
+  });
+
   it('never overrides a variable already exported in the environment', () => {
     const { root, nested } = makeTree();
     writeFileSync(join(root, '.env'), `${VAR}=from-file\n`);
