@@ -68,7 +68,6 @@ export async function runScenario(
   const verdicts = scenario.verdicts ?? (() => APPROVE_ALL);
   const roundRecords: RoundRecord[] = [];
   let maxBlobBytes = 0;
-  let firstState: string | undefined;
   let seen = 0; // index into recording.calls already attributed
 
   const takeSideEffects = (): SideEffect[] => {
@@ -103,7 +102,6 @@ export async function runScenario(
     const suspension = result;
     const prompts = readPrompts(suspension);
     const state = sealedState(suspension);
-    if (firstState === undefined) firstState = state;
     maxBlobBytes = Math.max(maxBlobBytes, Buffer.byteLength(state, 'utf8'));
 
     roundRecords.push({
@@ -120,7 +118,7 @@ export async function runScenario(
       if (verdict !== undefined) inputResponses[prompt.key] = verdict;
     }
 
-    let requestState = scenario.replayFirstState ? firstState : state;
+    let requestState = state;
     const tamperThisRound =
       scenario.tamper !== undefined &&
       (scenario.tamperRounds === undefined || scenario.tamperRounds.includes(round));

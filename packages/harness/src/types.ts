@@ -53,11 +53,6 @@ export interface Scenario {
   tamper?: StateMutator;
   /** Restrict tampering to these zero-based rounds. Default: all rounds. */
   tamperRounds?: number[];
-  /**
-   * Replay the FIRST suspension's requestState on every retry instead of
-   * the latest, modelling a client that re-sends a stale blob (D4).
-   */
-  replayFirstState?: boolean;
   /** Hard ceiling on round trips the harness itself will drive. */
   maxRounds?: number;
 }

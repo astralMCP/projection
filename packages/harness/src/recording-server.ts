@@ -79,7 +79,7 @@ export function createFileServer(initial: Record<string, string> = {}): Recordin
         description: 'List known file paths.',
         inputSchema: {},
         annotations: { readOnlyHint: true },
-        run: () => Object.keys(files).sort().join(','),
+        run: () => Object.keys(files).toSorted().join(','),
       },
       {
         name: 'write_file',
