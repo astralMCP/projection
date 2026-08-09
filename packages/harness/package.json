@@ -17,8 +17,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "mccircuit": "workspace:*",
+    "@anthropic-ai/sdk": "^0.116.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "mccircuit": "workspace:*",
     "zod": "^4.2.0"
   },
   "devDependencies": {
