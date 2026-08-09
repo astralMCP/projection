@@ -9,10 +9,19 @@ S1 (only the two code-mode tools exposed), S2 (approval binds the sealed
 call), S3/S4 (tampered and truncated blobs execute nothing), S5
 (annotation-driven policy), and S6 (server-derived prompt copy).
 
-This layer is deterministic and CI-runnable on its own. The
-Anthropic-SDK-driven reasoning loop — a model authoring machines against task
-prompts and self-healing from structured errors — builds on top of this and
-lands separately.
+The scenario layer is deterministic and CI-runnable on its own. On top of it,
+`src/reasoning/` implements the Anthropic-SDK reasoning loop (PRD §13): a
+`MachineAuthor` — a live model, or a deterministic scripted author in CI —
+writes machines for benchmark tasks, structured `isError` results feed back
+for self-healing, and `summarizeSelfHeal` computes the §10 metrics
+(first-attempt valid rate ≥ 60%, ≤ 2 attempts to valid ≥ 90%).
+
+Run the live benchmark (explicit opt-in; needs `ANTHROPIC_API_KEY`, model
+overridable via `MCC_BENCH_MODEL`):
+
+```bash
+MCC_LIVE_BENCH=1 pnpm --filter @mccircuit/harness exec vitest run test/reasoning.live.test.ts
+```
 
 ## Usage
 

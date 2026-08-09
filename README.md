@@ -97,10 +97,32 @@ The `write_file` call suspends the machine, seals its state into an encrypted bl
 
 ## Repository layout
 
-| Path                 | What                           |
-| -------------------- | ------------------------------ |
-| `packages/mccircuit` | The library (npm: `mccircuit`) |
-| `docs/PRD.md`        | Product requirements document  |
+| Path                 | What                                                                       |
+| -------------------- | -------------------------------------------------------------------------- |
+| `packages/mccircuit` | The library (npm: `mccircuit`)                                             |
+| `packages/harness`   | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark |
+| `packages/tui`       | `mccircuit-tui` — interactive Ink demo client (approve/deny with y/n/i)    |
+| `docs/PRD.md`        | Product requirements document                                              |
+| `docs/DECISIONS.md`  | Engineering decisions and their rationale                                  |
+
+## Try it
+
+The demo TUI wraps an in-memory file server and lets a live model author
+machines while you approve each write with a single key. It needs
+`ANTHROPIC_API_KEY` — exported, or in a `.env` at the repo root (loaded
+automatically):
+
+```bash
+pnpm --filter @mccircuit/tui start
+```
+
+The §10 self-heal benchmark (a model authors machines for scripted tasks and
+heals from structured errors) is explicit opt-in so plain test runs never
+spend tokens:
+
+```bash
+MCC_LIVE_BENCH=1 pnpm --filter @mccircuit/harness exec vitest run test/reasoning.live.test.ts
+```
 
 ## Development
 
@@ -114,3 +136,8 @@ pnpm run check   # build + typecheck + lint + test, via turbo
 Individual tasks: `pnpm run build`, `pnpm run test`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run format`.
 
 Toolchain: [Turborepo](https://turborepo.com) task runner · [tsdown](https://tsdown.dev) build · [oxlint](https://oxc.rs) lint · [vitest](https://vitest.dev) tests · strict TypeScript · prettier.
+
+Contributing conventions (small PRs, adversarial review, commit style) live in
+[.claude/skills/contributing](.claude/skills/contributing/SKILL.md); the
+machine-authoring cheat sheet for writing tests is in
+[.claude/skills/authoring-machines](.claude/skills/authoring-machines/SKILL.md).
