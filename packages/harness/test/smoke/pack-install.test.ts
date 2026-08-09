@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,15 @@ describe.skipIf(process.env['MCC_SKIP_PACK_SMOKE'] === '1')(
       'a fresh npm install of the packed mccircuit runs a machine end-to-end',
       { timeout: 300_000 },
       () => {
+        // `npm pack` ships whatever dist/ is on disk — no build runs here.
+        // Without this guard the test smoke-tests stale output after src
+        // edits, or packs a dist-less tarball on a fresh clone.
+        const distEntry = join(MCCIRCUIT_DIR, 'dist', 'index.mjs');
+        expect(
+          existsSync(distEntry),
+          `${distEntry} is missing — run "pnpm run build" first so the packed tarball contains current build output`,
+        ).toBe(true);
+
         const dir = mkdtempSync(join(tmpdir(), 'mcc-pack-smoke-'));
         try {
           // Pack the CURRENT workspace state of the library (runs no scripts).

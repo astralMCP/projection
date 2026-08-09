@@ -132,6 +132,15 @@ function getQuickJs(): Promise<QuickJsRuntime> {
   return quickJsPromise;
 }
 
+/**
+ * Environment-class transpile failure: the TypeScript transpiler itself is
+ * missing or incompatible, as opposed to a syntax error in the source being
+ * transpiled. `createSandboxSession` lets these pass through unrewrapped so
+ * the environment diagnostics (and their hints) reach the consumer instead
+ * of being misreported as an invalid-bridgeSource integration bug.
+ */
+class TranspilerUnavailableError extends McCircuitError {}
+
 function getTsSupport(): Promise<TsSupport> {
   tsSupportPromise ??= (async () => {
     // `typescript` is a real dependency (the generated tools bridge is
@@ -141,7 +150,7 @@ function getTsSupport(): Promise<TsSupport> {
     // "ts.transpile is not a function" at machine run time.
     const ts = (await import('typescript')) as { transpile?: unknown; version?: string };
     if (typeof ts.transpile !== 'function') {
-      throw new McCircuitError(
+      throw new TranspilerUnavailableError(
         'transpile',
         `the installed typescript@${ts.version ?? 'unknown'} does not provide ts.transpile`,
         {
@@ -149,11 +158,20 @@ function getTsSupport(): Promise<TsSupport> {
         },
       );
     }
-    return getTypescriptSupport(true);
+    // quickjs's getTypescriptSupport performs its own `import('typescript')`,
+    // which under flat/hoisted node_modules layouts can resolve a DIFFERENT
+    // copy than the one validated above (e.g. a hoisted root typescript@7
+    // next to mccircuit's own nested 5.x). Pass our resolved specifier so
+    // the support layer loads the exact copy we just checked. Falls back to
+    // quickjs's own resolution where import.meta.resolve is unavailable
+    // (e.g. bundler-transformed environments).
+    const typescriptImportFile =
+      typeof import.meta.resolve === 'function' ? import.meta.resolve('typescript') : undefined;
+    return getTypescriptSupport(true, typescriptImportFile);
   })().catch((cause: unknown) => {
     tsSupportPromise = undefined;
     if (cause instanceof McCircuitError) throw cause;
-    throw new McCircuitError('transpile', 'TypeScript transpiler is not available', {
+    throw new TranspilerUnavailableError('transpile', 'TypeScript transpiler is not available', {
       hint: 'Reinstall dependencies: mccircuit depends on typescript ^5 for machine and bridge transpilation.',
       cause,
     });
@@ -329,6 +347,10 @@ export async function createSandboxSession(
   try {
     bridgeJs = await transpileBridge(options.bridgeSource);
   } catch (error) {
+    // Transpiler-availability failures (typescript missing or incompatible)
+    // are environment diagnostics, not a bad bridgeSource — pass them
+    // through so the consumer sees the real cause and its fix hint.
+    if (error instanceof TranspilerUnavailableError) throw error;
     if (error instanceof McCircuitError && error.phase === 'transpile') {
       throw new McCircuitError(
         'runtime',
