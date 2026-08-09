@@ -102,7 +102,9 @@ beforeAll(async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverEntry, dir],
-    stderr: 'ignore',
+    // inherit: server startup failures print to stderr; the one-line startup
+    // banner is acceptable log noise.
+    stderr: 'inherit',
   });
   client = new Client({ name: 'mcc-smoke', version: '0.0.0' }, { capabilities: {} });
   await client.connect(transport);

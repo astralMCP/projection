@@ -128,7 +128,9 @@ beforeAll(async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverEntry, join(dir, 'demo.db')],
-    stderr: 'ignore',
+    // inherit: native-binding startup failures (sqlite3 prebuilt/ABI) print to
+    // stderr; the one-line startup banner is acceptable log noise.
+    stderr: 'inherit',
   });
   client = new Client({ name: 'mcc-smoke', version: '0.0.0' }, { capabilities: {} });
   await client.connect(transport);
