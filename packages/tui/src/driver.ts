@@ -132,21 +132,37 @@ export async function driveTask(
   };
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    update({ phase: 'authoring', attempt, suspension: undefined, error: undefined });
-    const code = await author.author({
-      task,
-      apiDocs,
-      attempt,
-      ...(previous !== undefined ? { previous } : {}),
-    });
+    update({ phase: 'authoring', attempt, suspension: undefined, error: undefined, logs: [] });
+    let code: string;
+    try {
+      code = await author.author({
+        task,
+        apiDocs,
+        attempt,
+        ...(previous !== undefined ? { previous } : {}),
+      });
+    } catch (thrown) {
+      // An SDK failure (bad key, quota, network) is not a machine-authoring
+      // failure — do NOT feed it through the self-heal loop; surface it as a
+      // structured failure so the UI stays alive and the facade can close.
+      return update({
+        phase: 'failed',
+        error: {
+          phase: 'author',
+          message: thrown instanceof Error ? thrown.message : String(thrown),
+          hint: 'The authoring model call failed; check ANTHROPIC_API_KEY, quota, and network, then retry.',
+        },
+        suspension: undefined,
+      });
+    }
     update({ code });
 
     let args: ExecuteMachineArgs = { code };
     let trips = 0;
     let terminal: TerminalView | undefined;
 
-    while (trips < maxRounds) {
-      update({ phase: 'running' });
+    for (;;) {
+      update({ phase: 'running', suspension: undefined });
       const result = await facade.executeMachine(args, 'modern');
 
       if (!isInputRequiredResult(result)) {
@@ -159,18 +175,25 @@ export async function driveTask(
       }
 
       trips += 1;
+      if (trips > maxRounds) {
+        // Cap check BEFORE prompting: a verdict for a round we can never
+        // resume would be silently discarded, so abort without asking.
+        break;
+      }
       const requestState = result.requestState;
       if (requestState === undefined) {
-        terminal = {
-          isError: true,
+        // A suspension without its sealed blob is a self-declared server
+        // bug — retrying the author cannot fix it, so fail the whole drive
+        // instead of burning self-heal attempts.
+        return update({
+          phase: 'failed',
           error: {
             phase: 'protocol',
             message: 'suspension carried no requestState',
             hint: 'This is a server bug; the sealed blob is mandatory on suspensions.',
           },
-          logs: [],
-        };
-        break;
+          suspension: undefined,
+        });
       }
       const info: SuspensionInfo = {
         trip: trips,

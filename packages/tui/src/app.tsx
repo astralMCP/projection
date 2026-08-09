@@ -8,7 +8,7 @@
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { useCallback, useRef, useState } from 'react';
-import type { InputResponse, McCircuitFacade } from 'mccircuit';
+import { neutralizeControlChars, type InputResponse, type McCircuitFacade } from 'mccircuit';
 import type { MachineAuthor } from '@mccircuit/harness';
 import { driveTask, type DriveState, type SuspensionInfo } from './driver.js';
 
@@ -66,10 +66,26 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
             }),
         },
         maxAttempts !== undefined ? { maxAttempts } : {},
-      ).finally(() => {
-        setBusy(false);
-        setTask('');
-      });
+      )
+        .catch((thrown: unknown) => {
+          // Safety net: driveTask resolves failures into state, so this
+          // should be unreachable — but a residual rejection must land in
+          // UI state, never crash the render loop as an unhandled rejection.
+          setDrive({
+            phase: 'failed',
+            attempt: 1,
+            logs: [],
+            error: {
+              phase: 'driver',
+              message: thrown instanceof Error ? thrown.message : String(thrown),
+              hint: 'Unexpected driver failure; check ANTHROPIC_API_KEY and network, then retry.',
+            },
+          });
+        })
+        .finally(() => {
+          setBusy(false);
+          setTask('');
+        });
     },
     [apiDocs, author, busy, facade, maxAttempts],
   );
@@ -128,16 +144,20 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
           {drive.code !== undefined && (
             <Box flexDirection="column" borderStyle="round" paddingX={1}>
               <Text dimColor>authored machine</Text>
-              <Text>{drive.code}</Text>
+              {/* Model-authored text: strip ANSI/OSC control chars, keep line
+                  structure (S6). */}
+              <Text>{neutralizeControlChars(drive.code, { allowNewline: true })}</Text>
             </Box>
           )}
 
           {drive.error !== undefined && (
             <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}>
+              {/* Error copy can echo model-authored text — render it inert (S6). */}
               <Text color="red" bold>
-                {drive.error.phase}: {drive.error.message}
+                {neutralizeControlChars(drive.error.phase)}:{' '}
+                {neutralizeControlChars(drive.error.message)}
               </Text>
-              <Text dimColor>hint: {drive.error.hint}</Text>
+              <Text dimColor>hint: {neutralizeControlChars(drive.error.hint)}</Text>
             </Box>
           )}
 
@@ -146,7 +166,9 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
               <Text dimColor>console</Text>
               {drive.logs.map((log, i) => (
                 <Text key={i}>
-                  [{log.level}] {log.message}
+                  {/* console.log from authored code is untrusted: no escape
+                      sequences may reach the terminal (S6). */}
+                  [{log.level}] {neutralizeControlChars(log.message, { allowNewline: true })}
                 </Text>
               ))}
             </Box>

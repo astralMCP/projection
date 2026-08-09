@@ -123,4 +123,19 @@ describe('App', () => {
     await waitForFrame(lastFrame, '"status": "declined"');
     expect(recording.files['/out.txt']).toBeUndefined();
   });
+
+  it('ignores with "i": the omitted key is a decline (R17)', { timeout: 30_000 }, async () => {
+    const { facade, recording, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
+    const { lastFrame, stdin } = render(
+      <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
+    );
+
+    await submitTask(stdin, 'write hi to /out.txt');
+    await waitForFrame(lastFrame, '[y] approve');
+    stdin.write('i');
+
+    await waitForFrame(lastFrame, '"status": "declined"');
+    expect(recording.files['/out.txt']).toBeUndefined();
+  });
 });

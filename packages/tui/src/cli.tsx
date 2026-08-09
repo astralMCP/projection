@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * `mccircuit-tui` entry point — wraps the demo file server and drives it
  * with a live Anthropic author. Doubles as the team demo surface (PRD §13).

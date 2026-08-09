@@ -6,7 +6,12 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { wrapMcpServer, type InputResponse, type McCircuitFacade } from 'mccircuit';
-import { buildApiDocs, createFileServer, createScriptedAuthor } from '@mccircuit/harness';
+import {
+  buildApiDocs,
+  createFileServer,
+  createScriptedAuthor,
+  type MachineAuthor,
+} from '@mccircuit/harness';
 import { driveTask, type DriveState, type SuspensionInfo } from '../src/driver.js';
 
 const INVALID_MODULE = `export default { not: 'a machine' };`;
@@ -31,6 +36,33 @@ export default setup({}).createMachine({
     done: { type: 'final' },
   },
   output: ({ context }) => ({ status: context.status }),
+});
+`;
+
+/**
+ * Two sequential gated writes → two suspensions (one round trip each).
+ * Exercises the maxRounds cap.
+ */
+const TWO_WRITES = `
+import { setup } from 'xstate';
+import { toolCall } from '@mccircuit/tools';
+
+export default setup({}).createMachine({
+  id: 'twoWrites',
+  context: {},
+  initial: 'first',
+  states: {
+    first: {
+      entry: toolCall('write_file', () => ({ path: '/one.txt', content: '1' })),
+      on: { TOOL_RESULT: 'second', TOOL_DENIED: 'second', TOOL_ERROR: 'second' },
+    },
+    second: {
+      entry: toolCall('write_file', () => ({ path: '/two.txt', content: '2' })),
+      on: { TOOL_RESULT: 'done', TOOL_DENIED: 'done', TOOL_ERROR: 'done' },
+    },
+    done: { type: 'final' },
+  },
+  output: () => ({ ok: true }),
 });
 `;
 
@@ -133,5 +165,74 @@ describe('driveTask', () => {
     expect(final.attempt).toBe(2);
     expect(final.error?.phase).toBe('validate');
     expect(final.error?.hint.length).toBeGreaterThan(0);
+  });
+
+  it('an author throw resolves to a failed state instead of rejecting (no self-heal)', async () => {
+    const { facade, apiDocs } = await setup();
+    let calls = 0;
+    const author: MachineAuthor = {
+      name: 'throwing',
+      author: () => {
+        calls += 1;
+        return Promise.reject(new Error('401 invalid x-api-key'));
+      },
+    };
+
+    // Must RESOLVE — an SDK failure surfaces as state, never as an
+    // unhandled rejection that crashes the CLI mid-render.
+    const final = await driveTask(facade, author, 'anything', apiDocs, {
+      onUpdate: () => undefined,
+      approve: approveAll,
+    });
+
+    expect(final.phase).toBe('failed');
+    expect(final.error?.phase).toBe('author');
+    expect(final.error?.message).toContain('401 invalid x-api-key');
+    expect(final.error?.hint).toContain('ANTHROPIC_API_KEY');
+    // Not retried through the self-heal loop: one call, one failure.
+    expect(calls).toBe(1);
+  });
+
+  it('an omitted verdict key is a decline (R17): the machine takes TOOL_DENIED', async () => {
+    const { facade, recording, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted', [WRITE_OUT]);
+
+    const final = await driveTask(facade, author, 'write /out.txt', apiDocs, {
+      onUpdate: () => undefined,
+      // The "i" (ignore) key omits the key entirely — the server must treat
+      // absence as a decline.
+      approve: () => Promise.resolve({}),
+    });
+
+    expect(final.phase).toBe('completed');
+    expect(final.output).toEqual({ status: 'declined' });
+    expect(recording.files['/out.txt']).toBeUndefined();
+  });
+
+  it('aborts at maxRounds WITHOUT prompting for the over-cap round', async () => {
+    const { facade, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted', [TWO_WRITES]);
+    let approvals = 0;
+
+    const final = await driveTask(
+      facade,
+      author,
+      'write both files',
+      apiDocs,
+      {
+        onUpdate: () => undefined,
+        approve: (info) => {
+          approvals += 1;
+          return approveAll(info);
+        },
+      },
+      { maxRounds: 1 },
+    );
+
+    // The second suspension would exceed the cap — the user is never asked
+    // for a verdict that could not be resumed.
+    expect(approvals).toBe(1);
+    expect(final.phase).toBe('failed');
+    expect(final.error?.message).toBe('aborted after 1 round trips');
   });
 });
