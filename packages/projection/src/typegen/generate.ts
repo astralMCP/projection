@@ -1,0 +1,313 @@
+/**
+ * Typegen — produces the `@astral-mcp/tools` artifacts from a ServerCatalog
+ * (PRD G6, R3, R4, R30):
+ *
+ * 1. `.d.ts` text describing the namespaced `tools` API surface,
+ * 2. the runtime bridge module source mounted at `@astral-mcp/tools` inside
+ *    the QuickJS sandbox, and
+ * 3. a compact human-readable overview block for `discover_apis`.
+ */
+
+import { ProjectionError } from '../errors.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
+import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
+import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
+
+/**
+ * Module specifier authored machines import the tools surface from (R4).
+ * The sandbox component mounts {@link GeneratedToolTypes.bridgeSource} here.
+ */
+export const TOOLS_MODULE_SPECIFIER = '@astral-mcp/tools';
+
+/**
+ * Name of the global the sandbox host MUST inject before authored code runs.
+ *
+ * Contract (for the sandbox / machine-host components):
+ *
+ * ```js
+ * globalThis.__projection_toolcall = (name, args) => <host-defined value>
+ * ```
+ *
+ * - `name` is the wrapped server's tool name exactly as catalogued.
+ * - `args` is a plain JSON-serializable object (never `undefined`; the
+ *   bridge substitutes `{}` for a missing argument).
+ * - The bridge performs no I/O itself and returns the hook's value
+ *   verbatim. Per R7, authored machines never consume that value as a
+ *   promise inside invoked actors — the library-supplied `toolCall` action
+ *   is the intended caller, and results come back as TOOL_RESULT /
+ *   TOOL_ERROR / TOOL_DENIED events injected by the host.
+ * - If the hook is missing, every tool function throws, keeping the bridge
+ *   inert outside a properly initialized sandbox (S1).
+ */
+export const TOOL_CALL_HOST_GLOBAL = '__projection_toolcall';
+
+/** Output of {@link generateToolTypes}. */
+export interface GeneratedToolTypes {
+  /** `.d.ts` text for the `@astral-mcp/tools` surface (serve via discover_apis, R3). */
+  dts: string;
+  /** ESM source of the runtime bridge to mount at `@astral-mcp/tools` in the sandbox. */
+  bridgeSource: string;
+  /** Compact per-tool overview block for inline embedding by discover_apis (R3). */
+  overview: string;
+}
+
+const PASCAL_FALLBACK = 'Tool';
+
+/**
+ * Longest catalog-supplied identity rendered into generated artifacts.
+ * A hostile wrapped server controls this string (S5).
+ */
+const MAX_IDENTITY_CHARS = 200;
+
+/**
+ * Render an untrusted catalog string for safe inclusion in a `//` line
+ * comment of generated source.
+ *
+ * The bridge source is EVALUATED (mounted at `@astral-mcp/tools` and imported
+ * by every machine that calls a tool), so a newline in a wrapped server's
+ * name or version would terminate the comment and inject executable
+ * statements into the bridge — a hostile server would then run code inside
+ * the sandbox on every `execute_machine`, regardless of what the model
+ * authored (S1/S5). The same string lands in the `.d.ts` header the model
+ * reads as authoritative guidance.
+ *
+ * `JSON.stringify` escapes newlines and quotes; the control/bidi pass covers
+ * the separators JSON leaves raw, and the length cap bounds the artifact.
+ */
+function commentSafe(text: string): string {
+  return JSON.stringify(neutralizeControlChars(capLength(text, MAX_IDENTITY_CHARS)));
+}
+
+/** Derive a unique PascalCase type-name base from a tool name. */
+function pascalBase(toolName: string, taken: Set<string>): string {
+  const joined = toolName
+    .split(/[^A-Za-z0-9]+/)
+    .filter((segment) => segment.length > 0)
+    .map((segment) => (segment[0] ?? '').toUpperCase() + segment.slice(1))
+    .join('');
+  let base = /^[A-Za-z]/.test(joined) ? joined : `${PASCAL_FALLBACK}${joined}`;
+  if (base.length === 0) base = PASCAL_FALLBACK;
+  if (taken.has(base)) {
+    let counter = 2;
+    while (taken.has(`${base}${counter}`)) counter += 1;
+    base = `${base}${counter}`;
+  }
+  taken.add(base);
+  return base;
+}
+
+interface ToolTypeNames {
+  input: string;
+  output: string | undefined;
+}
+
+function approvalNote(tool: ToolCatalogEntry): string {
+  if (tool.annotations?.readOnlyHint === true) {
+    return 'Read-only: executes immediately, no user approval required.';
+  }
+  if (tool.annotations?.destructiveHint === true) {
+    return 'DESTRUCTIVE write: pauses the machine for user approval before executing.';
+  }
+  return 'Write (or unannotated): pauses the machine for user approval before executing.';
+}
+
+function toolDoc(tool: ToolCatalogEntry): string {
+  const lines: string[] = [];
+  if (tool.description !== undefined && tool.description.length > 0) {
+    lines.push(tool.description.trim(), '');
+  }
+  lines.push(approvalNote(tool));
+  return lines.join('\n');
+}
+
+function generateDts(server: ServerCatalog): string {
+  const taken = new Set<string>();
+  const names = new Map<string, ToolTypeNames>();
+  const sections: string[] = [];
+
+  sections.push(
+    [
+      `// Generated by Projection from wrapped server ${commentSafe(server.identity)}. Do not edit.`,
+      '//',
+      '// Import inside an authored machine module as:',
+      `//   import { tools } from '${TOOLS_MODULE_SPECIFIER}';`,
+      '//',
+      '// Tool functions are the transport used by the library-supplied',
+      '// `toolCall` action. Do NOT wrap them in fromPromise / invoked actors',
+      '// (banned pattern R7) — emit toolCall(name, args) and handle the',
+      '// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead.',
+    ].join('\n'),
+  );
+
+  for (const tool of server.tools) {
+    const base = pascalBase(tool.name, taken);
+    const typeNames: ToolTypeNames = {
+      input: `${base}Input`,
+      output: tool.outputSchema !== undefined ? `${base}Output` : undefined,
+    };
+    names.set(tool.name, typeNames);
+
+    sections.push(
+      `${docComment(`Input for tool "${tool.name}".`, '')}\n` +
+        `export type ${typeNames.input} = ${schemaToTsType(tool.inputSchema)};`,
+    );
+    if (typeNames.output !== undefined) {
+      sections.push(
+        `${docComment(`Output of tool "${tool.name}".`, '')}\n` +
+          `export type ${typeNames.output} = ${schemaToTsType(tool.outputSchema)};`,
+      );
+    }
+  }
+
+  const memberLines: string[] = [];
+  for (const tool of server.tools) {
+    // Names are set for every tool in the loop above (dedupeToolNames ran
+    // first), so the lookup is always present.
+    const typeNames = names.get(tool.name) as ToolTypeNames;
+    memberLines.push(docComment(toolDoc(tool), '  '));
+    const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
+    const returnType = typeNames.output ?? 'unknown';
+    memberLines.push(
+      `  ${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`,
+    );
+  }
+
+  const surfaceDoc = docComment(
+    `Namespaced tool surface of wrapped server ${commentSafe(server.identity)}.`,
+    '',
+  );
+  const body =
+    memberLines.length > 0
+      ? `export declare const tools: {\n${memberLines.join('\n')}\n};`
+      : 'export declare const tools: Record<string, never>;';
+  sections.push(`${surfaceDoc}\n${body}\n\nexport default tools;`);
+
+  return `${sections.join('\n\n')}\n`;
+}
+
+function generateBridgeSource(server: ServerCatalog): string {
+  // Assigned imperatively rather than as object-literal keys: a tool named
+  // `__proto__` in a literal is the prototype-setter form, which would make
+  // `tools` unusable and hide the tool from enumeration while the .d.ts
+  // still advertises it. Bracket assignment onto a null-prototype object
+  // treats every tool name as ordinary data (S5).
+  const memberLines = server.tools.map(
+    (tool) => `tools[${JSON.stringify(tool.name)}] = bindTool(${JSON.stringify(tool.name)});`,
+  );
+  return [
+    `// ${TOOLS_MODULE_SPECIFIER} — runtime bridge generated by Projection`,
+    `// from wrapped server ${commentSafe(server.identity)}. Do not edit.`,
+    '//',
+    '// Sandbox-host contract:',
+    '//   Before authored code runs, the sandbox host MUST inject:',
+    `//     globalThis.${TOOL_CALL_HOST_GLOBAL} = (name, args) => <host-defined>`,
+    '//   `name` is the catalogued tool name, `args` a plain JSON-serializable',
+    '//   object (the bridge substitutes {} when called without arguments).',
+    '//   This module performs no I/O itself; the injected hook is the only',
+    '//   channel out of the sandbox (S1), and its return value is handed back',
+    '//   verbatim to the caller — the library-supplied `toolCall` action.',
+    '',
+    'function bindTool(name) {',
+    '  return function (args) {',
+    `    const hook = globalThis[${JSON.stringify(TOOL_CALL_HOST_GLOBAL)}];`,
+    "    if (typeof hook !== 'function') {",
+    '      throw new Error(',
+    `        'Projection tools bridge: missing host hook globalThis.${TOOL_CALL_HOST_GLOBAL}. ' +`,
+    "          'The sandbox host must inject it before authored code runs.',",
+    '      );',
+    '    }',
+    '    return hook(name, args === undefined ? {} : args);',
+    '  };',
+    '}',
+    '',
+    'const tools = Object.create(null);',
+    ...memberLines,
+    'Object.freeze(tools);',
+    '',
+    'export { tools };',
+    'export default tools;',
+    '',
+  ].join('\n');
+}
+
+function overviewFlags(tool: ToolCatalogEntry): string {
+  if (tool.annotations?.readOnlyHint === true) return '[read-only]';
+  if (tool.annotations?.destructiveHint === true) return '[approval, destructive]';
+  return '[approval]';
+}
+
+function firstLine(text: string | undefined): string {
+  if (text === undefined) return '(no description)';
+  const line = (text.split('\n')[0] ?? '').trim();
+  if (line.length === 0) return '(no description)';
+  return line.length > 100 ? `${line.slice(0, 97)}...` : line;
+}
+
+function generateOverview(server: ServerCatalog): string {
+  const lines = [`Tools (server: ${server.identity}):`];
+  if (server.tools.length === 0) {
+    lines.push('  (none)');
+  }
+  for (const tool of server.tools) {
+    lines.push(`- ${tool.name} ${overviewFlags(tool)} — ${firstLine(tool.description)}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function resolveSingleServer(catalog: ToolCatalog | ServerCatalog): ServerCatalog {
+  if ('servers' in catalog) {
+    if (catalog.servers.size !== 1) {
+      throw new ProjectionError(
+        'protocol',
+        `Typegen requires exactly one wrapped server; catalog has ${catalog.servers.size}.`,
+        {
+          hint: 'v1 wraps a single server (multi-server namespacing is a stretch goal, PRD 12.2). Pass a single-entry catalog or a ServerCatalog directly.',
+        },
+      );
+    }
+    const server = catalog.servers.values().next().value;
+    if (server === undefined) {
+      throw new ProjectionError('protocol', 'Tool catalog contains no servers.', {
+        hint: 'Build the catalog with createIntrospector before generating types.',
+      });
+    }
+    return server;
+  }
+  return catalog;
+}
+
+/**
+ * Generate the `@astral-mcp/tools` artifacts for a wrapped server.
+ *
+ * Accepts either the full aliased {@link ToolCatalog} (which must contain
+ * exactly one server in v1, per R30's single-instance instantiation) or a
+ * {@link ServerCatalog} directly.
+ */
+export function generateToolTypes(catalog: ToolCatalog | ServerCatalog): GeneratedToolTypes {
+  const server = dedupeToolNames(resolveSingleServer(catalog));
+  return {
+    dts: generateDts(server),
+    bridgeSource: generateBridgeSource(server),
+    overview: generateOverview(server),
+  };
+}
+
+/**
+ * Drop tools whose name repeats an earlier one, first occurrence wins.
+ *
+ * A wrapped server may return the same tool name twice (S5: the catalog is
+ * untrusted). Emitting it twice would produce a duplicate member in the
+ * `.d.ts` object type — invalid TypeScript — and a silently last-wins
+ * shadowed key in the bridge, so the types and the runtime would disagree
+ * about which schema the tool takes. Collapsing to the first occurrence
+ * matches what `callTool` reaches on the wrapped server.
+ */
+function dedupeToolNames(server: ServerCatalog): ServerCatalog {
+  const seen = new Set<string>();
+  const tools = server.tools.filter((tool) => {
+    if (seen.has(tool.name)) return false;
+    seen.add(tool.name);
+    return true;
+  });
+  return tools.length === server.tools.length ? server : { ...server, tools };
+}

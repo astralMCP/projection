@@ -10,11 +10,11 @@
  * suspension blob must stay inside the §10 budget despite the large
  * catalog (the blob carries the pending call, never the catalog).
  *
- * Explicit opt-in only: MCC_LIVE_GITHUB=1 AND a non-empty GITHUB_TOKEN (or
+ * Explicit opt-in only: PROJ_LIVE_GITHUB=1 AND a non-empty GITHUB_TOKEN (or
  * GITHUB_PERSONAL_ACCESS_TOKEN), which may live in the repo-root .env.
  * A plain `pnpm test` never talks to GitHub. Run it with:
  *
- *   MCC_LIVE_GITHUB=1 pnpm --filter @mccircuit/harness exec vitest run test/smoke/github.live.test.ts
+ *   PROJ_LIVE_GITHUB=1 pnpm --filter @astral-mcp/harness exec vitest run test/smoke/github.live.test.ts
  *
  * The suite performs READ calls only (one search, one file fetch); every
  * write tool is exercised strictly through the approval gate and DECLINED,
@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { wrapMcpServer, type McCircuitFacade } from 'mccircuit';
+import { wrapMcpServer, type ProjectionFacade } from '@astral-mcp/projection';
 import { loadNearestDotEnv, runScenario, declineAll } from '../../src/index.js';
 
 const require = createRequire(import.meta.url);
@@ -38,12 +38,12 @@ const token =
   (process.env['GITHUB_TOKEN'] ?? '') !== ''
     ? (process.env['GITHUB_TOKEN'] as string)
     : (process.env['GITHUB_PERSONAL_ACCESS_TOKEN'] ?? '');
-const optedIn = process.env['MCC_LIVE_GITHUB'] === '1';
+const optedIn = process.env['PROJ_LIVE_GITHUB'] === '1';
 
 /** Search repositories — a read, but unannotated, so it still asks. */
 const SEARCH_REPOS = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'searchRepos',
@@ -67,7 +67,7 @@ export default setup({}).createMachine({
 /** Create an issue — a write; the test ALWAYS declines it. */
 const CREATE_ISSUE = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'createIssue',
@@ -78,7 +78,7 @@ export default setup({}).createMachine({
       entry: toolCall('create_issue', () => ({
         owner: 'modelcontextprotocol',
         repo: 'servers',
-        title: 'McCircuit smoke test - must never be created',
+        title: 'Projection smoke test - must never be created',
       })),
       on: {
         TOOL_RESULT: { target: 'done', actions: assign({ status: 'created' }) },
@@ -93,7 +93,7 @@ export default setup({}).createMachine({
 `;
 
 let client: Client;
-let facade: McCircuitFacade;
+let facade: ProjectionFacade;
 
 describe.skipIf(!optedIn || token === '')('github-mcp-server live (PRD §13 matrix #2)', () => {
   beforeAll(async () => {
@@ -111,7 +111,7 @@ describe.skipIf(!optedIn || token === '')('github-mcp-server live (PRD §13 matr
       // Native-binding-free, but keep startup diagnostics visible anyway.
       stderr: 'inherit',
     });
-    client = new Client({ name: 'mcc-smoke', version: '0.0.0' }, { capabilities: {} });
+    client = new Client({ name: 'proj-smoke', version: '0.0.0' }, { capabilities: {} });
     await client.connect(transport);
     facade = await wrapMcpServer(client, { blob: { key: randomBytes(32) } });
   }, 30_000);

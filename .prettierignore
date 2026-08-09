@@ -5,4 +5,4 @@ pnpm-lock.yaml
 coverage
 
 # Generated golden files must stay byte-exact as the generator emits them.
-packages/mccircuit/test/typegen/__golden__/
+packages/projection/test/typegen/__golden__/

@@ -82,7 +82,7 @@ is why `registerOn(server, { era })` defaults to legacy — fail-safe.
 _R28 both ways._ A modern client (`versionNegotiation: { mode: { pin:
 '2026-07-28' } }`) suspends; a legacy client gets the fail-fast `protocol`
 error. Note that v2 would otherwise fulfil an `input_required` return on a
-legacy connection through its own server→client elicitation shim. McCircuit
+legacy connection through its own server→client elicitation shim. Projection
 refuses that on purpose: R28 mandates the fail-fast, and the shim's push-style
 round trips hold a connection open, which is the statelessness (R27) MRTR
 exists to buy.

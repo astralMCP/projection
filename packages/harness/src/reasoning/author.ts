@@ -8,7 +8,7 @@
  * live benchmark runs (see `anthropic.ts`).
  */
 
-import type { McCircuitFacade } from 'mccircuit';
+import type { ProjectionFacade } from '@astral-mcp/projection';
 
 /** The structured error fed back for self-healing (R25). */
 export interface AttemptErrorView {
@@ -21,7 +21,7 @@ export interface AttemptErrorView {
 export interface AuthoringContext {
   /** The benchmark task prompt (what the "user" asked for). */
   task: string;
-  /** API docs: discover_apis overview plus every mccircuit:// resource. */
+  /** API docs: discover_apis overview plus every projection:// resource. */
   apiDocs: string;
   /** 1-based attempt number. */
   attempt: number;
@@ -39,9 +39,9 @@ export interface MachineAuthor {
 /**
  * Build the API documentation string handed to authors: the same content a
  * real MCP client reads — the discover_apis overview plus the full text of
- * every `mccircuit://` resource (tool types, authoring contract, examples).
+ * every `projection://` resource (tool types, authoring contract, examples).
  */
-export function buildApiDocs(facade: McCircuitFacade): string {
+export function buildApiDocs(facade: ProjectionFacade): string {
   const overview = facade
     .discoverApis()
     .content.filter(

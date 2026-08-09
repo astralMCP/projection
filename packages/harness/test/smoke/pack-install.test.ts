@@ -1,5 +1,5 @@
 /**
- * Published-artifact smoke test: `npm pack` the workspace `mccircuit`,
+ * Published-artifact smoke test: `npm pack` the workspace `@astral-mcp/projection`,
  * install the tarball into a fresh temp project (dependencies resolved from
  * the registry, exactly like a consumer install), and run a machine
  * end-to-end in a child process.
@@ -9,7 +9,7 @@
  * dependencies (the generated tools bridge is always TypeScript, so the
  * transpiler is a hard runtime requirement) — every workspace test passed
  * while every consumer install was broken. Needs registry network, same as
- * `pnpm install` itself; skipped only when MCC_SKIP_PACK_SMOKE=1.
+ * `pnpm install` itself; skipped only when PROJ_SKIP_PACK_SMOKE=1.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -20,11 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const MCCIRCUIT_DIR = resolve(HERE, '../../../mccircuit');
+const PROJECTION_DIR = resolve(HERE, '../../../projection');
 
 const CONSUMER_SCRIPT = `
 import { McpServer } from '@modelcontextprotocol/server';
-import { wrapMcpServer } from 'mccircuit';
+import { wrapMcpServer } from '@astral-mcp/projection';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
@@ -38,7 +38,7 @@ server.registerTool(
 const facade = await wrapMcpServer(server, { blob: { key: randomBytes(32) } });
 const result = await facade.executeMachine({ code: \`
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 export default setup({}).createMachine({
   id: 'g', context: { text: null }, initial: 'greeting',
   states: { greeting: { entry: toolCall('greet', () => ({ name: 'npm' })),
@@ -50,27 +50,27 @@ console.log(JSON.stringify(result.structuredContent ?? {}));
 await facade.close();
 `;
 
-describe.skipIf(process.env['MCC_SKIP_PACK_SMOKE'] === '1')(
+describe.skipIf(process.env['PROJ_SKIP_PACK_SMOKE'] === '1')(
   'packed-tarball consumer install',
   () => {
     it(
-      'a fresh npm install of the packed mccircuit runs a machine end-to-end',
+      'a fresh npm install of the packed @astral-mcp/projection runs a machine end-to-end',
       { timeout: 300_000 },
       () => {
         // `npm pack` ships whatever dist/ is on disk — no build runs here.
         // Without this guard the test smoke-tests stale output after src
         // edits, or packs a dist-less tarball on a fresh clone.
-        const distEntry = join(MCCIRCUIT_DIR, 'dist', 'index.mjs');
+        const distEntry = join(PROJECTION_DIR, 'dist', 'index.mjs');
         expect(
           existsSync(distEntry),
           `${distEntry} is missing — run "pnpm run build" first so the packed tarball contains current build output`,
         ).toBe(true);
 
-        const dir = mkdtempSync(join(tmpdir(), 'mcc-pack-smoke-'));
+        const dir = mkdtempSync(join(tmpdir(), 'proj-pack-smoke-'));
         try {
           // Pack the CURRENT workspace state of the library (runs no scripts).
           const tarball = execFileSync('npm', ['pack', '--pack-destination', dir], {
-            cwd: MCCIRCUIT_DIR,
+            cwd: PROJECTION_DIR,
             encoding: 'utf8',
           })
             .trim()
@@ -83,7 +83,7 @@ describe.skipIf(process.env['MCC_SKIP_PACK_SMOKE'] === '1')(
           );
           // Consumer-style install: the tarball plus its peer usage deps,
           // everything else resolved from the registry per the tarball's own
-          // dependency ranges — exactly what a real `npm install mccircuit` does.
+          // dependency ranges — exactly what a real `npm install @astral-mcp/projection` does.
           execFileSync(
             'npm',
             [

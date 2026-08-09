@@ -1,6 +1,6 @@
 /**
- * @mccircuit/tui — Ink terminal client for exploratory McCircuit testing
- * (PRD §13 "Manual TUI"). `mccircuit-tui` runs the demo; the exports let a
+ * @astral-mcp/tui — Ink terminal client for exploratory Projection testing
+ * (PRD §13 "Manual TUI"). `projection-tui` runs the demo; the exports let a
  * host embed the App against any facade/author pair.
  */
 

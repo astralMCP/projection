@@ -17,9 +17,9 @@ import {
   type InputRequiredResult,
   type InputResponse,
   type LogEntry,
-  type McCircuitFacade,
-} from 'mccircuit';
-import type { AttemptErrorView, AuthoringContext, MachineAuthor } from '@mccircuit/harness';
+  type ProjectionFacade,
+} from '@astral-mcp/projection';
+import type { AttemptErrorView, AuthoringContext, MachineAuthor } from '@astral-mcp/harness';
 
 export type DrivePhase =
   'authoring' | 'running' | 'awaiting_approval' | 'healing' | 'completed' | 'failed';
@@ -113,7 +113,7 @@ function readTerminal(result: {
  * (`completed` or `failed`).
  */
 export async function driveTask(
-  facade: McCircuitFacade,
+  facade: ProjectionFacade,
   author: MachineAuthor,
   task: string,
   apiDocs: string,

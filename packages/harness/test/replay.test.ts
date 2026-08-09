@@ -5,7 +5,11 @@
  * fix has a regression to flip.
  */
 
-import { isInputRequiredResult, wrapMcpServer, type InputRequiredResult } from 'mccircuit';
+import {
+  isInputRequiredResult,
+  wrapMcpServer,
+  type InputRequiredResult,
+} from '@astral-mcp/projection';
 import { describe, expect, it } from 'vitest';
 import { createFileServer } from '../src/index.js';
 
@@ -13,7 +17,7 @@ const KEY = new Uint8Array(32).fill(17);
 
 const WRITE_ONCE = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'w',

@@ -1,11 +1,11 @@
 {
-  "name": "@mccircuit/tui",
+  "name": "@astral-mcp/tui",
   "version": "0.1.0",
   "private": true,
-  "description": "Ink terminal client for exploratory McCircuit testing: type a task, watch authored machines run, approve/deny elicitations with single keys.",
+  "description": "Ink terminal client for exploratory Projection testing: type a task, watch authored machines run, approve/deny elicitations with single keys.",
   "type": "module",
   "bin": {
-    "mccircuit-tui": "./dist/cli.mjs"
+    "projection-tui": "./dist/cli.mjs"
   },
   "exports": {
     ".": {
@@ -18,13 +18,13 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "test": "vitest run",
-    "start": "pnpm -w exec turbo run build --filter=@mccircuit/tui... --output-logs=errors-only && node dist/cli.mjs"
+    "start": "pnpm -w exec turbo run build --filter=@astral-mcp/tui... --output-logs=errors-only && node dist/cli.mjs"
   },
   "dependencies": {
-    "@mccircuit/harness": "workspace:*",
+    "@astral-mcp/harness": "workspace:*",
     "ink": "^5.2.0",
     "ink-text-input": "^6.0.0",
-    "mccircuit": "workspace:*",
+    "@astral-mcp/projection": "workspace:*",
     "react": "^18.3.1"
   },
   "devDependencies": {

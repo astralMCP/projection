@@ -7,7 +7,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { wrapMcpServer, type McCircuitFacade } from 'mccircuit';
+import { wrapMcpServer, type ProjectionFacade } from '@astral-mcp/projection';
 import {
   buildApiDocs,
   createFileServer,
@@ -24,7 +24,7 @@ const INVALID_MODULE = `export default { not: 'a machine' };`;
 
 const READ_NOTES = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'readNotes',
@@ -46,7 +46,7 @@ export default setup({}).createMachine({
 
 const WRITE_OUT = `
 import { setup, assign } from 'xstate';
-import { toolCall } from '@mccircuit/tools';
+import { toolCall } from '@astral-mcp/tools';
 
 export default setup({}).createMachine({
   id: 'writeOut',
@@ -73,7 +73,7 @@ afterEach(async () => {
 });
 
 async function setup(): Promise<{
-  facade: McCircuitFacade;
+  facade: ProjectionFacade;
   recording: ReturnType<typeof createFileServer>;
   apiDocs: string;
 }> {

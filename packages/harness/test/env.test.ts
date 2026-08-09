@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadNearestDotEnv } from '../src/env.js';
 
-const VAR = 'MCC_TUI_ENV_TEST_VAR';
+const VAR = 'PROJ_TUI_ENV_TEST_VAR';
 const cleanups: (() => void)[] = [];
 
 afterEach(() => {
@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 function makeTree(): { root: string; nested: string } {
-  const root = mkdtempSync(join(tmpdir(), 'mcc-tui-env-'));
+  const root = mkdtempSync(join(tmpdir(), 'proj-tui-env-'));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const nested = join(root, 'packages', 'tui');
   mkdirSync(nested, { recursive: true });

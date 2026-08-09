@@ -1,14 +1,14 @@
-# PRD — McCircuit
+# PRD — Projection
 
 **A TypeScript library that turns any MCP server into a code-mode server with human-approved side effects, built on MCP 2026-07-28 MRTR and XState.**
 
-Status: Draft for team review · Package: `mccircuit` (npm + GitHub reserved) · Owner: TBD · Target spec: MCP 2026-07-28 (final)
+Status: Draft for team review · Package: `@astral-mcp/projection` (npm + GitHub reserved) · Owner: TBD · Target spec: MCP 2026-07-28 (final)
 
 ---
 
 ## 1. Summary
 
-McCircuit wraps an existing MCP server (or a remote connection to one) and exposes a minimal code-mode surface: one tool that executes an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox, and one tool that returns generated TypeScript type definitions describing the wrapped server's tool API.
+Projection wraps an existing MCP server (or a remote connection to one) and exposes a minimal code-mode surface: one tool that executes an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox, and one tool that returns generated TypeScript type definitions describing the wrapped server's tool API.
 
 The machine orchestrates calls to the wrapped server's tools. Read-only tool calls execute immediately. Any non-read-only tool call suspends the machine, serializes its snapshot into a sealed opaque blob, and returns an MRTR `InputRequiredResult` asking the human to approve the action. When the client retries the call with the approval and the echoed `requestState`, the library rehydrates the machine from the blob and continues exactly where it left off.
 
@@ -62,9 +62,9 @@ R1. The library MUST expose exactly two tools by default: `execute_machine` and 
 
 R2. `execute_machine` accepts `{ code: string, lang?: "ts" | "js", input?: object }` where `input` is passed as the machine's input. The tool description MUST summarize the authoring contract and point to `discover_apis`.
 
-R3. `discover_apis` returns a compact inline overview (pinned XState version, allowed imports, the tool-call event protocol, serializability rules) plus one `resource_link` content block per artifact: each generated `.d.ts` file and each example machine (at minimum one happy path and one handling a denied approval). The server declares the `resources` capability and serves these at stable URIs (e.g. `mccircuit://types/tools.d.ts`, `mccircuit://examples/denial-fallback.ts`) via `resources/read`, letting the model pull full contents only when it wants them. Resources and list responses SHOULD carry cache hints (`ttlMs`) keyed to the wrapped server's tool list. The inline overview MUST be sufficient to author a simple machine unaided, so clients with weak resource support still function.
+R3. `discover_apis` returns a compact inline overview (pinned XState version, allowed imports, the tool-call event protocol, serializability rules) plus one `resource_link` content block per artifact: each generated `.d.ts` file and each example machine (at minimum one happy path and one handling a denied approval). The server declares the `resources` capability and serves these at stable URIs (e.g. `projection://types/tools.d.ts`, `projection://examples/denial-fallback.ts`) via `resources/read`, letting the model pull full contents only when it wants them. Resources and list responses SHOULD carry cache hints (`ttlMs`) keyed to the wrapped server's tool list. The inline overview MUST be sufficient to author a simple machine unaided, so clients with weak resource support still function.
 
-R4. Type generation MUST support two sources: direct extraction from an in-process server instance (preferred fidelity, e.g. Zod schemas → types) and JSON Schema conversion from a remote `tools/list`. Tool names are namespaced into a single `tools` API surface importable as `@mccircuit/tools`.
+R4. Type generation MUST support two sources: direct extraction from an in-process server instance (preferred fidelity, e.g. Zod schemas → types) and JSON Schema conversion from a remote `tools/list`. Tool names are namespaced into a single `tools` API surface importable as `@astral-mcp/tools`.
 
 R29. The library forwards the wrapped server's `instructions` field verbatim, then appends a short (2–3 sentence) code-mode preamble explaining that tools are invoked by authoring a state machine via `execute_machine`, that non-read-only actions will pause for user approval, and that `discover_apis` describes the API. The preamble is library-supplied copy, overridable by the integrating developer.
 
@@ -78,9 +78,9 @@ R6. Machine `context` MUST be JSON-serializable at all times. Validation round-t
 
 R7. Tool calls MUST NOT be modeled as invoked promise actors (`fromPromise` wrapping a tool call is a banned pattern — restored snapshots restart invoked actors, which would re-execute approved writes). Instead, the contract provides a library-supplied action creator: the machine emits `toolCall(name, argsFromContext)` and waits in a state for `TOOL_RESULT`, `TOOL_ERROR`, or `TOOL_DENIED` events. The host — not the machine — performs all I/O.
 
-R8. The sandbox mounts a pinned XState v5 build at `xstate` and the generated bridge at `@mccircuit/tools`. No other imports resolve except an allowlisted set of pure utilities (TBD, e.g. none in v1).
+R8. The sandbox mounts a pinned XState v5 build at `xstate` and the generated bridge at `@astral-mcp/tools`. No other imports resolve except an allowlisted set of pure utilities (TBD, e.g. none in v1).
 
-R9. No filesystem surface is exposed to authored code in v1. The sandbox mounts only what the library itself needs internally (module resolution for `xstate` and `@mccircuit/tools`, transpilation scratch); `node:fs` imports and FS access from authored code fail at validation. The authoring contract states plainly: all working state lives in machine context. Scratch FS is a stretch goal (Section 12.3).
+R9. No filesystem surface is exposed to authored code in v1. The sandbox mounts only what the library itself needs internally (module resolution for `xstate` and `@astral-mcp/tools`, transpilation scratch); `node:fs` imports and FS access from authored code fail at validation. The authoring contract states plainly: all working state lives in machine context. Scratch FS is a stretch goal (Section 12.3).
 
 ### 6.3 Execution engine and resource caps
 
@@ -159,7 +159,7 @@ R28. Down-negotiation: when a client speaks a pre-2026-07-28 revision without MR
 
 Seven components, cleanly separable for parallel workstreams:
 
-**Introspector** — connects to the wrapped server (instance or remote), reads `tools/list`, annotations, and `instructions`, maintains the tool catalog. Interfaces accept a set of aliased server connections even though v1 instantiates exactly one (R30). **Typegen** — produces `@mccircuit/tools` runtime bridge + `.d.ts` from the catalog (Zod path and JSON-Schema path). **Sandbox runtime** — `@sebastianwessel/quickjs` lifecycle, module mounting, caps, interrupts, marshaling. **Machine host** — evaluates the module, validates the contract, drives the actor, translates `toolCall` effects into host-side execution or suspension, injects result/verdict events. **Policy engine** — annotation defaults plus developer overrides; decides auto/ask/deny per resolved call. **Blob sealer** — snapshot packaging, AEAD, versioning, verification. **MRTR adapter** — maps suspensions to `InputRequiredResult`, parses `inputResponses` on retry, enforces trip caps; the only component touching the MCP SDK's transport types.
+**Introspector** — connects to the wrapped server (instance or remote), reads `tools/list`, annotations, and `instructions`, maintains the tool catalog. Interfaces accept a set of aliased server connections even though v1 instantiates exactly one (R30). **Typegen** — produces `@astral-mcp/tools` runtime bridge + `.d.ts` from the catalog (Zod path and JSON-Schema path). **Sandbox runtime** — `@sebastianwessel/quickjs` lifecycle, module mounting, caps, interrupts, marshaling. **Machine host** — evaluates the module, validates the contract, drives the actor, translates `toolCall` effects into host-side execution or suspension, injects result/verdict events. **Policy engine** — annotation defaults plus developer overrides; decides auto/ask/deny per resolved call. **Blob sealer** — snapshot packaging, AEAD, versioning, verification. **MRTR adapter** — maps suspensions to `InputRequiredResult`, parses `inputResponses` on retry, enforces trip caps; the only component touching the MCP SDK's transport types.
 
 Dependency notes: pin XState v5.x exactly (snapshot compatibility across minor versions must be verified in CI before bumping); pin the quickjs-ng WASM variant; target the 2026-07-28 TypeScript SDK stable line.
 

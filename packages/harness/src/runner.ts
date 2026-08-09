@@ -8,9 +8,9 @@ import {
   type ExecuteMachineArgs,
   type InputRequiredResult,
   type InputResponse,
-  type McCircuitFacade,
+  type ProjectionFacade,
   type ToolCallResult,
-} from 'mccircuit';
+} from '@astral-mcp/projection';
 import type { RecordingServer } from './recording-server.js';
 
 /**
@@ -67,7 +67,7 @@ interface TerminalResult {
  * recording server instance must back both.
  */
 export async function runScenario(
-  facade: McCircuitFacade,
+  facade: ProjectionFacade,
   recording: SideEffectLog,
   scenario: Scenario,
 ): Promise<ScenarioResult> {

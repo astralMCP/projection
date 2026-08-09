@@ -7,7 +7,7 @@
  * exactly what happened so the S1–S6 invariants can be checked.
  */
 
-import type { InputResponse } from 'mccircuit';
+import type { InputResponse } from '@astral-mcp/projection';
 
 /**
  * How a scenario answers one approval prompt, keyed by the inputRequest key.

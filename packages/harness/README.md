@@ -1,6 +1,6 @@
-# @mccircuit/harness
+# @astral-mcp/harness
 
-A scenario-driven test harness for [McCircuit](../mccircuit). It drives
+A scenario-driven test harness for [Projection](../projection). It drives
 `execute_machine` through the full MRTR round-trip loop under a scripted
 answer policy, records the side effects that actually reached the wrapped
 server, and reports enough to assert the approval invariants and the PRD
@@ -17,17 +17,17 @@ for self-healing, and `summarizeSelfHeal` computes the §10 metrics
 (first-attempt valid rate ≥ 60%, ≤ 2 attempts to valid ≥ 90%).
 
 Run the live benchmark (explicit opt-in; needs `ANTHROPIC_API_KEY`, model
-overridable via `MCC_BENCH_MODEL`):
+overridable via `PROJ_BENCH_MODEL`):
 
 ```bash
-MCC_LIVE_BENCH=1 pnpm --filter @mccircuit/harness exec vitest run test/reasoning.live.test.ts
+PROJ_LIVE_BENCH=1 pnpm --filter @astral-mcp/harness exec vitest run test/reasoning.live.test.ts
 ```
 
 ## Usage
 
 ```ts
-import { wrapMcpServer } from 'mccircuit';
-import { createFileServer, runScenario, denyKeys } from '@mccircuit/harness';
+import { wrapMcpServer } from '@astral-mcp/projection';
+import { createFileServer, runScenario, denyKeys } from '@astral-mcp/harness';
 
 const file = createFileServer({ '/notes.txt': 'original' });
 const facade = await wrapMcpServer(file.server, { blob: { key } });
