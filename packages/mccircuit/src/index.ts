@@ -54,6 +54,9 @@ export {
   type GeneratedToolTypes,
 } from './typegen/index.js';
 
+// Text safety — inert rendering of untrusted strings (S5, S6)
+export { capLength, neutralizeControlChars } from './text-safety.js';
+
 // Policy engine — approval decisions and elicitation copy
 export {
   buildElicitationCopy,
