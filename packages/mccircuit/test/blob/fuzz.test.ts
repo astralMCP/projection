@@ -6,8 +6,20 @@
  * `requestState`. The invariant under fuzz: for ANY input, `openBlob` must
  * fail closed with a structured `McCircuitError` (never a raw TypeError /
  * RangeError leaking from internals, never a hang, never a returned payload
- * from an unverified blob). This suite throws tens of thousands of malformed
- * and mutated inputs at it and asserts exactly that.
+ * from an unverified blob).
+ *
+ * Coverage is deliberately split, because AEAD makes the layers reachable in
+ * two different ways:
+ *
+ * - Random / mutated / truncated inputs (no valid key) exercise the size
+ *   guard and the parse + GCM-authentication layers — anything an attacker
+ *   without the key can produce. These cannot reach the post-decryption
+ *   semantic checks, because those only run after the tag verifies.
+ * - To fuzz the semantic layer (version, expiry, codeHash, serverIdentity,
+ *   payload shape), the "broken payload, valid key" suite seals genuinely
+ *   authenticated blobs whose plaintext is deliberately wrong — modelling a
+ *   snapshot minted by an incompatible library version, an expired blob, or
+ *   a resume against different code/server.
  *
  * The PRNG is seeded, so a failure is reproducible from the printed seed.
  */
@@ -15,7 +27,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildBlobPayload, openBlob, sealBlob } from '../../src/blob/index.js';
 import { McCircuitError } from '../../src/errors.js';
-import type { BlobSealerConfig } from '../../src/types.js';
+import type { BlobPayload, BlobSealerConfig, PendingToolCall } from '../../src/types.js';
 
 const KEY = new Uint8Array(32).fill(42);
 const CONFIG: BlobSealerConfig = { key: KEY };
@@ -49,18 +61,27 @@ function randomString(rng: () => number, maxLen: number): string {
   return out;
 }
 
-/** Open with a valid config and return the thrown error, or a sentinel if it returned. */
-function attempt(blob: string): { threw: true; error: unknown } | { threw: false; value: unknown } {
+/**
+ * Open with a valid config and return the thrown error, or a sentinel if it
+ * returned. `now` is passed explicitly so results never depend on wall clock.
+ */
+function attempt(
+  blob: string,
+  now: number,
+): { threw: true; error: unknown } | { threw: false; value: unknown } {
   try {
-    const value = openBlob(blob, { code: CODE, serverIdentity: IDENTITY, config: CONFIG });
+    const value = openBlob(blob, { code: CODE, serverIdentity: IDENTITY, config: CONFIG, now });
     return { threw: false, value };
   } catch (error) {
     return { threw: true, error };
   }
 }
 
+/** A clock far past any fuzzed blob's expiry — for inputs that should never open. */
+const EXPIRED_NOW = 10_000_000_000;
+
 function assertFailsClosed(blob: string, label: string): void {
-  const result = attempt(blob);
+  const result = attempt(blob, EXPIRED_NOW);
   if (!result.threw) {
     throw new Error(
       `openBlob returned a payload for a fuzzed input (${label}): ${blob.slice(0, 80)}`,
@@ -98,30 +119,44 @@ describe('blob parser fuzzing (M5)', () => {
     }
   });
 
-  it('fails closed on every single-byte mutation of a valid blob', () => {
-    const valid = sealBlob(
-      buildBlobPayload({
-        code: CODE,
-        serverIdentity: IDENTITY,
-        snapshot: { status: 'active', value: 'x', context: { n: 1 } },
-        pending: {},
-        audit: [],
-        trip: 1,
-        now: 1_000_000,
-      }),
-      CONFIG,
-    );
-    // Sanity: the un-mutated blob opens (with a matching clock).
-    expect(() =>
-      openBlob(valid, { code: CODE, serverIdentity: IDENTITY, config: CONFIG, now: 1_000_500 }),
-    ).not.toThrow();
+  it('no single-byte mutation produces a different valid payload', () => {
+    const sealedAt = 1_000_000;
+    const openAt = 1_000_500; // inside the TTL, so expiry never masks a result
+    const payload = buildBlobPayload({
+      code: CODE,
+      serverIdentity: IDENTITY,
+      snapshot: { status: 'active', value: 'x', context: { n: 1 } },
+      pending: {},
+      audit: [],
+      trip: 1,
+      now: sealedAt,
+    });
+    const valid = sealBlob(payload, CONFIG);
+    const original = openBlob(valid, {
+      code: CODE,
+      serverIdentity: IDENTITY,
+      config: CONFIG,
+      now: openAt,
+    });
 
+    // The honest invariant: a one-byte change either fails closed, or — for
+    // base64url's low-bit aliasing, where a different char decodes to the
+    // same bytes — re-opens the SAME payload. It can never yield a DIFFERENT
+    // valid payload or a raw crash. Opened inside the TTL so nothing here
+    // leans on wall-clock expiry.
     const chars = 'AB.mcc10_-=';
     for (let i = 0; i < valid.length; i += 1) {
       for (const c of chars) {
         if (valid[i] === c) continue;
         const mutated = valid.slice(0, i) + c + valid.slice(i + 1);
-        assertFailsClosed(mutated, `flip@${i}=${c}`);
+        const result = attempt(mutated, openAt);
+        if (result.threw) {
+          expect(result.error, `flip@${i}=${c}`).toBeInstanceOf(McCircuitError);
+          const phase = (result.error as McCircuitError).phase;
+          expect(['blob_verification', 'terminal'], `flip@${i}=${c}`).toContain(phase);
+        } else {
+          expect(result.value, `flip@${i}=${c} opened a different payload`).toEqual(original);
+        }
       }
     }
   });
@@ -170,5 +205,90 @@ describe('blob parser fuzzing (M5)', () => {
       spliced[i] = b[i] as string;
       assertFailsClosed(spliced.join('.'), `swap@${i}`);
     }
+  });
+
+  it('rejects an oversized input fast, before any crypto work (size guard)', () => {
+    // Feed inputs far past the acceptance limit and confirm they are rejected
+    // quickly — the guard runs before base64/AES, so this cannot hang.
+    for (const megabytes of [1, 4, 16]) {
+      const huge = 'mcc1.' + 'A'.repeat(megabytes * 1024 * 1024);
+      const started = performance.now();
+      assertFailsClosed(huge, `oversized-${megabytes}MB`);
+      expect(performance.now() - started, `${megabytes}MB took too long`).toBeLessThan(100);
+    }
+  });
+});
+
+/**
+ * The semantic layer only runs after GCM authenticates, so it is unreachable
+ * from an attacker without the key. To fuzz it we seal genuinely
+ * authenticated blobs whose plaintext is deliberately wrong — the honest way
+ * these branches fire in production (an incompatible library version, an
+ * expired blob, a resume against different code or a different server).
+ */
+describe('blob semantic-layer fuzzing (valid key, broken payload)', () => {
+  const OPEN_NOW = 5_000_000;
+
+  function sealRaw(overrides: Partial<BlobPayload>): string {
+    const base = buildBlobPayload({
+      code: CODE,
+      serverIdentity: IDENTITY,
+      snapshot: { status: 'active', value: 'x', context: {} },
+      pending: {},
+      audit: [],
+      trip: 1,
+      now: OPEN_NOW - 1000,
+    });
+    return sealBlob({ ...base, ...overrides } as BlobPayload, CONFIG);
+  }
+
+  function assertSemanticReject(blob: string, label: string): void {
+    const result = attempt(blob, OPEN_NOW);
+    expect(result.threw, `${label} should have failed`).toBe(true);
+    if (!result.threw) return;
+    expect(result.error, label).toBeInstanceOf(McCircuitError);
+    expect(['blob_verification', 'terminal'], label).toContain(
+      (result.error as McCircuitError).phase,
+    );
+  }
+
+  it('rejects an unknown schema version', () => {
+    assertSemanticReject(sealRaw({ v: 999 }), 'bad v');
+    assertSemanticReject(sealRaw({ v: 'x' as unknown as number }), 'string v');
+  });
+
+  it('rejects mismatched library / XState versions (no snapshot migration)', () => {
+    assertSemanticReject(sealRaw({ libv: '0.0.0-other' }), 'bad libv');
+    assertSemanticReject(sealRaw({ xstatev: '4.0.0' }), 'bad xstatev');
+  });
+
+  it('rejects an expired blob', () => {
+    assertSemanticReject(sealRaw({ exp: OPEN_NOW - 1 }), 'expired');
+  });
+
+  it('rejects a resume whose codeHash does not match the re-sent code (S4)', () => {
+    assertSemanticReject(sealRaw({ codeHash: 'deadbeef'.repeat(8) }), 'bad codeHash');
+  });
+
+  it('rejects a blob minted against a different wrapped server (R30)', () => {
+    assertSemanticReject(sealRaw({ serverIdentity: 'srv://other/default' }), 'wrong server');
+  });
+
+  it('rejects structurally malformed pending / audit', () => {
+    assertSemanticReject(
+      sealRaw({ pending: { k: { id: 'k' } as unknown as PendingToolCall } }),
+      'pending missing fields',
+    );
+    assertSemanticReject(
+      sealRaw({ audit: 'not-an-array' as unknown as BlobPayload['audit'] }),
+      'audit not array',
+    );
+    assertSemanticReject(sealRaw({ trip: 'x' as unknown as number }), 'trip not a number');
+  });
+
+  it('still opens a correctly-sealed blob (the good path is not over-rejected)', () => {
+    const good = sealRaw({});
+    const result = attempt(good, OPEN_NOW);
+    expect(result.threw).toBe(false);
   });
 });
