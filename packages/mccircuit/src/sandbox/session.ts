@@ -13,7 +13,7 @@ import {
 import type TS from 'typescript';
 import { McCircuitError } from '../errors.js';
 import { clampCaps, type LogEntry, type ResourceCaps } from '../types.js';
-import { LogCollector } from './logs.js';
+import { LogCollector, utf8Length } from './logs.js';
 import {
   buildNodeModulesMount,
   DENIED_IMPORT_MARKER,
@@ -158,6 +158,25 @@ function flattenDiagnosticMessage(messageText: string | TS.DiagnosticMessageChai
   return parts.join(' ');
 }
 
+/**
+ * Transpile the (invariant) tools bridge, memoized by source. Bounded so a
+ * process that wraps many distinct servers can't grow the cache unbounded.
+ */
+const bridgeCache = new Map<string, string>();
+const BRIDGE_CACHE_MAX = 32;
+
+async function transpileBridge(source: string): Promise<string> {
+  const cached = bridgeCache.get(source);
+  if (cached !== undefined) return cached;
+  const js = await transpileTs(source, '/bridge/index.ts');
+  if (bridgeCache.size >= BRIDGE_CACHE_MAX) {
+    const oldest = bridgeCache.keys().next().value;
+    if (oldest !== undefined) bridgeCache.delete(oldest);
+  }
+  bridgeCache.set(source, js);
+  return js;
+}
+
 async function transpileTs(source: string, fileName: string): Promise<string> {
   const support = await getTsSupport();
   const diagnostics: TS.Diagnostic[] = [];
@@ -257,8 +276,6 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-const utf8ByteLength = (value: string): number => new TextEncoder().encode(value).length;
-
 /** No-op sink for console methods that are captured nowhere (R31 covers five levels). */
 const silent = (): void => {};
 
@@ -274,7 +291,7 @@ export async function createSandboxSession(
   const segment = options.segment ?? 0;
   const lang = options.lang ?? 'js';
 
-  const codeBytes = utf8ByteLength(options.code);
+  const codeBytes = utf8Length(options.code);
   if (codeBytes > caps.maxCodeBytes) {
     throw new McCircuitError(
       'cap_exceeded',
@@ -287,11 +304,12 @@ export async function createSandboxSession(
 
   const machineJs =
     lang === 'ts' ? await transpileTs(options.code, '/src/machine.ts') : options.code;
-  // The bridge is library/typegen-supplied, not model-authored: transpile it
-  // unconditionally (a plain-JS bridge passes through unchanged).
+  // The bridge is library/typegen-supplied and invariant across every segment
+  // of a workflow, so its transpile output is cached by source (a plain-JS
+  // bridge passes through unchanged). Only the machine code varies per call.
   let bridgeJs: string;
   try {
-    bridgeJs = await transpileTs(options.bridgeSource, '/bridge/index.ts');
+    bridgeJs = await transpileBridge(options.bridgeSource);
   } catch (error) {
     if (error instanceof McCircuitError && error.phase === 'transpile') {
       throw new McCircuitError(

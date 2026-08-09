@@ -12,7 +12,8 @@ import type { LogEntry, LogLevel } from '../types.js';
 
 const encoder = new TextEncoder();
 
-function utf8Length(value: string): number {
+/** UTF-8 byte length of a string (shared cached encoder). */
+export function utf8Length(value: string): number {
   return encoder.encode(value).length;
 }
 

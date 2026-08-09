@@ -9,6 +9,7 @@
  */
 
 import { McCircuitError } from '../errors.js';
+import { findTool } from '../types.js';
 import type {
   PendingToolCall,
   PolicyDecision,
@@ -63,7 +64,7 @@ export function resolveCallPolicy(
   catalog: ServerCatalog,
   overrides?: PolicyOverrides,
 ): ResolvedCallPolicy {
-  const entry = catalog.tools.find((tool) => tool.name === call.name);
+  const entry = findTool(catalog, call.name);
   if (entry === undefined) {
     return {
       ok: false,

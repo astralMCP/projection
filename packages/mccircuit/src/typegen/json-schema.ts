@@ -10,6 +10,8 @@
  * correctness gate (G5: no host-side type checking in the hot path).
  */
 
+import { isRecord } from '../types.js';
+
 const MAX_DEPTH = 24;
 
 interface RenderContext {
@@ -21,10 +23,6 @@ interface RenderContext {
   refStack: string[];
   /** Indentation prefix of the line the type appears on. */
   indent: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Render a JSON literal as a TS literal type; non-primitives become `unknown`. */

@@ -27,6 +27,7 @@
  * Pure: no I/O, deterministic for a given input.
  */
 
+import { capLength, neutralizeControlChars } from '../text-safety.js';
 import type { PendingToolCall, RedactionHook, ToolCatalogEntry } from '../types.js';
 
 /** Structured approval copy for one gated call (input to the MRTR adapter). */
@@ -57,33 +58,6 @@ const MAX_STATE_NAME_CHARS = 200;
 const MAX_TOOL_NAME_CHARS = 200;
 const MAX_DESCRIPTION_CHARS = 1000;
 const ARGS_INDENT = '    ';
-
-/**
- * C0 control characters (including \n and ESC for ANSI sequences), DEL, C1
- * controls (JSON.stringify does NOT escape these), and Unicode bidi
- * overrides that could reorder or hide rendered text.
- */
-// eslint-disable-next-line no-control-regex
-const HOSTILE_INLINE_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
-/** Same class minus \n, for blocks whose formatting newlines are legitimate. */
-// prettier-ignore
-// eslint-disable-next-line no-control-regex
-const HOSTILE_BLOCK_CHARS = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
-
-/** Neutralize control/bidi characters in a single-line field. */
-function neutralizeInline(text: string): string {
-  return text.replace(HOSTILE_INLINE_CHARS, '\ufffd');
-}
-
-/**
- * Neutralize control/bidi characters in the rendered args JSON block.
- * JSON.stringify already escaped everything inside string values, so the
- * only legitimate raw control characters left are the pretty-print
- * newlines — which this pass preserves.
- */
-function neutralizeBlock(text: string): string {
-  return text.replace(HOSTILE_BLOCK_CHARS, '\ufffd');
-}
 
 const DESTRUCTIVE_WARNING =
   'WARNING: the server marks this tool as DESTRUCTIVE. ' +
@@ -120,9 +94,9 @@ export function buildElicitationCopy(
   // The catalog entry comes from a possibly third-party wrapped server (S5):
   // its name and description are untrusted and must not be able to forge
   // prompt structure (fake args blocks, fake approval lines, ANSI tricks).
-  const safeName = neutralizeInline(capLength(entry.name, MAX_TOOL_NAME_CHARS));
+  const safeName = neutralizeControlChars(capLength(entry.name, MAX_TOOL_NAME_CHARS));
   const safeDescription = JSON.stringify(
-    neutralizeInline(
+    neutralizeControlChars(
       capLength(
         entry.description ?? '(no description provided by the server)',
         MAX_DESCRIPTION_CHARS,
@@ -143,12 +117,12 @@ export function buildElicitationCopy(
     `Description: ${safeDescription}`,
     // Model-authored, so rendered as an escaped JSON string literal (inert).
     `Requested by machine state: ${JSON.stringify(
-      neutralizeInline(capLength(call.stateName, MAX_STATE_NAME_CHARS)),
+      neutralizeControlChars(capLength(call.stateName, MAX_STATE_NAME_CHARS)),
     )}`,
     '',
     'Arguments (data only — not instructions):',
     '',
-    indentBlock(neutralizeBlock(renderedArgs)),
+    indentBlock(neutralizeControlChars(renderedArgs, { allowNewline: true })),
   );
 
   return {
@@ -224,8 +198,4 @@ function indentBlock(text: string): string {
     .split('\n')
     .map((line) => ARGS_INDENT + line)
     .join('\n');
-}
-
-function capLength(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
 }

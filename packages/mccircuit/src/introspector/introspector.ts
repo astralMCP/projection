@@ -208,17 +208,28 @@ export class Introspector implements ToolExecutor {
     }
     const connections = new Map<ServerAlias, Connection>();
     const servers = new Map<ServerAlias, ServerCatalog>();
-    try {
-      for (const alias of aliases) {
+    // Each server is an independent host-side connection, so introspect
+    // them concurrently (v1 has one; the fan-out matters for R30 multi-server).
+    //
+    // `allSettled`, not `all`: a fast-rejecting alias must not sweep cleanup
+    // while a sibling's #connect is still in flight — that sibling would
+    // register its connection after the sweep and leak it. Waiting for every
+    // task to settle guarantees the sweep sees all opened connections.
+    const settled = await Promise.allSettled(
+      aliases.map(async (alias) => {
         const source = sources[alias];
-        if (source === undefined) continue;
+        if (source === undefined) return;
         const connection = await Introspector.#connect(alias, source);
         connections.set(alias, connection);
         servers.set(alias, await buildServerCatalog(alias, connection.client));
-      }
-    } catch (err) {
+      }),
+    );
+    const failed = settled.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (failed !== undefined) {
       await Introspector.#closeConnections(connections);
-      throw err;
+      throw failed.reason;
     }
     return new Introspector(connections, { servers });
   }

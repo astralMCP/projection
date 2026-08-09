@@ -49,6 +49,39 @@ export interface ServerCatalog {
   tools: ToolCatalogEntry[];
 }
 
+/**
+ * Name → entry index, built lazily and cached per catalog object. The
+ * catalog is immutable once introspected, so a `WeakMap` keyed on identity
+ * lets every consumer look a tool up in O(1) without the catalog having to
+ * carry (and every construction site having to build) the index itself.
+ */
+const catalogIndex = new WeakMap<ServerCatalog, Map<string, ToolCatalogEntry>>();
+
+/**
+ * Look up a tool by name in a catalog, O(1) after the first call.
+ *
+ * Duplicate names resolve to the FIRST occurrence, matching `Array#find` and
+ * typegen's `dedupeToolNames` (S5): a hostile server declaring the same name
+ * twice must not be able to make the policy gate see a different entry (e.g.
+ * a later `readOnlyHint: true` copy) than the one typegen exposed.
+ */
+export function findTool(catalog: ServerCatalog, name: string): ToolCatalogEntry | undefined {
+  let index = catalogIndex.get(catalog);
+  if (index === undefined) {
+    index = new Map();
+    for (const tool of catalog.tools) {
+      if (!index.has(tool.name)) index.set(tool.name, tool);
+    }
+    catalogIndex.set(catalog, index);
+  }
+  return index.get(name);
+}
+
+/** Narrow to a non-null, non-array object. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Executes a tool call against the wrapped server. Implemented by the introspector. */
 export interface ToolExecutor {
   callTool(
