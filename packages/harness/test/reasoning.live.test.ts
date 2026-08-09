@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { wrapMcpServer } from 'mccircuit';
 import {
   buildApiDocs,
+  loadNearestDotEnv,
   createAnthropicAuthor,
   createFileServer,
   formatSelfHealReport,
@@ -26,6 +27,9 @@ import {
   FILE_SERVER_TASKS,
   type ReasoningResult,
 } from '../src/index.js';
+
+// Secrets may live in the repo-root .env rather than the shell.
+loadNearestDotEnv();
 
 // Both gates: key presence alone must never trigger live spend, and an
 // empty-string key is absent, not present.

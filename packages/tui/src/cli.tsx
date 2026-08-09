@@ -10,10 +10,14 @@
 
 import { randomBytes } from 'node:crypto';
 import { render } from 'ink';
-import { buildApiDocs, createAnthropicAuthor, createFileServer } from '@mccircuit/harness';
+import {
+  buildApiDocs,
+  createAnthropicAuthor,
+  createFileServer,
+  loadNearestDotEnv,
+} from '@mccircuit/harness';
 import { wrapMcpServer } from 'mccircuit';
 import { App } from './app.js';
-import { loadNearestDotEnv } from './env.js';
 
 async function main(): Promise<void> {
   loadNearestDotEnv();
