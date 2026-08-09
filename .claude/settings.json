@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command? // \"\"' | grep -Eq '(^|[^A-Za-z0-9_])[.]env' && { echo 'Blocked by project hook: .env files hold secrets and must never be read, written, or echoed by Claude.' >&2; exit 2; }; exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '[.tool_input.file_path? // \"\", .tool_input.path? // \"\", .tool_input.pattern? // \"\"] | join(\" \")' | grep -Eq '(^|[^A-Za-z0-9_])[.]env' && { echo 'Blocked by project hook: .env files hold secrets and are off-limits to Claude.' >&2; exit 2; }; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
