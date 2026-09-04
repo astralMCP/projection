@@ -147,3 +147,21 @@ stateless target rather than silently ignored.
 Component code lives under `src/<component>/` with a local `index.ts`.
 `src/types.ts` is the shared contract; component agents do not edit it or
 `src/index.ts` concurrently — top-level exports are wired after each wave.
+
+## D5 — MCP Apps attach to completed results, not suspensions (2026-09-04)
+
+PRD §12.1 fences two Apps use cases: approval previews (priority) and
+result dashboards. The wire decides for us, for now: the 2026-07-28
+`InputRequiredResult` encode seam strips `content` AND `_meta` (verified in
+D1), so a suspension cannot carry an app reference, and the elicitation
+params have no vehicle for one either. Approval previews therefore need a
+spec extension before they are implementable. What ships: a static,
+library-authored workflow dashboard (`ui://projection/dashboard.html`,
+`text/html;profile=mcp-app`, declared via `execute_machine`'s
+`_meta.ui.resourceUri` per SEP-1865) rendering output, audit trail, logs
+and structured errors. The §12.1 security constraint is satisfied by
+construction: the app is a compile-time constant with zero model-authored
+code (no VM at all), requests no host capabilities, and renders all
+model-controlled data via `textContent` only — locked by tests. The
+`discover_apis` resource links exclude `ui://` so models never see the app
+surface.
