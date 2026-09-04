@@ -8,6 +8,7 @@
  */
 
 import { AUTHORING_CONTRACT } from '../machine-host/index.js';
+import { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from '../apps/dashboard.js';
 import { XSTATE_VERSION } from '../blob/index.js';
 import type { ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
@@ -27,6 +28,8 @@ export interface ProjectionResource {
   description: string;
   mimeType: string;
   text: string;
+  /** Resource-level metadata (e.g. the MCP Apps `ui` object). */
+  _meta?: Record<string, unknown>;
 }
 
 export const EXAMPLE_HAPPY_PATH = `import { setup, assign } from 'xstate';
@@ -135,6 +138,18 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
       mimeType: 'text/plain',
       text: EXAMPLE_DENIAL_FALLBACK,
     },
+    {
+      // MCP Apps dashboard (PRD 12.1): rendered by app-capable hosts when
+      // execute_machine completes. Served for hosts, not for models -- the
+      // discover_apis links below exclude the ui:// scheme so the authoring
+      // surface stays uncluttered.
+      uri: DASHBOARD_RESOURCE_URI,
+      name: 'dashboard.html',
+      description: 'Workflow result dashboard rendered by MCP Apps hosts.',
+      mimeType: MCP_APP_MIME_TYPE,
+      text: DASHBOARD_HTML,
+      _meta: { ui: { prefersBorder: true } },
+    },
   ];
 }
 
@@ -153,13 +168,15 @@ export function discoverApis(catalog: ServerCatalog, overview: string): CallTool
     AUTHORING_CONTRACT,
   ].join('\n');
 
-  const links: ContentBlock[] = buildResources(catalog, '').map((resource) => ({
-    type: 'resource_link',
-    uri: resource.uri,
-    name: resource.name,
-    description: resource.description,
-    mimeType: resource.mimeType,
-  }));
+  const links: ContentBlock[] = buildResources(catalog, '')
+    .filter((resource) => !resource.uri.startsWith('ui://'))
+    .map((resource) => ({
+      type: 'resource_link',
+      uri: resource.uri,
+      name: resource.name,
+      description: resource.description,
+      mimeType: resource.mimeType,
+    }));
 
   return {
     content: [{ type: 'text', text: inline }, ...links],

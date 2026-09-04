@@ -40,6 +40,8 @@ export interface MachineAuthor {
  * Build the API documentation string handed to authors: the same content a
  * real MCP client reads — the discover_apis overview plus the full text of
  * every `projection://` resource (tool types, authoring contract, examples).
+ * `ui://` app resources are host-render surfaces, not authoring docs, and
+ * are excluded (DECISIONS.md D5: models never see the app surface).
  */
 export function buildApiDocs(facade: ProjectionFacade): string {
   const overview = facade
@@ -52,9 +54,9 @@ export function buildApiDocs(facade: ProjectionFacade): string {
     )
     .map((block) => block.text)
     .join('\n\n');
-  const resources = facade.resources.map(
-    (resource) => `## ${resource.name} (${resource.uri})\n\n${resource.text}`,
-  );
+  const resources = facade.resources
+    .filter((resource) => !resource.uri.startsWith('ui://'))
+    .map((resource) => `## ${resource.name} (${resource.uri})\n\n${resource.text}`);
   return [overview, ...resources].join('\n\n---\n\n');
 }
 

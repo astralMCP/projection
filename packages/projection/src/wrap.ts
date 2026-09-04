@@ -35,6 +35,7 @@ import {
   type McpServerFactory,
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import { DASHBOARD_RESOURCE_URI } from './apps/dashboard.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
 import {
   buildInstructions,
@@ -229,6 +230,10 @@ class Facade implements ProjectionFacade {
         title: 'Execute a state machine',
         description: EXECUTE_MACHINE_DESCRIPTION,
         inputSchema: EXECUTE_MACHINE_INPUT_SCHEMA,
+        // MCP Apps (SEP-1865): app-capable hosts render the workflow
+        // dashboard in place of the raw result. Hosts without the extension
+        // ignore _meta.ui entirely.
+        _meta: { ui: { resourceUri: DASHBOARD_RESOURCE_URI } },
       },
       async (args, ctx) =>
         await this.executeMachine(
@@ -268,7 +273,11 @@ class Facade implements ProjectionFacade {
       server.registerResource(
         resource.name,
         resource.uri,
-        { description: resource.description, mimeType: resource.mimeType },
+        {
+          description: resource.description,
+          mimeType: resource.mimeType,
+          ...(resource._meta !== undefined ? { _meta: resource._meta } : {}),
+        },
         () => ({
           contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text }],
         }),
