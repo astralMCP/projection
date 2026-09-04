@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "apps-demo",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@astral-mcp/demo-host", "start"],
+      "port": 8787
+    }
+  ]
+}
