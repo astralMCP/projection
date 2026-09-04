@@ -21,6 +21,37 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  apps/demo-host:
+    dependencies:
+      '@astral-mcp/projection':
+        specifier: workspace:*
+        version: link:../../packages/projection
+      '@modelcontextprotocol/client':
+        specifier: 2.0.0
+        version: 2.0.0
+      '@modelcontextprotocol/server':
+        specifier: 2.0.0
+        version: 2.0.0
+    devDependencies:
+      '@modelcontextprotocol/server-filesystem':
+        specifier: 2026.7.10
+        version: 2026.7.10(zod@4.4.3)
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.20.1
+      tsdown:
+        specifier: ^0.22.14
+        version: 0.22.14(typescript@5.9.3)(unrun@0.3.1)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      unrun:
+        specifier: ^0.3.1
+        version: 0.3.1
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@22.20.1)
+
   packages/harness:
     dependencies:
       '@anthropic-ai/sdk':
