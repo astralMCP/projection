@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint",
+    "lint": "oxlint src",
     "test": "vitest run --passWithNoTests",
     "start": "pnpm -w exec turbo run build --filter=@astral-mcp/demo-host... --output-logs=errors-only && node dist/server.mjs"
   },
