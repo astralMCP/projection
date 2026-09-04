@@ -173,6 +173,19 @@ describe('runReasoningTask (PRD §13 reasoning loop)', () => {
   });
 });
 
+describe('buildApiDocs', () => {
+  it('includes the authoring contract but filters ui:// app resources (D5)', async () => {
+    const { apiDocs } = await setup();
+    // The authoring docs a model reads must still be complete...
+    expect(apiDocs).toContain('authoring');
+    expect(apiDocs).toContain('read_file');
+    // ...but the MCP Apps dashboard is a host-render surface, not API docs:
+    // its URI and its script must never land in an authoring prompt.
+    expect(apiDocs).not.toContain('ui://projection/dashboard.html');
+    expect(apiDocs).not.toContain('ui/initialize');
+  });
+});
+
 describe('summarizeSelfHeal (§10 metrics)', () => {
   function fake(
     attemptsToValid: number | undefined,

@@ -164,4 +164,5 @@ construction: the app is a compile-time constant with zero model-authored
 code (no VM at all), requests no host capabilities, and renders all
 model-controlled data via `textContent` only — locked by tests. The
 `discover_apis` resource links exclude `ui://` so models never see the app
-surface.
+surface (the harness's `buildApiDocs` authoring docs filter `ui://`
+resources too).

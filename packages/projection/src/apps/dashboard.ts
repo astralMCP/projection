@@ -170,6 +170,9 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
 
   window.addEventListener('message', function (event) {
+    // Only the embedding host may speak: forged tool-results from a hostile
+    // embedder could otherwise spoof the displayed audit trail.
+    if (event.source !== window.parent) return;
     var message = event.data;
     if (!message || message.jsonrpc !== '2.0') return;
     if (message.id !== undefined && message.method === undefined) {
@@ -194,6 +197,12 @@ export const DASHBOARD_HTML = `<!doctype html>
       setStatus('cancelled', 'err');
       byId('error').textContent = String(reason || 'cancelled by the host');
       show('error-section');
+      return;
+    }
+    // Host -> app REQUESTS (id + method) get an empty result: answers ping
+    // and ui/resource-teardown so hosts don't stall on their SHOULD-wait.
+    if (message.id !== undefined && message.method !== undefined) {
+      post({ jsonrpc: '2.0', id: message.id, result: {} });
     }
   });
 

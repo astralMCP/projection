@@ -106,6 +106,9 @@ describe('dashboard app source (the §12.1 security posture)', () => {
     expect(DASHBOARD_HTML).not.toContain('outerHTML');
     expect(DASHBOARD_HTML).not.toContain('document.write');
     expect(DASHBOARD_HTML).not.toContain('insertAdjacentHTML');
+    expect(DASHBOARD_HTML).not.toContain('createContextualFragment');
+    expect(DASHBOARD_HTML).not.toContain('setAttribute');
+    expect(DASHBOARD_HTML).not.toContain('DOMParser');
     expect(DASHBOARD_HTML).toContain('textContent');
   });
 });
