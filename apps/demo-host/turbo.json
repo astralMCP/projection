@@ -1,0 +1,11 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tsconfig.json", "tsdown.config.ts", "package.json"],
+      "outputs": ["dist/**", "public/host.iife.js"]
+    }
+  }
+}

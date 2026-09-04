@@ -12,10 +12,12 @@
 
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -75,6 +77,20 @@ async function main(): Promise<void> {
       }
 
       if (url.pathname === '/mcp') {
+        // Per the MCP StreamableHTTP guidance for locally-running servers:
+        // validate Origin to prevent DNS-rebinding / cross-site drive-by use.
+        // An absent Origin means a non-browser client (same machine); allow it.
+        const origin = req.headers['origin'];
+        if (
+          origin !== undefined &&
+          origin !== `http://localhost:${PORT}` &&
+          origin !== `http://127.0.0.1:${PORT}`
+        ) {
+          res.writeHead(403, { 'content-type': 'text/plain' });
+          res.end('forbidden origin');
+          return;
+        }
+
         // Adapt Node's request to the fetch-style handler.
         const chunks: Buffer[] = [];
         for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -91,8 +107,20 @@ async function main(): Promise<void> {
             ...(body.length > 0 ? { body, duplex: 'half' } : {}),
           } as RequestInit),
         );
-        res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
-        res.end(Buffer.from(await response.arrayBuffer()));
+        // Stream the response instead of buffering: SSE bodies (GET stream,
+        // per-request event streams) must reach the client as they are
+        // produced, and an infinite stream would never settle arrayBuffer().
+        const outHeaders: Record<string, string | string[]> = Object.fromEntries(
+          response.headers.entries(),
+        );
+        const setCookies = response.headers.getSetCookie();
+        if (setCookies.length > 0) outHeaders['set-cookie'] = setCookies;
+        res.writeHead(response.status, outHeaders);
+        if (response.body === null) {
+          res.end();
+        } else {
+          Readable.fromWeb(response.body as WebReadableStream).pipe(res);
+        }
         return;
       }
 
@@ -104,15 +132,21 @@ async function main(): Promise<void> {
     });
   });
 
-  server.listen(PORT, () => {
+  // Loopback only: this demo self-approves writes, so it must not be
+  // reachable from the rest of the LAN.
+  server.listen(PORT, '127.0.0.1', () => {
     console.info(`Projection MCP Apps demo: http://localhost:${PORT}`);
     console.info(`Wrapped upstream: filesystem server over ${dir}`);
   });
 
+  let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
+    if (shuttingDown) process.exit(1); // second signal: give up immediately
+    shuttingDown = true;
     server.close();
     await facade.close();
     await client.close();
+    rmSync(dir, { recursive: true, force: true });
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());
