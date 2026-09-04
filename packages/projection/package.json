@@ -1,6 +1,6 @@
 {
   "name": "@astral-mcp/projection",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Turn any MCP server into a code-mode server with human-approved side effects, built on MCP MRTR and XState v5.",
   "license": "MIT",
   "type": "module",
