@@ -208,6 +208,18 @@ One code-mode facade over N upstream servers, so a single machine can orchestrat
 
 Expose the sandbox's virtual FS to authored code as ephemeral per-segment scratch, with a size-capped FS delta optionally serialized into the blob for cross-suspension persistence. Deferred because "all state in context" is a simpler contract for the model and keeps blobs small; revisit if benchmark workflows show context bloat from large intermediate data.
 
+### 12.4 Per-user upstream OAuth
+
+**Not the stretch goal:** a service-identity OAuth upstream works today — the integrator connects an SDK `Client` with an auth provider on its transport (client-credentials grant, provisioned refresh token) and wraps it. Design constraint already holding by construction, kept normative here: **upstream credentials never enter the sandbox, the blob, or any model-visible surface.** S1 makes the tools bridge the machine's only I/O, so authored code names tools while the host-side executor makes the authenticated call; a hostile machine cannot exfiltrate a token it never touches. Upstream auth expiry surfaces as an ordinary `TOOL_ERROR` event; token refresh is the transport auth provider's job.
+
+**The stretch goal** is on-behalf-of access: each end user's own identity reaching the upstream (user A's GitHub, not the service's). Three coupled pieces, none built in v1:
+
+1. **Per-principal upstream connections.** The introspector holds one connection made at wrap time; per-user auth needs connections resolved per principal at call time. This is the same seam multi-server needs (12.2 / R30 aliases) — design the connection-context refactor once for both.
+2. **Principal-bound blobs.** An approved blob must resume only under the principal that approved it, or user A's approved workflow could execute under user B's token. Adopt the SDK requestState codec's `bind` concept (deferred in DECISIONS.md D1); this is a blob-format change gated on the fuzz/tamper suites and a version bump.
+3. **Token residence.** Stateless resume (R27) means every instance needs the principal's token. Preferred: a server-side token store keyed by principal — the first shared state R27 admits, chosen over serializing refresh tokens into the AEAD blob (architecturally purer, but it makes the client a courier of their own upstream credentials and stretches revocation windows; rejected unless an adversarial review overturns this).
+
+**Authorization as a suspension** (the MRTR-shaped part): an upstream 401 with `WWW-Authenticate` is semantically an approval — the workflow cannot proceed without a human acting. Suspend over MRTR with an elicitation directing the user to authorize out-of-band; the retry finds a fresh token via (3). No held connections, R27 preserved. S6 caveat decided now: the authorization URL originates from a third-party server and MUST be rendered with the same inert-text discipline as all other untrusted catalog data.
+
 ## 13. Verification and test plan
 
 **Smoke-test matrix.** Source candidate servers from the Glama directory (https://glama.ai/mcp/servers) and pin a narrow initial set of three, chosen for shape diversity rather than coverage — long-term goal is "any server," v1 goal is "these three, flawlessly":
