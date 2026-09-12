@@ -9,9 +9,10 @@
  * rather than at server-held state.
  *
  * Prompt text is server-derived (S6 posture): the only client-controlled
- * fragments are the declared arguments, which are neutralized and
- * length-capped before interpolation so they cannot forge structure inside
- * the returned guidance.
+ * fragments are the declared arguments, and the only wrapped-server-controlled
+ * fragment is the catalog identity (S5). Both are neutralized, length-capped,
+ * and rendered as JSON string literals before interpolation so they cannot
+ * forge structure inside the returned guidance.
  */
 
 import { capLength, neutralizeControlChars } from '../text-safety.js';
@@ -20,10 +21,24 @@ import { RESOURCE_URIS } from '../mrtr/discover.js';
 
 const MAX_ARG_CHARS = 200;
 
-/** Inert rendering for a client-supplied prompt argument. */
+/**
+ * Inert rendering for a client-supplied prompt argument: neutralized,
+ * length-capped, and emitted as a JSON string literal so the guidance reads
+ * it as unambiguous quoted data. The fallback is trusted library copy and
+ * renders as plain unquoted prose.
+ */
 function inertArg(value: string | undefined, fallback: string): string {
   if (value === undefined || value.length === 0) return fallback;
-  return neutralizeControlChars(capLength(value, MAX_ARG_CHARS));
+  return JSON.stringify(neutralizeControlChars(capLength(value, MAX_ARG_CHARS)));
+}
+
+/**
+ * Inert rendering for the wrapped server's identity (S5-hostile): neutralized,
+ * length-capped, and emitted as a JSON string literal — the literal supplies
+ * its own quotes.
+ */
+function inertIdentity(catalog: ServerCatalog): string {
+  return JSON.stringify(neutralizeControlChars(capLength(catalog.identity, 200)));
 }
 
 export interface WorkflowPromptDefinition {
@@ -80,7 +95,7 @@ Skill name: ${skillName}
      retries echo requestState + inputResponses unchanged).
 
 5. Record the binding: this machine targets the tool surface of
-   "${catalog.identity}". Note in the skill that it must be re-verified if
+   ${inertIdentity(catalog)}. Note in the skill that it must be re-verified if
    pointed at a different wrapped server.`;
   },
 };
@@ -111,7 +126,7 @@ The visualization must include:
 2. The machine output, pretty-printed.
 3. The approval audit trail as a table — one row per entry with tool,
    decision (auto / approved / declined), and the exact arguments — this is
-   the human-approval story of the workflow against "${catalog.identity}"
+   the human-approval story of the workflow against ${inertIdentity(catalog)}
    and should be visually prominent.
 4. Console logs ([level] message), if any.
 
