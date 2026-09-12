@@ -9,7 +9,12 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { inertIdentity } from '../text-safety.js';
+import {
+  capLength,
+  inertIdentity,
+  MAX_IDENTITY_CHARS,
+  neutralizeControlChars,
+} from '../text-safety.js';
 import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
 import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
 
@@ -66,8 +71,10 @@ const PASCAL_FALLBACK = 'Tool';
  * reads as authoritative guidance.
  *
  * `inertIdentity` emits a JSON string literal: `JSON.stringify` escapes
- * newlines and quotes, the control/bidi pass covers the separators JSON
- * leaves raw, and the length cap bounds the artifact.
+ * newlines and quotes, the control/bidi pass covers the characters JSON
+ * leaves raw (C1 controls, the U+2028/U+2029 LineTerminators that would
+ * otherwise end the comment, bidi marks), and the length cap bounds the
+ * artifact.
  */
 function commentSafe(text: string): string {
   return inertIdentity(text);
@@ -246,7 +253,19 @@ function generateOverview(server: ServerCatalog): string {
     lines.push('  (none)');
   }
   for (const tool of server.tools) {
-    lines.push(`- ${tool.name} ${overviewFlags(tool)} — ${firstLine(tool.description)}`);
+    // Tool names and descriptions are S5-controlled too: neutralize both so
+    // a hostile name cannot forge extra overview lines (e.g. relabel a
+    // destructive tool "[read-only]" on a line of its own) and no
+    // ESC/ANSI/bidi characters reach the model's guidance. Plain
+    // neutralization — not JSON quoting like the identity — keeps the
+    // `- name [flags] — description` shape the model matches against
+    // readable; the flags stay trustworthy because any injected copy is
+    // flattened into the (capped) name field of its single line.
+    // `firstLine` already caps descriptions at 100 chars; names get the
+    // identity cap.
+    const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
+    const description = neutralizeControlChars(firstLine(tool.description));
+    lines.push(`- ${name} ${overviewFlags(tool)} — ${description}`);
   }
   return `${lines.join('\n')}\n`;
 }
