@@ -166,3 +166,44 @@ model-controlled data via `textContent` only — locked by tests. The
 `discover_apis` resource links exclude `ui://` so models never see the app
 surface (the harness's `buildApiDocs` authoring docs filter `ui://`
 resources too).
+
+## D6 — Opt-in legacy elicitation via the SDK shim (2026-09-12)
+
+R28's fail-fast on legacy connections was chosen because the SDK's
+server→client elicitation shim holds the `tools/call` open, suspending the
+statelessness (R27) MRTR buys. But popular clients (Cursor among them) have
+not adopted 2026-07-28, and the cost analysis is transport-dependent: over
+stdio — how those clients actually run servers — the connection is held by
+nature and there is no statelessness to lose.
+
+Decision: `compat.legacyElicitation` opts in per facade; default stays
+fail-fast. Verified empirically before building: on a held legacy
+connection the SDK converts a returned `input_required` into old-style
+`elicitation/create` pushes and re-invokes the handler with a byte-exact
+`requestState` echo plus the collected `inputResponses` — the same retry
+envelope as a real MRTR retry — so blob sealing/verification (S2–S4), the
+audit trail, trip counting, and R17's missing-answer-is-decline all run
+unchanged. Only the transport of the question differs.
+
+Limitation, locked by test: per-request legacy HTTP serving
+(`createMcpHandler`'s stateless legacy mode) has no server→client channel;
+the SDK refuses with a named error and nothing executes (S2 holds). The
+opt-in is therefore effective for stdio/held-connection deployments only.
+
+## D7 — Wrapped-tool elicitations fail closed; forwarding is MRTR-only if ever (2026-09-12)
+
+What happens when a WRAPPED tool raises its own elicitation mid-call?
+Verified empirically: the introspector's client declares no `elicitation`
+capability, so the upstream's request is refused with a named error and the
+machine receives an ordinary `TOOL_ERROR` event it can handle — fail
+closed, no hang, no silent approval surface.
+
+Decision: keep fail-closed as the posture. If forwarding is ever built, it
+is MRTR-upstreams-only: a modern upstream's `input_required` carries an
+opaque `requestState` that can NEST inside Projection's own sealed blob,
+preserving stateless resume across both hops. Legacy-push upstream
+elicitations cannot be forwarded without holding the upstream's in-flight
+call across our own suspension — cross-instance-impossible state that R27
+forbids. Forwarded upstream copy would be third-party text and MUST get the
+S6 inert-rendering treatment; it must never be conflated with Projection's
+own approval prompts.

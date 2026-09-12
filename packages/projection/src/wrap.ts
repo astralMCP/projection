@@ -70,6 +70,17 @@ export interface WrapOptions {
   redact?: RedactionHook;
   /** Replaces the library's code-mode preamble (R29). */
   codeModePreamble?: string;
+  /** Compatibility switches for pre-2026-07-28 clients. */
+  compat?: {
+    /**
+     * Serve approval suspensions to legacy clients through the SDK's
+     * server→client `elicitation/create` shim instead of failing fast
+     * (R28 amendment; DECISIONS D6). The client must declare the
+     * `elicitation` capability. Statelessness is suspended for the open
+     * call — free over stdio, needs session affinity over legacy HTTP.
+     */
+    legacyElicitation?: boolean;
+  };
   /** Identity the servers built by `createServer` advertise. */
   serverInfo?: Implementation;
 }
@@ -196,6 +207,7 @@ class Facade implements ProjectionFacade {
       ...(options.policy !== undefined ? { policy: options.policy } : {}),
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
       ...(era !== undefined ? { protocolEra: era } : {}),
+      ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
     });
   }
 

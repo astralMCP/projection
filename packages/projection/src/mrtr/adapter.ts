@@ -61,6 +61,19 @@ export interface ExecuteMachineDeps {
    * `McpRequestContext.era`; `undefined` is treated as legacy.
    */
   protocolEra?: ProtocolEra;
+  /**
+   * Opt-in legacy-client compatibility (R28 amendment): when true, a
+   * suspension on a pre-2026-07-28 connection is returned as a normal
+   * `input_required` result and the SDK's serving layer fulfils it through
+   * old-style server→client `elicitation/create` requests, re-invoking this
+   * adapter with a byte-exact `requestState` echo and the collected
+   * `inputResponses` — the same retry envelope as a real MRTR retry, so
+   * every sealing/verification invariant runs unchanged. Cost: the
+   * `tools/call` stays open on this instance while the human answers, so
+   * statelessness (R27) is suspended for that call (free over stdio; needs
+   * session affinity over legacy HTTP). Default false: fail fast per R28.
+   */
+  legacyElicitation?: boolean;
 }
 
 /**
@@ -228,12 +241,15 @@ function suspendResult(
   // executing an unapproved write or hanging.
   //
   // The SDK would otherwise fulfil an `input_required` return on a legacy
-  // connection through its server→client elicitation shim. Projection refuses
-  // that path deliberately: R28 mandates a fail-fast error naming the
+  // connection through its server→client elicitation shim. By default
+  // Projection refuses that path: R28 mandates a fail-fast error naming the
   // required revision, and the shim's push-style round trips hold a
   // connection open, which is exactly the statelessness (R27) the MRTR
-  // design buys us.
-  if (!supportsMrtr(deps.protocolEra)) {
+  // design buys us. `legacyElicitation` opts in per facade (DECISIONS D6):
+  // the shim's re-invocation carries the same requestState echo and
+  // inputResponses as a real retry, so S2–S4 verification runs unchanged —
+  // only the transport of the question differs.
+  if (!supportsMrtr(deps.protocolEra) && deps.legacyElicitation !== true) {
     return fail(
       'protocol',
       `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
