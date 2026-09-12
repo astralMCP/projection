@@ -42,3 +42,19 @@ export function neutralizeControlChars(
 export function capLength(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
 }
+
+/**
+ * Longest wrapped-server identity rendered into prompt copy or generated
+ * artifacts (S5: a hostile wrapped server controls the string).
+ */
+export const MAX_IDENTITY_CHARS = 200;
+
+/**
+ * Render an untrusted server identity inert for single-line embedding:
+ * neutralized, length-capped, and emitted as a JSON string literal — the
+ * literal supplies its own quotes, so surrounding copy reads it as
+ * unambiguous quoted data.
+ */
+export function inertIdentity(identity: string): string {
+  return JSON.stringify(neutralizeControlChars(capLength(identity, MAX_IDENTITY_CHARS)));
+}

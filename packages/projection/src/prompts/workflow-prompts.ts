@@ -15,7 +15,11 @@
  * forge structure inside the returned guidance.
  */
 
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import {
+  capLength,
+  inertIdentity as inertIdentityText,
+  neutralizeControlChars,
+} from '../text-safety.js';
 import type { ServerCatalog } from '../types.js';
 import { RESOURCE_URIS } from '../mrtr/discover.js';
 
@@ -38,7 +42,7 @@ function inertArg(value: string | undefined, fallback: string): string {
  * its own quotes.
  */
 function inertIdentity(catalog: ServerCatalog): string {
-  return JSON.stringify(neutralizeControlChars(capLength(catalog.identity, 200)));
+  return inertIdentityText(catalog.identity);
 }
 
 export interface WorkflowPromptDefinition {

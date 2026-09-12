@@ -9,7 +9,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { inertIdentity } from '../text-safety.js';
 import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
 import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
 
@@ -54,13 +54,7 @@ export interface GeneratedToolTypes {
 const PASCAL_FALLBACK = 'Tool';
 
 /**
- * Longest catalog-supplied identity rendered into generated artifacts.
- * A hostile wrapped server controls this string (S5).
- */
-const MAX_IDENTITY_CHARS = 200;
-
-/**
- * Render an untrusted catalog string for safe inclusion in a `//` line
+ * Render the untrusted server identity for safe inclusion in a `//` line
  * comment of generated source.
  *
  * The bridge source is EVALUATED (mounted at `@astral-mcp/tools` and imported
@@ -71,11 +65,12 @@ const MAX_IDENTITY_CHARS = 200;
  * authored (S1/S5). The same string lands in the `.d.ts` header the model
  * reads as authoritative guidance.
  *
- * `JSON.stringify` escapes newlines and quotes; the control/bidi pass covers
- * the separators JSON leaves raw, and the length cap bounds the artifact.
+ * `inertIdentity` emits a JSON string literal: `JSON.stringify` escapes
+ * newlines and quotes, the control/bidi pass covers the separators JSON
+ * leaves raw, and the length cap bounds the artifact.
  */
 function commentSafe(text: string): string {
-  return JSON.stringify(neutralizeControlChars(capLength(text, MAX_IDENTITY_CHARS)));
+  return inertIdentity(text);
 }
 
 /** Derive a unique PascalCase type-name base from a tool name. */
@@ -244,7 +239,9 @@ function firstLine(text: string | undefined): string {
 }
 
 function generateOverview(server: ServerCatalog): string {
-  const lines = [`Tools (server: ${server.identity}):`];
+  // The overview is inlined into the discover_apis text the model reads as
+  // guidance, so the S5-controlled identity renders inert and quoted.
+  const lines = [`Tools (server: ${inertIdentity(server.identity)}):`];
   if (server.tools.length === 0) {
     lines.push('  (none)');
   }
