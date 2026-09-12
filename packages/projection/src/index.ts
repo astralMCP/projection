@@ -40,6 +40,12 @@ export {
 // Shared contract
 export * from './types.js';
 export { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from './apps/dashboard.js';
+export {
+  SAVE_WORKFLOW_PROMPT,
+  VISUALIZE_WORKFLOW_PROMPT,
+  WORKFLOW_PROMPTS,
+  type WorkflowPromptDefinition,
+} from './prompts/workflow-prompts.js';
 export { ProjectionError, toStructuredError } from './errors.js';
 
 // Introspector — wrapped-server catalog and tool execution

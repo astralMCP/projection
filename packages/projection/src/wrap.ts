@@ -36,6 +36,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { DASHBOARD_RESOURCE_URI } from './apps/dashboard.js';
+import { WORKFLOW_PROMPTS } from './prompts/workflow-prompts.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
 import {
   buildInstructions,
@@ -301,6 +302,33 @@ class Facade implements ProjectionFacade {
         },
         () => ({
           contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text }],
+        }),
+      );
+    }
+
+    // Workflow prompts (/save-workflow, /visualize-workflow): templated
+    // guidance the client's model runs against ITS conversation context —
+    // the facade is stateless (R27) and holds no call history itself.
+    for (const prompt of WORKFLOW_PROMPTS) {
+      const shape: Record<string, z.ZodType> = {};
+      for (const [arg, spec] of Object.entries(prompt.args)) {
+        const base = z.string().describe(spec.description);
+        shape[arg] = spec.required ? base : base.optional();
+      }
+      server.registerPrompt(
+        prompt.name,
+        { title: prompt.title, description: prompt.description, argsSchema: z.object(shape) },
+        (args: Record<string, unknown>) => ({
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                // Safe: the zod argsSchema above admits only (optional) strings.
+                text: prompt.build(args as Record<string, string | undefined>, this.catalog),
+              },
+            },
+          ],
         }),
       );
     }
