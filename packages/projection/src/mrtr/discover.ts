@@ -9,6 +9,7 @@
 
 import { AUTHORING_CONTRACT } from '../machine-host/index.js';
 import { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from '../apps/dashboard.js';
+import { inertIdentity } from '../text-safety.js';
 import { XSTATE_VERSION } from '../blob/index.js';
 import type { ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
@@ -113,7 +114,8 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
     {
       uri: RESOURCE_URIS.toolTypes,
       name: 'tools.d.ts',
-      description: `TypeScript definitions for the tools of ${catalog.identity}.`,
+      // The identity is S5-untrusted; inertIdentity supplies its own quotes.
+      description: `TypeScript definitions for the tools of ${inertIdentity(catalog.identity)}.`,
       mimeType: 'text/plain',
       text: dts,
     },
@@ -159,7 +161,8 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
  */
 export function discoverApis(catalog: ServerCatalog, overview: string): CallToolResult {
   const inline = [
-    `Projection code mode over "${catalog.identity}".`,
+    // The identity is S5-untrusted; inertIdentity supplies its own quotes.
+    `Projection code mode over ${inertIdentity(catalog.identity)}.`,
     '',
     `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',

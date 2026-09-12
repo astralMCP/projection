@@ -1,4 +1,4 @@
-Tools (server: fixture-server@1.2.3):
+Tools (server: "fixture-server@1.2.3"):
 - get_weather [read-only] — Get the current weather for a city.
 - create-ticket! [approval, destructive] — Create a ticket.
 - search [approval] — Search things. Unannotated, so it defaults to approval-gated.

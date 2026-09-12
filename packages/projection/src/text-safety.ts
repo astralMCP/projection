@@ -14,17 +14,20 @@
 
 /**
  * C0 control characters (incl. ESC and, unless `allowNewline`, `\n`), DEL, C1
- * controls (which `JSON.stringify` does NOT escape), the bidi override marks
- * (LRM/RLM/LRE/RLE/PDF/LRO/RLO), and the directional isolates (LRI/RLI/FSI/
- * PDI).
+ * controls (which `JSON.stringify` does NOT escape), U+2028/U+2029
+ * (LINE/PARAGRAPH SEPARATOR — ECMAScript LineTerminators that
+ * `JSON.stringify` also leaves raw, so unescaped they would terminate a `//`
+ * comment in evaluated generated source), the bidi format/override marks
+ * (ALM, LRM/RLM, LRE/RLE/PDF/LRO/RLO), and the directional isolates
+ * (LRI/RLI/FSI/PDI).
  */
 // prettier-ignore
 // eslint-disable-next-line no-control-regex
-const HOSTILE_INLINE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const HOSTILE_INLINE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 // Same class minus `\n`, for blocks whose pretty-print newlines are legitimate.
 // prettier-ignore
 // eslint-disable-next-line no-control-regex
-const HOSTILE_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const HOSTILE_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 
 /**
  * Replace control and bidi characters with the replacement character.
@@ -41,4 +44,20 @@ export function neutralizeControlChars(
 /** Truncate to `maxChars`, appending an ellipsis when shortened. */
 export function capLength(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
+}
+
+/**
+ * Longest wrapped-server identity rendered into prompt copy or generated
+ * artifacts (S5: a hostile wrapped server controls the string).
+ */
+export const MAX_IDENTITY_CHARS = 200;
+
+/**
+ * Render an untrusted server identity inert for single-line embedding:
+ * neutralized, length-capped, and emitted as a JSON string literal — the
+ * literal supplies its own quotes, so surrounding copy reads it as
+ * unambiguous quoted data.
+ */
+export function inertIdentity(identity: string): string {
+  return JSON.stringify(neutralizeControlChars(capLength(identity, MAX_IDENTITY_CHARS)));
 }

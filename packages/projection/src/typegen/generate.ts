@@ -9,7 +9,12 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import {
+  capLength,
+  inertIdentity,
+  MAX_IDENTITY_CHARS,
+  neutralizeControlChars,
+} from '../text-safety.js';
 import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
 import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
 
@@ -54,13 +59,7 @@ export interface GeneratedToolTypes {
 const PASCAL_FALLBACK = 'Tool';
 
 /**
- * Longest catalog-supplied identity rendered into generated artifacts.
- * A hostile wrapped server controls this string (S5).
- */
-const MAX_IDENTITY_CHARS = 200;
-
-/**
- * Render an untrusted catalog string for safe inclusion in a `//` line
+ * Render the untrusted server identity for safe inclusion in a `//` line
  * comment of generated source.
  *
  * The bridge source is EVALUATED (mounted at `@astral-mcp/tools` and imported
@@ -71,11 +70,14 @@ const MAX_IDENTITY_CHARS = 200;
  * authored (S1/S5). The same string lands in the `.d.ts` header the model
  * reads as authoritative guidance.
  *
- * `JSON.stringify` escapes newlines and quotes; the control/bidi pass covers
- * the separators JSON leaves raw, and the length cap bounds the artifact.
+ * `inertIdentity` emits a JSON string literal: `JSON.stringify` escapes
+ * newlines and quotes, the control/bidi pass covers the characters JSON
+ * leaves raw (C1 controls, the U+2028/U+2029 LineTerminators that would
+ * otherwise end the comment, bidi marks), and the length cap bounds the
+ * artifact.
  */
 function commentSafe(text: string): string {
-  return JSON.stringify(neutralizeControlChars(capLength(text, MAX_IDENTITY_CHARS)));
+  return inertIdentity(text);
 }
 
 /** Derive a unique PascalCase type-name base from a tool name. */
@@ -244,12 +246,26 @@ function firstLine(text: string | undefined): string {
 }
 
 function generateOverview(server: ServerCatalog): string {
-  const lines = [`Tools (server: ${server.identity}):`];
+  // The overview is inlined into the discover_apis text the model reads as
+  // guidance, so the S5-controlled identity renders inert and quoted.
+  const lines = [`Tools (server: ${inertIdentity(server.identity)}):`];
   if (server.tools.length === 0) {
     lines.push('  (none)');
   }
   for (const tool of server.tools) {
-    lines.push(`- ${tool.name} ${overviewFlags(tool)} — ${firstLine(tool.description)}`);
+    // Tool names and descriptions are S5-controlled too: neutralize both so
+    // a hostile name cannot forge extra overview lines (e.g. relabel a
+    // destructive tool "[read-only]" on a line of its own) and no
+    // ESC/ANSI/bidi characters reach the model's guidance. Plain
+    // neutralization — not JSON quoting like the identity — keeps the
+    // `- name [flags] — description` shape the model matches against
+    // readable; the flags stay trustworthy because any injected copy is
+    // flattened into the (capped) name field of its single line.
+    // `firstLine` already caps descriptions at 100 chars; names get the
+    // identity cap.
+    const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
+    const description = neutralizeControlChars(firstLine(tool.description));
+    lines.push(`- ${name} ${overviewFlags(tool)} — ${description}`);
   }
   return `${lines.join('\n')}\n`;
 }
