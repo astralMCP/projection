@@ -50,6 +50,7 @@ import {
 } from './mrtr/index.js';
 import { generateToolTypes } from './typegen/index.js';
 import {
+  clampCaps,
   DEFAULT_SERVER_ALIAS,
   type BlobSealerConfig,
   type PolicyOverrides,
@@ -227,7 +228,15 @@ class Facade implements ProjectionFacade {
         name: `projection-${this.deps.catalog.alias}`,
         version: '0.1.0',
       },
-      { instructions: this.instructions },
+      {
+        instructions: this.instructions,
+        // Keeps the SDK shim's round budget aligned with Projection's R18
+        // trip cap, so Projection's structured trip-cap error always fires
+        // before the shim's generic round-limit failure (which would
+        // otherwise cap legacy-elicitation flows at the SDK default of 8
+        // rounds even when caps.maxRoundTrips is raised).
+        inputRequired: { maxRounds: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips },
+      },
     );
     this.registerOn(server, ctx);
     return server;

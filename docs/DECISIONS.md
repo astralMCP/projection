@@ -196,7 +196,10 @@ What happens when a WRAPPED tool raises its own elicitation mid-call?
 Verified empirically: the introspector's client declares no `elicitation`
 capability, so the upstream's request is refused with a named error and the
 machine receives an ordinary `TOOL_ERROR` event it can handle — fail
-closed, no hang, no silent approval surface.
+closed, no hang, no silent approval surface. Caveat: this guarantee covers
+introspector-OWNED clients (in-process wraps); a caller-provided connected
+`Client` answers upstream elicitations with whatever handlers the
+integrator registered on it — that is the integrator's choice.
 
 Decision: keep fail-closed as the posture. If forwarding is ever built, it
 is MRTR-upstreams-only: a modern upstream's `input_required` carries an

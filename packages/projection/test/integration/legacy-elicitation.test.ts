@@ -51,6 +51,35 @@ export default setup({}).createMachine({
 });
 `;
 
+const MULTI_GATED_MACHINE = `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'multiWrite',
+  context: { first: 'pending', second: 'pending' },
+  initial: 'first',
+  states: {
+    first: {
+      entry: toolCall('write_file', () => ({ path: '/one.txt', content: 'first write' }), { id: 'w1' }),
+      on: {
+        TOOL_RESULT: { target: 'second', actions: assign({ first: ({ event }) => event.result }) },
+        TOOL_DENIED: { target: 'done', actions: assign({ first: 'skipped' }) },
+      },
+    },
+    second: {
+      entry: toolCall('write_file', () => ({ path: '/two.txt', content: 'second write' }), { id: 'w2' }),
+      on: {
+        TOOL_RESULT: { target: 'done', actions: assign({ second: ({ event }) => event.result }) },
+        TOOL_DENIED: { target: 'done', actions: assign({ second: 'skipped' }) },
+      },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => ({ first: context.first, second: context.second }),
+});
+`;
+
 let files: Record<string, string>;
 let facade: ProjectionFacade | undefined;
 let client: Client | undefined;
@@ -127,6 +156,20 @@ async function connectHeldLegacy(
   return client;
 }
 
+/**
+ * A held legacy connection whose client does NOT declare the `elicitation`
+ * capability (and registers no handler): the shim must fail closed (S2).
+ */
+async function connectHeldLegacyWithoutElicitation(options: Partial<WrapOptions>): Promise<Client> {
+  facade = await wrapMcpServer(buildWrappedServer(), { blob: { key: KEY }, ...options });
+  const served = facade.createServer();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  client = new Client({ name: 'legacy-client', version: '1.0.0' }, { capabilities: {} });
+  await served.connect(serverTransport);
+  await client.connect(clientTransport);
+  return client;
+}
+
 function machineOutput(result: { structuredContent?: unknown }): unknown {
   return (result.structuredContent as Record<string, unknown> | undefined)?.['output'];
 }
@@ -198,6 +241,60 @@ describe('legacy elicitation compat (R28 amendment, D6)', () => {
     }[];
     expect(approvals).toHaveLength(1);
     expect(approvals[0]).toMatchObject({ tool: 'write_file', decision: 'approved' });
+  });
+
+  it('opt-in over a held connection: a multi-round machine collects sequential approvals through repeated shim rounds', async () => {
+    const prompts: string[] = [];
+    const legacy = await connectHeldLegacy({ compat: { legacyElicitation: true } }, (message) => {
+      prompts.push(message);
+      return { action: 'accept' };
+    });
+
+    // Still ONE callTool from the client's point of view: each gated state
+    // suspends in turn, and the shim runs a fresh elicitation round per
+    // suspension, accumulating inputResponses across retries.
+    const result = (await legacy.callTool({
+      name: 'execute_machine',
+      arguments: { code: MULTI_GATED_MACHINE },
+    })) as {
+      isError?: boolean;
+      structuredContent?: Record<string, unknown>;
+    };
+
+    expect(result.isError).toBeUndefined();
+    expect(machineOutput(result)).toEqual({ first: 'wrote 11 bytes', second: 'wrote 12 bytes' });
+    expect(files['/one.txt']).toBe('first write');
+    expect(files['/two.txt']).toBe('second write');
+
+    // One human prompt per gated call, in machine order.
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain('/one.txt');
+    expect(prompts[1]).toContain('/two.txt');
+
+    // The audit trail carries both approvals.
+    const approvals = result.structuredContent?.['approvals'] as {
+      decision: string;
+      tool: string;
+    }[];
+    expect(approvals).toHaveLength(2);
+    for (const approval of approvals) {
+      expect(approval).toMatchObject({ tool: 'write_file', decision: 'approved' });
+    }
+  });
+
+  it('opt-in over a held connection: a client without the elicitation capability fails closed (S2)', async () => {
+    const legacy = await connectHeldLegacyWithoutElicitation({
+      compat: { legacyElicitation: true },
+    });
+
+    const result = (await legacy.callTool({
+      name: 'execute_machine',
+      arguments: { code: GATED_MACHINE },
+    })) as { isError?: boolean };
+
+    expect(result.isError).toBe(true);
+    // Nothing executed (S2).
+    expect(files['/notes.txt']).toBe('original notes');
   });
 
   it('opt-in over a held connection: a decline takes the TOOL_DENIED path and nothing executes', async () => {
