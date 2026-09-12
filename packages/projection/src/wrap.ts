@@ -50,6 +50,7 @@ import {
 } from './mrtr/index.js';
 import { generateToolTypes } from './typegen/index.js';
 import {
+  clampCaps,
   DEFAULT_SERVER_ALIAS,
   type BlobSealerConfig,
   type PolicyOverrides,
@@ -70,6 +71,17 @@ export interface WrapOptions {
   redact?: RedactionHook;
   /** Replaces the library's code-mode preamble (R29). */
   codeModePreamble?: string;
+  /** Compatibility switches for pre-2026-07-28 clients. */
+  compat?: {
+    /**
+     * Serve approval suspensions to legacy clients through the SDK's
+     * server→client `elicitation/create` shim instead of failing fast
+     * (R28 amendment; DECISIONS D6). The client must declare the
+     * `elicitation` capability. Statelessness is suspended for the open
+     * call — free over stdio, needs session affinity over legacy HTTP.
+     */
+    legacyElicitation?: boolean;
+  };
   /** Identity the servers built by `createServer` advertise. */
   serverInfo?: Implementation;
 }
@@ -196,6 +208,7 @@ class Facade implements ProjectionFacade {
       ...(options.policy !== undefined ? { policy: options.policy } : {}),
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
       ...(era !== undefined ? { protocolEra: era } : {}),
+      ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
     });
   }
 
@@ -215,7 +228,15 @@ class Facade implements ProjectionFacade {
         name: `projection-${this.deps.catalog.alias}`,
         version: '0.1.0',
       },
-      { instructions: this.instructions },
+      {
+        instructions: this.instructions,
+        // Keeps the SDK shim's round budget aligned with Projection's R18
+        // trip cap, so Projection's structured trip-cap error always fires
+        // before the shim's generic round-limit failure (which would
+        // otherwise cap legacy-elicitation flows at the SDK default of 8
+        // rounds even when caps.maxRoundTrips is raised).
+        inputRequired: { maxRounds: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips },
+      },
     );
     this.registerOn(server, ctx);
     return server;

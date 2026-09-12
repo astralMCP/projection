@@ -74,6 +74,27 @@ const facade = await wrapMcpServer(myServer, {
 });
 ```
 
+## Legacy clients (pre-2026-07-28)
+
+By default a legacy client can run read-only machines, and any gated call
+fails fast naming the required revision (R28). If your deployment serves a
+held connection — stdio, the way Cursor and most local clients run servers —
+you can opt in to the SDK's elicitation shim instead:
+
+```ts
+const facade = await wrapMcpServer(myServer, {
+  blob: { key: blobKey },
+  compat: { legacyElicitation: true },
+});
+```
+
+Approvals then reach the legacy client as old-style server→client
+`elicitation/create` requests, and every sealing/verification invariant
+runs unchanged. The client must declare the `elicitation` capability. This
+does nothing for per-request legacy HTTP serving (no server→client
+channel; the call fails cleanly), and while the shim round-trips, that one
+call is pinned to the serving instance.
+
 ## The blob key — your one piece of state
 
 Every suspension seals the machine snapshot, the pending approvals, the
