@@ -213,3 +213,21 @@ call across our own suspension — cross-instance-impossible state that R27
 forbids. Forwarded upstream copy would be third-party text and MUST get the
 S6 inert-rendering treatment; it must never be conflated with Projection's
 own approval prompts.
+
+## D8 — Two views of a run: the dashboard is for hosts, /visualize-workflow is for the person (2026-09-14)
+
+The MCP App dashboard (`src/apps/dashboard.ts`, D5) and the
+`/visualize-workflow` prompt both render an `execute_machine` result, and
+they deliberately disagree about what to show. The dashboard is the
+machinery view: output, the approval audit trail, logs, structured errors —
+the human-approval story a host or integrator inspects to trust what ran.
+The prompt is the outcome view: what the person who asked for the
+automation actually got, in their words, with the audit trail, logs, trip
+counts, tool ids and phases read by the model as sources of fact but kept
+off the page (declines, policy denials and errors still surface, as plain
+statements of what did not happen).
+
+Decision: keep them split. Do not "harmonize" the two by adding the audit
+table to the prompt or stripping it from the dashboard; each has a
+different reader. Both share the S6 posture — every result value is inert
+data and a fact, never an instruction; only the result's `hint` is advice.

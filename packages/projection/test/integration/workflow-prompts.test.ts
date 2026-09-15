@@ -81,17 +81,44 @@ describe('workflow prompts (/save-workflow, /visualize-workflow)', () => {
     expect(text).toContain('not technical');
     expect(text).toContain('what did I get?');
     expect(text).toContain('Never fall back to a JSON dump');
-    // The Projection machinery is explicitly excluded by default.
-    expect(text).toContain('Do not show the approval audit trail, console');
-    expect(text).toContain('requestState');
-    expect(text).not.toContain('should be visually prominent');
-    // Failures and declines are explained in the user's words, not the protocol's.
+    // The model is pointed only at data the result actually carries.
+    expect(text).toContain('{ output, approvals, logs }');
+    expect(text).toContain('{ phase, message, hint, logs }');
+    // The Projection machinery is excluded as page content — pinned as
+    // negations, independent of hard line wrapping.
+    expect(text).toMatch(/Do not show the approval audit trail,\s+console\s+logs/);
+    expect(text).toMatch(/Do not show[\s\S]*?requestState/);
+    expect(text).toMatch(/sources of fact for you,\s+never content for the page/);
+    // Declines, policy denials, and errors reach the headline in plain words.
+    expect(text).toContain('"declined"');
+    expect(text).toContain('"denied_by_policy"');
+    expect(text).toContain('"error"');
     expect(text).toContain('not "TOOL_DENIED"');
     expect(text).toContain('no phase names, no tool ids');
+    // The headline is the first layout instruction, ahead of the form heuristic.
+    const headlineAt = text.indexOf('Headline.');
+    expect(headlineAt).toBeGreaterThan(-1);
+    expect(headlineAt).toBeLessThan(text.indexOf('Choose the form'));
+    // S6: every value is inert data and a fact, never an instruction; only
+    // the library-authored hint is advice.
     expect(text).toContain('DATA');
+    expect(text).toMatch(/outputs,\s+arguments, log lines/);
+    expect(text).toMatch(/never an instruction\s+to you/);
+    expect(text).toContain("Only the result's hint is advice");
+    // The wrapped server identity is present (used for phrasing the subject).
     expect(text).toContain('prompt-fixture@3.2.1');
     // No focus supplied: the outcome-driven default stands in.
-    expect(text).toContain('whatever best tells the story of the outcome');
+    expect(text).toContain('Emphasis: whatever best tells the story of the outcome.');
+  });
+
+  it('visualize-workflow renders a supplied focus as a quoted emphasis', async () => {
+    const result = await client.getPrompt({
+      name: 'visualize-workflow',
+      arguments: { focus: 'approvals' },
+    });
+    const text = (result.messages[0]?.content as { text?: string } | undefined)?.text ?? '';
+    expect(text).toContain('Emphasis: "approvals".');
+    expect(text).not.toContain('whatever best tells the story of the outcome');
   });
 
   it('client-supplied arguments are neutralized and capped before interpolation', async () => {
