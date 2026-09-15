@@ -74,6 +74,14 @@ export interface ExecuteMachineDeps {
    * session affinity over legacy HTTP). Default false: fail fast per R28.
    */
   legacyElicitation?: boolean;
+  /**
+   * Whether the connected client declared the MCP `elicitation` capability.
+   * Only consulted on the legacy path with `legacyElicitation` on: the SDK
+   * shim cannot deliver an approval to a client without it, and its own
+   * failure surfaces as an unstructured error. `undefined` (the caller does
+   * not know) leaves the shim to decide.
+   */
+  clientCanElicit?: boolean;
 }
 
 /**
@@ -249,12 +257,25 @@ function suspendResult(
   // the shim's re-invocation carries the same requestState echo and
   // inputResponses as a real retry, so S2–S4 verification runs unchanged —
   // only the transport of the question differs.
-  if (!supportsMrtr(deps.protocolEra) && deps.legacyElicitation !== true) {
-    return fail(
-      'protocol',
-      `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
-      'Author a machine that only calls read-only tools, or connect with a client that negotiates the 2026-07-28 revision (SDK v2: `versionNegotiation: { mode: "auto" }`).',
-    );
+  if (!supportsMrtr(deps.protocolEra)) {
+    if (deps.legacyElicitation !== true) {
+      return fail(
+        'protocol',
+        `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
+        'Author a machine that only calls read-only tools, or connect with a client that negotiates the 2026-07-28 revision (SDK v2: `versionNegotiation: { mode: "auto" }`).',
+      );
+    }
+    // The shim has no channel to a client that never declared `elicitation`:
+    // it would reject the `input_required` return with an unstructured SDK
+    // error. Fail here instead, in Projection's own shape with a hint the
+    // model can act on. S2 holds either way — nothing has executed.
+    if (deps.clientCanElicit === false) {
+      return fail(
+        'protocol',
+        'this machine needs approval for a non-read-only tool call, but the connected client cannot receive approval prompts (it did not declare the MCP elicitation capability on this pre-2026-07-28 connection)',
+        'Author a machine that only calls read-only tools, or connect with a client that supports elicitation or negotiates the 2026-07-28 revision.',
+      );
+    }
   }
 
   // R18: refuse to suspend again once the cap is reached, rather than

@@ -36,11 +36,14 @@ export interface ProjectionResource {
 export const EXAMPLE_HAPPY_PATH = `import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
 
-// Read a file and return its contents. Read-only calls run immediately,
+// Read a file and return the tool's result. Read-only calls run immediately,
 // so this whole machine completes in one round trip.
+//
+// Run it with input: { path } — paths are server-specific, so take them
+// from the input or from an earlier read-only listing call, never guess.
 export default setup({}).createMachine({
-  id: 'readNotes',
-  context: ({ input }) => ({ path: input?.path ?? '/notes.txt', text: null }),
+  id: 'readOne',
+  context: ({ input }) => ({ path: input.path, result: null, error: null }),
   initial: 'reading',
   states: {
     reading: {
@@ -48,18 +51,20 @@ export default setup({}).createMachine({
       on: {
         TOOL_RESULT: {
           target: 'done',
-          actions: assign({ text: ({ event }) => event.result }),
+          // event.result is the tool's structuredContent when the server
+          // returns one (see its Output type in tools.d.ts), else its text.
+          actions: assign({ result: ({ event }) => event.result }),
         },
         TOOL_ERROR: {
           target: 'failed',
-          actions: assign({ text: ({ event }) => \`error: \${event.error.message}\` }),
+          actions: assign({ error: ({ event }) => event.error.message }),
         },
       },
     },
     done: { type: 'final' },
     failed: { type: 'final' },
   },
-  output: ({ context }) => ({ text: context.text }),
+  output: ({ context }) => ({ result: context.result, error: context.error }),
 });
 `;
 
@@ -68,13 +73,15 @@ import { toolCall } from '@astral-mcp/tools';
 
 // Write a file, but keep going if the user declines. TOOL_DENIED is an
 // ordinary transition — denial is never an automatic abort.
+//
+// Run it with input: { path, dir } — both are server-specific.
 export default setup({}).createMachine({
   id: 'writeWithFallback',
-  context: { status: 'pending', note: null },
+  context: ({ input }) => ({ path: input.path, dir: input.dir, status: 'pending', note: null }),
   initial: 'writing',
   states: {
     writing: {
-      entry: toolCall('write_file', () => ({ path: '/notes.txt', content: 'hello' })),
+      entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
       on: {
         TOOL_RESULT: {
           target: 'summarizing',
@@ -96,7 +103,7 @@ export default setup({}).createMachine({
       },
     },
     summarizing: {
-      entry: toolCall('list_dir', () => ({ path: '/' })),
+      entry: toolCall('list_dir', ({ context }) => ({ path: context.dir })),
       on: {
         TOOL_RESULT: { target: 'done' },
         TOOL_ERROR: { target: 'done' },
