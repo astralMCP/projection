@@ -74,16 +74,24 @@ describe('workflow prompts (/save-workflow, /visualize-workflow)', () => {
     expect(text).toContain('prompt-fixture@3.2.1');
   });
 
-  it('visualize-workflow guidance covers status, output, audit trail, logs, and inert rendering', async () => {
+  it('visualize-workflow guidance is outcome-first for a non-technical reader, hides the machinery, and keeps inert rendering', async () => {
     const result = await client.getPrompt({ name: 'visualize-workflow', arguments: {} });
     const text = (result.messages[0]?.content as { text?: string } | undefined)?.text ?? '';
-    expect(text).toContain('structuredContent');
-    expect(text).toContain('approval audit trail');
-    expect(text).toContain('logs');
+    // The subject is the real-world result, chosen for the person who asked.
+    expect(text).toContain('not technical');
+    expect(text).toContain('what did I get?');
+    expect(text).toContain('Never fall back to a JSON dump');
+    // The Projection machinery is explicitly excluded by default.
+    expect(text).toContain('Do not show the approval audit trail, console');
+    expect(text).toContain('requestState');
+    expect(text).not.toContain('should be visually prominent');
+    // Failures and declines are explained in the user's words, not the protocol's.
+    expect(text).toContain('not "TOOL_DENIED"');
+    expect(text).toContain('no phase names, no tool ids');
     expect(text).toContain('DATA');
     expect(text).toContain('prompt-fixture@3.2.1');
-    // No focus supplied: the balanced default stands in.
-    expect(text).toContain('a balanced overview');
+    // No focus supplied: the outcome-driven default stands in.
+    expect(text).toContain('whatever best tells the story of the outcome');
   });
 
   it('client-supplied arguments are neutralized and capped before interpolation', async () => {
