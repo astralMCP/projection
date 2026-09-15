@@ -223,9 +223,12 @@ describe('buildElicitationCopy', () => {
 
   it('caps an oversized catalog description at the purpose length', () => {
     const copy = buildElicitationCopy(call(), entry({ description: 'x'.repeat(100_000) }));
-    const purposeLine = copy.message.split('\n').find((l) => l.startsWith('x'));
+    const purposeLine = copy.message
+      .split('\n')
+      .find((l) => l.startsWith('What the server says it does:'));
     expect(purposeLine).toBeDefined();
-    expect((purposeLine as string).length).toBeLessThanOrEqual(201);
+    // Prefix + quotes + the 200-char purpose cap.
+    expect((purposeLine as string).length).toBeLessThanOrEqual(240);
   });
 
   it('a hostile tool name cannot inject lines into title or message', () => {

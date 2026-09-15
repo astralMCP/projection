@@ -60,6 +60,10 @@ const DEFAULT_MAX_ARGS_CHARS = 4096;
 const MAX_STATE_NAME_CHARS = 200;
 const MAX_TOOL_NAME_CHARS = 200;
 const MAX_PURPOSE_CHARS = 200;
+// The catalog stores the S5 server's description verbatim and uncapped, so
+// bound the raw text before the extraction passes run over it (a hostile
+// multi-MB description would otherwise cost CPU proportional to its length).
+const MAX_RAW_DESCRIPTION_CHARS = 2_000;
 const ARGS_INDENT = '    ';
 
 const DESTRUCTIVE_WARNING =
@@ -104,7 +108,11 @@ export function buildElicitationCopy(
 
   const lines: string[] = [];
   if (destructive) lines.push(DESTRUCTIVE_WARNING, '');
-  if (purpose !== undefined) lines.push(purpose, '');
+  // The purpose is the wrapped server's own words (S5-untrusted), so it is
+  // attributed and quoted as inert data — never rendered as prose in the
+  // assistant's voice, where "safe, pre-approved" copy could mislead.
+  if (purpose !== undefined)
+    lines.push(`What the server says it does: ${JSON.stringify(purpose)}`, '');
   lines.push('Details:', indentBlock(neutralizeControlChars(renderedArgs, { allowNewline: true })));
   // Compact technical footer: exact tool id + the workflow step that asked
   // (R16). The state is model-authored, so quoted as an inert JSON literal.
@@ -147,6 +155,7 @@ function friendlyAction(entry: ToolCatalogEntry, safeName: string): string {
  */
 function purposeSentence(description: string | undefined): string | undefined {
   if (description === undefined) return undefined;
+  description = capLength(description, MAX_RAW_DESCRIPTION_CHARS);
   // Work on the RAW first line: a newline is a hard boundary, so a hostile
   // description cannot smuggle a forged block past the first sentence. Then
   // trim to the first sentence, and only then neutralize — collapsing runs
