@@ -230,7 +230,8 @@ const VALIDATION_SPECS: Record<string, ValidationSpec> = {
   machine_init_threw: {
     phase: 'validate',
     message: (detail) => `creating the machine actor threw: ${detail}`,
-    hint: () => 'Fix the error thrown while building the machine context or initial state.',
+    hint: () =>
+      'Fix the error thrown while building the machine context or initial state. If the context factory reads `input`, pass the matching `input` argument to execute_machine (the examples expect `{ path }`).',
   },
 };
 

@@ -276,9 +276,16 @@ class Facade implements ProjectionFacade {
         // connection, not known at registration — and left unknown when the
         // SDK has none to report (per-request legacy HTTP), so the shim's
         // own per-request failure stays the one the caller sees there.
+        // Mirrors the shim's form-capability rule: form mode needs
+        // `elicitation.form`, and a bare `elicitation: {}` counts as implied
+        // form support only when `url` is absent too.
         const clientCaps = server.server.getClientCapabilities();
+        const elicitation = clientCaps?.elicitation;
         const clientCanElicit =
-          clientCaps === undefined ? undefined : clientCaps.elicitation !== undefined;
+          clientCaps === undefined
+            ? undefined
+            : elicitation !== undefined &&
+              (elicitation.form !== undefined || elicitation.url === undefined);
         return await this.executeMachine(
           {
             code: args.code,

@@ -52,7 +52,9 @@ export default setup({}).createMachine({
         TOOL_RESULT: {
           target: 'done',
           // event.result is the tool's structuredContent when the server
-          // returns one (see its Output type in tools.d.ts), else its text.
+          // returns one (see its Output type in tools.d.ts); otherwise the
+          // text of its single text block, null when empty, or the raw
+          // content array. isError results arrive as TOOL_ERROR instead.
           actions: assign({ result: ({ event }) => event.result }),
         },
         TOOL_ERROR: {

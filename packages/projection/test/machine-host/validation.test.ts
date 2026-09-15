@@ -97,6 +97,25 @@ export default setup({}).createMachine({
     expect(outcome.status).toBe('completed');
   });
 
+  it('surfaces a context factory dereferencing a missing input as machine_init_threw', async () => {
+    // XState v5 does not throw here: it returns an error-status snapshot
+    // with an undefined context, which used to surface as a misleading
+    // context_not_serializable error.
+    const error = await failWith(`
+import { setup } from 'xstate';
+export default setup({}).createMachine({
+  id: 'needsInput',
+  context: ({ input }) => ({ path: input.path }),
+  initial: 'a',
+  states: { a: { type: 'final' } },
+});
+`);
+    expect(error.phase).toBe('validate');
+    expect(error.message).toContain('creating the machine actor threw');
+    expect(error.message).not.toContain('not JSON-serializable');
+    expect(error.hint).toContain('input');
+  });
+
   it('rejects non-serializable machine context (R6)', async () => {
     const error = await failWith(`
 import { setup } from 'xstate';

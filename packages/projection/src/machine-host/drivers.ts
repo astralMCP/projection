@@ -100,6 +100,14 @@ function run() {
   } catch (err) {
     return fail('machine_init_threw', String(err && err.message ? err.message : err));
   }
+  // XState v5 catches a throwing context factory (e.g. input.path with no
+  // input) and reports it as an error-status snapshot with an undefined
+  // context rather than throwing, so check the status before probing the
+  // context — otherwise the author sees a misleading serializability error.
+  if (snapshot.status === 'error') {
+    const cause = snapshot.error;
+    return fail('machine_init_threw', String(cause && cause.message ? cause.message : cause));
+  }
   const badPath = findNonSerializable(snapshot.context, 'context', new Set());
   if (badPath !== null) {
     return fail('context_not_serializable', badPath);

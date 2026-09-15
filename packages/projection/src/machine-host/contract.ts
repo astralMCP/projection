@@ -142,9 +142,10 @@ Rules:
    filesystem, no network, no fetch. All working state lives in context.
 7. Finish by reaching a final state. Use the machine's output for the result.
 8. TOOL_RESULT.result is the tool's structuredContent when the server returns
-   one, otherwise the text of its single text block. Check the tool's Output
-   type in tools.d.ts before reading fields off it; when there is no Output
-   type, expect a string.
+   one (see its Output type in tools.d.ts); otherwise the text of its single
+   text block, null for an empty result, or the raw content array for
+   anything else. A tool that returns isError arrives as TOOL_ERROR. Tools
+   without an Output type are typed unknown — usually a string.
 9. Tool inputs such as paths, ids and names are server-specific. Do not guess
    them: take them from the machine's input, or discover them first with a
    read-only call (a list/search tool) and keep what you learn in context.
