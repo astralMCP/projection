@@ -453,7 +453,7 @@ export default setup({}).createMachine({
     // The 2026-07-28 elicitation has no `title` field, so the summary line
     // opens the message and the destructive warning follows it.
     const request = elicitation(result, 'd1');
-    expect(request.message.split('\n')[0]).toContain('DESTRUCTIVE');
-    expect(request.message).toContain('WARNING:');
+    expect(request.message.split('\n')[0]).toContain('⚠');
+    expect(request.message).toContain('permanently change or delete data');
   });
 });

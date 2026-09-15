@@ -111,7 +111,7 @@ R14. Default policy derives from tool annotations on the wrapped server: `readOn
 
 R15. On suspension, the library returns `resultType: input_required` with one elicitation entry per pending tool call. When the machine reaches a state (including parallel states) with multiple pending gated calls, all of them MUST be batched into the single `inputRequests` map for one round trip.
 
-R16. Each elicitation MUST present a human-readable summary: tool name, the wrapped server's tool description, the fully resolved arguments, and the machine state name requesting it. A redaction hook lets the integrating developer mask sensitive argument fields before they leave the server.
+R16. Each elicitation MUST present a CONCISE, human-readable summary aimed at a non-technical approver: lead with a plain-English action (the tool's annotation title, else its humanized id) and a one-line purpose (the first sentence of the wrapped server's tool description), then the fully resolved arguments as readable details. The exact tool id and the requesting machine state are included compactly (a footer), not dumped — the full model-facing tool description MUST NOT be rendered verbatim. A redaction hook lets the integrating developer mask sensitive argument fields before they leave the server.
 
 R17. On retry, an approved request executes the tool call and delivers `TOOL_RESULT` (or `TOOL_ERROR` if the underlying call fails) to the rehydrated machine. A declined request delivers `TOOL_DENIED` with the decline reason if provided. A request missing from `inputResponses` is treated as declined. The workflow then continues; denial is not an automatic abort.
 

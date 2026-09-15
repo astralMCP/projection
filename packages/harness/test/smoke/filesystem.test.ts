@@ -186,7 +186,8 @@ describe('official filesystem server through Projection (PRD §13 matrix #1)', (
 
     // R14: destructiveHint → clearly stronger warning language in the copy.
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain('DESTRUCTIVE');
+    expect(prompts[0]).toContain('permanently change or delete data');
+    // The exact tool id still appears in the compact footer (R16).
     expect(prompts[0]).toContain('write_file');
 
     // §10 budget holds on a real-server workflow.
