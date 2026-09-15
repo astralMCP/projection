@@ -161,7 +161,7 @@ export default setup({}).createMachine({
       },
     });
     // The delete tool carries destructiveHint; policy renders a stronger prompt.
-    expect(destructiveMessage).toContain('DESTRUCTIVE');
+    expect(destructiveMessage).toContain('permanently change or delete data');
   });
 
   it('attributes each side effect to the round it ran in', async () => {

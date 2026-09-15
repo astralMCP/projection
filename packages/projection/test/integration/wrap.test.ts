@@ -221,7 +221,7 @@ export default setup({}).createMachine({
 `;
     const first = await facade.executeMachine({ code }, 'modern');
     if (!isSuspended(first)) throw new Error('expected suspension');
-    expect(elicitation(first, 'd1').message.split('\n')[0]).toContain('DESTRUCTIVE');
+    expect(elicitation(first, 'd1').message.split('\n')[0]).toContain('⚠');
 
     const retry = await facade.executeMachine(
       {
