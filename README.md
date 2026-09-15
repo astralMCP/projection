@@ -69,6 +69,7 @@ export default setup({}).createMachine({
   initial: 'writing',
   states: {
     writing: {
+      // '/notes.txt' is the test fixture's path; real machines take paths from `input` (contract rule 9).
       entry: toolCall('write_file', () => ({ path: '/notes.txt', content: 'hello' })),
       on: {
         TOOL_RESULT: { target: 'done', actions: assign({ status: 'written' }) },

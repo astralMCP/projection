@@ -51,6 +51,25 @@ export default setup({}).createMachine({
 });
 `;
 
+const READ_ONLY_MACHINE = `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'read',
+  context: { text: null },
+  initial: 'reading',
+  states: {
+    reading: {
+      entry: toolCall('read_file', () => ({ path: '/notes.txt' })),
+      on: { TOOL_RESULT: { target: 'done', actions: assign({ text: ({ event }) => event.result }) } },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => ({ text: context.text }),
+});
+`;
+
 const MULTI_GATED_MACHINE = `
 import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
@@ -96,6 +115,15 @@ function buildWrappedServer(): McpServer {
       files[path] = content;
       return { content: [{ type: 'text' as const, text: `wrote ${content.length} bytes` }] };
     },
+  );
+  server.registerTool(
+    'read_file',
+    {
+      description: 'Read a file.',
+      inputSchema: z.object({ path: z.string() }),
+      annotations: { readOnlyHint: true },
+    },
+    ({ path }) => ({ content: [{ type: 'text' as const, text: files[path] ?? '' }] }),
   );
   return server;
 }
@@ -290,11 +318,31 @@ describe('legacy elicitation compat (R28 amendment, D6)', () => {
     const result = (await legacy.callTool({
       name: 'execute_machine',
       arguments: { code: GATED_MACHINE },
-    })) as { isError?: boolean };
+    })) as { isError?: boolean; structuredContent?: Record<string, unknown> };
 
     expect(result.isError).toBe(true);
+    // Projection's own structured protocol error — not the SDK shim's
+    // unstructured "did not declare the required capability" failure — so
+    // the model gets an actionable hint instead of a dead end.
+    expect(result.structuredContent?.['phase']).toBe('protocol');
+    expect(String(result.structuredContent?.['message'])).toContain('elicitation capability');
+    expect(String(result.structuredContent?.['hint'])).toContain('read-only');
     // Nothing executed (S2).
     expect(files['/notes.txt']).toBe('original notes');
+  });
+
+  it('opt-in over a held connection: a read-only machine still runs for a client without the elicitation capability', async () => {
+    const legacy = await connectHeldLegacyWithoutElicitation({
+      compat: { legacyElicitation: true },
+    });
+
+    const result = (await legacy.callTool({
+      name: 'execute_machine',
+      arguments: { code: READ_ONLY_MACHINE },
+    })) as { isError?: boolean };
+
+    // The capability gate applies at suspend time only.
+    expect(result.isError).toBeUndefined();
   });
 
   it('opt-in over a held connection: a decline takes the TOOL_DENIED path and nothing executes', async () => {

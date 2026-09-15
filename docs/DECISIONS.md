@@ -189,6 +189,9 @@ Limitation, locked by test: per-request legacy HTTP serving
 (`createMcpHandler`'s stateless legacy mode) has no server→client channel;
 the SDK refuses with a named error and nothing executes (S2 holds). The
 opt-in is therefore effective for stdio/held-connection deployments only.
+The client must also declare the `elicitation` capability (form mode);
+otherwise gated calls get Projection's structured `protocol` error at
+suspend time, while read-only machines still run.
 
 ## D7 — Wrapped-tool elicitations fail closed; forwarding is MRTR-only if ever (2026-09-12)
 

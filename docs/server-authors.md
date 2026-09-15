@@ -90,7 +90,9 @@ const facade = await wrapMcpServer(myServer, {
 
 Approvals then reach the legacy client as old-style server→client
 `elicitation/create` requests, and every sealing/verification invariant
-runs unchanged. The client must declare the `elicitation` capability. This
+runs unchanged. The client must declare the `elicitation` capability;
+otherwise gated calls get Projection's structured `protocol` error at
+suspend time, while read-only machines still run. This
 does nothing for per-request legacy HTTP serving (no server→client
 channel; the call fails cleanly), and while the shim round-trips, that one
 call is pinned to the serving instance.

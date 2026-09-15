@@ -141,42 +141,50 @@ Rules:
 6. Only 'xstate' and '@astral-mcp/tools' resolve as imports. There is no
    filesystem, no network, no fetch. All working state lives in context.
 7. Finish by reaching a final state. Use the machine's output for the result.
+8. TOOL_RESULT.result is the tool's structuredContent when the server returns
+   one (see its Output type in tools.d.ts); otherwise the text of its single
+   text block, null for an empty result, or the raw content array for
+   anything else. A tool that returns isError arrives as TOOL_ERROR. Tools
+   without an Output type are typed unknown — usually a string.
+9. Tool inputs such as paths, ids and names are server-specific. Do not guess
+   them: take them from the machine's input, or discover them first with a
+   read-only call (a list/search tool) and keep what you learn in context.
 
-Example — happy path with a read-only call:
+Example — happy path with a read-only call (run with input: { path }):
 
   import { setup, assign } from 'xstate';
   import { toolCall } from '@astral-mcp/tools';
 
   export default setup({}).createMachine({
-    id: 'readNotes',
-    context: ({ input }) => ({ path: input?.path ?? '/notes.txt', text: null }),
+    id: 'readOne',
+    context: ({ input }) => ({ path: input.path, result: null }),
     initial: 'reading',
     states: {
       reading: {
         entry: toolCall('read_file', ({ context }) => ({ path: context.path })),
         on: {
-          TOOL_RESULT: { target: 'done', actions: assign({ text: ({ event }) => event.result }) },
+          TOOL_RESULT: { target: 'done', actions: assign({ result: ({ event }) => event.result }) },
           TOOL_ERROR: 'failed',
         },
       },
       done: { type: 'final' },
       failed: { type: 'final' },
     },
-    output: ({ context }) => ({ text: context.text }),
+    output: ({ context }) => ({ result: context.result }),
   });
 
-Example — handling a denied approval:
+Example — handling a denied approval (run with input: { path }):
 
   import { setup, assign } from 'xstate';
   import { toolCall } from '@astral-mcp/tools';
 
   export default setup({}).createMachine({
-    id: 'writeNotes',
-    context: { status: 'pending' },
+    id: 'writeOne',
+    context: ({ input }) => ({ path: input.path, status: 'pending' }),
     initial: 'writing',
     states: {
       writing: {
-        entry: toolCall('write_file', () => ({ path: '/notes.txt', content: 'hello' })),
+        entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
         on: {
           TOOL_RESULT: { target: 'done', actions: assign({ status: 'written' }) },
           TOOL_DENIED: { target: 'done', actions: assign({ status: 'skipped' }) },

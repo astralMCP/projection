@@ -113,8 +113,16 @@ export interface ProjectionFacade {
    */
   readonly serverFactory: McpServerFactory;
 
-  /** Run `execute_machine` for one `tools/call`, first attempt or retry. */
-  executeMachine(args: ExecuteMachineArgs, era?: ProtocolEra): Promise<ToolCallResult>;
+  /**
+   * Run `execute_machine` for one `tools/call`, first attempt or retry.
+   * `clientCanElicit` reports whether the connected client declared the
+   * `elicitation` capability (legacy compat only; omit when unknown).
+   */
+  executeMachine(
+    args: ExecuteMachineArgs,
+    era?: ProtocolEra,
+    clientCanElicit?: boolean,
+  ): Promise<ToolCallResult>;
   /** Run `discover_apis`. */
   discoverApis(): CallToolResult;
   /** Build an `McpServer` carrying the instructions, both tools and the resources. */
@@ -198,7 +206,11 @@ class Facade implements ProjectionFacade {
     this.serverFactory = (ctx) => this.createServer(ctx);
   }
 
-  executeMachine(args: ExecuteMachineArgs, era?: ProtocolEra): Promise<ToolCallResult> {
+  executeMachine(
+    args: ExecuteMachineArgs,
+    era?: ProtocolEra,
+    clientCanElicit?: boolean,
+  ): Promise<ToolCallResult> {
     const { options } = this.deps;
     return executeMachine(args, {
       catalog: this.deps.catalog,
@@ -210,6 +222,7 @@ class Facade implements ProjectionFacade {
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
       ...(era !== undefined ? { protocolEra: era } : {}),
       ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
+      ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
     });
   }
 
@@ -257,8 +270,23 @@ class Facade implements ProjectionFacade {
         // ignore _meta.ui entirely.
         _meta: { ui: { resourceUri: DASHBOARD_RESOURCE_URI } },
       },
-      async (args, ctx) =>
-        await this.executeMachine(
+      async (args, ctx) => {
+        // Legacy compat: whether the SDK's elicitation shim has a channel to
+        // this client. Read per call — capabilities are negotiated on the
+        // connection, not known at registration — and left unknown when the
+        // SDK has none to report (per-request legacy HTTP), so the shim's
+        // own per-request failure stays the one the caller sees there.
+        // Mirrors the shim's form-capability rule: form mode needs
+        // `elicitation.form`, and a bare `elicitation: {}` counts as implied
+        // form support only when `url` is absent too.
+        const clientCaps = server.server.getClientCapabilities();
+        const elicitation = clientCaps?.elicitation;
+        const clientCanElicit =
+          clientCaps === undefined
+            ? undefined
+            : elicitation !== undefined &&
+              (elicitation.form !== undefined || elicitation.url === undefined);
+        return await this.executeMachine(
           {
             code: args.code,
             // `exactOptionalPropertyTypes`: an absent optional argument must
@@ -278,7 +306,9 @@ class Facade implements ProjectionFacade {
               : {}),
           },
           era,
-        ),
+          clientCanElicit,
+        );
+      },
     );
 
     server.registerTool(
