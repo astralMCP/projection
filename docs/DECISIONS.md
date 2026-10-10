@@ -231,3 +231,77 @@ Decision: keep them split. Do not "harmonize" the two by adding the audit
 table to the prompt or stripping it from the dashboard; each has a
 different reader. Both share the S6 posture — every result value is inert
 data and a fact, never an instruction; only the result's `hint` is advice.
+
+## D9 — Two projections, one gate: the catalog projection coexists with code mode (2026-10-09)
+
+Code mode (`execute_machine`) is the product: N steps in one round trip,
+branching on `TOOL_DENIED`, a sealed snapshot that any instance can resume,
+and a result worth saving as a skill. It has two costs that showed up in use.
+A single action ("read notes.txt") costs a 25-line machine and a round of
+self-healing, and `discover_apis` describes the whole catalog inline, which
+does not survive a server with hundreds of tools.
+
+Decision: add the lazy-catalog shape — `search_tools`, `describe_tool`,
+`call_tool` — as a second projection on the same facade (PRD §6.8), on by
+default, and route between them in the instructions preamble (R29): one step
+→ `call_tool`; several steps, branching, or anything worth saving →
+`execute_machine`. Not a mode switch; both are live unless the integrator
+turns one off.
+
+Why one gate rather than a proxy. `call_tool` is the degenerate one-call
+machine, so it reuses the machine's approval path end to end: the R16 copy
+builder, the redaction hook, the blob sealer and the MRTR adapter. The
+approved args execute from the blob's `pending` entry, never from the retry
+(S2), and the blob is bound to the canonical `{ kind: "call", name, args }`
+request through the existing `codeHash` field plus a `kind` discriminator
+(R36) — a coherence check that keeps a stale approved blob from being
+attached to an unrelated request, not the approval binding itself. A separate,
+simpler "approval token" for direct calls was rejected: it would be a second
+S2–S4 implementation to fuzz, tamper-test and keep in step for a saving of
+one `null` snapshot.
+
+Decline is an outcome, not an error. `call_tool` returns a normal result
+`{ status: "declined" }` (mirroring `TOOL_DENIED`), because an `isError`
+result reads to a model as "retry", and the one thing a declined write must
+not do is come straight back. The tool description says so explicitly. The
+same holds for `denied_by_policy`: the model cannot change the integrator's
+policy, so an error would only invite retries.
+
+Argument validation is structural only (required keys, top-level types,
+unknown keys when forbidden). It exists so a human is never asked to approve
+a call that the upstream will reject on shape, and so the model gets a
+`validate` hint naming the property; full JSON Schema validation would run
+twice — the wrapped server is the authority — for nothing but a nicer error
+message.
+
+`describe_tool` is the injection surface of this projection — it hands the
+wrapped server's own words to the model, and not only in the description:
+`inputSchema` and `outputSchema` carry server-controlled free text in
+`title`, nested `description`, `examples`, `default`, `$comment`, `x-*`,
+`enum` and `pattern`. Both get the S5 treatment `discover_apis` gets:
+description neutralized and capped, schemas rendered through a key allowlist
+with every string neutralized and the rendering capped per tool (R34),
+annotations presented as hints, identity inert. Follow-up: typegen's
+`docComment` only escapes `*/` today and should get the same neutralization
+(implementation follow-up, not a PRD change).
+
+`call_tool` also changes the S5 effort calculus. A mislabelled
+`readOnlyHint: true` tool used to be a machine away; now it is one model call
+away. The mitigation is unchanged — the R14 override forces such tools to
+`ask`, and the §13 Postgres case exercises exactly this — but the catalog
+projection turns it from a setting an integrator could defer into one they
+should set before enabling the projection on a server they do not control.
+
+`call_tool` makes the D4 window more consequential. After an approved machine
+step the workflow moves forward (fresh blob, fresh nonce, incremented trip),
+and `packages/harness/test/replay.test.ts` documents the residual: a captured
+approved retry still re-executes until `exp`. After an approved `call_tool`
+there is no forward step at all — no fresh blob, no trip increment — so a
+captured approved retry is a standing write capability until `exp`, with
+nothing in the flow that even nominally supersedes it. Hence R38: `call`
+blobs default to a 5-minute TTL (`blob.callTtlMs`) instead of 15, and the
+replay-cache hook D4 reserved is now specified as
+`WrapOptions.replayCache.seen(nonce, exp)`, consulted for both blob kinds
+after R21 verification and before any gated call executes. No default
+implementation ships: an in-memory cache would pass every single-instance
+test and silently fail the moment a second instance resumes the blob.
