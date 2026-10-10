@@ -6,3 +6,6 @@ coverage
 
 # Generated golden files must stay byte-exact as the generator emits them.
 packages/projection/test/typegen/__golden__/
+
+# Other agents' worktrees: never format or descend into them from the main checkout.
+.claude/worktrees/

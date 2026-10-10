@@ -8,3 +8,5 @@ coverage/
 .env.*
 *.db
 apps/demo-host/public/host.iife.js
+eval-results/
+.claude/worktrees/

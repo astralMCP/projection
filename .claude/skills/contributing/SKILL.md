@@ -9,18 +9,20 @@ description: The Projection contribution workflow — branch/PR conventions, the
 
 One PR per feature or bug — never batch unrelated changes. For every PR:
 
-1. `git fetch origin` **first**, then branch from `origin/main` (a stale
-   local `origin/main` has caused missing-export build failures here).
+1. `git fetch origin`, then branch from `origin/main`. Parallel agents each
+   work in their own git worktree under `.claude/worktrees/` (ignored by git
+   and prettier). Never switch branches in the shared checkout.
 2. Make the change; run `pnpm run format` then `pnpm run check` — both must
    be green before pushing.
 3. Push, open the PR with `gh pr create`.
-4. Spawn a **review subagent**: adversarial code + security review. Give it
-   the diff range, the threat model (S1–S6 in `docs/PRD.md` §9), and the PRD
-   sections the change implements. Tell it to verify findings with concrete
-   repros and mark each CONFIRMED or PLAUSIBLE; no style nits.
-5. Spawn a **fix subagent** to apply the confirmed findings (don't fix them
-   in the main loop). It commits and pushes; it never touches PRs.
-6. Verify green, `gh pr merge N --squash`, move to the next task.
+4. Spawn two review subagents in parallel — a code review and an adversarial
+   security review (threat model S1–S6, `docs/PRD.md` §9; give each the diff
+   range and the PRD sections the change implements; findings verified with
+   concrete repros, marked CONFIRMED or PLAUSIBLE; no style nits).
+5. Then a **fix subagent** applies the accepted findings (don't fix them in
+   the main loop). It commits and pushes; it never touches PRs.
+6. Verify green, then squash-merge with `gh pr merge N --squash
+--delete-branch`, and move to the next task.
 
 Trivial one-liners still get at least a quick synchronous review agent.
 
@@ -28,15 +30,20 @@ Trivial one-liners still get at least a quick synchronous review agent.
 
 ```bash
 pnpm install
-pnpm run check          # build + typecheck + lint + test (turbo, all packages)
-pnpm run format         # prettier --write; CI runs format:check and FAILS on drift
-pnpm --filter @astral-mcp/projection test            # one package
-pnpm --filter @astral-mcp/tui start      # demo TUI (builds deps via turbo first)
+pnpm run check                                   # build + typecheck + lint + test (turbo, all packages)
+pnpm run format                                  # prettier --write; CI runs format:check and FAILS on drift
+pnpm run format:check                            # what CI runs after check
+pnpm --filter @astral-mcp/projection test        # one package
+pnpm --filter @astral-mcp/tui start              # demo TUI (builds deps via turbo first)
+pnpm --filter @astral-mcp/projection exec vitest run test/integration/budgets.test.ts   # solo re-run of the perf budgets (known p95 flake under parallel load)
 ```
 
 CI = `pnpm run check` + `pnpm run format:check`. Formatting drift in ANY
 committed file (including `.claude/*.json`) fails CI — always run
 `pnpm run format` before committing.
+
+Node ≥ 22 is enforced (`engine-strict`). In a shell that has not loaded nvm,
+prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
 
 ## Commit / PR conventions
 
@@ -45,24 +52,47 @@ committed file (including `.claude/*.json`) fails CI — always run
   bodies with the Claude Code attribution line.
 - Squash-merge. Small, reviewable diffs.
 
+## Releasing
+
+- Bump `packages/projection/package.json` and `LIB_VERSION` in
+  `src/blob/versions.ts` together (`test/blob/versions.test.ts` enforces it;
+  bump `XSTATE_VERSION` only if xstate changes) in a PR titled `vX.Y.Z: …`.
+- Minor bump for any public-surface change (new tools, options, result
+  shapes, prompt copy models match on); patch for pure hardening.
+- After merge: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+- The maintainer publishes by hand: `npm whoami` first — the login token
+  lapses — then `pnpm --filter @astral-mcp/projection publish --access public`
+  (OTP prompt). `prepublishOnly` runs build/typecheck/test. CI never
+  publishes.
+
 ## Repo gotchas
 
-- **`.env` is off-limits to agents** — deny rules + a PreToolUse hook in
-  `.claude/settings.json` block reading it; it holds real secrets. Tests
-  that need env files create their own under a temp dir at runtime.
-- **Golden files** under `packages/projection/test/typegen/__golden__/` are
-  intentionally excluded from prettier (`.prettierignore`). Regenerate them
-  via the typegen tests, don't hand-edit or format them.
+- **The repo-root `.env` file is off-limits to agents** — it holds real
+  secrets. Deny rules + PreToolUse hooks in `.claude/settings.json` enforce
+  it: the Bash hook rejects any command whose text contains the filename
+  (heredocs, `sed`, `--exclude=` included), and Read/Grep/Glob are blocked
+  on the path. Edit docs that mention the file with Edit/Write, not Bash.
+  Tests that need env files create their own under a temp dir at runtime.
+- **Golden files** under `packages/projection/test/typegen/__golden__/`:
+  regenerate with `UPDATE_GOLDEN=1 pnpm exec vitest run test/typegen` from
+  `packages/projection`, then review `git diff`. Any value of
+  `UPDATE_GOLDEN` triggers a rewrite. Goldens live under `test/`, are
+  typechecked by `tsc --noEmit`, and are prettier-exempt
+  (`.prettierignore`) — never hand-edit or format them.
 - **Live-spend gates**: anything that calls the Anthropic API must be
   explicit opt-in (`PROJ_LIVE_BENCH=1` + non-empty `ANTHROPIC_API_KEY`), so a
   plain `pnpm test` never spends tokens. Preserve this on new live tests.
+  Live GitHub smoke needs `PROJ_LIVE_GITHUB=1` and a token.
+  `packages/harness/test/smoke/pack-install.test.ts` packs and installs from
+  the npm registry on every `check`; set `PROJ_SKIP_PACK_SMOKE=1` when
+  offline.
 - **XState is pinned exactly** (5.32.5) and `@sebastianwessel/quickjs` at
   3.1.0 (PRD §7). Don't bump casually — blobs bind to the XState version.
 - **Perf-budget tests** (`test/integration/budgets.test.ts`) can flake under
-  parallel turbo load; a p95 failure that passes on a solo re-run is load
-  noise, not a regression.
-- `src/types.ts` in the library is the shared contract; wire top-level
-  exports through `src/index.ts` deliberately (see `docs/DECISIONS.md` D3).
+  parallel turbo load; a p95 failure that passes on a solo re-run (command
+  above) is load noise, not a regression.
+- `src/types.ts` is the shared contract. Export new public API through
+  `src/index.ts` deliberately (DECISIONS D3).
 
 ## Where truth lives
 
@@ -71,3 +101,8 @@ committed file (including `.claude/*.json`) fails CI — always run
 - `docs/DECISIONS.md` — why things are the way they are (SDK v2 MRTR
   adoption, AEAD sealer rationale, D4 replay obligation, D9 two
   projections). Append a decision entry when you make one worth remembering.
+- Docs that restate behaviour and must change with it: `README.md`,
+  `packages/projection/README.md`, `docs/server-authors.md` (options,
+  defaults, tool descriptions), and the `AUTHORING_CONTRACT` text
+  (`packages/projection/src/machine-host/contract.ts`) that the
+  `authoring-machines` skill summarises.

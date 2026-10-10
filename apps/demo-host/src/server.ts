@@ -2,7 +2,7 @@
  * MCP Apps demo server (PRD §12.1 demo surface).
  *
  * Wraps the official filesystem reference server — one of the §13
- * smoke-matrix test servers — with Projection, serves the code-mode facade
+ * smoke-matrix test servers — with Projection, serves the Projection facade
  * over StreamableHTTP at /mcp, and serves the static host page that renders
  * the workflow dashboard app in a sandboxed iframe.
  *

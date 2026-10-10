@@ -1,8 +1,8 @@
 # Projection
 
-Turn any MCP server into a **code-mode** server with **human-approved side effects**, built on MCP MRTR (Multi Round-Trip Requests) and XState v5.
+Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a **tool catalog** (search, describe, call), with **human-approved side effects** over MCP MRTR (Multi Round-Trip Requests).
 
-Projection wraps an existing MCP server and exposes two projections of it over one facade — five tools, never the wrapped server's own:
+Projection wraps an existing MCP server and exposes two projections of it — five tools in all, never the wrapped server's own:
 
 **Code mode** — for workflows:
 
@@ -11,9 +11,11 @@ Projection wraps an existing MCP server and exposes two projections of it over o
 
 **Catalog** — for single actions and large tool surfaces:
 
-- **`search_tools`** — a paged, filterable list of the wrapped tools with their approval posture.
+- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches, name hits rank first.
 - **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
 - **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
+
+Alongside the tools it serves `projection://` resources (generated types, the authoring contract, example machines), a `ui://projection/dashboard.html` MCP App that app-capable hosts render for `execute_machine` results, and, with code mode on, the `/save-workflow` and `/visualize-workflow` prompts.
 
 The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
 
@@ -40,20 +42,12 @@ const facade = await wrapMcpServer(myMcpServer, {
 export default createMcpHandler(facade.serverFactory);
 ```
 
-`serverFactory` is the shape the SDK asks for, and it is the shape Projection
-needs: `createMcpHandler` (and `serveStdio`) call it once per served request
-or connection with the negotiated **protocol era**. That is the only place the
-era is available, and it decides two things — whether a gated call may suspend
-over MRTR or must fail fast (R28), and the `instructions` the server
-advertises, which an SDK `Server` accepts only at construction (R29).
-
-Building the `McpServer` yourself works too, as long as you say which era it
-serves:
-
-```ts
-const server = facade.createServer({ era: 'modern' }); // instructions included
-facade.registerOn(myOwnServer, { era: 'modern' }); // or register onto your own
-```
+`serverFactory` is the shape the SDK asks for: `createMcpHandler` and
+`serveStdio` call it once per request or connection with the negotiated
+protocol era, which decides whether a gated call can suspend over MRTR and
+carries the routing `instructions`. To build the `McpServer` yourself
+(`facade.createServer({ era: 'modern' })`, `facade.registerOn(server, { era })`)
+see [docs/server-authors.md](docs/server-authors.md#wrap-and-serve).
 
 A client reaches the MRTR path by opting into the modern era:
 
@@ -64,9 +58,11 @@ const client = new Client(info, {
 });
 ```
 
-A client that stays on the 2025 era still runs read-only machines and calls; the
+A legacy (pre-2026-07-28) client still runs read-only machines and calls; the
 moment a call needs approval it gets a structured error naming the revision it
-needs.
+needs. Over stdio you can opt in to approvals for those clients with
+`compat: { legacyElicitation: true }`
+([Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28)).
 
 The wrapped server's tools are never exposed directly. For a single action a model calls `search_tools`, `describe_tool`, then `call_tool({ name, args })` — a write pauses for approval exactly like a machine step, and a declined call comes back as a normal `{ status: "declined" }` result, not an error. For a workflow it calls `discover_apis`, authors a machine, and runs it:
 
@@ -74,18 +70,19 @@ The wrapped server's tools are never exposed directly. For a single action a mod
 import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
 
+// run with input: { path }
 export default setup({}).createMachine({
-  id: 'writeNotes',
-  context: { status: 'pending' },
+  id: 'writeOne',
+  context: ({ input }) => ({ path: input.path, status: 'pending' }),
   initial: 'writing',
   states: {
     writing: {
-      // '/notes.txt' is the test fixture's path; real machines take paths from `input` (contract rule 9).
-      entry: toolCall('write_file', () => ({ path: '/notes.txt', content: 'hello' })),
+      entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
       on: {
         TOOL_RESULT: { target: 'done', actions: assign({ status: 'written' }) },
         // Denial is an ordinary transition, not an abort.
         TOOL_DENIED: { target: 'done', actions: assign({ status: 'skipped' }) },
+        TOOL_ERROR: { target: 'done', actions: assign({ status: 'failed' }) },
       },
     },
     done: { type: 'final' },
@@ -98,36 +95,47 @@ The `write_file` call suspends the machine, seals its state into an encrypted bl
 
 ## Security model
 
-| Invariant                                               | How it holds                                                                                                            |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` resolve as imports                    |
-| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                                          |
-| Clients are untrusted couriers                          | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                                     |
-| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code` — for `call_tool`, of the canonical `{ kind, name, args }` request |
-| A blob answers only the tool that issued it             | Blobs carry their kind; a `call_tool` blob cannot resume `execute_machine` or vice versa                                |
-| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                                     |
-| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                                               |
+The sandbox has one way out (the tools bridge); no gated call runs without an
+approval sealed to its exact name and arguments; blobs are encrypted,
+authenticated and bound to the code, kind and tool that issued them, so
+clients carry state but can neither read nor alter it. The invariants are
+S1–S6 in [docs/PRD.md §9](docs/PRD.md#9-security-invariants); the full
+table of how each holds is in the
+[package README](packages/projection/README.md#security-model).
+
+Known limitation: unless you supply a shared `replayCache` (R38), an approved
+retry can be replayed until its blob expires (5 min for `call_tool`, 15 for
+machines). See [Lifecycle](docs/server-authors.md#lifecycle-and-operations).
 
 ## Repository layout
 
-| Path                     | What                                                                       |
-| ------------------------ | -------------------------------------------------------------------------- |
-| `packages/projection`    | The library (npm: `@astral-mcp/projection`)                                |
-| `packages/harness`       | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark |
-| `packages/tui`           | `projection-tui` — interactive Ink demo client (approve/deny with y/n/i)   |
-| `docs/server-authors.md` | Integration guide for wrapping your server                                 |
-| `docs/PRD.md`            | Product requirements document                                              |
-| `docs/DECISIONS.md`      | Engineering decisions and their rationale                                  |
+| Path                     | What                                                                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/projection`    | The library (npm: `@astral-mcp/projection`)                                                                                                                                    |
+| `packages/harness`       | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark (private)                                                                                           |
+| `packages/tui`           | `projection-tui` — interactive Ink demo client (approve/deny with y/n/i) (private)                                                                                             |
+| `apps/demo-host`         | MCP Apps demo: a browser host rendering the workflow dashboard over a wrapped filesystem server — `pnpm --filter @astral-mcp/demo-host start`, http://localhost:8787 (private) |
+| `docs/server-authors.md` | Integration guide for wrapping your server                                                                                                                                     |
+| `docs/PRD.md`            | Product requirements document                                                                                                                                                  |
+| `docs/DECISIONS.md`      | Engineering decisions and their rationale                                                                                                                                      |
+| `.claude/skills`         | Agent skills: the contribution workflow and the machine-authoring cheat sheet                                                                                                  |
 
 ## Try it
 
 The demo TUI wraps an in-memory file server and lets a live model author
 machines while you approve each write with a single key. It needs
-`ANTHROPIC_API_KEY` — exported, or in a `.env` at the repo root (loaded
-automatically):
+`ANTHROPIC_API_KEY` (exported, or in a repo-root env file — see
+[packages/tui/README.md](packages/tui/README.md)):
 
 ```bash
 pnpm --filter @astral-mcp/tui start
+```
+
+The MCP Apps demo wraps the filesystem reference server and renders the
+workflow dashboard in a browser host with approve/deny buttons:
+
+```bash
+pnpm --filter @astral-mcp/demo-host start   # then open http://localhost:8787
 ```
 
 The §10 self-heal benchmark (a model authors machines for scripted tasks and
@@ -135,7 +143,7 @@ heals from structured errors) is explicit opt-in so plain test runs never
 spend tokens:
 
 ```bash
-PROJ_LIVE_BENCH=1 pnpm --filter @astral-mcp/harness exec vitest run test/reasoning.live.test.ts
+pnpm run build && PROJ_LIVE_BENCH=1 pnpm --filter @astral-mcp/harness exec vitest run test/reasoning.live.test.ts
 ```
 
 ## Development
@@ -147,7 +155,7 @@ pnpm install
 pnpm run check   # build + typecheck + lint + test, via turbo
 ```
 
-Individual tasks: `pnpm run build`, `pnpm run test`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run format`.
+Individual tasks: `pnpm run build`, `pnpm run test`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run format`, `pnpm run format:check`.
 
 Toolchain: [Turborepo](https://turborepo.com) task runner · [tsdown](https://tsdown.dev) build · [oxlint](https://oxc.rs) lint · [vitest](https://vitest.dev) tests · strict TypeScript · prettier.
 
