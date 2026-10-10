@@ -65,3 +65,62 @@ export {
   type SelfHealSummary,
 } from './reasoning/metrics.js';
 export { FILE_SERVER_TASKS, FILE_SERVER_FIXTURE } from './reasoning/tasks.js';
+
+// Tool-choice eval: direct tools vs Projection, against the offline GitHub fake.
+export {
+  createGithubFake,
+  GITHUB_CATALOG,
+  GITHUB_FAKE_ANSWERS,
+  type GithubCatalogFixture,
+  type GithubCatalogTool,
+  type GithubFake,
+  type GithubFakeOptions,
+} from './eval/github-fake.js';
+export {
+  anthropicCaller,
+  resolveModelPresets,
+  runAgentEpisode,
+  DEFAULT_MAX_TURNS,
+  DEFAULT_MODEL_PRESETS,
+  MODEL_PRESETS,
+  type AgentEpisode,
+  type AgentEpisodeOptions,
+  type AgentRuntime,
+  type AgentTool,
+  type AgentToolResult,
+  type EpisodeUsage,
+  type ModelCaller,
+  type ModelPreset,
+  type ToolUseRecord,
+} from './eval/agent.js';
+export { resolveTasks, TOOL_CHOICE_TASKS, type EvalTask, type TaskKind } from './eval/tasks.js';
+export {
+  openDirectSession,
+  openProjectionSession,
+  openSession,
+  resolveModes,
+  toolResultText,
+  DIRECT_SYSTEM_PROMPT,
+  EVAL_MODES,
+  type EvalMode,
+  type ModeSession,
+} from './eval/modes.js';
+export {
+  createResultsWriter,
+  estimateUsd,
+  formatEpisodeLine,
+  formatToolChoiceReport,
+  runToolChoiceEval,
+  summarizeToolChoice,
+  writeToolChoiceResults,
+  MODEL_PRICES,
+  type CellSummary,
+  type EpisodeRecord,
+  type ProjectionRoute,
+  type ProjectionUse,
+  type ResultsMeta,
+  type ResultsWriter,
+  type TaskCellSummary,
+  type ToolChoiceEvalOptions,
+  type ToolChoiceSummary,
+} from './eval/run.js';
