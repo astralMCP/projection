@@ -6,8 +6,11 @@
  * or through Projection's `call_tool` / `execute_machine`.
  *
  * Matching is lenient where the API allows synonyms (`issue_number` vs
- * `pullNumber`, numbers as strings, owner/repo case) and strict on the
- * values the prompt states (titles, bodies, branch names, merge method).
+ * `pullNumber`, numbers as strings, owner/repo case, a defaulted `state`,
+ * `refs/heads/` and `./` prefixes) and strict on the values the prompt
+ * states (titles, bodies, branch names, merge method). Comment predicates
+ * count only calls that make the comment visible: a pending review is not a
+ * comment until it is submitted.
  */
 
 import type { SideEffect } from '../types.js';
@@ -79,22 +82,106 @@ function has(
   return find(calls, tool, where) >= 0;
 }
 
-/** A comment on PR/issue `number` whose body contains `body`, by any commenting tool. */
+/** Every tool that can put a comment on a PR or issue (the tool-correct step group). */
 const COMMENT_TOOLS = [
   'add_issue_comment',
   'pull_request_review_write',
   'add_comment_to_pending_review',
   'add_reply_to_pull_request_comment',
 ];
-function commented(calls: SideEffect[], number: number, body: string): number {
-  return find(
-    calls,
-    COMMENT_TOOLS,
-    (args) =>
-      inRepo(args) &&
-      sameNumber(firstOf(args, ['issue_number', 'pullNumber', 'pull_number']), number) &&
-      containsText(args['body'], body),
+
+/** The call addresses PR/issue `number` in the task repo. */
+function targets(args: Args, number: number): boolean {
+  return (
+    inRepo(args) && sameNumber(firstOf(args, ['issue_number', 'pullNumber', 'pull_number']), number)
   );
+}
+
+/**
+ * Index of the first `pull_request_review_write` with method `submit_pending`
+ * for PR `number` after `from`, or -1. Submitting is what turns a pending
+ * review (and the comments attached to it) into something anyone can see.
+ */
+function submittedAfter(calls: SideEffect[], number: number, from: number): number {
+  return calls.findIndex(
+    (call, i) =>
+      i > from &&
+      call.tool === 'pull_request_review_write' &&
+      call.args['method'] === 'submit_pending' &&
+      targets(call.args, number),
+  );
+}
+
+/**
+ * Index of the call that makes a comment containing `body` visible on
+ * PR/issue `number`, or -1. `add_issue_comment` and
+ * `add_reply_to_pull_request_comment` post immediately. A
+ * `pull_request_review_write` posts immediately only when it carries an
+ * `event` (COMMENT / APPROVE / REQUEST_CHANGES); without one, `create` only
+ * opens a PENDING review, which — like `add_comment_to_pending_review` —
+ * shows nothing until a later `submit_pending` for the same PR, so the
+ * comment is attributed to that submit's index (ordering checks compare
+ * against the moment the comment became visible).
+ */
+function commented(calls: SideEffect[], number: number, body: string): number {
+  for (let i = 0; i < calls.length; i += 1) {
+    const call = calls[i] as SideEffect;
+    if (!COMMENT_TOOLS.includes(call.tool)) continue;
+    if (!targets(call.args, number) || !containsText(call.args['body'], body)) continue;
+    switch (call.tool) {
+      case 'add_issue_comment':
+      case 'add_reply_to_pull_request_comment':
+        return i;
+      case 'pull_request_review_write': {
+        if (typeof call.args['event'] === 'string' && call.args['event'] !== '') return i;
+        const submit = submittedAfter(calls, number, i);
+        if (submit >= 0) return submit;
+        break;
+      }
+      case 'add_comment_to_pending_review': {
+        const submit = submittedAfter(calls, number, i);
+        if (submit >= 0) return submit;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return -1;
+}
+
+/**
+ * A lookup that would list the open PRs of the task repo: `list_pull_requests`
+ * with `state` open or absent (GitHub defaults to open; `closed` / `all` are
+ * wrong), or `search_pull_requests` whose query names the repo and asks for
+ * open ones.
+ */
+function listsOpenPrs(call: SideEffect): boolean {
+  const args = call.args;
+  if (call.tool === 'list_pull_requests') {
+    return inRepo(args) && (args['state'] === undefined || sameText(args['state'], 'open'));
+  }
+  if (call.tool === 'search_pull_requests') {
+    return (
+      containsText(args['query'], `${OWNER}/${REPO}`) &&
+      (containsText(args['query'], 'is:open') || containsText(args['query'], 'state:open'))
+    );
+  }
+  return false;
+}
+
+/** Git refs may be fully qualified; `refs/heads/main` names the main branch. */
+function branchName(value: unknown): string | undefined {
+  return str(value)
+    ?.trim()
+    .replace(/^refs\/heads\//, '');
+}
+
+/** Repo-relative paths may carry a `./` or `/` prefix. */
+function repoPath(value: unknown): string | undefined {
+  return str(value)
+    ?.trim()
+    .replace(/^(\.\/|\/)+/, '');
 }
 
 const ISSUE_TITLE = 'Crash on startup';
@@ -121,9 +208,8 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
     name: 'list-open-prs',
     kind: 'single',
     prompt: `List the open pull requests in ${OWNER}/${REPO}.`,
-    steps: [['list_pull_requests']],
-    expect: (calls) =>
-      has(calls, 'list_pull_requests', (args) => inRepo(args) && sameText(args['state'], 'open')),
+    steps: [['list_pull_requests', 'search_pull_requests']],
+    expect: (calls) => calls.some(listsOpenPrs),
   },
   {
     name: 'read-readme',
@@ -134,9 +220,7 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
       has(
         calls,
         'get_file_contents',
-        (args) =>
-          inRepo(args) &&
-          (sameText(args['path'], 'README.md') || sameText(args['path'], '/README.md')),
+        (args) => inRepo(args) && sameText(repoPath(args['path']), 'README.md'),
       ),
   },
   {
@@ -169,7 +253,7 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
           args['method'] === 'run_workflow' &&
           inRepo(args) &&
           sameText(args['workflow_id'], 'ci.yml') &&
-          sameText(args['ref'], 'main'),
+          sameText(branchName(args['ref']), 'main'),
       ),
   },
   {
@@ -213,6 +297,8 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt: `In ${OWNER}/${REPO}, create a branch named feature/x from main.`,
     steps: [['create_branch']],
+    // from_branch is strict: the prompt states "from main", so omitting it
+    // (which lets the server pick the default branch) is not the stated task.
     expect: (calls) =>
       has(
         calls,
@@ -247,7 +333,7 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
     prompt: `In ${OWNER}/${REPO}, squash-merge the open pull request titled "Fix typo".`,
     steps: [['list_pull_requests', 'search_pull_requests'], ['merge_pull_request']],
     expect: (calls) => {
-      const listed = find(calls, ['list_pull_requests', 'search_pull_requests'], () => true);
+      const listed = calls.findIndex(listsOpenPrs);
       const merged = find(
         calls,
         'merge_pull_request',

@@ -125,9 +125,18 @@ export interface AgentEpisode {
   /** Text blocks of the final assistant message, joined. */
   finalText: string;
   /**
-   * Set when the episode did not end on the model's own `end_turn`: a
-   * refusal, a `max_tokens` cut, the turn cap, or a thrown API error. Such
-   * episodes are reported separately and excluded from success rates.
+   * True when the loop stopped because `maxTurns` Messages API calls had
+   * been made while the model was still calling tools. Not a harness error:
+   * every upstream call up to the cap was recorded, so the episode is scored
+   * on them like any other — a model that loops gets its loops counted, not
+   * dropped.
+   */
+  turnCapped: boolean;
+  /**
+   * Set when the episode did not end on the model's own `end_turn` for a
+   * reason that is not the model's tool choice: a refusal, a `max_tokens`
+   * cut, a context-window overflow, or a thrown API error. Such episodes are
+   * reported separately and excluded from success rates.
    */
   harnessError?: string;
 }
@@ -176,13 +185,14 @@ export async function runAgentEpisode(
   let stopReason: string | undefined;
   let finalText = '';
 
-  const finish = (harnessError?: string): AgentEpisode => ({
+  const finish = (harnessError?: string, turnCapped = false): AgentEpisode => ({
     apiTurns,
     toolUses,
     usage,
     wallMs: Math.round(performance.now() - started),
     ...(stopReason !== undefined ? { stopReason } : {}),
     finalText,
+    turnCapped,
     ...(harnessError !== undefined ? { harnessError } : {}),
   });
 
@@ -250,5 +260,5 @@ export async function runAgentEpisode(
     return finish(`stop_reason ${String(message.stop_reason)}`);
   }
 
-  return finish(`turn cap ${maxTurns} reached`);
+  return finish(undefined, true);
 }

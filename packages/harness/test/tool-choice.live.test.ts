@@ -17,13 +17,16 @@
  *   PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-choice.live.test.ts
  *
  * The report is printed and the records are written to
- * packages/harness/eval-results/<timestamp>.json (gitignored).
+ * packages/harness/eval-results/<timestamp>.json (gitignored). The file is
+ * rewritten after every episode, so a vitest timeout or a crash still leaves
+ * the partial results (and their summary) on disk.
  */
 
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  createResultsWriter,
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
@@ -31,7 +34,7 @@ import {
   resolveModes,
   resolveTasks,
   runToolChoiceEval,
-  writeToolChoiceResults,
+  type EpisodeRecord,
 } from '../src/index.js';
 
 loadNearestDotEnv();
@@ -52,20 +55,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
 
-    const records = await runToolChoiceEval({
-      models,
-      modes,
-      tasks,
-      runs,
-      concurrency,
-      // eslint-disable-next-line no-console -- progress while a long run goes
-      onEpisode: (record) => console.info(formatEpisodeLine(record)),
-    });
-
-    // eslint-disable-next-line no-console -- the report IS the deliverable
-    console.info(`\n${formatToolChoiceReport(records)}\n`);
-    const path = writeToolChoiceResults(
-      records,
+    const results = createResultsWriter(
       join(dirname(fileURLToPath(import.meta.url)), '../eval-results'),
       {
         models: models.map((m) => m.name),
@@ -75,7 +65,30 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       },
     );
     // eslint-disable-next-line no-console
-    console.info(`results written to ${path}`);
+    console.info(`results file: ${results.path} (rewritten after every episode)`);
+
+    // Completion order, not plan order: a durable partial file matters more
+    // than ordering, and the final write below is in plan order anyway.
+    const completed: EpisodeRecord[] = [];
+    const records = await runToolChoiceEval({
+      models,
+      modes,
+      tasks,
+      runs,
+      concurrency,
+      onEpisode: (record) => {
+        // eslint-disable-next-line no-console -- progress while a long run goes
+        console.info(formatEpisodeLine(record));
+        completed.push(record);
+        results.write(completed);
+      },
+    });
+
+    // eslint-disable-next-line no-console -- the report IS the deliverable
+    console.info(`\n${formatToolChoiceReport(records)}\n`);
+    results.write(records);
+    // eslint-disable-next-line no-console
+    console.info(`results written to ${results.path}`);
 
     expect(records).toHaveLength(models.length * modes.length * tasks.length * runs);
   });

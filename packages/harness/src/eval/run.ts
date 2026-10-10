@@ -5,9 +5,15 @@
  *
  * "Success" is tool AND arguments correct; "tool-correct" is the right
  * upstream tool(s) reached with any arguments. Episodes that ended on a
- * harness error (refusal, max_tokens, turn cap, API error) are excluded from
- * both denominators and counted separately — their tokens still count
- * toward spend.
+ * harness error (refusal, max_tokens, API error, or an exception thrown by
+ * the harness itself) are excluded from both denominators and counted
+ * separately — their tokens still count toward spend. Hitting the turn cap
+ * is NOT a harness error: the upstream calls made before the cap are fully
+ * observable, so such episodes are scored on them and flagged `turnCapped`.
+ *
+ * One planned episode never takes the matrix down with it: any exception
+ * (opening the session, the agent loop, closing, scoring, the progress
+ * callback) becomes a harness-error record and the other workers carry on.
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -17,12 +23,13 @@ import {
   anthropicCaller,
   resolveModelPresets,
   runAgentEpisode,
+  type AgentEpisode,
   type EpisodeUsage,
   type ModelCaller,
   type ModelPreset,
   type ToolUseRecord,
 } from './agent.js';
-import { EVAL_MODES, openSession, type EvalMode } from './modes.js';
+import { EVAL_MODES, openSession, type EvalMode, type ModeSession } from './modes.js';
 import { TOOL_CHOICE_TASKS, type EvalTask, type TaskKind } from './tasks.js';
 
 export type ProjectionRoute = 'call_tool' | 'execute_machine' | 'both' | 'neither';
@@ -48,6 +55,17 @@ export interface EpisodeRecord {
   run: number;
   success: boolean;
   toolCorrect: boolean;
+  /**
+   * The episode stopped at the turn cap while the model was still calling
+   * tools. Scored normally on the calls made up to the cap.
+   */
+  turnCapped: boolean;
+  /**
+   * Present when the episode is excluded from the success denominators: a
+   * model stop reason the eval cannot score (refusal, max_tokens, …), a
+   * thrown API error, or `harness: <name>: <message>` when the harness
+   * itself threw while running the episode.
+   */
   harnessError?: string;
   apiTurns: number;
   toolUseCount: number;
@@ -109,28 +127,27 @@ interface PlannedEpisode {
   run: number;
 }
 
-async function runPlanned(
+const EMPTY_USAGE: Readonly<EpisodeUsage> = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadInputTokens: 0,
+  cacheCreationInputTokens: 0,
+};
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+/**
+ * Score a finished episode against the task. A thrown predicate is the
+ * caller's problem (it surfaces as a harness error there).
+ */
+function scoreEpisode(
   planned: PlannedEpisode,
-  caller: ModelCaller,
-  options: ToolChoiceEvalOptions,
-): Promise<EpisodeRecord> {
+  session: ModeSession,
+  episode: AgentEpisode,
+): EpisodeRecord {
   const { model, mode, task, run } = planned;
-  const session = await openSession(
-    mode,
-    options.serverInstructions === false ? { instructions: false } : {},
-  );
-  let episode;
-  try {
-    episode = await runAgentEpisode(
-      caller,
-      model,
-      session.runtime,
-      task.prompt,
-      options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {},
-    );
-  } finally {
-    await session.close();
-  }
   const upstreamCalls = session.fake.calls.slice();
   const scored = episode.harnessError === undefined;
   return {
@@ -144,6 +161,7 @@ async function runPlanned(
     toolCorrect:
       scored &&
       task.steps.every((group) => upstreamCalls.some((call) => group.includes(call.tool))),
+    turnCapped: episode.turnCapped,
     ...(episode.harnessError !== undefined ? { harnessError: episode.harnessError } : {}),
     apiTurns: episode.apiTurns,
     toolUseCount: episode.toolUses.length,
@@ -159,7 +177,84 @@ async function runPlanned(
   };
 }
 
-/** Run the matrix; records come back in model → mode → task → run order. */
+/**
+ * The record for an episode the harness itself failed on. Keeps whatever
+ * was observed before the throw (upstream calls, tool uses, usage) so the
+ * spend still counts and the failure can be diagnosed from the JSON.
+ */
+function harnessFailureRecord(
+  planned: PlannedEpisode,
+  err: unknown,
+  session: ModeSession | undefined,
+  episode: AgentEpisode | undefined,
+  startedAt: number,
+): EpisodeRecord {
+  const { model, mode, task, run } = planned;
+  const upstreamCalls = session?.fake.calls.slice() ?? [];
+  const toolUses = episode?.toolUses ?? [];
+  return {
+    model: model.name,
+    modelId: model.model,
+    mode,
+    task: task.name,
+    kind: task.kind,
+    run,
+    success: false,
+    toolCorrect: false,
+    turnCapped: episode?.turnCapped ?? false,
+    harnessError: `harness: ${errorMessage(err)}`,
+    apiTurns: episode?.apiTurns ?? 0,
+    toolUseCount: toolUses.length,
+    toolUses,
+    upstreamCalls,
+    ...(mode === 'projection' && session !== undefined
+      ? { projection: summarizeProjectionUse(toolUses, session.approvals) }
+      : {}),
+    usage: episode?.usage ?? { ...EMPTY_USAGE },
+    wallMs: episode?.wallMs ?? Math.round(performance.now() - startedAt),
+    ...(episode?.stopReason !== undefined ? { stopReason: episode.stopReason } : {}),
+    finalText: episode?.finalText ?? '',
+  };
+}
+
+/** Run one planned episode; never throws — failures become records. */
+async function runPlanned(
+  planned: PlannedEpisode,
+  caller: ModelCaller,
+  options: ToolChoiceEvalOptions,
+): Promise<EpisodeRecord> {
+  const { model, mode, task } = planned;
+  const startedAt = performance.now();
+  let session: ModeSession | undefined;
+  let episode: AgentEpisode | undefined;
+  try {
+    session = await openSession(
+      mode,
+      options.serverInstructions === false ? { instructions: false } : {},
+    );
+    try {
+      episode = await runAgentEpisode(
+        caller,
+        model,
+        session.runtime,
+        task.prompt,
+        options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {},
+      );
+    } finally {
+      await session.close();
+    }
+    return scoreEpisode(planned, session, episode);
+  } catch (err) {
+    return harnessFailureRecord(planned, err, session, episode, startedAt);
+  }
+}
+
+/**
+ * Run the matrix; records come back in model → mode → task → run order, one
+ * per planned episode. `onEpisode` is best-effort progress reporting: an
+ * exception thrown from it is swallowed so one bad callback cannot cost the
+ * rest of the run.
+ */
 export async function runToolChoiceEval(
   options: ToolChoiceEvalOptions = {},
 ): Promise<EpisodeRecord[]> {
@@ -189,7 +284,11 @@ export async function runToolChoiceEval(
       if (planned === undefined) return;
       const record = await runPlanned(planned, caller, options);
       records[index] = record;
-      options.onEpisode?.(record);
+      try {
+        options.onEpisode?.(record);
+      } catch {
+        // Progress reporting must not take the matrix down.
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, plan.length) }, worker));
@@ -224,6 +323,8 @@ export interface CellSummary {
   successes: number;
   toolCorrect: number;
   harnessErrors: number;
+  /** Scored episodes that stopped at the turn cap. */
+  turnCapped: number;
   meanTurns: number;
   meanUpstreamCalls: number;
   meanInputTokens: number;
@@ -280,6 +381,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     successes: scored.filter((r) => r.success).length,
     toolCorrect: scored.filter((r) => r.toolCorrect).length,
     harnessErrors: records.length - scored.length,
+    turnCapped: scored.filter((r) => r.turnCapped).length,
     meanTurns: mean(records.map((r) => r.apiTurns)),
     meanUpstreamCalls: mean(records.map((r) => r.upstreamCalls.length)),
     meanInputTokens: mean(
@@ -389,6 +491,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'out-tok',
       'cache-read',
       'est $',
+      'turn-capped',
       'harness-err',
     ],
   ];
@@ -404,6 +507,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       Math.round(cell.meanOutputTokens).toString(),
       pct(cell.cacheReadShare, 1),
       cell.estimatedUsd.toFixed(4),
+      cell.turnCapped.toString(),
       cell.harnessErrors.toString(),
     ]);
   }
@@ -453,7 +557,8 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
   }
 
   lines.push(
-    'Cost model: Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input.',
+    'Cost model: Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
+      'Turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored.',
   );
   return lines.join('\n');
 }
@@ -469,9 +574,10 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
           ? 'tool-ok/args-wrong'
           : 'miss';
   const route = record.projection !== undefined ? ` via ${record.projection.route}` : '';
+  const capped = record.turnCapped ? ' (turn-capped)' : '';
   const upstream = record.upstreamCalls.map((c) => c.tool).join(',') || '-';
   return (
-    `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}; ` +
+    `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}${capped}; ` +
     `turns ${record.apiTurns}, upstream [${upstream}], ${record.wallMs}ms`
   );
 }
@@ -483,25 +589,52 @@ export interface ResultsMeta {
   runs?: number;
 }
 
+export interface ResultsWriter {
+  /** The file every `write` rewrites. */
+  path: string;
+  /** Rewrite the file with these records and their summary. */
+  write(records: EpisodeRecord[]): void;
+}
+
 /**
- * Write the records (plus their summary) as JSON into `dir`, named by ISO
- * timestamp (colons replaced for portable filenames). Returns the path.
+ * Choose the results file up front (named by ISO timestamp, colons replaced
+ * for portable filenames) so a long run can rewrite it after every episode:
+ * a vitest timeout or a crash then leaves the partial results on disk
+ * instead of nothing. `updatedAt` tells a reader how fresh the file is.
  */
+export function createResultsWriter(dir: string, meta: ResultsMeta = {}): ResultsWriter {
+  mkdirSync(dir, { recursive: true });
+  const generatedAt = new Date().toISOString();
+  const path = join(dir, `${generatedAt.replace(/:/g, '-')}.json`);
+  return {
+    path,
+    write(records) {
+      const present = records.filter((r) => r !== undefined);
+      writeFileSync(
+        path,
+        JSON.stringify(
+          {
+            generatedAt,
+            updatedAt: new Date().toISOString(),
+            ...meta,
+            summary: summarizeToolChoice(present),
+            records: present,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+    },
+  };
+}
+
+/** Write the records (plus their summary) once; returns the path. */
 export function writeToolChoiceResults(
   records: EpisodeRecord[],
   dir: string,
   meta: ResultsMeta = {},
 ): string {
-  mkdirSync(dir, { recursive: true });
-  const generatedAt = new Date().toISOString();
-  const path = join(dir, `${generatedAt.replace(/:/g, '-')}.json`);
-  writeFileSync(
-    path,
-    JSON.stringify(
-      { generatedAt, ...meta, summary: summarizeToolChoice(records), records },
-      null,
-      2,
-    ) + '\n',
-  );
-  return path;
+  const writer = createResultsWriter(dir, meta);
+  writer.write(records);
+  return writer.path;
 }

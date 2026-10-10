@@ -88,9 +88,14 @@ Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku-low`,
 `sonnet-medium`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TASKS`
 (comma list of task names), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
-turns, upstream calls, tokens, cache-read share, estimated cost, harness
-errors, a per-task table, and Projection's route split) is printed, and the
-records are written to `eval-results/<timestamp>.json` (gitignored).
+turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped
+and harness-error counts, a per-task table, and Projection's route split) is
+printed, and the records are written to `eval-results/<timestamp>.json`
+(gitignored), rewritten after every episode so a timeout or crash keeps the
+partial results. An episode that hits the 12-turn cap is scored on the
+upstream calls it made (and flagged `turnCapped`); refusals, `max_tokens`,
+API errors and harness exceptions are harness errors, excluded from the
+success denominators but still counted toward spend.
 
 The plumbing is proven offline in `test/eval/`: a scripted model drives both
 modes end to end without an API key.

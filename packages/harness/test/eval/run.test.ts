@@ -6,12 +6,13 @@
  * scored, and that the report and JSON come out.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  createResultsWriter,
   formatEpisodeLine,
   formatToolChoiceReport,
   MODEL_PRESETS,
@@ -22,6 +23,7 @@ import {
   summarizeToolChoice,
   writeToolChoiceResults,
   type EpisodeRecord,
+  type EvalTask,
   type ModelCaller,
   type ModelPreset,
 } from '../../src/index.js';
@@ -104,6 +106,7 @@ describe('tool-choice eval plumbing (offline)', () => {
     expect(records).toHaveLength(4);
     for (const record of records) {
       expect(record.harnessError).toBeUndefined();
+      expect(record.turnCapped).toBe(false);
       expect(record.success).toBe(true);
       expect(record.toolCorrect).toBe(true);
       expect(record.apiTurns).toBe(2);
@@ -195,7 +198,9 @@ describe('tool-choice eval plumbing (offline)', () => {
     expect(report).toContain('who-am-i');
     expect(report).toContain('Projection routes');
     expect(report).toContain('2/2');
+    expect(report).toContain('turn-capped');
     expect(formatEpisodeLine(records[0] as EpisodeRecord)).toContain('who-am-i #0: ok');
+    expect(formatEpisodeLine(records[0] as EpisodeRecord)).not.toContain('turn-capped');
 
     const path = writeToolChoiceResults(records, join(tmp, 'eval-results'), { runs: 1 });
     const written = JSON.parse(readFileSync(path, 'utf8')) as { records: unknown[]; runs: number };
@@ -214,9 +219,163 @@ describe('tool-choice eval plumbing (offline)', () => {
     });
     expect(record?.harnessError).toBe('stop_reason refusal');
     expect(record?.success).toBe(false);
+    expect(record?.turnCapped).toBe(false);
     const summary = summarizeToolChoice([record as EpisodeRecord]);
     expect(summary.cells[0]).toMatchObject({ scored: 0, successes: 0, harnessErrors: 1 });
     expect(formatToolChoiceReport([record as EpisodeRecord])).toContain('Harness errors');
+  });
+
+  it(
+    'scores a turn-capped episode on its upstream calls instead of dropping it',
+    { timeout: 60_000 },
+    async () => {
+      // A model that never stops: get_me on every turn, forever.
+      const looping: ModelCaller = async (params) => {
+        const names = new Set((params.tools ?? []).map((t) => t.name));
+        return names.has('call_tool')
+          ? message([toolUse('tu_loop', 'call_tool', { name: 'get_me', args: {} })], 'tool_use')
+          : message([toolUse('tu_loop', 'get_me', {})], 'tool_use');
+      };
+      const records = await runToolChoiceEval({
+        models: [preset],
+        modes: resolveModes(undefined),
+        tasks: resolveTasks('who-am-i'),
+        runs: 1,
+        maxTurns: 3,
+        caller: looping,
+      });
+      expect(records).toHaveLength(2);
+      for (const record of records) {
+        expect(record.turnCapped).toBe(true);
+        expect(record.harnessError).toBeUndefined();
+        expect(record.apiTurns).toBe(3);
+        expect(record.upstreamCalls.map((c) => c.tool)).toEqual(['get_me', 'get_me', 'get_me']);
+        expect(record.success).toBe(true);
+        expect(record.toolCorrect).toBe(true);
+        expect(formatEpisodeLine(record)).toContain('ok');
+        expect(formatEpisodeLine(record)).toContain('(turn-capped)');
+      }
+      const summary = summarizeToolChoice(records);
+      for (const cell of summary.cells) {
+        expect(cell).toMatchObject({
+          episodes: 1,
+          scored: 1,
+          successes: 1,
+          toolCorrect: 1,
+          turnCapped: 1,
+          harnessErrors: 0,
+        });
+      }
+      expect(summary.tasks.map((t) => [t.successes, t.scored])).toEqual([
+        [1, 1],
+        [1, 1],
+      ]);
+      const report = formatToolChoiceReport(records);
+      expect(report).not.toContain('Harness errors');
+      expect(report).toContain('1/1 100%');
+    },
+  );
+
+  it(
+    'turns a throw inside one episode into a harness-error record and finishes the rest',
+    { timeout: 60_000 },
+    async () => {
+      // The caller explodes on the create-issue prompt only; who-am-i is unaffected.
+      const seenHere: Anthropic.MessageStreamParams[] = [];
+      const inner = scriptedCaller(seenHere);
+      const exploding: ModelCaller = async (params) => {
+        const first = params.messages[0];
+        const prompt = typeof first?.content === 'string' ? first.content : '';
+        if (prompt.includes('Crash on startup') && params.messages.length > 1) {
+          throw new TypeError('fake session wiring broke');
+        }
+        return inner(params);
+      };
+      const records = await runToolChoiceEval({
+        models: [preset],
+        modes: ['direct'],
+        tasks: resolveTasks('who-am-i,create-issue'),
+        runs: 2,
+        concurrency: 2,
+        caller: exploding,
+        // A broken progress callback must not take the matrix down either.
+        onEpisode: () => {
+          throw new Error('progress sink is down');
+        },
+      });
+      expect(records).toHaveLength(4);
+      expect(records.map((r) => r.task)).toEqual([
+        'who-am-i',
+        'who-am-i',
+        'create-issue',
+        'create-issue',
+      ]);
+      const [me1, me2, issue1, issue2] = records as [
+        EpisodeRecord,
+        EpisodeRecord,
+        EpisodeRecord,
+        EpisodeRecord,
+      ];
+      for (const record of [me1, me2]) {
+        expect(record.harnessError).toBeUndefined();
+        expect(record.success).toBe(true);
+      }
+      // A thrown API call is the agent loop's own harness error (not ours)...
+      for (const record of [issue1, issue2]) {
+        expect(record.harnessError).toBe('api error: TypeError: fake session wiring broke');
+        expect(record.success).toBe(false);
+        expect(record.toolCorrect).toBe(false);
+        // ...and the upstream call made before the throw is still on record.
+        expect(record.upstreamCalls.map((c) => c.tool)).toEqual(['issue_write']);
+      }
+
+      // ...whereas a throw in the harness around the loop (here: the task
+      // predicate) becomes a `harness:` record with the observed calls kept.
+      const who = resolveTasks('who-am-i')[0] as EvalTask;
+      const brokenTask: EvalTask = {
+        ...who,
+        name: 'who-am-i-broken',
+        expect: () => {
+          throw new RangeError('predicate exploded');
+        },
+      };
+      const [broken, fine] = await runToolChoiceEval({
+        models: [preset],
+        modes: ['direct'],
+        tasks: [brokenTask, who],
+        runs: 1,
+        caller: scriptedCaller([]),
+      });
+      expect(broken?.harnessError).toBe('harness: RangeError: predicate exploded');
+      expect(broken?.success).toBe(false);
+      expect(broken?.toolCorrect).toBe(false);
+      expect(broken?.upstreamCalls.map((c) => c.tool)).toEqual(['get_me']);
+      expect(broken?.apiTurns).toBe(2);
+      expect(fine?.success).toBe(true);
+      const summary = summarizeToolChoice([broken as EpisodeRecord, fine as EpisodeRecord]);
+      expect(summary.cells[0]).toMatchObject({
+        episodes: 2,
+        scored: 1,
+        successes: 1,
+        harnessErrors: 1,
+      });
+    },
+  );
+
+  it('rewrites one results file in place so partial runs survive', () => {
+    const writer = createResultsWriter(join(tmp, 'partial'), { runs: 1 });
+    expect(existsSync(writer.path)).toBe(false);
+    writer.write([records[0] as EpisodeRecord]);
+    const first = JSON.parse(readFileSync(writer.path, 'utf8')) as {
+      records: unknown[];
+      summary: { episodes: number };
+      updatedAt: string;
+    };
+    expect(first.records).toHaveLength(1);
+    expect(first.summary.episodes).toBe(1);
+    writer.write(records);
+    const second = JSON.parse(readFileSync(writer.path, 'utf8')) as { records: unknown[] };
+    expect(second.records).toHaveLength(4);
   });
 
   it('resolves model presets from a comma list and rejects unknown names', () => {

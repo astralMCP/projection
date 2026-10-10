@@ -106,6 +106,7 @@ export {
   type ModeSession,
 } from './eval/modes.js';
 export {
+  createResultsWriter,
   estimateUsd,
   formatEpisodeLine,
   formatToolChoiceReport,
@@ -118,6 +119,7 @@ export {
   type ProjectionRoute,
   type ProjectionUse,
   type ResultsMeta,
+  type ResultsWriter,
   type TaskCellSummary,
   type ToolChoiceEvalOptions,
   type ToolChoiceSummary,
