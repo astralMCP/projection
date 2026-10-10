@@ -332,16 +332,19 @@ export default setup({}).createMachine({
     expect(types?.text).toContain('write_file');
   });
 
-  it('registers exactly execute_machine and discover_apis on a code-mode server (R1)', async () => {
+  it('registers exactly the five projection tools on a facade server (R1)', async () => {
     const codeModeServer = new McpServer({ name: 'projection-demo', version: '0.1.0' });
     facade.registerOn(codeModeServer);
 
-    // Introspecting the facade server shows only the two code-mode tools —
+    // Introspecting the facade server shows only Projection's own tools —
     // the wrapped server's tools are not exposed.
     const facadeIntrospector = await wrapMcpServer(codeModeServer, { blob: { key: KEY } });
     expect(facadeIntrospector.catalog.tools.map((t) => t.name).toSorted()).toEqual([
+      'call_tool',
+      'describe_tool',
       'discover_apis',
       'execute_machine',
+      'search_tools',
     ]);
     await facadeIntrospector.close();
   });

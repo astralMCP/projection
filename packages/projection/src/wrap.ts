@@ -30,7 +30,7 @@
  */
 
 import type { Client } from '@modelcontextprotocol/client';
-import { describeTool, searchTools } from './catalog/index.js';
+import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
 import {
   McpServer,
   type Implementation,
@@ -61,6 +61,7 @@ import {
   type BlobSealerConfig,
   type PolicyOverrides,
   type RedactionHook,
+  type ReplayCache,
   type ResourceCaps,
   type ServerCatalog,
 } from './types.js';
@@ -94,15 +95,16 @@ export interface WrapOptions {
   /** Identity the servers built by `createServer` advertise. */
   serverInfo?: Implementation;
   /**
-   * Which projections the facade serves (R1, R32). Code mode
-   * (`execute_machine`, `discover_apis`) defaults on.
-   *
-   * Staged rollout: the catalog projection ships in parts, and until
-   * `call_tool` lands it is incomplete — `search_tools` / `describe_tool`
-   * describe tools the model cannot yet call directly, and the preambles
-   * already name `call_tool`. It therefore defaults OFF for now (opt in with
-   * `catalog: true`) and flips to the R32 default of on when `call_tool`
-   * ships. Disabling both projections is an error at wrap time.
+   * Shared replay cache (R38). Consulted after blob verification and before
+   * any gated execution, for both `execute_machine` and `call_tool`. None
+   * ships by default; supply a store shared across instances.
+   */
+  replayCache?: ReplayCache;
+  /**
+   * Which projections the facade serves (R1, R32): code mode
+   * (`execute_machine`, `discover_apis`) and the catalog projection
+   * (`search_tools`, `describe_tool`, `call_tool`). Both default on;
+   * disabling both is an error at wrap time.
    */
   projections?: ProjectionsOptions;
 }
@@ -113,7 +115,7 @@ export interface ProjectionsOptions {
   catalog?: boolean;
 }
 
-const DEFAULT_PROJECTIONS: ProjectionSelection = { codeMode: true, catalog: false };
+const DEFAULT_PROJECTIONS: ProjectionSelection = { codeMode: true, catalog: true };
 
 /** Options for registering the projections on a server the caller built. */
 export interface RegisterOptions {
@@ -157,6 +159,15 @@ export interface ProjectionFacade {
   searchTools(args: { query?: string; cursor?: string }): CallToolResult;
   /** Run `describe_tool` (R34). Failures come back as R25 structured error results. */
   describeTool(args: { name: string }): CallToolResult;
+  /**
+   * Run `call_tool` (R35) for one `tools/call`, first attempt or retry.
+   * `era` / `clientCanElicit` as for `executeMachine`.
+   */
+  callTool(
+    args: CallToolArgs,
+    era?: ProtocolEra,
+    clientCanElicit?: boolean,
+  ): Promise<ToolCallResult>;
   /** The projections this facade serves (R32). Frozen: fixed at wrap time. */
   readonly projections: Readonly<ProjectionSelection>;
   /** Build an `McpServer` carrying the instructions, the enabled projections' tools and the resources. */
@@ -176,6 +187,8 @@ Call discover_apis first for the tool types, the full authoring contract, and wo
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
 const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally filtered by a plain substring on name and description. Each entry gives the tool's name, a one-line purpose, whether it runs immediately or asks the user for approval, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+
+const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, its approval posture, and its generated TypeScript types. Call this before call_tool, or when authoring a machine that uses the tool.`;
 
@@ -234,7 +247,7 @@ function resolveProjections(
   };
   if (!selection.codeMode && !selection.catalog) {
     throw new ProjectionError('terminal', 'at least one projection must be enabled', {
-      hint: 'Set projections.codeMode and/or projections.catalog to true (code mode defaults on; the catalog projection is opt-in until call_tool ships).',
+      hint: 'Set projections.codeMode and/or projections.catalog to true (both default to on).',
     });
   }
   return Object.freeze(selection);
@@ -290,6 +303,27 @@ class Facade implements ProjectionFacade {
       ...(era !== undefined ? { protocolEra: era } : {}),
       ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
       ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
+      ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
+    });
+  }
+
+  callTool(
+    args: CallToolArgs,
+    era?: ProtocolEra,
+    clientCanElicit?: boolean,
+  ): Promise<ToolCallResult> {
+    const { options } = this.deps;
+    return callTool(args, {
+      catalog: this.deps.catalog,
+      executor: this.deps.introspector,
+      blob: options.blob,
+      ...(options.caps !== undefined ? { caps: options.caps } : {}),
+      ...(options.policy !== undefined ? { policy: options.policy } : {}),
+      ...(options.redact !== undefined ? { redact: options.redact } : {}),
+      ...(era !== undefined ? { protocolEra: era } : {}),
+      ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
+      ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
+      ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
     });
   }
 
@@ -352,7 +386,7 @@ class Facade implements ProjectionFacade {
     const era = options?.era;
 
     if (this.projections.codeMode) this.registerCodeMode(server, era);
-    if (this.projections.catalog) this.registerCatalog(server);
+    if (this.projections.catalog) this.registerCatalog(server, era);
 
     // Resources back both projections: describe_tool points at the .d.ts,
     // and the MCP Apps dashboard rides execute_machine results.
@@ -372,8 +406,8 @@ class Facade implements ProjectionFacade {
     }
   }
 
-  /** Catalog projection (R32–R34): `search_tools`, `describe_tool`. */
-  private registerCatalog(server: McpServer): void {
+  /** Catalog projection (R32–R35): `search_tools`, `describe_tool`, `call_tool`. */
+  private registerCatalog(server: McpServer, era: ProtocolEra | undefined): void {
     // Both are pure reads over the catalog; the annotation lets hosts that
     // gate on annotations run them without a prompt (R35).
     server.registerTool(
@@ -409,6 +443,34 @@ class Facade implements ProjectionFacade {
       },
       (args) => this.describeTool({ name: args.name }),
     );
+
+    // No annotations on purpose (R35): hosts that gate on annotations must
+    // never auto-run it. `args` is validated by Projection, not zod, so a
+    // non-object arrives as an R25 structured error rather than an SDK one.
+    server.registerTool(
+      'call_tool',
+      {
+        title: 'Call one tool',
+        description: CALL_TOOL_DESCRIPTION,
+        inputSchema: z.object({
+          name: z.string().describe('Tool name as listed by search_tools.'),
+          args: z.unknown().optional().describe('JSON object of arguments per describe_tool.'),
+        }),
+      },
+      async (args, ctx) =>
+        await this.callTool(
+          {
+            name: args.name,
+            ...(args.args !== undefined ? { args: args.args } : {}),
+            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
+            ...(ctx.mcpReq.inputResponses !== undefined
+              ? { inputResponses: ctx.mcpReq.inputResponses }
+              : {}),
+          },
+          era,
+          clientCanElicit(server),
+        ),
+    );
   }
 
   /** Code mode (R1–R3): `execute_machine`, `discover_apis`, the workflow prompts. */
@@ -424,23 +486,8 @@ class Facade implements ProjectionFacade {
         // ignore _meta.ui entirely.
         _meta: { ui: { resourceUri: DASHBOARD_RESOURCE_URI } },
       },
-      async (args, ctx) => {
-        // Legacy compat: whether the SDK's elicitation shim has a channel to
-        // this client. Read per call — capabilities are negotiated on the
-        // connection, not known at registration — and left unknown when the
-        // SDK has none to report (per-request legacy HTTP), so the shim's
-        // own per-request failure stays the one the caller sees there.
-        // Mirrors the shim's form-capability rule: form mode needs
-        // `elicitation.form`, and a bare `elicitation: {}` counts as implied
-        // form support only when `url` is absent too.
-        const clientCaps = server.server.getClientCapabilities();
-        const elicitation = clientCaps?.elicitation;
-        const clientCanElicit =
-          clientCaps === undefined
-            ? undefined
-            : elicitation !== undefined &&
-              (elicitation.form !== undefined || elicitation.url === undefined);
-        return await this.executeMachine(
+      async (args, ctx) =>
+        await this.executeMachine(
           {
             code: args.code,
             // `exactOptionalPropertyTypes`: an absent optional argument must
@@ -460,9 +507,8 @@ class Facade implements ProjectionFacade {
               : {}),
           },
           era,
-          clientCanElicit,
-        );
-      },
+          clientCanElicit(server),
+        ),
     );
 
     server.registerTool(
@@ -515,6 +561,24 @@ class Facade implements ProjectionFacade {
  * string, and anything else means someone wired a decoding hook Projection
  * does not own.
  */
+/**
+ * Legacy compat: whether the SDK's elicitation shim has a channel to this
+ * client. Read per call — capabilities are negotiated on the connection, not
+ * known at registration — and left unknown when the SDK has none to report
+ * (per-request legacy HTTP), so the shim's own per-request failure stays the
+ * one the caller sees there. Mirrors the shim's form-capability rule: form
+ * mode needs `elicitation.form`, and a bare `elicitation: {}` counts as
+ * implied form support only when `url` is absent too.
+ */
+function clientCanElicit(server: McpServer): boolean | undefined {
+  const clientCaps = server.server.getClientCapabilities();
+  if (clientCaps === undefined) return undefined;
+  const elicitation = clientCaps.elicitation;
+  return (
+    elicitation !== undefined && (elicitation.form !== undefined || elicitation.url === undefined)
+  );
+}
+
 function maybeRequestState(state: unknown): { requestState?: string } {
   return typeof state === 'string' ? { requestState: state } : {};
 }

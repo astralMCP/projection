@@ -52,6 +52,11 @@ export interface ElicitationCopy {
 export interface ElicitationCopyOptions {
   /** Redaction hook applied to args before any rendering (R16). */
   redact?: RedactionHook;
+  /**
+   * Who asked: a machine state (default) or a direct `call_tool` request
+   * (R35). Selects the footer; nothing else differs.
+   */
+  origin?: 'machine' | 'direct';
   /** Cap on the rendered args JSON, in characters. Default 4096. */
   maxArgsChars?: number;
 }
@@ -116,7 +121,12 @@ export function buildElicitationCopy(
   // Compact technical footer: exact tool id + the workflow step that asked
   // (R16). The state is model-authored, so quoted as an inert JSON literal.
   const safeState = neutralizeControlChars(capLength(call.stateName, MAX_STATE_NAME_CHARS));
-  lines.push('', `Tool ${safeName} · requested by step ${JSON.stringify(safeState)}`);
+  lines.push(
+    '',
+    options.origin === 'direct'
+      ? `Tool ${safeName} · requested directly by the model`
+      : `Tool ${safeName} · requested by step ${JSON.stringify(safeState)}`,
+  );
 
   return {
     title,

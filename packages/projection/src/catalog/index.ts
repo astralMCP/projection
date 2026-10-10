@@ -9,6 +9,16 @@
  */
 
 export {
+  callTool,
+  CALL_KEY,
+  DEFAULT_CALL_TTL_MS,
+  type CallToolArgs,
+  type CallToolDeps,
+  type CallToolOutcome,
+} from './call.js';
+export { canonicalJson, canonicalRequest } from './canonical.js';
+export { validateArgsShape } from './validate-args.js';
+export {
   describeTool,
   type DescribeToolArgs,
   type DescribeToolOptions,

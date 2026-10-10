@@ -377,3 +377,78 @@ describe('inbound hardening', () => {
     );
   });
 });
+
+describe('blob kind (R36)', () => {
+  it('defaults to machine, and a blob is opened only by the tool that minted it', () => {
+    const machine = makePayload();
+    expect(machine.kind).toBe('machine');
+    const blob = sealBlob(machine, makeConfig());
+    expect(() =>
+      openBlob(blob, {
+        code: CODE,
+        serverIdentity: SERVER_IDENTITY,
+        config: makeConfig(),
+        now: NOW + 1,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      openBlob(blob, {
+        expectedKind: 'call',
+        code: CODE,
+        serverIdentity: SERVER_IDENTITY,
+        config: makeConfig(),
+        now: NOW + 1,
+      }),
+    ).toThrow(/kind mismatch/);
+  });
+
+  it('a call blob carries exactly one pending entry keyed "call" and a null snapshot', () => {
+    const call = buildBlobPayload({
+      kind: 'call',
+      code: '{"args":{},"kind":"call","name":"x"}',
+      serverIdentity: SERVER_IDENTITY,
+      snapshot: null,
+      pending: { call: { id: 'call', name: 'x', args: {}, stateName: 'call_tool' } },
+      trip: 1,
+      now: NOW,
+    });
+    const open = (payload: typeof call) =>
+      openBlob(sealBlob(payload, makeConfig()), {
+        expectedKind: 'call',
+        code: call.codeHash === payload.codeHash ? '{"args":{},"kind":"call","name":"x"}' : CODE,
+        serverIdentity: SERVER_IDENTITY,
+        config: makeConfig(),
+        now: NOW + 1,
+      });
+    expect(() => open(call)).not.toThrow();
+    expect(() =>
+      open({ ...call, pending: { ...call.pending, extra: call.pending['call'] as never } }),
+    ).toThrow(/malformed/);
+    expect(() => open({ ...call, pending: { other: call.pending['call'] as never } })).toThrow(
+      /malformed/,
+    );
+    expect(() => open({ ...call, snapshot: { status: 'active' } })).toThrow(/malformed/);
+    // Opening it as a machine blob is a kind mismatch.
+    expect(() =>
+      openBlob(sealBlob(call, makeConfig()), {
+        code: '{"args":{},"kind":"call","name":"x"}',
+        serverIdentity: SERVER_IDENTITY,
+        config: makeConfig(),
+        now: NOW + 1,
+      }),
+    ).toThrow(/kind mismatch/);
+  });
+
+  it('a payload without kind is malformed', () => {
+    const { kind: _kind, ...withoutKind } = makePayload();
+    const blob = sealBlob(withoutKind as never, makeConfig());
+    expect(() =>
+      openBlob(blob, {
+        code: CODE,
+        serverIdentity: SERVER_IDENTITY,
+        config: makeConfig(),
+        now: NOW + 1,
+      }),
+    ).toThrow(/malformed/);
+  });
+});
