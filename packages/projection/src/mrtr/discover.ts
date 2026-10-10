@@ -11,7 +11,7 @@ import { AUTHORING_CONTRACT } from '../machine-host/index.js';
 import { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from '../apps/dashboard.js';
 import { inertIdentity } from '../text-safety.js';
 import { XSTATE_VERSION } from '../blob/index.js';
-import type { ServerCatalog } from '../types.js';
+import { dedupeTools, type ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
 
 /** Stable URIs the server serves via `resources/read` (R3). */
@@ -164,18 +164,55 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
   ];
 }
 
+/** R37: above this many tools, `discover_apis` defers the per-tool list to the catalog tools. */
+export const DEFAULT_INLINE_TOOL_THRESHOLD = 40;
+
+export interface DiscoverApisOptions {
+  /** Whether the catalog projection (`search_tools` / `describe_tool`) is served (R37). */
+  catalog?: boolean;
+  /**
+   * Tool count above which the inline per-tool list is omitted. Default
+   * {@link DEFAULT_INLINE_TOOL_THRESHOLD}; a finite value is floored and
+   * clamped at 0, anything else falls back to the default.
+   */
+  inlineThreshold?: number;
+}
+
+/** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
+function clampInlineThreshold(raw: number | undefined): number {
+  return raw !== undefined && Number.isFinite(raw)
+    ? Math.max(0, Math.floor(raw))
+    : DEFAULT_INLINE_TOOL_THRESHOLD;
+}
+
 /**
  * The `discover_apis` result: an inline overview sufficient to author a
  * simple machine unaided, plus resource links for the full artifacts.
+ *
+ * R37: when the catalog projection is on and the catalog is large, the
+ * per-tool overview is replaced by the tool count and a pointer to
+ * `search_tools` / `describe_tool` — the `.d.ts` resource stays complete.
  */
-export function discoverApis(catalog: ServerCatalog, overview: string): CallToolResult {
+export function discoverApis(
+  catalog: ServerCatalog,
+  overview: string,
+  options: DiscoverApisOptions = {},
+): CallToolResult {
+  const threshold = clampInlineThreshold(options.inlineThreshold);
+  // Count what the model can reach: typegen and the catalog projection both
+  // dedupe by name (S5), so a repeated name is one tool, not two.
+  const toolCount = dedupeTools(catalog.tools).length;
+  const deferred = options.catalog === true && toolCount > threshold;
+  const toolsSection = deferred
+    ? `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments and types; the full definitions are in ${RESOURCE_URIS.toolTypes}.`
+    : overview;
   const inline = [
     // The identity is S5-untrusted; inertIdentity supplies its own quotes.
     `Projection code mode over ${inertIdentity(catalog.identity)}.`,
     '',
     `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',
-    overview,
+    toolsSection,
     '',
     AUTHORING_CONTRACT,
   ].join('\n');

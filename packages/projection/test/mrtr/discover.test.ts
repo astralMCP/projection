@@ -3,6 +3,7 @@ import {
   buildInstructions,
   buildResources,
   DEFAULT_CODE_MODE_PREAMBLE,
+  DEFAULT_INLINE_TOOL_THRESHOLD,
   DEFAULT_ROUTING_PREAMBLE,
   discoverApis,
   EXAMPLE_DENIAL_FALLBACK,
@@ -13,6 +14,11 @@ import { generateToolTypes } from '../../src/typegen/index.js';
 import { CATALOG } from '../machine-host/fixtures.js';
 
 const { dts, overview } = generateToolTypes(CATALOG);
+
+/** The inline text block of a discover_apis result. */
+function inline(result: { content: { type: string; text?: string }[] }): string {
+  return result.content[0]?.text ?? '';
+}
 
 describe('discover_apis (R3)', () => {
   it('returns an inline overview plus one resource_link per artifact', () => {
@@ -118,5 +124,83 @@ describe('instructions forwarding (R29)', () => {
     const instructions = buildInstructions(CATALOG, 'Custom copy.');
     expect(instructions).toBe('Custom copy.');
     expect(instructions).not.toContain(DEFAULT_ROUTING_PREAMBLE);
+  });
+});
+
+describe('discover_apis catalog scale (R37)', () => {
+  const big = {
+    ...CATALOG,
+    tools: Array.from({ length: DEFAULT_INLINE_TOOL_THRESHOLD + 1 }, (_, i) => ({
+      name: `tool_${i}`,
+      description: `Tool number ${i}.`,
+      inputSchema: { type: 'object' },
+    })),
+  };
+  const bigOverview = generateToolTypes(big).overview;
+
+  it('above the threshold with the catalog projection on, defers the tool list to search_tools', () => {
+    const text = inline(discoverApis(big, bigOverview, { catalog: true }));
+    expect(text).toContain(`Tools: ${DEFAULT_INLINE_TOOL_THRESHOLD + 1} on this server`);
+    expect(text).toContain('search_tools');
+    expect(text).toContain('describe_tool');
+    expect(text).not.toContain('- tool_0 ');
+    // The authoring contract is still inline.
+    expect(text).toContain('toolCall');
+  });
+
+  it('inlines the full overview when the catalog projection is off, or at or below the threshold', () => {
+    expect(inline(discoverApis(big, bigOverview, { catalog: false }))).toContain('- tool_0 ');
+    expect(inline(discoverApis(big, bigOverview))).toContain('- tool_0 ');
+    expect(inline(discoverApis(CATALOG, overview, { catalog: true }))).toContain('- read_file ');
+    expect(
+      inline(discoverApis(big, bigOverview, { catalog: true, inlineThreshold: 1_000 })),
+    ).toContain('- tool_0 ');
+  });
+
+  it('the threshold is configurable downwards too', () => {
+    const text = inline(discoverApis(CATALOG, overview, { catalog: true, inlineThreshold: 2 }));
+    expect(text).toContain('Tools: 4 on this server');
+    expect(text).not.toContain('- read_file ');
+  });
+
+  it('inlines a catalog of exactly the threshold size (the bound is strict)', () => {
+    const exact = { ...big, tools: big.tools.slice(0, DEFAULT_INLINE_TOOL_THRESHOLD) };
+    const exactOverview = generateToolTypes(exact).overview;
+    expect(inline(discoverApis(exact, exactOverview, { catalog: true }))).toContain('- tool_0 ');
+    // Same at a configured threshold: CATALOG has four tools.
+    const text = inline(discoverApis(CATALOG, overview, { catalog: true, inlineThreshold: 4 }));
+    expect(text).toContain('- read_file ');
+    expect(text).not.toContain('on this server');
+  });
+
+  it('counts a duplicated tool name once, in the comparison and in the count', () => {
+    // Four unique names declared twice: still at the threshold, so inline.
+    const doubled = { ...CATALOG, tools: [...CATALOG.tools, ...CATALOG.tools] };
+    const doubledOverview = generateToolTypes(doubled).overview;
+    expect(
+      inline(discoverApis(doubled, doubledOverview, { catalog: true, inlineThreshold: 4 })),
+    ).toContain('- read_file ');
+    // Above the threshold, the message reports unique tools, not entries.
+    const padded = { ...big, tools: [...big.tools, ...big.tools] };
+    const text = inline(discoverApis(padded, bigOverview, { catalog: true }));
+    expect(text).toContain(`Tools: ${DEFAULT_INLINE_TOOL_THRESHOLD + 1} on this server`);
+  });
+
+  it('falls back to the default for a NaN threshold and clamps a negative one', () => {
+    // Default is 40: big (41 tools) defers, CATALOG (4 tools) inlines.
+    expect(
+      inline(discoverApis(big, bigOverview, { catalog: true, inlineThreshold: Number.NaN })),
+    ).toContain('on this server');
+    expect(
+      inline(discoverApis(CATALOG, overview, { catalog: true, inlineThreshold: Number.NaN })),
+    ).toContain('- read_file ');
+    // Negative clamps to 0: every non-empty catalog defers.
+    const text = inline(discoverApis(CATALOG, overview, { catalog: true, inlineThreshold: -5 }));
+    expect(text).toContain('Tools: 4 on this server');
+    expect(text).not.toContain('- read_file ');
+    // Fractions floor: 4.5 -> 4, so four tools still inline.
+    expect(
+      inline(discoverApis(CATALOG, overview, { catalog: true, inlineThreshold: 4.5 })),
+    ).toContain('- read_file ');
   });
 });
