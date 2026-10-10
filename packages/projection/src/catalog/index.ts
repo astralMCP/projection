@@ -37,6 +37,7 @@ export {
 export {
   searchTools,
   summarizeTool,
+  tokenize,
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
   type SearchToolsArgs,

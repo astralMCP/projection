@@ -1,7 +1,7 @@
 {
   "name": "@astral-mcp/projection",
   "version": "0.7.0",
-  "description": "Turn any MCP server into a code-mode server with human-approved side effects, built on MCP MRTR and XState v5.",
+  "description": "Wrap any MCP server in code mode (LLM-authored XState workflows) and a tool catalog (search, describe, call), with human-approved side effects over MCP MRTR (Multi Round-Trip Requests).",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,

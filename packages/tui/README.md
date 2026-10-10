@@ -6,6 +6,8 @@ Type a task, watch the model's authored machine, validation results, and
 captured console logs stream by, and answer each approval prompt with a
 single key. Every suspension shows its sealed-blob size and round-trip count.
 
+Private workspace package; drives code mode only (`execute_machine`).
+
 ## Run
 
 Needs `ANTHROPIC_API_KEY` — exported, or in a `.env` at the repo root (the
@@ -22,13 +24,13 @@ first, so it works on a fresh checkout.
 
 ## Controls
 
-| Key     | When              | Does                                        |
-| ------- | ----------------- | ------------------------------------------- |
-| `enter` | at the task input | submit the task to the model                |
-| `y`     | on an approval    | approve the shown call                      |
-| `n`     | on an approval    | decline it (the machine gets `TOOL_DENIED`) |
-| `i`     | on an approval    | ignore — omit the response (R17: a decline) |
-| `q`     | when idle         | quit                                        |
+| Key     | When              | Does                                                             |
+| ------- | ----------------- | ---------------------------------------------------------------- |
+| `enter` | at the task input | submit the task to the model                                     |
+| `y`     | on an approval    | approve the shown call                                           |
+| `n`     | on an approval    | decline it (the machine gets `TOOL_DENIED`)                      |
+| `i`     | on an approval    | ignore — omit the response ([R17](../../docs/PRD.md): a decline) |
+| `q`     | when idle         | quit                                                             |
 
 ## Embedding
 
