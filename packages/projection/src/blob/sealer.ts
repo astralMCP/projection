@@ -61,6 +61,7 @@ import {
   type AuditEntry,
   type BlobSealerConfig,
   type PendingToolCall,
+  type BlobKind,
 } from '../types.js';
 import { LIB_VERSION, XSTATE_VERSION } from './versions.js';
 
@@ -71,8 +72,14 @@ import { LIB_VERSION, XSTATE_VERSION } from './versions.js';
 /** Envelope format version prefix. Bump (proj2, …) on any wire-format change. */
 export const ENVELOPE_PREFIX = 'proj1';
 
-/** Default blob TTL: 15 minutes (R20). */
+/** Default blob TTL for `machine` blobs: 15 minutes (R20). */
 export const DEFAULT_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Default TTL for `call` blobs: 5 minutes (R38). An approved `call` blob has
+ * no forward step, so it is a standing capability until it expires (D4, D9).
+ */
+export const DEFAULT_CALL_TTL_MS = 5 * 60 * 1000;
 
 /** Default sealed-blob size ceiling: 128 KB (R23). */
 export const DEFAULT_MAX_BLOB_BYTES = 128 * 1024;
@@ -104,6 +111,10 @@ const HINT_CODE =
   'Retry the call with the byte-exact original code argument; a blob only resumes the code that produced it.';
 const HINT_SERVER =
   'This blob was minted against a different wrapped server and cannot be resumed here. Re-run execute_machine against this server.';
+const HINT_KIND =
+  'Echo the requestState back to the same tool that returned it: execute_machine blobs resume execute_machine, call_tool blobs resume call_tool.';
+const HINT_REQUEST =
+  'Retry call_tool with exactly the name and args that produced this requestState; to run a different call, start a new call_tool request.';
 
 // ---------------------------------------------------------------------------
 // Key handling
@@ -235,6 +246,12 @@ function malformed(field: string): ProjectionError {
  * here indicate a sealer bug or cross-version confusion — still fail closed.
  */
 function assertPayloadShape(payload: Record<string, unknown>): void {
+  // R36: `kind` is required; a payload without it predates the field and is
+  // fenced by the exact `libv` match once the release that introduced `kind`
+  // ships, so here it is simply malformed.
+  if (payload['kind'] !== 'machine' && payload['kind'] !== 'call') {
+    throw malformed('kind');
+  }
   if (typeof payload['codeHash'] !== 'string' || payload['codeHash'].length === 0) {
     throw malformed('codeHash');
   }
@@ -274,11 +291,36 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload['audit'])) {
     throw malformed('audit');
   }
+  // R36: a `call` blob is the degenerate one-call machine, so its shape is
+  // fixed — exactly one pending entry keyed `call` whose id is `call`, no
+  // snapshot, no prior audit, and trip 1 (there is no second round trip).
+  if (payload['kind'] === 'call') {
+    const keys = Object.keys(pending);
+    if (keys.length !== 1 || keys[0] !== 'call') {
+      throw malformed('pending (call blob)');
+    }
+    if ((pending['call'] as Record<string, unknown>)['id'] !== 'call') {
+      throw malformed('pending["call"].id (call blob)');
+    }
+    if (payload['snapshot'] !== null) {
+      throw malformed('snapshot (call blob)');
+    }
+    if ((payload['audit'] as unknown[]).length !== 0) {
+      throw malformed('audit (call blob)');
+    }
+    if (payload['trip'] !== 1) {
+      throw malformed('trip (call blob)');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+function toolFor(kind: BlobKind): string {
+  return kind === 'call' ? 'call_tool' : 'execute_machine';
+}
 
 /** SHA-256 hex digest of a code argument (S4 binding — R20 `codeHash`). */
 export function hashCode(code: string): string {
@@ -286,7 +328,12 @@ export function hashCode(code: string): string {
 }
 
 export interface BuildBlobPayloadInput {
-  /** The original `code` argument; hashed into `codeHash` (S4). */
+  /** Minting tool (R36). Default `machine`. */
+  kind?: BlobKind | undefined;
+  /**
+   * The text the blob is bound to (S4): the original `code` argument for a
+   * `machine` blob, the canonical request for a `call` blob (R36).
+   */
   code: string;
   /** Identity of the wrapped server this blob is minted against (R30). */
   serverIdentity: string;
@@ -313,6 +360,7 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
   const ttlMs = input.ttlMs ?? DEFAULT_TTL_MS;
   return {
     v: BLOB_SCHEMA_VERSION,
+    kind: input.kind ?? 'machine',
     libv: LIB_VERSION,
     xstatev: XSTATE_VERSION,
     codeHash: hashCode(input.code),
@@ -355,7 +403,12 @@ export function sealBlob(payload: BlobPayload, config: BlobSealerConfig): string
       'terminal',
       `sealed suspension blob is ${size} bytes, exceeding the ${maxBlobBytes}-byte ceiling`,
       {
-        hint: 'Machine context is too large to suspend. Keep large tool results out of context — store only the fields later states need — then re-run execute_machine.',
+        // A `call` blob holds nothing but the request, so only the args can
+        // be what is too big; a `machine` blob is dominated by its snapshot.
+        hint:
+          payload.kind === 'call'
+            ? 'The arguments are too large to seal for approval; shrink them and call call_tool again.'
+            : 'Machine context is too large to suspend. Keep large tool results out of context — store only the fields later states need — then re-run execute_machine.',
       },
     );
   }
@@ -363,7 +416,12 @@ export function sealBlob(payload: BlobPayload, config: BlobSealerConfig): string
 }
 
 export interface OpenBlobOptions {
-  /** The `code` argument re-sent with the retried call (S4). */
+  /** The tool opening the blob (R36). Default `machine`. */
+  expectedKind?: BlobKind | undefined;
+  /**
+   * The text re-sent with the retry (S4): the `code` argument for
+   * `execute_machine`, the canonical request for `call_tool`.
+   */
   code: string;
   /** Identity of the wrapped server handling the retry (R30). */
   serverIdentity: string;
@@ -455,12 +513,26 @@ export function openBlob(blob: string, options: OpenBlobOptions): BlobPayload {
     );
   }
 
-  // (4) Code hash (S4) and server identity (R30, cross-server replay).
-  if (hashCode(options.code) !== verified.codeHash) {
+  // (3b) Kind (R36): a blob minted by one tool cannot be opened by the other.
+  const expectedKind = options.expectedKind ?? 'machine';
+  if (verified.kind !== expectedKind) {
     throw verificationError(
-      "code hash mismatch: the retried call's code differs from the code that produced this blob",
-      HINT_CODE,
+      `blob kind mismatch: this requestState was issued by ${toolFor(verified.kind)} and cannot be used with ${toolFor(expectedKind)}`,
+      HINT_KIND,
     );
+  }
+
+  // (4) Binding hash (S4) and server identity (R30, cross-server replay).
+  if (hashCode(options.code) !== verified.codeHash) {
+    throw verified.kind === 'call'
+      ? verificationError(
+          "request mismatch: the retried call's name or args differ from the request that produced this requestState",
+          HINT_REQUEST,
+        )
+      : verificationError(
+          "code hash mismatch: the retried call's code differs from the code that produced this blob",
+          HINT_CODE,
+        );
   }
   if (options.serverIdentity !== verified.serverIdentity) {
     throw verificationError(

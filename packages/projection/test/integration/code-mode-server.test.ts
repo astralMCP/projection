@@ -173,10 +173,16 @@ describe('the code-mode server as a real client sees it', () => {
     await client.close();
   });
 
-  it('exposes exactly the two code-mode tools, never the wrapped ones (R1)', async () => {
+  it('exposes exactly the five projection tools, never the wrapped ones (R1)', async () => {
     const client = await connect(handler, { modern: true });
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name).toSorted()).toEqual(['discover_apis', 'execute_machine']);
+    expect(tools.map((tool) => tool.name).toSorted()).toEqual([
+      'call_tool',
+      'describe_tool',
+      'discover_apis',
+      'execute_machine',
+      'search_tools',
+    ]);
     await client.close();
   });
 

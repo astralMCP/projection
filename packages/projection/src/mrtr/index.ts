@@ -7,11 +7,14 @@
  */
 
 export {
+  assertNotReplayed,
   errorResult,
   executeMachine,
+  type ApprovalGateDeps,
   type ExecuteMachineArgs,
   type ExecuteMachineDeps,
 } from './adapter.js';
+export { legacySuspendError, type LegacyGateCopy, type LegacyGateInput } from './legacy-gate.js';
 export {
   buildInstructions,
   buildResources,

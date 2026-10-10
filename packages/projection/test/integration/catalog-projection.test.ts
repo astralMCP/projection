@@ -81,17 +81,30 @@ afterEach(async () => {
 });
 
 describe('projections switch (R1, R32)', () => {
-  it('defaults to code mode only until call_tool ships: two tools, code-mode preamble', async () => {
+  it('defaults to both projections: five tools, routing preamble', async () => {
     const c = await connect();
-    expect(await toolNames(c)).toEqual(['discover_apis', 'execute_machine']);
-    expect(facade?.projections).toEqual({ codeMode: true, catalog: false });
+    expect(await toolNames(c)).toEqual([
+      'call_tool',
+      'describe_tool',
+      'discover_apis',
+      'execute_machine',
+      'search_tools',
+    ]);
+    expect(facade?.projections).toEqual({ codeMode: true, catalog: true });
     expect(Object.isFrozen(facade?.projections)).toBe(true);
+    expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_ROUTING_PREAMBLE}`);
+  });
+
+  it('code mode only: two tools and the code-mode preamble', async () => {
+    const c = await connect({ projections: { catalog: false } });
+    expect(await toolNames(c)).toEqual(['discover_apis', 'execute_machine']);
     expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_CODE_MODE_PREAMBLE}`);
   });
 
   it('with both projections on, both surfaces are served and the routing preamble applies (R29)', async () => {
     const c = await connect({ projections: { catalog: true } });
     expect(await toolNames(c)).toEqual([
+      'call_tool',
       'describe_tool',
       'discover_apis',
       'execute_machine',
@@ -109,7 +122,10 @@ describe('projections switch (R1, R32)', () => {
 
   it('catalog only: no code-mode tools or prompts, catalog preamble', async () => {
     const c = await connect({ projections: { codeMode: false, catalog: true } });
-    expect(await toolNames(c)).toEqual(['describe_tool', 'search_tools']);
+    expect(await toolNames(c)).toEqual(['call_tool', 'describe_tool', 'search_tools']);
+    // call_tool deliberately carries no annotations (R35).
+    const { tools } = await c.listTools();
+    expect(tools.find((t) => t.name === 'call_tool')?.annotations).toBeUndefined();
     expect(facade?.instructions).toContain(DEFAULT_CATALOG_PREAMBLE);
     expect(facade?.instructions).not.toContain('execute_machine');
     const { prompts } = await c.listPrompts();

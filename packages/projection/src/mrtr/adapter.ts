@@ -8,6 +8,8 @@ import { hashCode, openBlob, sealBlob, buildBlobPayload } from '../blob/index.js
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { legacySuspendError } from './legacy-gate.js';
 import {
   clampCaps,
   findTool,
@@ -18,6 +20,7 @@ import {
   type PendingToolCall,
   type PolicyOverrides,
   type RedactionHook,
+  type ReplayCache,
   type ErrorPhase,
   type ResourceCaps,
   type SegmentOutcome,
@@ -27,10 +30,8 @@ import {
 } from '../types.js';
 import {
   APPROVAL_SCHEMA,
-  MRTR_PROTOCOL_REVISION,
   inputRequired,
   inputResponse,
-  supportsMrtr,
   type CallToolResult,
   type ContentBlock,
   type InputRequests,
@@ -39,6 +40,17 @@ import {
   type ToolCallResult,
 } from './protocol.js';
 
+/**
+ * `execute_machine` arguments plus the MRTR retry envelope.
+ *
+ * **Security (S2):** `requestState` and `inputResponses` are the retry
+ * envelope — siblings of `arguments` in a `tools/call` that the SDK lifts off
+ * the request params onto the handler context. They are NOT tool arguments.
+ * A direct caller of `executeMachine` MUST populate them only from the
+ * transport's retry fields, never from model-authored tool arguments: a
+ * model that has seen a `requestState` could otherwise echo it back with a
+ * fabricated `accept` and approve its own gated call.
+ */
 export interface ExecuteMachineArgs extends RetryEnvelope {
   /** The authored module source (R2). */
   code: string;
@@ -47,9 +59,14 @@ export interface ExecuteMachineArgs extends RetryEnvelope {
   input?: unknown;
 }
 
-export interface ExecuteMachineDeps {
+/**
+ * What every gated entry point needs: the catalog and executor of the wrapped
+ * server, the blob sealer, and the per-facade policy, redaction, caps,
+ * protocol-era and replay settings. `execute_machine` adds the sandbox
+ * bridge; `call_tool` needs nothing more (R35, R38).
+ */
+export interface ApprovalGateDeps {
   catalog: ServerCatalog;
-  bridgeSource: string;
   executor: ToolExecutor;
   blob: BlobSealerConfig;
   caps?: Partial<ResourceCaps>;
@@ -82,6 +99,13 @@ export interface ExecuteMachineDeps {
    * not know) leaves the shim to decide.
    */
   clientCanElicit?: boolean;
+  /** Optional shared replay cache (R38); consulted after verification, before execution. */
+  replayCache?: ReplayCache;
+}
+
+export interface ExecuteMachineDeps extends ApprovalGateDeps {
+  /** The `@astral-mcp/tools` bridge module source the sandbox loads (R2). */
+  bridgeSource: string;
 }
 
 /**
@@ -101,7 +125,7 @@ export async function executeMachine(
     assertCodeSize(args.code, caps);
     assertInputSize(args.input, caps);
 
-    const resume = args.requestState !== undefined ? openResume(args, deps, caps) : undefined;
+    const resume = args.requestState !== undefined ? await openResume(args, deps, caps) : undefined;
 
     const outcome = await runSegment({
       code: args.code,
@@ -141,16 +165,18 @@ interface ResumeState {
  * expiry, codeHash, server identity) and throws on any failure, so nothing
  * gated executes from an unverified blob.
  */
-function openResume(
+async function openResume(
   args: ExecuteMachineArgs,
   deps: ExecuteMachineDeps,
   caps: ResourceCaps,
-): ResumeState {
+): Promise<ResumeState> {
   const payload = openBlob(args.requestState as string, {
+    expectedKind: 'machine',
     code: args.code,
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
   });
+  await assertNotReplayed(payload, deps.replayCache);
 
   // R18: the trip cap bounds a workflow's total round trips. The counter is
   // authenticated inside the blob, so a client cannot wind it back.
@@ -195,9 +221,18 @@ function openResume(
   };
 }
 
-function readReason(content: Record<string, unknown> | undefined): string | undefined {
+const MAX_REASON_CHARS = 500;
+
+/**
+ * The optional decline reason from an elicitation's `content`, shared by
+ * `execute_machine` and `call_tool`. Client-supplied free text that is shown
+ * back to the model (as `TOOL_DENIED.reason` or the `declined` outcome) and
+ * recorded in the audit trail, so it is rendered inert and bounded.
+ */
+export function readReason(content: Record<string, unknown> | undefined): string | undefined {
   const reason = content?.['reason'];
-  return typeof reason === 'string' && reason.length > 0 ? reason : undefined;
+  if (typeof reason !== 'string' || reason.length === 0) return undefined;
+  return neutralizeControlChars(capLength(reason, MAX_REASON_CHARS));
 }
 
 // ---------------------------------------------------------------------------
@@ -246,37 +281,12 @@ function suspendResult(
     errorResult({ phase, message, diagnostics: [], hint, logs: outcome.logs });
 
   // R28: a client that cannot carry MRTR must fail here rather than silently
-  // executing an unapproved write or hanging.
-  //
-  // The SDK would otherwise fulfil an `input_required` return on a legacy
-  // connection through its server→client elicitation shim. By default
-  // Projection refuses that path: R28 mandates a fail-fast error naming the
-  // required revision, and the shim's push-style round trips hold a
-  // connection open, which is exactly the statelessness (R27) the MRTR
-  // design buys us. `legacyElicitation` opts in per facade (DECISIONS D6):
-  // the shim's re-invocation carries the same requestState echo and
-  // inputResponses as a real retry, so S2–S4 verification runs unchanged —
-  // only the transport of the question differs.
-  if (!supportsMrtr(deps.protocolEra)) {
-    if (deps.legacyElicitation !== true) {
-      return fail(
-        'protocol',
-        `this machine needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${deps.protocolEra ?? 'legacy'} protocol era)`,
-        'Author a machine that only calls read-only tools, or connect with a client that negotiates the 2026-07-28 revision (SDK v2: `versionNegotiation: { mode: "auto" }`).',
-      );
-    }
-    // The shim has no channel to a client that never declared `elicitation`:
-    // it would reject the `input_required` return with an unstructured SDK
-    // error. Fail here instead, in Projection's own shape with a hint the
-    // model can act on. S2 holds either way — nothing has executed.
-    if (deps.clientCanElicit === false) {
-      return fail(
-        'protocol',
-        'this machine needs approval for a non-read-only tool call, but the connected client cannot receive approval prompts (it did not declare the MCP elicitation capability on this pre-2026-07-28 connection)',
-        'Author a machine that only calls read-only tools, or connect with a client that supports elicitation or negotiates the 2026-07-28 revision.',
-      );
-    }
-  }
+  // executing an unapproved write or hanging (see legacy-gate.ts).
+  const gate = legacySuspendError(deps, {
+    subject: 'this machine',
+    readOnlyAdvice: 'Author a machine that only calls read-only tools',
+  });
+  if (gate !== undefined) return fail(gate.phase, gate.message, gate.hint);
 
   // R18: refuse to suspend again once the cap is reached, rather than
   // minting a blob the retry would reject.
@@ -346,6 +356,24 @@ function suspendResult(
   // by S6, and logs are model-authored. Every other response (completion,
   // `isError`, and each resumed segment) still carries its own logs.
   return inputRequired({ inputRequests, requestState });
+}
+
+/**
+ * R38: with a replay cache configured, a verified blob whose nonce was
+ * already recorded is a replayed approval and must not execute again.
+ */
+export async function assertNotReplayed(
+  payload: { nonce: string; exp: number },
+  cache: ReplayCache | undefined,
+): Promise<void> {
+  if (cache === undefined) return;
+  if (await cache.seen(payload.nonce, payload.exp)) {
+    throw new ProjectionError(
+      'blob_verification',
+      'this approval was already used: the requestState has been replayed',
+      { hint: 'Each approval is single-use; start the call again to request a fresh approval.' },
+    );
+  }
 }
 
 /** Every failure is a normal result with `isError: true` and a structured body (R25). */

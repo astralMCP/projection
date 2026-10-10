@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { APPROVAL_SCHEMA, executeMachine, MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
 import type { ExecuteMachineDeps, ToolCallResult } from '../../src/mrtr/index.js';
-import type { BlobSealerConfig, StructuredError } from '../../src/types.js';
+import type { BlobSealerConfig, ReplayCache, StructuredError } from '../../src/types.js';
 import { BRIDGE_SOURCE, CATALOG, FakeExecutor } from '../machine-host/fixtures.js';
 import {
   ACCEPT,
@@ -147,6 +147,30 @@ describe('execute_machine over MRTR', () => {
         decision: 'approved',
       },
     ]);
+  });
+
+  it('with a replay cache, a second resume of the same approved blob is refused and the write ran once (R38)', async () => {
+    const seen = new Set<string>();
+    const replayCache: ReplayCache = {
+      seen(nonce) {
+        const was = seen.has(nonce);
+        seen.add(nonce);
+        return Promise.resolve(was);
+      },
+    };
+    const executor = new FakeExecutor();
+    const d = deps({ executor, replayCache });
+    const first = await executeMachine({ code: WRITE_MACHINE }, d);
+    const retry = {
+      code: WRITE_MACHINE,
+      requestState: sealedState(first),
+      inputResponses: { w1: ACCEPT },
+    };
+    expect(completed(await executeMachine(retry, d)).isError).toBeUndefined();
+    const second = structuredError(await executeMachine(retry, d));
+    expect(second.phase).toBe('blob_verification');
+    expect(second.message).toContain('replayed');
+    expect(executor.calls).toHaveLength(1);
   });
 
   it('takes the fallback branch when the user declines', async () => {

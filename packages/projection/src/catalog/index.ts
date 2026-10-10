@@ -1,13 +1,27 @@
 /**
- * Catalog projection (PRD §6.8, R32–R34): the lazy-catalog shape —
+ * Catalog projection (PRD §6.8, R32–R38): the lazy-catalog shape —
  * `search_tools` → `describe_tool` → `call_tool` — served next to code mode
- * over the same introspected catalog and policy engine.
+ * over the same introspected catalog and policy engine. `search_tools` and
+ * `describe_tool` are pure reads; `call_tool` runs one wrapped tool under
+ * the same approval gate as a machine step (R35–R38).
  *
  * Pure functions over a `ServerCatalog`; the facade (`wrap.ts`) registers
  * them as MCP tools and converts thrown `ProjectionError`s into R25
  * structured error results.
  */
 
+export {
+  callTool,
+  CALL_KEY,
+  type CallToolArgs,
+  type CallToolDeps,
+  type CallToolOutcome,
+} from './call.js';
+// The `call` blob TTL lives with the other blob defaults; re-exported here so
+// the catalog surface keeps naming it.
+export { DEFAULT_CALL_TTL_MS } from '../blob/index.js';
+export { canonicalJson, canonicalRequest } from './canonical.js';
+export { validateArgsShape } from './validate-args.js';
 export {
   describeTool,
   type DescribeToolArgs,

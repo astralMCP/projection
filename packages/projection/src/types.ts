@@ -152,6 +152,8 @@ export type ErrorPhase =
   | 'cap_exceeded'
   | 'blob_verification'
   | 'protocol'
+  /** An `isError` result or transport failure from the wrapped tool, surfaced by `call_tool` (R25). */
+  | 'upstream'
   | 'terminal';
 
 export interface Diagnostic {
@@ -273,14 +275,23 @@ export function clampCaps(requested: Partial<ResourceCaps>): ResourceCaps {
 
 export const BLOB_SCHEMA_VERSION = 1;
 
+/** Which tool minted a blob (R36): a blob opened by the other tool is rejected. */
+export type BlobKind = 'machine' | 'call';
+
 export interface BlobPayload {
   /** Blob schema version; unknown versions are rejected. */
   v: number;
+  /** Minting tool (R36). */
+  kind: BlobKind;
   /** Library version that produced the snapshot. */
   libv: string;
   /** Exact XState version that produced the snapshot. */
   xstatev: string;
-  /** SHA-256 (hex) of the original `code` argument. */
+  /**
+   * Binding hash (S4): SHA-256 (hex) of the original `code` for `machine`
+   * blobs, of the canonical `{ kind: "call", name, args }` request for
+   * `call` blobs (R36).
+   */
   codeHash: string;
   /** Server identity the blob was minted against (R30). */
   serverIdentity: string;
@@ -311,10 +322,38 @@ export interface BlobSealerConfig {
   key: Uint8Array;
   /** Previous keys accepted for decryption during rotation (R22). */
   previousKeys?: Uint8Array[];
-  /** Blob TTL in ms. Default 15 minutes. */
+  /** Blob TTL in ms for `machine` blobs. Default 15 minutes. */
   ttlMs?: number;
+  /**
+   * Blob TTL in ms for `call` blobs (R38). Default 5 minutes: an approved
+   * `call` blob has no forward step, so it is a standing capability until
+   * it expires (D4, D9).
+   */
+  callTtlMs?: number;
   /** Sealed+compressed size ceiling in bytes. Default 128 KB (R23). */
   maxBlobBytes?: number;
+}
+
+/**
+ * Optional shared replay cache (R38). When configured, the adapter consults
+ * it after blob verification and before executing any gated call, for both
+ * blob kinds. No default ships: an in-memory one would silently break
+ * horizontal scaling (G4), so the integrator supplies a shared store.
+ */
+export interface ReplayCache {
+  /**
+   * Record `nonce` until `exp` (Unix ms) and resolve `true` when it had
+   * already been recorded — i.e. this approval is being replayed.
+   *
+   * Contract: this MUST be an atomic test-and-set across every instance that
+   * can serve a retry (a SETNX-style primitive, not a read followed by a
+   * write), or two concurrent replays of one approval both execute. The
+   * nonce is recorded on FIRST SIGHT, before the verdict is read and
+   * regardless of what follows — a decline, a policy denial, an upstream
+   * failure — so a blob is single-use whatever happens to the call it
+   * carried. A retry that fails verification never reaches this method.
+   */
+  seen(nonce: string, exp: number): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

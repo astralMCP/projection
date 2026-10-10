@@ -146,4 +146,12 @@ describe('policyDeniedReason', () => {
     expect(reason).toContain('denied by server policy');
     expect(reason).toContain('delete_file');
   });
+
+  it('renders a hostile tool name inert and bounded (S5)', () => {
+    const ESC = String.fromCharCode(0x1b);
+    const reason = policyDeniedReason(`rm${ESC}[31m\n${'z'.repeat(5_000)}`);
+    expect(reason).not.toContain(ESC);
+    expect(reason).not.toContain('\n');
+    expect(reason.length).toBeLessThan(300);
+  });
 });
