@@ -62,3 +62,35 @@ writes execute; declined and ignored calls never reach the server; tampered
 and truncated blobs fail verification with no side effect; and — in
 `replay.test.ts` — the documented D4 in-TTL replay behaviour, so a future
 replay-cache fix has a regression to flip.
+
+## Tool-choice eval: direct tools vs Projection
+
+`src/eval/` measures how often a model picks the **correct wrapped tool with
+correct arguments** for a task when the wrapped server is exposed (A)
+directly as native tools or (B) through Projection's five tools
+(`search_tools`, `describe_tool`, `call_tool`, `discover_apis`,
+`execute_machine`). The wrapped server is an offline fake of the remote
+GitHub MCP server (`createGithubFake`): the real 95-tool catalog — names,
+descriptions, JSON Schemas, annotations and the server's own `instructions`,
+dumped once into `test/fixtures/github-catalog.json` — answering from a
+small canned table and recording every call. Tasks (`TOOL_CHOICE_TASKS`,
+15 of them, single- and multi-step) say what to do, never how, and score the
+recorded upstream calls; in projection mode a scripted approve-all client
+auto-fulfils every approval round trip, so the model only sees results.
+
+Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
+
+```bash
+PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-choice.live.test.ts
+```
+
+Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku-low`,
+`sonnet-medium`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TASKS`
+(comma list of task names), `PROJ_EVAL_RUNS` (default 3),
+`PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
+turns, upstream calls, tokens, cache-read share, estimated cost, harness
+errors, a per-task table, and Projection's route split) is printed, and the
+records are written to `eval-results/<timestamp>.json` (gitignored).
+
+The plumbing is proven offline in `test/eval/`: a scripted model drives both
+modes end to end without an API key.
