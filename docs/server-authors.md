@@ -8,7 +8,14 @@ machines against generated types; the **catalog projection** (`search_tools`,
 `describe_tool`, `call_tool`) lets them find and run one tool at a time. Both
 run through one gate: read-only calls run inline; everything else pauses for
 human approval over MRTR (MCP 2026-07-28). The advertised instructions route
-the model — one step → `call_tool`; a workflow → `execute_machine`.
+the model — one step → `call_tool`; a workflow → `execute_machine`. With code
+mode on, the server also offers two prompts (`/save-workflow`,
+`/visualize-workflow`) and a `ui://projection/dashboard.html` MCP App that
+app-capable hosts render for `execute_machine` results.
+
+This guide cites requirement numbers from [`docs/PRD.md`](./PRD.md) (R-numbers,
+S1–S6 invariants); the reasoning behind the design is in
+[`docs/DECISIONS.md`](./DECISIONS.md) (D-numbers).
 
 ## Wrap and serve
 
@@ -37,7 +44,15 @@ calls). If you build the `McpServer` yourself, use
 `facade.createServer({ era: 'modern' })`
 or `facade.registerOn(server, { era })` — but only the factory gets era
 negotiation for free, and a hand-built server defaults to `legacy`
-(fail-safe).
+(fail-safe). For hosts that are not the SDK at all, the facade's methods
+(`executeMachine`, `discoverApis`, `searchTools`, `describeTool`, `callTool`)
+are plain functions over plain data — call them from your own handler.
+
+`wrapMcpServer` introspects once, at wrap time: it reads `tools/list`
+(following `nextCursor` for at most 100 pages or 2,000 tools, then failing
+with a `protocol` error — wrap a server with a bounded tool surface),
+`instructions` and the server identity. Tools you add afterwards are not seen
+until the next wrap, and duplicate names collapse to one tool.
 
 You can also wrap a **connected SDK `Client`** instead of an in-process
 instance — Projection in front of a server you don't own. The smoke tests in
@@ -48,11 +63,11 @@ community SQLite server exactly this way.
 
 Your tool annotations set the default decision per call:
 
-| Annotation                | Decision                                                                 |
-| ------------------------- | ------------------------------------------------------------------------ |
-| `readOnlyHint: true`      | `auto` — executes inline, no approval                                    |
-| anything else / none      | `ask` — the call pauses for human approval (machine step or `call_tool`) |
-| + `destructiveHint: true` | `ask`, with strong DESTRUCTIVE warning copy                              |
+| Annotation                | Decision                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `readOnlyHint: true`      | `auto` — executes inline, no approval                                                |
+| anything else / none      | `ask` — the call pauses for human approval (machine step or `call_tool`)             |
+| + `destructiveHint: true` | `ask`, with a ⚠ headline and a plain "can permanently change or delete data" warning |
 
 Annotate honestly and the defaults do the right thing. Unannotated tools
 always ask — annotations are hints, never authority (S5).
@@ -75,13 +90,42 @@ const facade = await wrapMcpServer(myServer, {
 
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
-  serverInfo: { name: 'acme-code-mode', version: '2.0.0' }, // advertised identity
+  // Advertised identity; default { name: 'projection-default', version: '0.1.0' }.
+  serverInfo: { name: 'acme-code-mode', version: '2.0.0' },
 });
 ```
 
-A `deny` also wins over approvals already in flight: a call the user approved
+Policy is read once, at `wrapMcpServer`; later changes to your object are not
+seen. Redeploying with a tool set to `deny` is a safe incident-response move: a
+`deny` also wins over approvals already in flight, so a call the user approved
 under an earlier policy comes back as `TOOL_DENIED` / `denied_by_policy`.
-Flipping a tool to `deny` is safe as an incident-response move.
+
+## What your metadata becomes
+
+Everything the model and the approver see about a tool is derived from your
+`tools/list` entry (S5: it is all treated as untrusted text — control and bidi
+characters are neutralized and every field is capped wherever it appears):
+
+- **`name`** — the `tools.<name>` member in the generated `.d.ts`, the `name`
+  the model passes to `call_tool`, and the `Tool: <id>` footer of every
+  approval prompt. When no title exists the id is humanized for the headline
+  (namespace prefix dropped, separators to spaces).
+- **`annotations.title`** — the approval headline, `Approve: <title>`; also
+  matched by `search_tools`.
+- **`description`** — its first sentence becomes the `purpose` in
+  `search_tools`, the "What the server says it does:" line of the approval
+  prompt and the per-tool line of the `discover_apis` overview; the full text
+  goes into the `.d.ts` doc comment (after the posture line) and is returned by
+  `describe_tool`. It is never rendered verbatim in an approval prompt (R16).
+- **`inputSchema` / `outputSchema`** — the TypeScript types in `tools.d.ts`
+  and the JSON Schema `describe_tool` returns, passed through a key allowlist
+  (R34) and capped at 16 KB per tool; `schemaTruncated: true` tells the model
+  when anything was cut. A top-level `method`/`action` property with an `enum`
+  also suffixes the headline (`Create or update issue — create`).
+- **`readOnlyHint` / `destructiveHint`** — the default posture (table above)
+  and the `destructive` flag in `search_tools` / `describe_tool`.
+- **`instructions`** — forwarded verbatim ahead of Projection's routing
+  preamble (R29); `codeModePreamble` replaces the preamble, not your text.
 
 ## Two projections, one gate
 
@@ -116,12 +160,19 @@ shorter than machine blobs: once approved there is no further step, so a
 captured approved retry is a standing capability until it expires (see
 "Lifecycle" on replay).
 
+If one of your tools raises its own elicitation mid-call, it is refused:
+Projection's introspector client declares no `elicitation` capability, so the
+upstream request fails with a named error and the machine receives an ordinary
+`TOOL_ERROR` (through `call_tool`, an `upstream` error). Projection never
+forwards upstream elicitations (D7). If you pass your own connected `Client`,
+its elicitation handlers are yours to govern.
+
 ## Legacy clients (pre-2026-07-28)
 
 By default a legacy client can run read-only machines and calls, and any
 gated call fails fast naming the required revision (R28). If your deployment
-serves a held connection — stdio, the way Cursor and most local clients run
-servers — you can opt in to the SDK's elicitation shim instead:
+serves a held connection — stdio, the way most local clients run servers —
+you can opt in to the SDK's elicitation shim instead:
 
 ```ts
 const facade = await wrapMcpServer(myServer, {
@@ -151,7 +202,11 @@ nothing between round trips, so:
 - **The key must be the same 32 bytes on every instance** (env var / secret
   manager). Rotate by issuing a new `key` and listing the old one in
   `previousKeys`; blobs sealed under the old key keep opening until their
-  TTL (`ttlMs`, default 15 minutes) runs out.
+  TTL (`ttlMs`, 15 minutes for machine blobs; `callTtlMs`, 5 for `call_tool`)
+  runs out.
+- **Blobs are fenced to the exact library and XState versions** that sealed
+  them. After a deploy that changes either, in-flight blobs fail verification
+  (`blob_verification`) and the model re-runs; there is no migration (PRD Q3).
 - Approval binds what the human saw: the blob carries the approved tool
   name and arguments, and execution happens from the blob — never from
   whatever the resumed machine asks for next (S2). Code is hash-bound (S4),
@@ -159,16 +214,25 @@ nothing between round trips, so:
 
 ## Resource caps
 
-All optional, clamped to sane floors/ceilings (`clampCaps`):
+All optional. Values outside [floor, max] are clamped (`clampCaps`), so a
+misconfiguration cannot disable the flow; non-finite values are ignored.
 
-| Cap                      | Default | What it bounds                                   |
-| ------------------------ | ------- | ------------------------------------------------ |
-| `maxCodeBytes`           | 128 KB  | submitted machine source                         |
-| `maxInputBytes`          | 128 KB  | machine `input` / `call_tool` args, JSON-encoded |
-| `maxReadCallsPerSegment` | 50      | inline read calls per segment                    |
-| `maxRoundTrips`          | 8       | approval round trips per workflow                |
-| `maxResultBytes`         | 256 KB  | final machine output / `call_tool` output        |
-| `maxStateNodes`          | 100     | state nodes in the machine                       |
+| Cap                      | Floor  | Default | Max    | What it bounds                                      |
+| ------------------------ | ------ | ------- | ------ | --------------------------------------------------- |
+| `segmentWallClockMs`     | 100 ms | 30 s    | 60 s   | wall clock per execution segment (per round trip)   |
+| `wasmMemoryBytes`        | 1 MB   | 128 MB  | 256 MB | sandbox WASM memory                                 |
+| `maxCodeBytes`           | 1 KB   | 128 KB  | 256 KB | submitted machine source                            |
+| `maxInputBytes`          | 1 KB   | 128 KB  | 256 KB | machine `input` / `call_tool` args, JSON-encoded    |
+| `maxReadCallsPerSegment` | 1      | 50      | 200    | auto-run (policy `auto`) tool calls per segment     |
+| `maxRoundTrips`          | 1      | 8       | 16     | approval round trips per workflow                   |
+| `maxEventsPerSegment`    | 1      | 10 000  | 50 000 | events the host delivers to the machine per segment |
+| `maxResultBytes`         | 1 KB   | 256 KB  | 1 MB   | final machine output / `call_tool` output           |
+| `maxStateNodes`          | 1      | 100     | 1 000  | state nodes in the machine                          |
+| `maxConsoleBytes`        | 1 KB   | 64 KB   | 256 KB | captured console output per segment                 |
+
+Separately, a sealed suspension blob over `blob.maxBlobBytes` (default 128 KB)
+fails the suspension with a `terminal` error advising the model to slim its
+machine context (R23).
 
 Breaches return structured `cap_exceeded` errors with self-heal hints — the
 model can read them and restructure. Exception: a `call_tool` result over
@@ -183,7 +247,8 @@ only be restructured and resubmitted.
 - `facade.close()` on shutdown. It closes the connection Projection opened
   for an in-process server; a `Client` you passed in stays yours.
 - Every failure is a normal `isError` result with a structured body
-  (`phase`, `message`, `hint`, `logs`) — nothing throws across the wire.
+  (`phase`, `message`, `diagnostics`, `hint`, `logs`; PRD R25 lists the
+  phases) — nothing throws across the wire.
 - Known limitation (documented in `docs/DECISIONS.md` D4): within its TTL a
   captured approved retry can be replayed. Deployments that need hard replay
   prevention supply a shared replay cache (R38) — an atomic test-and-set on
@@ -201,8 +266,9 @@ only be restructured and resubmitted.
   });
   ```
 
-  No default implementation ships: an in-memory one would silently break
-  horizontal scaling.
+  The nonce is recorded on first sight, whatever the verdict, so with a cache
+  every approval blob is single-use. No default implementation ships: an
+  in-memory one would silently break horizontal scaling.
 
 - Blobs are bound to the wrapped server's identity (`name@version`). Two
   facades that share a blob key over same-identity servers can resume each
@@ -210,7 +276,8 @@ only be restructured and resubmitted.
 
 ## Try it against your server
 
-Point the harness at your server for scripted approval scenarios
+In a clone of this repository (the harness and TUI are not published), point
+the harness at your server for scripted approval scenarios
 (`runScenario` with approve/deny/tamper scripts — see
 `packages/harness/README.md`), or the TUI for interactive testing:
 `pnpm --filter @astral-mcp/tui start` wraps the demo server; swap in your own
