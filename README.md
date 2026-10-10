@@ -11,7 +11,7 @@ Projection wraps an existing MCP server and exposes two projections of it — fi
 
 **Catalog** — for single actions and large tool surfaces:
 
-- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches, name hits rank first.
+- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more.
 - **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
 - **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
 
@@ -101,11 +101,9 @@ authenticated and bound to the code, kind and tool that issued them, so
 clients carry state but can neither read nor alter it. The invariants are
 S1–S6 in [docs/PRD.md §9](docs/PRD.md#9-security-invariants); the full
 table of how each holds is in the
-[package README](packages/projection/README.md#security-model).
-
-Known limitation: unless you supply a shared `replayCache` (R38), an approved
-retry can be replayed until its blob expires (5 min for `call_tool`, 15 for
-machines). See [Lifecycle](docs/server-authors.md#lifecycle-and-operations).
+[package README](packages/projection/README.md#security-model), along with
+the known replay-window limitation and the `replayCache` option that closes
+it.
 
 ## Repository layout
 

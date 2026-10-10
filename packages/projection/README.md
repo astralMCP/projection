@@ -5,11 +5,11 @@ Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a
 effects** over MCP MRTR (Multi Round-Trip Requests).
 
 ```bash
-npm install @astral-mcp/projection @modelcontextprotocol/server
+npm install @astral-mcp/projection @modelcontextprotocol/server@2.0.0
 ```
 
-Add `@modelcontextprotocol/client` when wrapping a connected `Client`. Both
-SDK packages are pinned at `2.0.0` in Projection's own dependencies, so
+Add `@modelcontextprotocol/client@2.0.0` when wrapping a connected `Client`.
+Both SDK packages are pinned at `2.0.0` in Projection's own dependencies, so
 install the same version to match the pin.
 
 Projection wraps an existing MCP server and exposes two projections of it —
@@ -29,7 +29,8 @@ five tools in all, never the wrapped server's own:
   both).
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
-(read-only), `asks for approval`, or is `blocked by policy`.
+(read-only, or `auto` by policy), `asks for approval`, or is `blocked by
+policy`.
 
 All suspension state rides the MRTR `requestState` payload, so Projection is
 fully stateless: any server instance can resume any workflow.
@@ -57,19 +58,20 @@ Projection in front of a server you don't own.
 
 ## Security model
 
-| Invariant                                               | How it holds                                                                                                            |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` resolve as imports                    |
-| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                                          |
-| Clients carry state but can neither read nor alter it   | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                                     |
-| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code` — for `call_tool`, of the canonical `{ kind, name, args }` request |
-| A blob answers only the tool that issued it             | Blobs carry their kind; a `call_tool` blob cannot resume `execute_machine` or vice versa                                |
-| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                                     |
-| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                                               |
+| Invariant                                               | How it holds                                                                                                                                      |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` are meant for authored code; nothing that performs I/O resolves |
+| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                                                                    |
+| Clients carry state but can neither read nor alter it   | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                                                               |
+| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code` — for `call_tool`, of the canonical `{ kind, name, args }` request                           |
+| A blob answers only the tool that issued it             | Blobs carry their kind; a `call_tool` blob cannot resume `execute_machine` or vice versa                                                          |
+| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                                                               |
+| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                                                                         |
 
 Known limitation: unless you supply a shared `replayCache` (R38), an approved
-retry can be replayed until its blob expires (5 min for `call_tool`, 15 for
-machines). See
+retry can be replayed until its blob expires (by default 5 min for
+`call_tool`, 15 for machines; `blob.callTtlMs` and `blob.ttlMs` override).
+See
 [Lifecycle](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#lifecycle-and-operations).
 
 ## Documentation

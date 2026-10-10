@@ -2,8 +2,8 @@
 
 TypeScript monorepo: `@astral-mcp/projection` (the library — wraps any MCP
 server in **code mode** (LLM-authored XState workflows) and a **tool catalog**
-(search, describe, call), with **human-approved side effects** over MCP MRTR
-(Multi Round-Trip Requests)), `@astral-mcp/harness` (scenario tests +
+(search, describe, call), with **human-approved side effects** over MCP
+MRTR), `@astral-mcp/harness` (scenario tests +
 reasoning-loop benchmark), `@astral-mcp/tui` (Ink demo client),
 `@astral-mcp/demo-host` (MCP Apps browser demo, `apps/demo-host`).
 
@@ -18,8 +18,9 @@ reasoning-loop benchmark), `@astral-mcp/tui` (Ink demo client),
 
 Read the `contributing` skill (`.claude/skills/contributing/SKILL.md`): one
 PR per change, review subagents → fix subagent → squash-merge. Repo gotchas
-(worktrees, Node 22, env-file hook, goldens, flaky budget test, releasing)
-are in the `contributing` skill.
+and release steps are in the `contributing` skill (worktrees, Node 22,
+env-file hook, goldens, flaky budget test, XState pin, live-spend gates,
+releasing).
 
 When writing machine fixtures or scenarios, use the `authoring-machines`
 skill (`.claude/skills/authoring-machines/SKILL.md`).

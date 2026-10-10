@@ -21,8 +21,8 @@ One PR per feature or bug — never batch unrelated changes. For every PR:
    concrete repros, marked CONFIRMED or PLAUSIBLE; no style nits).
 5. Then a **fix subagent** applies the accepted findings (don't fix them in
    the main loop). It commits and pushes; it never touches PRs.
-6. Verify green, then squash-merge with `gh pr merge N --squash
---delete-branch`, and move to the next task.
+6. Verify green, then squash-merge with
+   `gh pr merge N --squash --delete-branch`, and move to the next task.
 
 Trivial one-liners still get at least a quick synchronous review agent.
 
@@ -76,13 +76,14 @@ prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
 - **Golden files** under `packages/projection/test/typegen/__golden__/`:
   regenerate with `UPDATE_GOLDEN=1 pnpm exec vitest run test/typegen` from
   `packages/projection`, then review `git diff`. Any value of
-  `UPDATE_GOLDEN` triggers a rewrite. Goldens live under `test/`, are
-  typechecked by `tsc --noEmit`, and are prettier-exempt
-  (`.prettierignore`) — never hand-edit or format them.
+  `UPDATE_GOLDEN` triggers a rewrite. Goldens live under `test/`, the
+  `tools.d.ts` golden is typechecked by `tsc --noEmit`, and all of them are
+  prettier-exempt (`.prettierignore`) — never hand-edit or format them.
 - **Live-spend gates**: anything that calls the Anthropic API must be
   explicit opt-in (`PROJ_LIVE_BENCH=1` + non-empty `ANTHROPIC_API_KEY`), so a
   plain `pnpm test` never spends tokens. Preserve this on new live tests.
-  Live GitHub smoke needs `PROJ_LIVE_GITHUB=1` and a token.
+  Live GitHub smoke needs `PROJ_LIVE_GITHUB=1` and `GITHUB_TOKEN` (or
+  `GITHUB_PERSONAL_ACCESS_TOKEN`).
   `packages/harness/test/smoke/pack-install.test.ts` packs and installs from
   the npm registry on every `check`; set `PROJ_SKIP_PACK_SMOKE=1` when
   offline.

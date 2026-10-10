@@ -59,10 +59,10 @@ export default setup({}).createMachine({
   - `TOOL_DENIED { callId, reason }` — the user declined, or policy denies it
 
   `toolCall(name, args, { id })` sets the id; the default is `name#N`. If
-  more than one call is outstanding at
-  once (parallel regions), give each `toolCall` an explicit id and guard
-  every waiting state with `whenCall(id)` — events reach every region that
-  can handle them, so an unguarded region consumes another call's result.
+  more than one call is outstanding at once (parallel regions), give each
+  `toolCall` an explicit id and guard every waiting state with
+  `whenCall(id)` — events reach every region that can handle them, so an
+  unguarded region consumes another call's result.
 
 - `event.result` on `TOOL_RESULT` is the tool's `structuredContent` when the
   server returns one (see its Output type in `tools.d.ts`); otherwise the
@@ -75,7 +75,7 @@ export default setup({}).createMachine({
   no handler for the incoming event fails with a `runtime` error ("the
   machine is stuck in state … with no pending tool call and no final
   state"). A `deny` policy arrives as `TOOL_DENIED` with the policy reason
-  (`policyDeniedReason` in `src/policy/decision.ts`:
+  (`policyDeniedReason` in `packages/projection/src/policy/decision.ts`:
   `… tool "<name>" is configured as deny`).
 - Caps (R12, overridable per facade; see R12 in `docs/PRD.md` for all ten):
   structured `cap_exceeded` errors name the limit.
@@ -133,6 +133,7 @@ await facade.close();
 
 Reference machines: `EXAMPLE_HAPPY_PATH` / `EXAMPLE_DENIAL_FALLBACK` in
 `packages/projection/src/mrtr/discover.ts`, and the fixtures in
-`packages/harness/test/` and `packages/tui/test/`. The examples use generic
-tool names (the fallback lists with `list_dir`), so they are not runnable
-unmodified against `createFileServer` (`list_files`).
+`packages/harness/test/` and `packages/tui/test/`. `EXAMPLE_HAPPY_PATH` runs
+against `createFileServer` with `input: { path }`; `EXAMPLE_DENIAL_FALLBACK`
+calls `list_dir` (the fixture has `list_files`) and needs
+`input: { path, dir }`.
