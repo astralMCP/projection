@@ -1,11 +1,22 @@
 /**
  * `search_tools` — the catalog projection's discovery tool (PRD R33, S5).
  *
- * Returns one page of the wrapped server's tools in catalog order — name,
- * a one-line purpose, the policy posture in plain words, and whether the
- * server marks the tool destructive — optionally filtered by a plain
- * substring. It is the lazy alternative to `discover_apis`' inline
- * overview: O(tools the model looks at), not O(tools the server has).
+ * Returns one page of the wrapped server's tools — name, a one-line
+ * purpose, the policy posture in plain words, and whether the server marks
+ * the tool destructive — optionally matched against a query. It is the lazy
+ * alternative to `discover_apis`' inline overview: O(tools the model looks
+ * at), not O(tools the server has).
+ *
+ * Matching is token-based (DECISIONS D10): the query is split on
+ * non-alphanumerics, and a tool matches when ANY token is a case-insensitive
+ * substring of its name, its annotation title, or its full description.
+ * Matches are ranked by `2 × (tokens hitting the name) + (tokens hitting the
+ * title or description)`, ties in catalog order, so a guessed name like
+ * `create_issue` finds `issue_write` instead of nothing. A title hit counts
+ * like a description hit — it catches words the description lacks — but
+ * never outranks a name hit, so "pull request" lists the `*pull_request*`
+ * tools before a tool whose title merely mentions them. No regex is ever
+ * built from the query (S5: descriptions are hostile input).
  *
  * Everything rendered comes from the S5-untrusted catalog, so names and
  * purposes are neutralized in the text rendering. `structuredContent.tools[].name`
@@ -95,14 +106,8 @@ export function searchTools(
   const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
   const offset = decodeCursor(args.cursor, query);
 
-  const needle = query.toLowerCase();
   // First occurrence wins, as for `findTool` and typegen (S5).
-  const matches = dedupeTools(catalog.tools).filter(
-    (entry) =>
-      needle.length === 0 ||
-      entry.name.toLowerCase().includes(needle) ||
-      (entry.description ?? '').toLowerCase().includes(needle),
-  );
+  const matches = rankTools(dedupeTools(catalog.tools), query);
   // A cursor is only ever issued while more results remain, so an offset at
   // or beyond the end was not issued by us (or not for this catalog): refuse
   // it rather than answer with an empty page that contradicts `total`.
@@ -122,6 +127,40 @@ export function searchTools(
     content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
     structuredContent: { ...page },
   };
+}
+
+/** Tokens of a query: lowercase, split on anything that is not a letter or digit. */
+export function tokenize(query: string): string[] {
+  const lowered = query.toLowerCase();
+  const tokens = lowered.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+  // Nothing survived (a one-letter query, or punctuation only): fall back
+  // to the whole query as the single token so `pr` still means `pr`.
+  if (tokens.length > 0) return tokens;
+  const whole = lowered.trim();
+  return whole.length > 0 ? [whole] : [];
+}
+
+/**
+ * Filter and rank the catalog for a query (D10). An empty query returns
+ * every tool in catalog order. The sort is stable, so equal scores keep
+ * catalog order and paging stays deterministic for a given query.
+ */
+function rankTools(tools: ToolCatalogEntry[], query: string): ToolCatalogEntry[] {
+  const tokens = tokenize(query);
+  if (tokens.length === 0) return tools;
+  const scored: { entry: ToolCatalogEntry; score: number }[] = [];
+  for (const entry of tools) {
+    const name = entry.name.toLowerCase();
+    const title = (entry.annotations?.title ?? '').toLowerCase();
+    const description = (entry.description ?? '').toLowerCase();
+    let score = 0;
+    for (const token of tokens) {
+      if (name.includes(token)) score += 2;
+      else if (title.includes(token) || description.includes(token)) score += 1;
+    }
+    if (score > 0) scored.push({ entry, score });
+  }
+  return scored.sort((a, b) => b.score - a.score).map((item) => item.entry);
 }
 
 function renderPage(

@@ -317,3 +317,42 @@ replay-cache hook D4 reserved is now specified as
 after R21 verification and before any gated call executes. No default
 implementation ships: an in-memory cache would pass every single-instance
 test and silently fail the moment a second instance resumes the blob.
+
+## D10 — `search_tools` matches tokens and ranks; no regex, no fuzzy, no synonyms (2026-10-10)
+
+The first `search_tools` was `grep -iF`: the whole query as a case-insensitive
+substring of the name or description, catalog order, no ranking. Measured
+on the 95-tool remote GitHub MCP catalog with 45 hand-labelled queries of
+the kind a model types before it has seen the catalog (snake_case guesses
+such as `create_issue`, intents such as `comment on a pull request`, single
+keywords), it returned nothing for 29 of them: hit@1 31%, hit@5 33%. Each
+miss costs the model a round trip and usually a two-page browse of the
+whole catalog.
+
+Decision: split the query into tokens (anything that is not a letter or
+digit separates; tokens under two characters are dropped, falling back to
+the whole query when nothing survives), match a tool when ANY token is a
+substring of its name, annotation title, or description, and rank by
+`2 × (tokens hitting the name) + (tokens hitting the title or description)`
+with a stable sort so ties keep catalog order. The title counts like the
+description rather than like the name: it catches words the description
+lacks (`issue_write`'s title says "Create"), but a tool whose title merely
+mentions "pull request" must not tie the `*pull_request*` tools for that
+query — which it did when titles were weighted like names. Same eval: hit@1 78%, hit@5 89%, on
+the first page 98%, one miss, and no regression — every match set is a
+superset of the substring matcher's and ranking never pushed a target off
+the page. Filesystem catalog: misses 5 of 10 → 1. About sixteen lines.
+
+Rejected, with the numbers: requiring ALL tokens (hit@1 67%, 12 misses —
+filler words and inflection kill it); ALL-then-ANY fallback (shorter pages,
+median 4 vs 22, but two confidently wrong short lists, a worse failure than
+a long page); name-first ranking (identical ordering on every query — the
+2× weight already does it); trailing-`s` stemming (net negative on ties);
+regex from the query (a hostile description plus a model-authored pattern
+is a ReDoS surface, and models predict a word better than a pattern).
+
+Known cost: filler words match most descriptions, so a natural-language
+query can return a full page with the answer at #1, and an unanswerable
+query (`who am I`) returns wrong rows instead of none. Still missed: queries
+that need synonyms (`mkdir` → `create_directory`); that is a vocabulary
+problem, not a matching one, and not worth a thesaurus.

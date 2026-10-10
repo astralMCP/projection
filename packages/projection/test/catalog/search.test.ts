@@ -220,4 +220,82 @@ describe('search_tools (R33)', () => {
       expect(overview).toContain(`- ${tool.name} [asks for approval] — ${tool.purpose}`);
     }
   });
+
+  describe('token matching and ranking (D10)', () => {
+    const github: ServerCatalog = {
+      ...CATALOG,
+      identity: 'github@1.0.0',
+      tools: [
+        entry({ name: 'list_issues', description: 'List issues in a GitHub repository.' }),
+        entry({
+          name: 'issue_write',
+          description: 'Create a new or update an existing issue in a GitHub repository.',
+          annotations: { title: 'Create or update issue/pull request' },
+        }),
+        entry({
+          name: 'create_branch',
+          description: 'Create a new branch in a GitHub repository.',
+        }),
+        entry({
+          name: 'pull_request_read',
+          description: 'Get information on a specific pull request.',
+        }),
+        entry({ name: 'merge_pull_request', description: 'Merge a pull request.' }),
+        entry({ name: 'get_me', description: 'Get details of the authenticated user.' }),
+      ],
+    };
+    const names = (query: string) => page(searchTools(github, { query })).tools.map((t) => t.name);
+
+    it('a guessed snake_case name finds the tool whose name shares a token', () => {
+      // No tool is called create_issue; "issue" hits issue_write's name (and
+      // title), "create" hits the title too — it outranks create_branch.
+      expect(names('create_issue')[0]).toBe('issue_write');
+      expect(names('get_pull_request')[0]).toBe('pull_request_read');
+    });
+
+    it('a natural-language intent matches on any token, name hits ranked first', () => {
+      const ranked = names('merge a pull request');
+      expect(ranked[0]).toBe('merge_pull_request');
+      expect(ranked).toContain('pull_request_read');
+      // "a" is dropped (< 2 chars) so it does not match every description.
+    });
+
+    it('matches the annotation title, which counts like a description hit, below a name hit', () => {
+      // "update" appears only in issue_write's title and description.
+      expect(names('update')).toEqual(['issue_write']);
+      // "pull" hits issue_write only through its title: listed, but after
+      // the tools whose NAME says pull_request.
+      expect(names('pull')).toEqual(['pull_request_read', 'merge_pull_request', 'issue_write']);
+    });
+
+    it('ties keep catalog order and an empty query returns everything in catalog order', () => {
+      expect(names('github')).toEqual(['list_issues', 'issue_write', 'create_branch']);
+      expect(names('')).toEqual(github.tools.map((t) => t.name));
+    });
+
+    it('a one-letter or punctuation-only query falls back to the whole query', () => {
+      expect(page(searchTools(github, { query: 'e' })).total).toBeGreaterThan(0);
+      expect(page(searchTools(github, { query: '.*' })).total).toBe(0);
+      expect(page(searchTools(github, { query: '---' })).total).toBe(0);
+    });
+
+    it('paging follows the ranked order, not the catalog order', () => {
+      const first = page(searchTools(github, { query: 'pull request' }, { pageSize: 1 }));
+      expect(first.tools.map((t) => t.name)).toEqual(['pull_request_read']);
+      const second = page(
+        searchTools(
+          github,
+          { query: 'pull request', cursor: first.nextCursor as string },
+          { pageSize: 1 },
+        ),
+      );
+      expect(second.tools.map((t) => t.name)).toEqual(['merge_pull_request']);
+    });
+
+    it('never builds a regex from the query', () => {
+      expect(
+        page(searchTools(github, { query: '(issue|branch)+' })).tools.map((t) => t.name),
+      ).toEqual(['list_issues', 'issue_write', 'create_branch']);
+    });
+  });
 });
