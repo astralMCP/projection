@@ -298,8 +298,9 @@ should set before enabling the projection on a server they do not control.
 Policy outranks a stale approval. A `deny` configured after a `call` blob was
 minted wins on the retry: `call_tool` decides policy on the retried name
 before it opens the blob, so nothing executes and no replay nonce is spent.
-Follow-up: mirror this in the machine host's `applyVerdicts`, which today
-executes an approved `pending` entry without re-deciding policy.
+The machine host's `applyVerdicts` applies the same rule: a pending call
+whose tool is `deny` at resume time is `TOOL_DENIED` with the policy reason,
+whatever the verdict says.
 
 `call_tool` makes the D4 window more consequential. After an approved machine
 step the workflow moves forward (fresh blob, fresh nonce, incremented trip),

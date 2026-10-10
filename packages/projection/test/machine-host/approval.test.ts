@@ -83,6 +83,33 @@ describe('single approval (PRD §8)', () => {
     ]);
   });
 
+  it('a deny policy on resume outranks a stale approval (D9): TOOL_DENIED, nothing executes', async () => {
+    const { outcome } = await suspendOnce();
+    const executor = new FakeExecutor();
+    // The tool was `ask` when the blob was minted; the integrator has since
+    // flipped it to `deny`. The human's approval must not win.
+    const resumed = await runSegment({
+      ...baseOptions,
+      code: WRITE_MACHINE,
+      executor,
+      policy: { write_file: 'deny' },
+      segment: 1,
+      resume: {
+        snapshot: outcome.snapshot,
+        pending: outcome.pending,
+        verdicts: { w1: { kind: 'approved' } },
+        trip: outcome.trip,
+      },
+    });
+    expect(resumed.status).toBe('completed');
+    if (resumed.status !== 'completed') return;
+    expect(resumed.output).toEqual({ status: 'skipped', result: null });
+    expect(executor.calls).toEqual([]);
+    expect(resumed.audit).toEqual([
+      expect.objectContaining({ tool: 'write_file', decision: 'denied_by_policy' }),
+    ]);
+  });
+
   it('takes the authored fallback branch when declined (denial is not an abort)', async () => {
     const { outcome } = await suspendOnce();
     const executor = new FakeExecutor();
