@@ -9,7 +9,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { decidePolicy, postureOf } from '../policy/decision.js';
+import { decidePolicy, postureOf, type ToolPosture } from '../policy/decision.js';
 import {
   capLength,
   inertIdentity,
@@ -137,17 +137,28 @@ interface ToolTypeNames {
  * `search_tools` and `describe_tool` use, so a model never sees
  * "[read-only]" on one surface and "runs immediately" on another.
  */
-function approvalNote(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
-  const destructive =
-    tool.annotations?.destructiveHint === true ? ' The server marks this tool destructive.' : '';
-  switch (postureOf(decidePolicy(tool, policy))) {
+function postureNote(posture: ToolPosture): string {
+  switch (posture) {
     case 'runs immediately':
       return 'Runs immediately: no user approval required.';
     case 'asks for approval':
-      return `Asks for approval: pauses for the user to approve this exact call before it runs.${destructive}`;
+      return 'Asks for approval: pauses for the user to approve this exact call before it runs.';
     case 'blocked by policy':
       return 'Blocked by policy: calls to this tool are refused.';
   }
+}
+
+/**
+ * The posture sentence plus, whatever the posture, the server's destructive
+ * marker: an `auto` or `deny` override does not make a destructive tool any
+ * less so, and `search_tools` / `describe_tool` show the flag on every
+ * posture too.
+ */
+function approvalNote(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
+  const note = postureNote(postureOf(decidePolicy(tool, policy)));
+  return tool.annotations?.destructiveHint === true
+    ? `${note} The server marks this tool destructive.`
+    : note;
 }
 
 function toolDoc(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
@@ -301,7 +312,7 @@ function generateOverview(server: ServerCatalog, policy: PolicyOverrides | undef
   for (const tool of server.tools) {
     // Tool names and descriptions are S5-controlled too: neutralize both so
     // a hostile name cannot forge extra overview lines (e.g. relabel a
-    // destructive tool "[read-only]" on a line of its own) and no
+    // destructive tool "[runs immediately]" on a line of its own) and no
     // ESC/ANSI/bidi characters reach the model's guidance. Plain
     // neutralization — not JSON quoting like the identity — keeps the
     // `- name [flags] — description` shape the model matches against

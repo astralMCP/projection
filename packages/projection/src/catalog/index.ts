@@ -35,7 +35,6 @@ export {
   type SanitizedSchema,
 } from './schema-safety.js';
 export {
-  postureOf,
   searchTools,
   summarizeTool,
   DEFAULT_SEARCH_PAGE_SIZE,
@@ -43,6 +42,8 @@ export {
   type SearchToolsArgs,
   type SearchToolsOptions,
   type SearchToolsPage,
-  type ToolPosture,
   type ToolSummary,
 } from './search.js';
+// The posture vocabulary (R33) belongs to the policy engine; re-exported
+// here because `search_tools` and `describe_tool` results are typed with it.
+export { postureOf, type ToolPosture } from '../policy/index.js';

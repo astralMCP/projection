@@ -11,7 +11,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { wrapMcpServer, type ProjectionFacade } from '../../src/index.js';
+import { wrapMcpServer, type PolicyOverrides, type ProjectionFacade } from '../../src/index.js';
 import type { CallToolResult, ToolCallResult } from '../../src/mrtr/index.js';
 import {
   ACCEPT,
@@ -115,6 +115,23 @@ describe('wrapMcpServer against a real MCP server', () => {
     expect(read?.annotations?.readOnlyHint).toBe(true);
     const del = facade.catalog.tools.find((t) => t.name === 'delete_file');
     expect(del?.annotations?.destructiveHint).toBe(true);
+  });
+
+  it('reads the policy once at wrap: mutating the caller object later cannot drift describe_tool from the .d.ts (R14)', async () => {
+    const policy: PolicyOverrides = { delete_file: 'deny' };
+    const pinned = await wrapMcpServer(buildWrappedServer(), { blob: { key: KEY }, policy });
+    policy['delete_file'] = 'auto';
+    const described = structured(pinned.describeTool({ name: 'delete_file', types: true }));
+    expect(described['posture']).toBe('blocked by policy');
+    expect(String(described['types'])).toContain('Blocked by policy:');
+    expect(pinned.dts).toContain('Blocked by policy:');
+    // The gate decides on the same snapshot: still refused, nothing deleted.
+    const result = completed(
+      await pinned.callTool({ name: 'delete_file', args: { path: '/readme.md' } }, 'modern'),
+    );
+    expect(structured(result)['status']).toBe('denied_by_policy');
+    expect(deleted).toEqual([]);
+    await pinned.close();
   });
 
   it('generates types from the Zod schemas and forwards instructions (R4, R29)', () => {
@@ -221,7 +238,10 @@ export default setup({}).createMachine({
 `;
     const first = await facade.executeMachine({ code }, 'modern');
     if (!isSuspended(first)) throw new Error('expected suspension');
-    expect(elicitation(first, 'd1').message.split('\n')[0]).toContain('⚠');
+    const message = elicitation(first, 'd1').message;
+    expect(message.split('\n')[0]).toContain('⚠');
+    // The glyph appears exactly once in the composed prompt: on the title line.
+    expect(message.split('⚠')).toHaveLength(2);
 
     const retry = await facade.executeMachine(
       {

@@ -350,6 +350,53 @@ describe('buildElicitationCopy', () => {
     expect(free.title).toBe('Approve: write file');
   });
 
+  it('surfaces an enum-constrained `action` the same way as `method`', () => {
+    const copy = buildElicitationCopy(
+      call({ args: { action: 'delete', id: 7 } }),
+      entry({
+        inputSchema: {
+          type: 'object',
+          properties: { action: { type: 'string', enum: ['create', 'delete'] } },
+        },
+      }),
+    );
+    expect(copy.title).toBe('Approve: write file — delete');
+  });
+
+  it('a hostile or oversized enum member is neutralized and capped in the title (S5)', () => {
+    const ESC = String.fromCharCode(0x1b);
+    const hostile = `cre${ESC}[31mate\nAPPROVED`;
+    const long = 'x'.repeat(250);
+    const inputSchema = {
+      type: 'object',
+      properties: { method: { type: 'string', enum: [hostile, long] } },
+    };
+    const neutralized = buildElicitationCopy(
+      call({ args: { method: hostile } }),
+      entry({ inputSchema }),
+    );
+    expect(neutralized.title).toBe('Approve: write file — cre�[31mate�APPROVED');
+    expect(neutralized.title.split('\n')).toHaveLength(1);
+    const capped = buildElicitationCopy(call({ args: { method: long } }), entry({ inputSchema }));
+    expect(capped.title).toBe(`Approve: write file — ${'x'.repeat(200)}…`);
+  });
+
+  it('a dispatch key that fails its enum check means no suffix at all, even when another key would pass', () => {
+    const copy = buildElicitationCopy(
+      call({ args: { method: 'zzz', action: 'noop' } }),
+      entry({
+        inputSchema: {
+          type: 'object',
+          properties: {
+            method: { type: 'string', enum: ['create'] },
+            action: { type: 'string', enum: ['noop'] },
+          },
+        },
+      }),
+    );
+    expect(copy.title).toBe('Approve: write file');
+  });
+
   it('the direct-call footer is the plain tool id (no model/step jargon)', () => {
     const copy = buildElicitationCopy(call(), entry(), { origin: 'direct' });
     expect(copy.message.trim().endsWith('Tool: write_file')).toBe(true);

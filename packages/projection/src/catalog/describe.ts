@@ -16,7 +16,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { decidePolicy } from '../policy/index.js';
+import { decidePolicy, postureOf, type ToolPosture } from '../policy/index.js';
 import {
   capLength,
   indentBlock,
@@ -33,7 +33,6 @@ import {
   type ToolAnnotations,
 } from '../types.js';
 import { sanitizeSchema } from './schema-safety.js';
-import { postureOf, type ToolPosture } from './search.js';
 
 export interface DescribeToolArgs {
   name: string;

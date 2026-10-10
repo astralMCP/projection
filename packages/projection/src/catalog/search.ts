@@ -50,8 +50,6 @@ const MAX_PAGE_SIZE = 200;
 /** `query` is capped (R33): it is matched as a plain substring, never a regex. */
 export const MAX_QUERY_CHARS = 200;
 
-export { postureOf, type ToolPosture } from '../policy/decision.js';
-
 /** One entry of a `search_tools` page (R33). */
 export interface ToolSummary {
   name: string;

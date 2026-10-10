@@ -73,7 +73,10 @@ export interface WrapOptions {
   blob: BlobSealerConfig;
   /** Resource cap overrides, clamped at the hard maxima (R12). */
   caps?: Partial<ResourceCaps>;
-  /** Per-tool policy overrides (R14). */
+  /**
+   * Per-tool policy overrides (R14). Read once, at wrap time: the facade
+   * keeps its own frozen copy, so later changes to this object are not seen.
+   */
   policy?: PolicyOverrides;
   /** Masks sensitive argument fields before they reach an approval prompt (R16). */
   redact?: RedactionHook;
@@ -193,7 +196,7 @@ Call discover_apis first for the tool types, the full authoring contract, and wo
 
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
-const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally filtered by a plain substring on name and description. Each entry gives the tool's name, a one-line purpose, whether it runs immediately or asks the user for approval, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally filtered by a plain substring on name and description. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
 const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
@@ -223,9 +226,14 @@ export async function wrapMcpServer(
     );
   }
 
-  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, {
-    policy: options.policy,
-  });
+  // The policy is snapshotted once, here, and that one frozen copy feeds
+  // typegen AND the gate / catalog tools: the posture baked into the `.d.ts`
+  // resource and the overview must be the posture `describe_tool` and the
+  // approval gate decide with, which a caller mutating their policy object
+  // after wrap could otherwise drift apart.
+  const policy = options.policy !== undefined ? Object.freeze({ ...options.policy }) : undefined;
+
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, { policy });
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
@@ -239,6 +247,7 @@ export async function wrapMcpServer(
     resources,
     instructions,
     options,
+    ...(policy !== undefined ? { policy } : {}),
     projections,
   });
 }
@@ -272,6 +281,8 @@ interface FacadeDeps {
   resources: ProjectionResource[];
   instructions: string;
   options: WrapOptions;
+  /** The wrap-time snapshot of `options.policy` (see `WrapOptions.policy`). */
+  policy?: PolicyOverrides;
   projections: Readonly<ProjectionSelection>;
 }
 
@@ -324,13 +335,13 @@ class Facade implements ProjectionFacade {
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
   ): ApprovalGateDeps {
-    const { options } = this.deps;
+    const { options, policy } = this.deps;
     return {
       catalog: this.deps.catalog,
       executor: this.deps.introspector,
       blob: options.blob,
       ...(options.caps !== undefined ? { caps: options.caps } : {}),
-      ...(options.policy !== undefined ? { policy: options.policy } : {}),
+      ...(policy !== undefined ? { policy } : {}),
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
       ...(era !== undefined ? { protocolEra: era } : {}),
       ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
@@ -368,7 +379,7 @@ class Facade implements ProjectionFacade {
 
   /** `exactOptionalPropertyTypes`: an absent policy must stay absent. */
   private policyOption(): { policy?: PolicyOverrides } {
-    const { policy } = this.deps.options;
+    const { policy } = this.deps;
     return policy !== undefined ? { policy } : {};
   }
 

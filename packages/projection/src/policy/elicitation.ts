@@ -162,7 +162,9 @@ const DISPATCH_ARGS = ['method', 'action'] as const;
  * whose schema property has an `enum` listing that exact value. Only
  * enum-listed values qualify, so the suffix is server-defined vocabulary
  * (neutralized and capped like every other S5 string), never free text
- * the model typed.
+ * the model typed. Every dispatch key the call carries must pass: one that
+ * is present but not enum-listed means no suffix at all, so a rejected
+ * `method` cannot be routed around with an `action` the model added.
  */
 function dispatchMethod(
   args: Record<string, unknown>,
@@ -172,6 +174,7 @@ function dispatchMethod(
   if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
     return undefined;
   }
+  let suffix: string | undefined;
   for (const key of DISPATCH_ARGS) {
     if (!Object.hasOwn(args, key)) continue;
     const value = args[key];
@@ -183,11 +186,11 @@ function dispatchMethod(
       !Array.isArray((property as Record<string, unknown>)['enum']) ||
       !((property as Record<string, unknown>)['enum'] as unknown[]).includes(value)
     ) {
-      continue;
+      return undefined;
     }
-    return neutralizeControlChars(capLength(value, MAX_TOOL_NAME_CHARS));
+    suffix ??= neutralizeControlChars(capLength(value, MAX_TOOL_NAME_CHARS));
   }
-  return undefined;
+  return suffix;
 }
 
 /**
