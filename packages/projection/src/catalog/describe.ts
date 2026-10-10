@@ -37,6 +37,12 @@ import { postureOf, type ToolPosture } from './search.js';
 
 export interface DescribeToolArgs {
   name: string;
+  /**
+   * Include the generated TypeScript for the tool (R34). Off by default:
+   * the JSON Schema already carries the shape, and the types double the
+   * payload — ask for them when authoring a machine.
+   */
+  types?: boolean;
 }
 
 export interface DescribeToolOptions {
@@ -95,7 +101,7 @@ export function describeTool(
           allowNewline: true,
         })
       : undefined;
-  const types = options.toolTypes?.get(entry.name)?.dts;
+  const types = args.types === true ? options.toolTypes?.get(entry.name)?.dts : undefined;
 
   const described: ToolDescription = {
     name: entry.name,

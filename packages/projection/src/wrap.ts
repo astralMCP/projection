@@ -165,7 +165,7 @@ export interface ProjectionFacade {
   /** Run `search_tools` (R33). Failures come back as R25 structured error results. */
   searchTools(args: { query?: string; cursor?: string }): CallToolResult;
   /** Run `describe_tool` (R34). Failures come back as R25 structured error results. */
-  describeTool(args: { name: string }): CallToolResult;
+  describeTool(args: { name: string; types?: boolean }): CallToolResult;
   /**
    * Run `call_tool` (R35) for one `tools/call`, first attempt or retry.
    * `era` / `clientCanElicit` as for `executeMachine`.
@@ -197,7 +197,7 @@ const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, 
 
 const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
-const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, its approval posture, and its generated TypeScript types. Call this before call_tool, or when authoring a machine that uses the tool.`;
+const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
 /**
  * Wrap an MCP server (an in-process instance or a connected client) into a
@@ -223,7 +223,9 @@ export async function wrapMcpServer(
     );
   }
 
-  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog);
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, {
+    policy: options.policy,
+  });
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
@@ -353,7 +355,7 @@ class Facade implements ProjectionFacade {
     }
   }
 
-  describeTool(args: { name: string }): CallToolResult {
+  describeTool(args: { name: string; types?: boolean }): CallToolResult {
     try {
       return describeTool(this.deps.catalog, args, {
         ...this.policyOption(),
@@ -453,10 +455,20 @@ class Facade implements ProjectionFacade {
         description: DESCRIBE_TOOL_DESCRIPTION,
         inputSchema: z.object({
           name: z.string().describe('Tool name as listed by search_tools.'),
+          types: z
+            .boolean()
+            .optional()
+            .describe(
+              'Also return the generated TypeScript for this tool (for authoring a machine).',
+            ),
         }),
         annotations: { readOnlyHint: true },
       },
-      (args) => this.describeTool({ name: args.name }),
+      (args) =>
+        this.describeTool({
+          name: args.name,
+          ...(args.types !== undefined ? { types: args.types } : {}),
+        }),
     );
 
     // No annotations on purpose (R35): hosts that gate on annotations must

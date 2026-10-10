@@ -210,7 +210,7 @@ describe('search_tools and describe_tool over the wire (R33, R34)', () => {
     const c = await connect({ projections: { catalog: true } });
     const result = (await c.callTool({
       name: 'describe_tool',
-      arguments: { name: 'write_file' },
+      arguments: { name: 'write_file', types: true },
     })) as {
       isError?: boolean;
       structuredContent?: {

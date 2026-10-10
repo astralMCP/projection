@@ -159,7 +159,7 @@ describe('call_tool over the 2026-07-28 wire', () => {
     expect(Object.keys(requests)).toEqual(['call']);
     const params = requests['call']?.params as { message: string };
     expect(params.message).toContain('Approve: write file');
-    expect(params.message).toContain('requested directly by the model');
+    expect(params.message).toContain('Tool: write_file');
     expect(params.message).toContain('via call_tool');
     expect(files['/notes.txt']).toBe('original notes');
 
@@ -218,7 +218,7 @@ describe('call_tool over the 2026-07-28 wire', () => {
       arguments: { name: 'write_file', args: { path: '/notes.txt', content: 'approved' } },
     })) as { isError?: boolean; structuredContent?: Structured };
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain('requested directly by the model');
+    expect(prompts[0]).toContain('Tool: write_file');
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toEqual({
       status: 'ok',
@@ -273,7 +273,7 @@ describe('call_tool on legacy connections (R28)', () => {
       arguments: { name: 'write_file', args: { path: '/notes.txt', content: 'legacy shim' } },
     })) as { isError?: boolean; structuredContent?: Structured };
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain('requested directly by the model');
+    expect(prompts[0]).toContain('Tool: write_file');
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent).toMatchObject({ status: 'ok', tool: 'write_file' });
     expect(files['/notes.txt']).toBe('legacy shim');

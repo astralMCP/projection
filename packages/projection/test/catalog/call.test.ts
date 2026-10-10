@@ -273,8 +273,8 @@ describe('call_tool: suspend and resume (R35.3–4, R36, S2)', () => {
     expect(requestKeys(result)).toEqual([CALL_KEY]);
     const prompt = elicitation(result, CALL_KEY);
     expect(prompt.message.startsWith('Approve: write file')).toBe(true);
-    expect(prompt.message).toContain('requested directly by the model');
-    expect(prompt.message).not.toContain('requested by step');
+    expect(prompt.message).toContain('Tool: write_file');
+    expect(prompt.message).not.toContain('workflow step');
     expect(prompt.message).toContain('"path": "/notes.txt"');
     expect(d.executor.calls).toEqual([]);
   });

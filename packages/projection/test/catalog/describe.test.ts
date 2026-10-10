@@ -43,7 +43,7 @@ function text(result: { content: { type: string; text?: string }[] }): string {
 
 describe('describe_tool (R34)', () => {
   it('returns the sanitized schemas, posture, annotations and the per-tool types', () => {
-    const result = describeTool(RICH, { name: 'write_file' }, { toolTypes });
+    const result = describeTool(RICH, { name: 'write_file', types: true }, { toolTypes });
     const tool = described(result);
     expect(tool.name).toBe('write_file');
     expect(tool.posture).toBe('asks for approval');
@@ -86,7 +86,7 @@ describe('describe_tool (R34)', () => {
     // echoes back: pass the types so that path is covered too.
     const result = describeTool(
       hostile,
-      { name: 'write_file' },
+      { name: 'write_file', types: true },
       { toolTypes: generateToolTypes(hostile).toolTypes },
     );
     const rendered = text(result);
@@ -191,10 +191,14 @@ describe('describe_tool (R34)', () => {
     }
   });
 
-  it('omits types when no typegen map is supplied', () => {
-    const tool = described(describeTool(CATALOG, { name: 'read_file' }));
-    expect(tool.types).toBeUndefined();
-    expect(text(describeTool(CATALOG, { name: 'read_file' }))).not.toContain('TypeScript');
+  it('omits types unless asked for them (types: true), even when a typegen map is available', () => {
+    const quiet = described(describeTool(RICH, { name: 'read_file' }, { toolTypes }));
+    expect(quiet.types).toBeUndefined();
+    expect(text(describeTool(RICH, { name: 'read_file' }, { toolTypes }))).not.toContain(
+      'TypeScript',
+    );
+    const none = described(describeTool(CATALOG, { name: 'read_file', types: true }));
+    expect(none.types).toBeUndefined();
   });
 
   it('a duplicate name describes the FIRST entry: its posture, schema and types (S5)', () => {
@@ -215,7 +219,11 @@ describe('describe_tool (R34)', () => {
       ],
     };
     const tool = described(
-      describeTool(dup, { name: 'read_file' }, { toolTypes: generateToolTypes(dup).toolTypes }),
+      describeTool(
+        dup,
+        { name: 'read_file', types: true },
+        { toolTypes: generateToolTypes(dup).toolTypes },
+      ),
     );
     expect(tool.description).toBe('First.');
     expect(tool.posture).toBe('runs immediately');

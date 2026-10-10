@@ -9,6 +9,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
+import { decidePolicy, postureOf } from '../policy/decision.js';
 import {
   capLength,
   inertIdentity,
@@ -17,6 +18,7 @@ import {
   purposeSentence,
 } from '../text-safety.js';
 import {
+  type PolicyOverrides,
   dedupeTools,
   type ServerCatalog,
   type ToolCatalog,
@@ -130,26 +132,37 @@ interface ToolTypeNames {
   output: string | undefined;
 }
 
-function approvalNote(tool: ToolCatalogEntry): string {
-  if (tool.annotations?.readOnlyHint === true) {
-    return 'Read-only: executes immediately, no user approval required.';
+/**
+ * One posture vocabulary for every surface (R33): the same words
+ * `search_tools` and `describe_tool` use, so a model never sees
+ * "[read-only]" on one surface and "runs immediately" on another.
+ */
+function approvalNote(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
+  const destructive =
+    tool.annotations?.destructiveHint === true ? ' The server marks this tool destructive.' : '';
+  switch (postureOf(decidePolicy(tool, policy))) {
+    case 'runs immediately':
+      return 'Runs immediately: no user approval required.';
+    case 'asks for approval':
+      return `Asks for approval: pauses for the user to approve this exact call before it runs.${destructive}`;
+    case 'blocked by policy':
+      return 'Blocked by policy: calls to this tool are refused.';
   }
-  if (tool.annotations?.destructiveHint === true) {
-    return 'DESTRUCTIVE write: pauses the machine for user approval before executing.';
-  }
-  return 'Write (or unannotated): pauses the machine for user approval before executing.';
 }
 
-function toolDoc(tool: ToolCatalogEntry): string {
+function toolDoc(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
   const lines: string[] = [];
   if (tool.description !== undefined && tool.description.length > 0) {
     lines.push(tool.description.trim(), '');
   }
-  lines.push(approvalNote(tool));
+  lines.push(approvalNote(tool, policy));
   return lines.join('\n');
 }
 
-function generateDts(server: ServerCatalog): { dts: string; toolTypes: Map<string, ToolTypeText> } {
+function generateDts(
+  server: ServerCatalog,
+  policy: PolicyOverrides | undefined,
+): { dts: string; toolTypes: Map<string, ToolTypeText> } {
   const taken = new Set<string>();
   const sections: string[] = [];
   const memberLines: string[] = [];
@@ -194,14 +207,14 @@ function generateDts(server: ServerCatalog): { dts: string; toolTypes: Map<strin
     const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
     const returnType = typeNames.output ?? 'unknown';
     const signature = `${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`;
-    memberLines.push(docComment(toolDoc(tool), '  '), `  ${signature}`);
+    memberLines.push(docComment(toolDoc(tool, policy), '  '), `  ${signature}`);
 
     toolTypes.set(tool.name, {
       inputAlias: typeNames.input,
       ...(typeNames.output !== undefined ? { outputAlias: typeNames.output } : {}),
       dts: [
         ...aliasSections,
-        `// Member of the \`tools\` surface:\n${docComment(toolDoc(tool), '')}\n${signature}`,
+        `// Member of the \`tools\` surface:\n${docComment(toolDoc(tool, policy), '')}\n${signature}`,
       ].join('\n\n'),
     });
   }
@@ -264,10 +277,9 @@ function generateBridgeSource(server: ServerCatalog): string {
   ].join('\n');
 }
 
-function overviewFlags(tool: ToolCatalogEntry): string {
-  if (tool.annotations?.readOnlyHint === true) return '[read-only]';
-  if (tool.annotations?.destructiveHint === true) return '[approval, destructive]';
-  return '[approval]';
+function overviewFlags(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
+  const posture = postureOf(decidePolicy(tool, policy));
+  return tool.annotations?.destructiveHint === true ? `[${posture}, destructive]` : `[${posture}]`;
 }
 
 /**
@@ -279,7 +291,7 @@ function purposeLine(text: string | undefined): string {
   return purposeSentence(text) ?? '(no description)';
 }
 
-function generateOverview(server: ServerCatalog): string {
+function generateOverview(server: ServerCatalog, policy: PolicyOverrides | undefined): string {
   // The overview is inlined into the discover_apis text the model reads as
   // guidance, so the S5-controlled identity renders inert and quoted.
   const lines = [`Tools (server: ${inertIdentity(server.identity)}):`];
@@ -299,7 +311,7 @@ function generateOverview(server: ServerCatalog): string {
     // most 200 chars — see `purposeSentence`); names get the identity cap.
     const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
     const description = purposeLine(tool.description);
-    lines.push(`- ${name} ${overviewFlags(tool)} — ${description}`);
+    lines.push(`- ${name} ${overviewFlags(tool, policy)} — ${description}`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -333,15 +345,23 @@ function resolveSingleServer(catalog: ToolCatalog | ServerCatalog): ServerCatalo
  * exactly one server in v1, per R30's single-instance instantiation) or a
  * {@link ServerCatalog} directly.
  */
-export function generateToolTypes(catalog: ToolCatalog | ServerCatalog): GeneratedToolTypes {
+export function generateToolTypes(
+  catalog: ToolCatalog | ServerCatalog,
+  options: GenerateToolTypesOptions = {},
+): GeneratedToolTypes {
   const server = dedupeToolNames(resolveSingleServer(catalog));
-  const { dts, toolTypes } = generateDts(server);
+  const { dts, toolTypes } = generateDts(server, options.policy);
   return {
     dts,
     bridgeSource: generateBridgeSource(server),
-    overview: generateOverview(server),
+    overview: generateOverview(server, options.policy),
     toolTypes,
   };
+}
+
+export interface GenerateToolTypesOptions {
+  /** Per-tool policy overrides (R14): decide the posture wording in docs and overview. */
+  policy?: PolicyOverrides | undefined;
 }
 
 /**

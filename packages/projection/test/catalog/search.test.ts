@@ -155,6 +155,9 @@ describe('search_tools (R33)', () => {
     const regexy = '.*';
     expect(page(searchTools(CATALOG, { query: regexy })).total).toBe(0);
     expect(() => searchTools(CATALOG, { query: 'x'.repeat(5_000) })).not.toThrow();
+    expect(text(searchTools(CATALOG, { query: 'x'.repeat(5_000) }))).toContain(
+      'query truncated to its first 200 characters',
+    );
     // The 201st character is ignored: a query of a 200-char token plus a
     // character that never follows the token still matches on the token.
     const token = 't'.repeat(MAX_QUERY_CHARS);
@@ -214,7 +217,7 @@ describe('search_tools (R33)', () => {
     };
     const { overview } = generateToolTypes(catalog);
     for (const tool of page(searchTools(catalog, {})).tools) {
-      expect(overview).toContain(`- ${tool.name} [approval] — ${tool.purpose}`);
+      expect(overview).toContain(`- ${tool.name} [asks for approval] — ${tool.purpose}`);
     }
   });
 });

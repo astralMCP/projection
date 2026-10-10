@@ -136,12 +136,16 @@ describe('generateToolTypes — overview block', () => {
   });
 
   it('lists every tool with a read-only/approval flag on one line', () => {
-    expect(generated.overview).toContain('- get_weather [read-only] — Get the current weather');
     expect(generated.overview).toContain(
-      '- create-ticket! [approval, destructive] — Create a ticket.',
+      '- get_weather [runs immediately] — Get the current weather',
     );
-    expect(generated.overview).toContain('- search [approval] —');
-    expect(generated.overview).toContain('- 123 spaced name [approval] — (no description)');
+    expect(generated.overview).toContain(
+      '- create-ticket! [asks for approval, destructive] — Create a ticket.',
+    );
+    expect(generated.overview).toContain('- search [asks for approval] —');
+    expect(generated.overview).toContain(
+      '- 123 spaced name [asks for approval] — (no description)',
+    );
   });
 });
 
