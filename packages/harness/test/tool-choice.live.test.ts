@@ -10,7 +10,8 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku-low, sonnet-medium)
  *   PROJ_EVAL_MODES        direct,projection
- *   PROJ_EVAL_TASKS        comma list of task names
+ *   PROJ_EVAL_TIERS        basic,hard (default both)
+ *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
  *
@@ -33,6 +34,7 @@ import {
   resolveModelPresets,
   resolveModes,
   resolveTasks,
+  resolveTiers,
   runToolChoiceEval,
   type EpisodeRecord,
 } from '../src/index.js';
@@ -51,7 +53,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
   it('runs the matrix and reports', { timeout: 1_800_000 }, async () => {
     const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']);
     const modes = resolveModes(process.env['PROJ_EVAL_MODES']);
-    const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS']);
+    const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
+    const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
 
@@ -60,6 +63,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       {
         models: models.map((m) => m.name),
         modes,
+        tiers,
         tasks: tasks.map((t) => t.name),
         runs,
       },

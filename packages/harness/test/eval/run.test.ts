@@ -378,6 +378,157 @@ describe('tool-choice eval plumbing (offline)', () => {
     expect(second.records).toHaveLength(4);
   });
 
+  it(
+    'drives a hard task through both modes: the fake rejects the first attempt, the corrected call scores',
+    { timeout: 60_000 },
+    async () => {
+      // A model that reads README.md, is told 404, lists the root, then reads
+      // readme.md — the recovery the read-lowercase-readme task scores. In
+      // projection mode every step goes through call_tool and the upstream
+      // error arrives as call_tool's `upstream` error result.
+      const ACME = { owner: 'acme', repo: 'widgets' };
+      const plan = [
+        { name: 'get_file_contents', args: { ...ACME, path: 'README.md' } },
+        { name: 'get_file_contents', args: { ...ACME, path: '' } },
+        { name: 'get_file_contents', args: { ...ACME, path: 'readme.md' } },
+      ];
+      const seenHere: Anthropic.MessageStreamParams[] = [];
+      const recovering: ModelCaller = async (params) => {
+        seenHere.push(params);
+        const resultsSoFar = params.messages.filter(
+          (m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'),
+        ).length;
+        const step = plan[resultsSoFar];
+        if (step === undefined) return message([{ type: 'text', text: 'Here it is.' }], 'end_turn');
+        const names = new Set((params.tools ?? []).map((t) => t.name));
+        return names.has('call_tool')
+          ? message(
+              [toolUse(`tu_${resultsSoFar}`, 'call_tool', { name: step.name, args: step.args })],
+              'tool_use',
+            )
+          : message([toolUse(`tu_${resultsSoFar}`, step.name, step.args)], 'tool_use');
+      };
+      const hard = await runToolChoiceEval({
+        models: [preset],
+        modes: resolveModes(undefined),
+        tasks: resolveTasks('read-lowercase-readme', ['hard']),
+        runs: 1,
+        caller: recovering,
+      });
+      expect(hard).toHaveLength(2);
+      for (const record of hard) {
+        expect(record.tier).toBe('hard');
+        expect(record.harnessError).toBeUndefined();
+        expect(record.success).toBe(true);
+        expect(record.forbidden).toBe(false);
+        expect(record.upstreamCalls.map((c) => c.args['path'])).toEqual([
+          'README.md',
+          '',
+          'readme.md',
+        ]);
+        expect(record.toolUses.map((t) => t.isError)).toEqual([true, false, false]);
+      }
+      // The error text reached the model in both modes. (Each episode's
+      // requests share one growing `messages` array, so collect the distinct
+      // error blocks rather than looking at the last message per request.)
+      const errorBlocks = new Set<Anthropic.ToolResultBlockParam>();
+      for (const p of seenHere) {
+        for (const m of p.messages) {
+          if (!Array.isArray(m.content)) continue;
+          for (const b of m.content) {
+            if (b.type === 'tool_result' && b.is_error === true) errorBlocks.add(b);
+          }
+        }
+      }
+      expect(errorBlocks.size).toBe(2);
+      for (const block of errorBlocks) expect(String(block.content)).toMatch(/404/);
+      const summary = summarizeToolChoice(hard);
+      expect(
+        summary.tiers.map((t) => [t.tier, t.mode, t.successes, t.scored, t.forbidden]),
+      ).toEqual([
+        ['hard', 'direct', 1, 1, 0],
+        ['hard', 'projection', 1, 1, 0],
+      ]);
+      const report = formatToolChoiceReport(hard);
+      expect(report).toContain('hard task (successes/scored)');
+      expect(report).not.toContain('basic task');
+      expect(report).toContain('tier (success; tool-ok; forbidden)');
+    },
+  );
+
+  it(
+    'marks an episode that makes a forbidden call, and the tier summary counts it',
+    { timeout: 60_000 },
+    async () => {
+      // star-unless-starred: the user already starred acme/widgets. This model
+      // looks, then stars anyway.
+      const plan = [
+        { name: 'list_starred_repositories', args: {} },
+        { name: 'star_repository', args: { owner: 'acme', repo: 'widgets' } },
+      ];
+      const eager: ModelCaller = async (params) => {
+        const resultsSoFar = params.messages.filter(
+          (m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'),
+        ).length;
+        const step = plan[resultsSoFar];
+        if (step === undefined) return message([{ type: 'text', text: 'Starred.' }], 'end_turn');
+        return message([toolUse(`tu_${resultsSoFar}`, step.name, step.args)], 'tool_use');
+      };
+      const [record] = await runToolChoiceEval({
+        models: [preset],
+        modes: ['direct'],
+        tasks: resolveTasks('star-unless-starred'),
+        runs: 1,
+        caller: eager,
+      });
+      expect(record?.upstreamCalls.map((c) => c.tool)).toEqual([
+        'list_starred_repositories',
+        'star_repository',
+      ]);
+      expect(record?.forbidden).toBe(true);
+      expect(record?.success).toBe(false);
+      expect(record?.toolCorrect).toBe(true);
+      expect(formatEpisodeLine(record as EpisodeRecord)).toContain('forbidden-call');
+      const summary = summarizeToolChoice([record as EpisodeRecord]);
+      expect(summary.tiers[0]).toMatchObject({
+        tier: 'hard',
+        successes: 0,
+        scored: 1,
+        forbidden: 1,
+        toolCorrect: 1,
+      });
+      expect(summary.tasks[0]).toMatchObject({
+        task: 'star-unless-starred',
+        tier: 'hard',
+        successes: 0,
+      });
+    },
+  );
+
+  it('groups the per-task table by tier when both tiers ran', () => {
+    const basic = records[0] as EpisodeRecord;
+    const hard: EpisodeRecord = {
+      ...basic,
+      task: 'rerun-failed-jobs',
+      tier: 'hard',
+      success: false,
+      forbidden: true,
+    };
+    const report = formatToolChoiceReport([basic, hard]);
+    const basicAt = report.indexOf('basic task (successes/scored)');
+    const hardAt = report.indexOf('hard task (successes/scored)');
+    expect(basicAt).toBeGreaterThan(0);
+    expect(hardAt).toBeGreaterThan(basicAt);
+    expect(report.indexOf('who-am-i')).toBeGreaterThan(basicAt);
+    expect(report.indexOf('who-am-i')).toBeLessThan(hardAt);
+    expect(report.indexOf('rerun-failed-jobs')).toBeGreaterThan(hardAt);
+    const tierTable = report.slice(report.indexOf('tier (success'), basicAt);
+    expect(tierTable).toMatch(/basic\s+1\/1 100%; 1\/1; 0/);
+    expect(tierTable).toMatch(/hard\s+0\/1 0%; 1\/1; 1/);
+    const summary = summarizeToolChoice([basic, hard]);
+    expect(summary.tiers.map((t) => t.tier)).toEqual(['basic', 'hard']);
+  });
+
   it('resolves model presets from a comma list and rejects unknown names', () => {
     expect(resolveModelPresets(undefined).map((p) => p.name)).toEqual([
       'haiku-low',
