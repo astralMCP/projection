@@ -300,7 +300,9 @@ minted wins on the retry: `call_tool` decides policy on the retried name
 before it opens the blob, so nothing executes and no replay nonce is spent.
 The machine host's `applyVerdicts` applies the same rule: a pending call
 whose tool is `deny` at resume time is `TOOL_DENIED` with the policy reason,
-whatever the verdict says.
+whatever the verdict says (here the blob is opened first — the machine has to
+continue with `TOOL_DENIED` — so the replay nonce is spent; the conservative
+side).
 
 `call_tool` makes the D4 window more consequential. After an approved machine
 step the workflow moves forward (fresh blob, fresh nonce, incremented trip),

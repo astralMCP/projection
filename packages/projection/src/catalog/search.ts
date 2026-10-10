@@ -14,12 +14,13 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { decidePolicy, purposeSentence } from '../policy/index.js';
+import { decidePolicy } from '../policy/index.js';
 import {
   capLength,
   inertIdentity,
   MAX_IDENTITY_CHARS,
   neutralizeControlChars,
+  purposeSentence,
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
 import {

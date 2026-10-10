@@ -449,7 +449,12 @@ class SegmentRunner {
     const events: HostEvent[] = [];
     for (const [key, call] of Object.entries(pending)) {
       const resolved = resolveCallPolicy(call, this.deps.catalog, this.deps.policy);
-      if (resolved.ok && resolved.decision === 'deny') {
+      // A sealed entry naming a tool this catalog does not declare can only
+      // have come from another deployment sharing the identity string (the
+      // same reasoning as `catalog/call.ts`): refuse it before anything
+      // reaches the executor.
+      if (!resolved.ok) throw resolved.error;
+      if (resolved.decision === 'deny') {
         const reason = policyDeniedReason(call.name);
         events.push({ type: 'TOOL_DENIED', callId: call.id, reason });
         this.deps.audit.push({
