@@ -199,13 +199,14 @@ export default setup({}).createMachine({
   });
 });
 
-describe('S1 — only the two code-mode tools are exposed', () => {
+describe("S1 — the wrapped server's own tools are never exposed", () => {
   it('does not surface the wrapped server tools on the facade catalog', async () => {
     const file = createFileServer();
     const facade = await wrapMcpServer(file.server, { blob: { key: KEY } });
     try {
       // The facade wraps the file server; its own tools stay internal. A
-      // client only ever sees execute_machine and discover_apis, which the
+      // client only ever sees Projection's tools (execute_machine,
+      // discover_apis, search_tools, describe_tool, call_tool), which the
       // library-level integration test asserts against a real Client. Here we
       // confirm the wrapped catalog is the file server's, not re-exposed.
       const names = facade.catalog.tools.map((t) => t.name).toSorted();

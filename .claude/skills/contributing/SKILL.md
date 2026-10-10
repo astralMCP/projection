@@ -66,8 +66,8 @@ committed file (including `.claude/*.json`) fails CI — always run
 
 ## Where truth lives
 
-- `docs/PRD.md` — requirements (R1–R31), security invariants (S1–S6), §10
+- `docs/PRD.md` — requirements (R1–R38), security invariants (S1–S6), §10
   budgets/metrics, §13 harness+TUI.
 - `docs/DECISIONS.md` — why things are the way they are (SDK v2 MRTR
-  adoption, AEAD sealer rationale, D4 replay obligation). Append a decision
-  entry when you make one worth remembering.
+  adoption, AEAD sealer rationale, D4 replay obligation, D9 two
+  projections). Append a decision entry when you make one worth remembering.

@@ -1,7 +1,8 @@
 # Projection for server authors
 
 You have an MCP server. `wrapMcpServer` turns it into a Projection server:
-clients see five tools — never your own — plus `projection://` resources.
+clients see five tools (fewer if you turn a projection off) — never your own —
+plus `projection://` resources.
 **Code mode** (`discover_apis`, `execute_machine`) lets models author XState v5
 machines against generated types; the **catalog projection** (`search_tools`,
 `describe_tool`, `call_tool`) lets them find and run one tool at a time. Both
@@ -31,8 +32,9 @@ export default createMcpHandler(facade.serverFactory); // HTTP
 (per request over HTTP, per connection over stdio) with the negotiated
 **protocol era**, which decides whether a gated call may
 suspend over MRTR (modern clients) or must fail fast with an error naming
-the required revision (legacy clients still run read-only machines). If you
-build the `McpServer` yourself, use `facade.createServer({ era: 'modern' })`
+the required revision (legacy clients still run read-only machines and
+calls). If you build the `McpServer` yourself, use
+`facade.createServer({ era: 'modern' })`
 or `facade.registerOn(server, { era })` — but only the factory gets era
 negotiation for free, and a hand-built server defaults to `legacy`
 (fail-safe).
@@ -46,11 +48,11 @@ community SQLite server exactly this way.
 
 Your tool annotations set the default decision per call:
 
-| Annotation                | Decision                                    |
-| ------------------------- | ------------------------------------------- |
-| `readOnlyHint: true`      | `auto` — executes inline, no approval       |
-| anything else / none      | `ask` — machine suspends for human approval |
-| + `destructiveHint: true` | `ask`, with strong DESTRUCTIVE warning copy |
+| Annotation                | Decision                                                                 |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `readOnlyHint: true`      | `auto` — executes inline, no approval                                    |
+| anything else / none      | `ask` — the call pauses for human approval (machine step or `call_tool`) |
+| + `destructiveHint: true` | `ask`, with strong DESTRUCTIVE warning copy                              |
 
 Annotate honestly and the defaults do the right thing. Unannotated tools
 always ask — annotations are hints, never authority (S5).
@@ -99,10 +101,11 @@ normal result (`{ status: "declined" }`), so the model does not retry it; a
 your tool is an `isError` result with phase `upstream`.
 
 For servers with many tools, `describe_tool` is how the model learns a
-schema without paying for the whole catalog up front. Above 40 tools
-(`catalogInlineThreshold`) `discover_apis` stops listing tools inline and
-points at `search_tools` / `describe_tool`; the `.d.ts` resource stays
-complete.
+schema without paying for the whole catalog up front. With the catalog
+projection on, above 40 tools (`catalogInlineThreshold`) `discover_apis`
+stops listing tools inline and points at `search_tools` / `describe_tool`;
+with it off the list is always inline, whatever the size. The `.d.ts`
+resource stays complete either way.
 
 Approval blobs for `call_tool` live 5 minutes by default (`blob.callTtlMs`),
 shorter than machine blobs: once approved there is no further step, so a
@@ -111,10 +114,10 @@ captured approved retry is a standing capability until it expires (see
 
 ## Legacy clients (pre-2026-07-28)
 
-By default a legacy client can run read-only machines, and any gated call
-fails fast naming the required revision (R28). If your deployment serves a
-held connection — stdio, the way Cursor and most local clients run servers —
-you can opt in to the SDK's elicitation shim instead:
+By default a legacy client can run read-only machines and calls, and any
+gated call fails fast naming the required revision (R28). If your deployment
+serves a held connection — stdio, the way Cursor and most local clients run
+servers — you can opt in to the SDK's elicitation shim instead:
 
 ```ts
 const facade = await wrapMcpServer(myServer, {
@@ -127,8 +130,8 @@ Approvals then reach the legacy client as old-style server→client
 `elicitation/create` requests, and every sealing/verification invariant
 runs unchanged. The client must declare the `elicitation` capability;
 otherwise gated calls get Projection's structured `protocol` error at
-suspend time, while read-only machines still run. This
-does nothing for per-request legacy HTTP serving (no server→client
+suspend time, while read-only machines and calls still run. This does
+nothing for per-request legacy HTTP serving (no server→client
 channel; the call fails cleanly), and while the shim round-trips, that one
 call is pinned to the serving instance.
 
@@ -154,19 +157,22 @@ nothing between round trips, so:
 
 All optional, clamped to sane floors/ceilings (`clampCaps`):
 
-| Cap                      | Default | What it bounds                    |
-| ------------------------ | ------- | --------------------------------- |
-| `maxCodeBytes`           | 128 KB  | submitted machine source          |
-| `maxInputBytes`          | 128 KB  | machine `input`, JSON-encoded     |
-| `maxReadCallsPerSegment` | 50      | inline read calls per segment     |
-| `maxRoundTrips`          | 8       | approval round trips per workflow |
-| `maxResultBytes`         | 256 KB  | final machine output              |
-| `maxStateNodes`          | 100     | state nodes in the machine        |
+| Cap                      | Default | What it bounds                                   |
+| ------------------------ | ------- | ------------------------------------------------ |
+| `maxCodeBytes`           | 128 KB  | submitted machine source                         |
+| `maxInputBytes`          | 128 KB  | machine `input` / `call_tool` args, JSON-encoded |
+| `maxReadCallsPerSegment` | 50      | inline read calls per segment                    |
+| `maxRoundTrips`          | 8       | approval round trips per workflow                |
+| `maxResultBytes`         | 256 KB  | final machine output / `call_tool` output        |
+| `maxStateNodes`          | 100     | state nodes in the machine                       |
 
 Breaches return structured `cap_exceeded` errors with self-heal hints — the
-model can read them and restructure. The exception is `maxRoundTrips`: a
-trip-cap breach is phase `terminal`, by design — the workflow cannot
-self-heal within the same run, only be restructured and resubmitted.
+model can read them and restructure. Exception: a `call_tool` result over
+`maxResultBytes` comes back `ok` with `truncated: true`, `outputBytes` and a
+1 000-char preview — the call already ran, so an error would read as
+'retry'. The other exception is `maxRoundTrips`: a trip-cap breach is phase
+`terminal`, by design — the workflow cannot self-heal within the same run,
+only be restructured and resubmitted.
 
 ## Lifecycle and operations
 
@@ -184,8 +190,9 @@ self-heal within the same run, only be restructured and resubmitted.
   const facade = await wrapMcpServer(myServer, {
     blob: { key: blobKey, callTtlMs: 2 * 60_000 },
     replayCache: {
-      // true when the nonce was already recorded — this approval is a replay
-      seen: (nonce, exp) => store.setIfAbsent(nonce, exp).then((added) => !added),
+      // expire the entry at exp (Unix ms); resolves true when already
+      // recorded — this approval is a replay
+      seen: (nonce, exp) => store.setIfAbsent(nonce, { expiresAt: exp }).then((added) => !added),
     },
   });
   ```

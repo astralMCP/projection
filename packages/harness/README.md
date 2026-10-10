@@ -5,8 +5,8 @@ A scenario-driven test harness for [Projection](../projection). It drives
 answer policy, records the side effects that actually reached the wrapped
 server, and reports enough to assert the approval invariants and the PRD
 Section 10 budgets (blob size, round-trip counts). The bundled tests cover
-S1 (only the two code-mode tools exposed), S2 (approval binds the sealed
-call), S3/S4 (tampered and truncated blobs execute nothing), S5
+S1 (the wrapped server's own tools are never exposed), S2 (approval binds
+the sealed call), S3/S4 (tampered and truncated blobs execute nothing), S5
 (annotation-driven policy), and S6 (server-derived prompt copy).
 
 The scenario layer is deterministic and CI-runnable on its own. On top of it,

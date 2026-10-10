@@ -13,7 +13,7 @@ Projection wraps an existing MCP server and exposes two projections of it over o
 
 - **`search_tools`** — a paged, filterable list of the wrapped tools with their approval posture.
 - **`describe_tool`** — one tool's description, JSON Schemas, annotations and generated types.
-- **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human to approve that exact call first.
+- **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
 
 The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
 
@@ -64,8 +64,9 @@ const client = new Client(info, {
 });
 ```
 
-A client that stays on the 2025 era still runs read-only machines; the moment a
-machine needs approval it gets a structured error naming the revision it needs.
+A client that stays on the 2025 era still runs read-only machines and calls; the
+moment a call needs approval it gets a structured error naming the revision it
+needs.
 
 The wrapped server's tools are never exposed directly. For a single action a model calls `search_tools`, `describe_tool`, then `call_tool({ name, args })` — a write pauses for approval exactly like a machine step, and a declined call comes back as a normal `{ status: "declined" }` result, not an error. For a workflow it calls `discover_apis`, authors a machine, and runs it:
 
@@ -97,15 +98,15 @@ The `write_file` call suspends the machine, seals its state into an encrypted bl
 
 ## Security model
 
-| Invariant                                               | How it holds                                                                                         |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` resolve as imports |
-| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                       |
-| Clients are untrusted couriers                          | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                  |
-| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code` (a `call_tool` blob, of the canonical request)  |
-| A blob answers only the tool that issued it             | Blobs carry their kind; a `call_tool` blob cannot resume `execute_machine` or vice versa             |
-| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                  |
-| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                            |
+| Invariant                                               | How it holds                                                                                                            |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` resolve as imports                    |
+| No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                                          |
+| Clients are untrusted couriers                          | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                                     |
+| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code` — for `call_tool`, of the canonical `{ kind, name, args }` request |
+| A blob answers only the tool that issued it             | Blobs carry their kind; a `call_tool` blob cannot resume `execute_machine` or vice versa                                |
+| A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                                     |
+| Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                                               |
 
 ## Repository layout
 
