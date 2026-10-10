@@ -73,10 +73,27 @@ directly as native tools or (B) through Projection's five tools
 GitHub MCP server (`createGithubFake`): the real 95-tool catalog — names,
 descriptions, JSON Schemas, annotations and the server's own `instructions`,
 dumped once into `test/fixtures/github-catalog.json` — answering from a
-small canned table and recording every call. Tasks (`TOOL_CHOICE_TASKS`,
-15 of them, single- and multi-step) say what to do, never how, and score the
-recorded upstream calls; in projection mode a scripted approve-all client
-auto-fulfils every approval round trip, so the model only sees results.
+small canned world and recording every call. Tasks (`TOOL_CHOICE_TASKS`)
+say what to do, never how, and score the recorded upstream calls; in
+projection mode a scripted approve-all client auto-fulfils every approval
+round trip, so the model only sees results.
+
+Tasks come in two tiers. The **basic** tier (15 tasks against
+`modelcontextprotocol/servers`) is one or two obvious calls each; current
+models saturate it. The **hard** tier (15 tasks against `acme/widgets` and
+the user's own repositories) discriminates: write tools whose `method` enum
+the prompt's verb must pick (close as not planned, re-run only failed jobs,
+reply in a review thread), candidate lists the prompt narrows to one (the
+PR by alice that touches CHANGELOG.md; the newest _open_ bug), a paged
+branch listing with the target on page 2, first attempts the fake rejects
+with `isError` (no `main` branch — the default is `master`; `README.md` is
+a 404 — the file is `readme.md`), conditional writes that must _not_ happen
+(the issue already exists; the repo is already starred), a get_me → repos →
+Dependabot alerts → issue chain, and PR URLs to parse. Hard tasks may
+`forbid` calls (a wrong write fails the episode even when the right one also
+happened) and assert that a write follows the lookup that justified it. The
+fake's hard-tier behaviours are pure functions of the call's arguments, and
+every episode gets a fresh fake, so the world is identical for every run.
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
@@ -85,12 +102,14 @@ PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-cho
 ```
 
 Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku-low`,
-`sonnet-medium`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TASKS`
-(comma list of task names), `PROJ_EVAL_RUNS` (default 3),
+`sonnet-medium`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
+(`basic,hard`, the default), `PROJ_EVAL_TASKS` (comma list of task names
+within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
 turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped
-and harness-error counts, a per-task table, and Projection's route split) is
-printed, and the records are written to `eval-results/<timestamp>.json`
+and harness-error counts, a per-tier summary, a per-task table grouped by
+tier, and Projection's route split) is printed, and the records are written
+to `eval-results/<timestamp>.json`
 (gitignored), rewritten after every episode so a timeout or crash keeps the
 partial results. An episode that hits the 12-turn cap is scored on the
 upstream calls it made (and flagged `turnCapped`); refusals, `max_tokens`,
@@ -98,4 +117,6 @@ API errors and harness exceptions are harness errors, excluded from the
 success denominators but still counted toward spend.
 
 The plumbing is proven offline in `test/eval/`: a scripted model drives both
-modes end to end without an API key.
+modes end to end without an API key, every task's predicate is checked
+against a golden call sequence and (for the hard tier) a plausible wrong
+one, and each scripted fake behaviour is checked call by call.

@@ -30,7 +30,13 @@ import {
   type ToolUseRecord,
 } from './agent.js';
 import { EVAL_MODES, openSession, type EvalMode, type ModeSession } from './modes.js';
-import { TOOL_CHOICE_TASKS, type EvalTask, type TaskKind } from './tasks.js';
+import {
+  TASK_TIERS,
+  TOOL_CHOICE_TASKS,
+  type EvalTask,
+  type TaskKind,
+  type TaskTier,
+} from './tasks.js';
 
 export type ProjectionRoute = 'call_tool' | 'execute_machine' | 'both' | 'neither';
 
@@ -50,11 +56,15 @@ export interface EpisodeRecord {
   modelId: string;
   mode: EvalMode;
   task: string;
+  tier: TaskTier;
   kind: TaskKind;
   /** Zero-based run index. */
   run: number;
+  /** The task's `expect` held and no forbidden call was made. */
   success: boolean;
   toolCorrect: boolean;
+  /** A call the task forbids was made (always false for tasks without `forbid`). */
+  forbidden: boolean;
   /**
    * The episode stopped at the turn cap while the model was still calling
    * tools. Scored normally on the calls made up to the cap.
@@ -150,17 +160,21 @@ function scoreEpisode(
   const { model, mode, task, run } = planned;
   const upstreamCalls = session.fake.calls.slice();
   const scored = episode.harnessError === undefined;
+  const forbid = task.forbid;
+  const forbidden = forbid !== undefined && upstreamCalls.some((call) => forbid(call));
   return {
     model: model.name,
     modelId: model.model,
     mode,
     task: task.name,
+    tier: task.tier,
     kind: task.kind,
     run,
-    success: scored && task.expect(upstreamCalls),
+    success: scored && !forbidden && task.expect(upstreamCalls),
     toolCorrect:
       scored &&
       task.steps.every((group) => upstreamCalls.some((call) => group.includes(call.tool))),
+    forbidden,
     turnCapped: episode.turnCapped,
     ...(episode.harnessError !== undefined ? { harnessError: episode.harnessError } : {}),
     apiTurns: episode.apiTurns,
@@ -197,10 +211,12 @@ function harnessFailureRecord(
     modelId: model.model,
     mode,
     task: task.name,
+    tier: task.tier,
     kind: task.kind,
     run,
     success: false,
     toolCorrect: false,
+    forbidden: false,
     turnCapped: episode?.turnCapped ?? false,
     harnessError: `harness: ${errorMessage(err)}`,
     apiTurns: episode?.apiTurns ?? 0,
@@ -342,6 +358,7 @@ export interface CellSummary {
 
 export interface TaskCellSummary {
   task: string;
+  tier: TaskTier;
   kind: TaskKind;
   model: string;
   mode: EvalMode;
@@ -350,9 +367,25 @@ export interface TaskCellSummary {
   episodes: number;
 }
 
+/** One tier in one cell: the success rate on that tier's tasks. */
+export interface TierCellSummary {
+  tier: TaskTier;
+  model: string;
+  mode: EvalMode;
+  tasks: number;
+  successes: number;
+  toolCorrect: number;
+  /** Scored episodes that made a forbidden call. */
+  forbidden: number;
+  scored: number;
+  episodes: number;
+}
+
 export interface ToolChoiceSummary {
   episodes: number;
   cells: CellSummary[];
+  /** Per tier × cell, in tier order (basic, then hard). */
+  tiers: TierCellSummary[];
   tasks: TaskCellSummary[];
 }
 
@@ -426,6 +459,7 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
     const scored = group.filter((r) => r.harnessError === undefined);
     return {
       task: first.task,
+      tier: first.tier,
       kind: first.kind,
       model: first.model,
       mode: first.mode,
@@ -434,9 +468,30 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
       episodes: group.length,
     };
   });
+  const tiers: TierCellSummary[] = [];
+  for (const tier of TASK_TIERS) {
+    for (const group of byCell.values()) {
+      const inTier = group.filter((r) => r.tier === tier);
+      const first = inTier[0];
+      if (first === undefined) continue;
+      const scored = inTier.filter((r) => r.harnessError === undefined);
+      tiers.push({
+        tier,
+        model: first.model,
+        mode: first.mode,
+        tasks: new Set(inTier.map((r) => r.task)).size,
+        successes: scored.filter((r) => r.success).length,
+        toolCorrect: scored.filter((r) => r.toolCorrect).length,
+        forbidden: scored.filter((r) => r.forbidden).length,
+        scored: scored.length,
+        episodes: inTier.length,
+      });
+    }
+  }
   return {
     episodes: records.length,
     cells: [...byCell.values()].map(summarizeCell),
+    tiers,
     tasks,
   };
 }
@@ -514,21 +569,45 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
   lines.push(table(cellRows), '');
 
   const cellKeys = summary.cells.map((c) => `${c.model}/${c.mode}`);
-  const taskRows: string[][] = [['task (successes/scored)', ...cellKeys]];
-  for (const name of taskNames) {
-    const row = [name];
-    for (const key of cellKeys) {
-      const cell = summary.tasks.find((t) => t.task === name && `${t.model}/${t.mode}` === key);
-      row.push(
-        cell === undefined
-          ? '-'
-          : `${cell.successes}/${cell.scored}` +
-              (cell.episodes > cell.scored ? ` (${cell.episodes - cell.scored} err)` : ''),
-      );
+  const tiersPresent = TASK_TIERS.filter((tier) => summary.tiers.some((t) => t.tier === tier));
+
+  if (tiersPresent.length > 0) {
+    const tierRows: string[][] = [['tier (success; tool-ok; forbidden)', ...cellKeys]];
+    for (const tier of tiersPresent) {
+      const row: string[] = [tier];
+      for (const key of cellKeys) {
+        const cell = summary.tiers.find((t) => t.tier === tier && `${t.model}/${t.mode}` === key);
+        row.push(
+          cell === undefined
+            ? '-'
+            : `${cell.successes}/${cell.scored} ${pct(cell.successes, cell.scored).trim()}; ` +
+                `${cell.toolCorrect}/${cell.scored}; ${cell.forbidden}`,
+        );
+      }
+      tierRows.push(row);
     }
-    taskRows.push(row);
+    lines.push(table(tierRows), '');
   }
-  lines.push(table(taskRows), '');
+
+  for (const tier of tiersPresent) {
+    const taskRows: string[][] = [[`${tier} task (successes/scored)`, ...cellKeys]];
+    for (const name of taskNames) {
+      const cells = summary.tasks.filter((t) => t.task === name && t.tier === tier);
+      if (cells.length === 0) continue;
+      const row = [name];
+      for (const key of cellKeys) {
+        const cell = cells.find((t) => `${t.model}/${t.mode}` === key);
+        row.push(
+          cell === undefined
+            ? '-'
+            : `${cell.successes}/${cell.scored}` +
+                (cell.episodes > cell.scored ? ` (${cell.episodes - cell.scored} err)` : ''),
+        );
+      }
+      taskRows.push(row);
+    }
+    lines.push(table(taskRows), '');
+  }
 
   const projectionCells = summary.cells.filter((c) => c.routes !== undefined);
   if (projectionCells.length > 0) {
@@ -558,7 +637,8 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
 
   lines.push(
     'Cost model: Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
-      'Turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored.',
+      'Turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
+      'an episode that makes a call its task forbids is not a success.',
   );
   return lines.join('\n');
 }
@@ -570,9 +650,11 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
       ? `ERR ${record.harnessError}`
       : record.success
         ? 'ok'
-        : record.toolCorrect
-          ? 'tool-ok/args-wrong'
-          : 'miss';
+        : record.forbidden
+          ? 'forbidden-call'
+          : record.toolCorrect
+            ? 'tool-ok/args-wrong'
+            : 'miss';
   const route = record.projection !== undefined ? ` via ${record.projection.route}` : '';
   const capped = record.turnCapped ? ' (turn-capped)' : '';
   const upstream = record.upstreamCalls.map((c) => c.tool).join(',') || '-';
@@ -585,6 +667,7 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
 export interface ResultsMeta {
   models?: string[];
   modes?: EvalMode[];
+  tiers?: TaskTier[];
   tasks?: string[];
   runs?: number;
 }
