@@ -36,6 +36,7 @@ export {
 } from './decision.js';
 export {
   buildElicitationCopy,
+  purposeSentence,
   type ElicitationCopy,
   type ElicitationCopyOptions,
 } from './elicitation.js';

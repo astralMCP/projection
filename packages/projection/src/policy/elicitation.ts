@@ -153,7 +153,7 @@ function friendlyAction(entry: ToolCatalogEntry, safeName: string): string {
  * description does not render as a wall of `�`. Undefined when the server
  * gave no usable description.
  */
-function purposeSentence(description: string | undefined): string | undefined {
+export function purposeSentence(description: string | undefined): string | undefined {
   if (description === undefined) return undefined;
   description = capLength(description, MAX_RAW_DESCRIPTION_CHARS);
   // Work on the RAW first line: a newline is a hard boundary, so a hostile

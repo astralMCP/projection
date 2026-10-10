@@ -29,6 +29,7 @@
  */
 
 import type { Client } from '@modelcontextprotocol/client';
+import { describeTool, searchTools } from './catalog/index.js';
 import {
   McpServer,
   type Implementation,
@@ -36,20 +37,23 @@ import {
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { DASHBOARD_RESOURCE_URI } from './apps/dashboard.js';
+import { toStructuredError } from './errors.js';
 import { WORKFLOW_PROMPTS } from './prompts/workflow-prompts.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
 import {
   buildInstructions,
   buildResources,
   discoverApis,
+  errorResult,
   executeMachine,
   type CallToolResult,
   type ExecuteMachineArgs,
   type ProjectionResource,
+  type ProjectionSelection,
   type ProtocolEra,
   type ToolCallResult,
 } from './mrtr/index.js';
-import { generateToolTypes } from './typegen/index.js';
+import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
 import {
   clampCaps,
   DEFAULT_SERVER_ALIAS,
@@ -85,7 +89,22 @@ export interface WrapOptions {
   };
   /** Identity the servers built by `createServer` advertise. */
   serverInfo?: Implementation;
+  /**
+   * Which projections the facade serves (R1, R32). Code mode
+   * (`execute_machine`, `discover_apis`) defaults on. The catalog projection
+   * (`search_tools`, `describe_tool`, `call_tool`) defaults OFF until
+   * `call_tool` ships; disabling both is an error at wrap time.
+   */
+  projections?: ProjectionsOptions;
 }
+
+/** Per-projection on/off switches (R1, R32). */
+export interface ProjectionsOptions {
+  codeMode?: boolean;
+  catalog?: boolean;
+}
+
+const DEFAULT_PROJECTIONS: ProjectionSelection = { codeMode: true, catalog: false };
 
 /** Options for registering the code-mode surface on a server the caller built. */
 export interface RegisterOptions {
@@ -125,6 +144,12 @@ export interface ProjectionFacade {
   ): Promise<ToolCallResult>;
   /** Run `discover_apis`. */
   discoverApis(): CallToolResult;
+  /** Run `search_tools` (R33). Failures come back as R25 structured error results. */
+  searchTools(args: { query?: string; cursor?: string }): CallToolResult;
+  /** Run `describe_tool` (R34). Failures come back as R25 structured error results. */
+  describeTool(args: { name: string }): CallToolResult;
+  /** The projections this facade serves (R32). */
+  readonly projections: ProjectionSelection;
   /** Build an `McpServer` carrying the instructions, both tools and the resources. */
   createServer(ctx?: RegisterOptions): McpServer;
   /** Register both tools and the resources on an `McpServer` the caller built. */
@@ -140,6 +165,10 @@ Author a module that default-exports a machine built with XState v5 setup(...).c
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
 
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
+
+const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally filtered by a plain substring on name and description. Each entry gives the tool's name, a one-line purpose, whether it runs immediately or asks the user for approval, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+
+const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, its approval posture, and its generated TypeScript types. Call this before call_tool, or when authoring a machine that uses the tool.`;
 
 /**
  * Wrap an MCP server (an in-process instance or a connected client) into a
@@ -161,9 +190,10 @@ export async function wrapMcpServer(
     );
   }
 
-  const { dts, bridgeSource, overview } = generateToolTypes(catalog);
+  const projections = resolveProjections(options.projections);
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog);
   const resources = buildResources(catalog, dts);
-  const instructions = buildInstructions(catalog, options.codeModePreamble);
+  const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
   return new Facade({
     introspector,
@@ -171,10 +201,26 @@ export async function wrapMcpServer(
     dts,
     bridgeSource,
     overview,
+    toolTypes,
     resources,
     instructions,
     options,
+    projections,
   });
+}
+
+/** R1: at least one projection must be on, or the facade serves nothing. */
+function resolveProjections(options: ProjectionsOptions | undefined): ProjectionSelection {
+  const selection: ProjectionSelection = {
+    codeMode: options?.codeMode ?? DEFAULT_PROJECTIONS.codeMode,
+    catalog: options?.catalog ?? DEFAULT_PROJECTIONS.catalog,
+  };
+  if (!selection.codeMode && !selection.catalog) {
+    throw new ProjectionError('terminal', 'at least one projection must be enabled', {
+      hint: 'Set projections.codeMode and/or projections.catalog to true (both default to on).',
+    });
+  }
+  return selection;
 }
 
 interface FacadeDeps {
@@ -183,9 +229,11 @@ interface FacadeDeps {
   dts: string;
   bridgeSource: string;
   overview: string;
+  toolTypes: Map<string, ToolTypeText>;
   resources: ProjectionResource[];
   instructions: string;
   options: WrapOptions;
+  projections: ProjectionSelection;
 }
 
 class Facade implements ProjectionFacade {
@@ -194,6 +242,7 @@ class Facade implements ProjectionFacade {
   readonly dts: string;
   readonly resources: ProjectionResource[];
   readonly serverFactory: McpServerFactory;
+  readonly projections: ProjectionSelection;
   private readonly deps: FacadeDeps;
 
   constructor(deps: FacadeDeps) {
@@ -202,6 +251,7 @@ class Facade implements ProjectionFacade {
     this.instructions = deps.instructions;
     this.dts = deps.dts;
     this.resources = deps.resources;
+    this.projections = deps.projections;
     // Bound so it can be handed to `createMcpHandler` detached.
     this.serverFactory = (ctx) => this.createServer(ctx);
   }
@@ -228,6 +278,31 @@ class Facade implements ProjectionFacade {
 
   discoverApis(): CallToolResult {
     return discoverApis(this.deps.catalog, this.deps.overview);
+  }
+
+  searchTools(args: { query?: string; cursor?: string }): CallToolResult {
+    try {
+      return searchTools(this.deps.catalog, args, this.policyOption());
+    } catch (err) {
+      return errorResult(toStructuredError(err));
+    }
+  }
+
+  describeTool(args: { name: string }): CallToolResult {
+    try {
+      return describeTool(this.deps.catalog, args, {
+        ...this.policyOption(),
+        toolTypes: this.deps.toolTypes,
+      });
+    } catch (err) {
+      return errorResult(toStructuredError(err));
+    }
+  }
+
+  /** `exactOptionalPropertyTypes`: an absent policy must stay absent. */
+  private policyOption(): { policy?: PolicyOverrides } {
+    const { policy } = this.deps.options;
+    return policy !== undefined ? { policy } : {};
   }
 
   /**
@@ -259,6 +334,68 @@ class Facade implements ProjectionFacade {
   registerOn(server: McpServer, options?: RegisterOptions): void {
     const era = options?.era;
 
+    if (this.projections.codeMode) this.registerCodeMode(server, era);
+    if (this.projections.catalog) this.registerCatalog(server);
+
+    // Resources back both projections: describe_tool points at the .d.ts,
+    // and the MCP Apps dashboard rides execute_machine results.
+    for (const resource of this.resources) {
+      server.registerResource(
+        resource.name,
+        resource.uri,
+        {
+          description: resource.description,
+          mimeType: resource.mimeType,
+          ...(resource._meta !== undefined ? { _meta: resource._meta } : {}),
+        },
+        () => ({
+          contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text }],
+        }),
+      );
+    }
+  }
+
+  /** Catalog projection (R32–R34): `search_tools`, `describe_tool`. */
+  private registerCatalog(server: McpServer): void {
+    // Both are pure reads over the catalog; the annotation lets hosts that
+    // gate on annotations run them without a prompt (R35).
+    server.registerTool(
+      'search_tools',
+      {
+        title: 'Search the tool catalog',
+        description: SEARCH_TOOLS_DESCRIPTION,
+        inputSchema: z.object({
+          query: z
+            .string()
+            .optional()
+            .describe('Plain substring to match on name and description.'),
+          cursor: z.string().optional().describe('nextCursor from a previous page.'),
+        }),
+        annotations: { readOnlyHint: true },
+      },
+      (args) =>
+        this.searchTools({
+          ...(args.query !== undefined ? { query: args.query } : {}),
+          ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+        }),
+    );
+
+    server.registerTool(
+      'describe_tool',
+      {
+        title: 'Describe one tool',
+        description: DESCRIBE_TOOL_DESCRIPTION,
+        inputSchema: z.object({
+          name: z.string().describe('Tool name as listed by search_tools.'),
+        }),
+        annotations: { readOnlyHint: true },
+      },
+      (args) => this.describeTool({ name: args.name }),
+    );
+  }
+
+  /** Code mode (R1–R3): `execute_machine`, `discover_apis`, the workflow prompts. */
+  private registerCodeMode(server: McpServer, era: ProtocolEra | undefined): void {
     server.registerTool(
       'execute_machine',
       {
@@ -320,21 +457,6 @@ class Facade implements ProjectionFacade {
       },
       () => this.discoverApis(),
     );
-
-    for (const resource of this.resources) {
-      server.registerResource(
-        resource.name,
-        resource.uri,
-        {
-          description: resource.description,
-          mimeType: resource.mimeType,
-          ...(resource._meta !== undefined ? { _meta: resource._meta } : {}),
-        },
-        () => ({
-          contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text }],
-        }),
-      );
-    }
 
     // Workflow prompts (/save-workflow, /visualize-workflow): templated
     // guidance the client's model runs against ITS conversation context —

@@ -195,14 +195,39 @@ export function discoverApis(catalog: ServerCatalog, overview: string): CallTool
   };
 }
 
+/** Which projections a facade serves (R1, R32). */
+export interface ProjectionSelection {
+  codeMode: boolean;
+  catalog: boolean;
+}
+
 /**
- * The wrapped server's `instructions`, followed by the code-mode preamble
- * (R29). The preamble is library copy the integrating developer can replace.
+ * The wrapped server's `instructions`, followed by the preamble for the
+ * projections in service (R29). The preamble is library copy the
+ * integrating developer can replace wholesale.
  */
+export function buildInstructions(
+  catalog: ServerCatalog,
+  preamble?: string,
+  projections: ProjectionSelection = { codeMode: true, catalog: false },
+): string {
+  const wrapped = catalog.instructions?.trim();
+  const copy = preamble ?? defaultPreamble(projections);
+  return wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${copy}` : copy;
+}
+
+/** The R29 preamble variant for a projection selection. */
+export function defaultPreamble(projections: ProjectionSelection): string {
+  if (projections.codeMode && projections.catalog) return DEFAULT_ROUTING_PREAMBLE;
+  if (projections.catalog) return DEFAULT_CATALOG_PREAMBLE;
+  return DEFAULT_CODE_MODE_PREAMBLE;
+}
+
+/** Preamble when only code mode is on (R29). */
 export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Any tool that is not read-only pauses the machine and asks the user to approve that specific action before it runs. Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
 
-export function buildInstructions(catalog: ServerCatalog, preamble?: string): string {
-  const wrapped = catalog.instructions?.trim();
-  const codeMode = preamble ?? DEFAULT_CODE_MODE_PREAMBLE;
-  return wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${codeMode}` : codeMode;
-}
+/** Preamble when only the catalog projection is on (R29, R32). */
+export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Any tool that is not read-only pauses and asks the user to approve that specific action before it runs.`;
+
+/** Preamble when both projections are on: the routing rule (R29). */
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, any action that is not read-only pauses and asks the user to approve that specific action before it runs.`;
