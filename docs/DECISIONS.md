@@ -231,3 +231,46 @@ Decision: keep them split. Do not "harmonize" the two by adding the audit
 table to the prompt or stripping it from the dashboard; each has a
 different reader. Both share the S6 posture — every result value is inert
 data and a fact, never an instruction; only the result's `hint` is advice.
+
+## D9 — Two projections, one gate: the catalog projection coexists with code mode (2026-10-09)
+
+Code mode (`execute_machine`) is the product: N steps in one round trip,
+branching on `TOOL_DENIED`, a sealed snapshot that any instance can resume,
+and a result worth saving as a skill. It has two costs that showed up in use.
+A single action ("read notes.txt") costs a 25-line machine and a round of
+self-healing, and `discover_apis` describes the whole catalog inline, which
+does not survive a server with hundreds of tools.
+
+Decision: add the lazy-catalog shape — `search_tools`, `describe_tool`,
+`call_tool` — as a second projection on the same facade (PRD §6.8), on by
+default, and route between them in the instructions preamble (R29): one step
+→ `call_tool`; several steps, branching, or anything worth saving →
+`execute_machine`. Not a mode switch; both are live unless the integrator
+turns one off.
+
+Why one gate rather than a proxy. `call_tool` is the degenerate one-call
+machine, so it reuses the machine's approval path end to end: the R16 copy
+builder, the redaction hook, the blob sealer and the MRTR adapter. The
+approved args execute from the blob's `pending` entry, never from the retry
+(S2), and the blob is bound to the canonical `{ name, args }` request through
+the existing `codeHash` field plus a `kind` discriminator (R36). A separate,
+simpler "approval token" for direct calls was rejected: it would be a second
+S2–S4 implementation to fuzz, tamper-test and keep in step for a saving of
+one `null` snapshot.
+
+Decline is an outcome, not an error. `call_tool` returns a normal result
+`{ status: "declined" }` (mirroring `TOOL_DENIED`), because an `isError`
+result reads to a model as "retry", and the one thing a declined write must
+not do is come straight back. The tool description says so explicitly.
+
+Argument validation is structural only (required keys, top-level types,
+unknown keys when forbidden). It exists so a human is never asked to approve
+a call that the upstream will reject on shape, and so the model gets a
+`validate` hint naming the property; full JSON Schema validation would add a
+dependency to the hot path for marginal benefit when the wrapped server is
+the authority anyway.
+
+`describe_tool` is the injection surface of this projection — it hands the
+wrapped server's own words to the model — and gets the same S5 treatment as
+`discover_apis`: description neutralized and capped, annotations presented as
+hints, identity inert.

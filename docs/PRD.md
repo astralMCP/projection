@@ -14,6 +14,8 @@ The machine orchestrates calls to the wrapped server's tools. Read-only tool cal
 
 Because all suspension state travels in the MRTR payload, the library is fully compatible with stateless, horizontally scaled deployments: any server instance can resume any workflow.
 
+Alongside code mode, the same facade exposes a **catalog projection** (Section 6.8): `search_tools`, `describe_tool` and a polymorphic `call_tool` for single actions and for servers whose tool surface is too large to describe up front. Both projections run through one policy engine, one approval path and one blob sealer, so a direct call is gated exactly like a step inside a machine.
+
 ## 2. Background and motivation
 
 The code-mode pattern (one execute-code tool instead of N tools) reduces context bloat, lets models compose multi-step workflows in a single call, and keeps intermediate data out of the model's context. Its historical weakness is side-effect safety: once code is running, every write it performs is invisible until it is done.
@@ -58,7 +60,7 @@ The **integrating developer** installs the library, points it at their MCP serve
 
 ### 6.1 Exposed tool surface
 
-R1. The library MUST expose exactly two tools by default: `execute_machine` and `discover_apis`. The wrapped server's own tools MUST NOT be exposed directly to the client.
+R1. The library exposes two projections of the wrapped server over one facade, both on by default: **code mode** (`execute_machine`, `discover_apis`) and the **catalog projection** (`search_tools`, `describe_tool`, `call_tool`; Section 6.8). The integrating developer MAY disable either projection (`WrapOptions.projections`). The wrapped server's own tools MUST NOT be exposed directly to the client: `call_tool` is a mediated entry point that validates, applies policy and binds approval to the exact call, never a pass-through.
 
 R2. `execute_machine` accepts `{ code: string, lang?: "ts" | "js", input?: object }` where `input` is passed as the machine's input. The tool description MUST summarize the authoring contract and point to `discover_apis`.
 
@@ -66,7 +68,7 @@ R3. `discover_apis` returns a compact inline overview (pinned XState version, al
 
 R4. Type generation MUST support two sources: direct extraction from an in-process server instance (preferred fidelity, e.g. Zod schemas → types) and JSON Schema conversion from a remote `tools/list`. Tool names are namespaced into a single `tools` API surface importable as `@astral-mcp/tools`.
 
-R29. The library forwards the wrapped server's `instructions` field verbatim, then appends a short (2–3 sentence) code-mode preamble explaining that tools are invoked by authoring a state machine via `execute_machine`, that non-read-only actions will pause for user approval, and that `discover_apis` describes the API. The preamble is library-supplied copy, overridable by the integrating developer.
+R29. The library forwards the wrapped server's `instructions` field verbatim, then appends a short (3–4 sentence) preamble that states the **routing rule** between the two projections: a single action goes through `call_tool` (with `search_tools` / `describe_tool` to find the tool and its arguments); several steps, branching on results, or a workflow worth saving are authored as a state machine and run with `execute_machine` (after `discover_apis`); and either way any non-read-only action pauses for user approval. When a projection is disabled the preamble describes only the one that is on. The preamble is library-supplied copy, overridable by the integrating developer.
 
 R30. The internal tool catalog, generated types, and blob format MUST NOT assume a single wrapped server. The catalog is keyed by server alias (v1 ships with exactly one, default alias omitted from generated type paths for ergonomics), and the blob records the server identity it was minted against. This keeps the door open for the multi-server stretch goal (Section 12.2) without a v2 blob-format break.
 
@@ -123,15 +125,16 @@ R19. The blob is versioned, authenticated, and encrypted (AEAD, e.g. AES-256-GCM
 
 R20. Blob payload fields:
 
-| Field                 | Purpose                                                                     |
-| --------------------- | --------------------------------------------------------------------------- |
-| `v`                   | Blob schema version; unknown versions are rejected with a terminal error    |
-| `libv` / `xstatev`    | Library and XState versions that produced the snapshot                      |
-| `codeHash`            | SHA-256 of the original `code` argument; the retried call's code must match |
-| `snapshot`            | `getPersistedSnapshot()` output of the machine actor                        |
-| `pending`             | Map of inputRequest key → gated tool call (name, args) awaiting a verdict   |
-| `trip`                | Round-trip counter for R18                                                  |
-| `nonce`, `iat`, `exp` | Replay scoping and expiry (default TTL 15 min, configurable)                |
+| Field                 | Purpose                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v`                   | Blob schema version; unknown versions are rejected with a terminal error                                                                                       |
+| `libv` / `xstatev`    | Library and XState versions that produced the snapshot                                                                                                         |
+| `kind`                | `machine` (minted by `execute_machine`) or `call` (minted by `call_tool`); a blob opened by the other tool is rejected (R36)                                   |
+| `codeHash`            | Binding hash (S4): SHA-256 of the original `code` for `machine` blobs, of the canonical `{ name, args }` request for `call` blobs; the retried call must match |
+| `snapshot`            | `getPersistedSnapshot()` output of the machine actor (`null` for `call` blobs)                                                                                 |
+| `pending`             | Map of inputRequest key → gated tool call (name, args) awaiting a verdict                                                                                      |
+| `trip`                | Round-trip counter for R18 (always 1 for `call` blobs)                                                                                                         |
+| `nonce`, `iat`, `exp` | Replay scoping and expiry (default TTL 15 min, configurable)                                                                                                   |
 
 R21. On resume the library MUST verify, in order: decrypt/authenticate, version compatibility, expiry, and `codeHash` equality against the re-sent code — then re-evaluate the module, restore the actor from `snapshot`, and inject verdict events. Any verification failure is a terminal structured error; the library never executes gated calls from an unverified blob.
 
@@ -155,6 +158,28 @@ R27. The library holds zero cross-request state. All resume information rides in
 
 R28. Down-negotiation: when a client speaks a pre-2026-07-28 revision without MRTR, `execute_machine` MUST still function for fully read-only machines and MUST fail fast with a clear error the moment a gated call would suspend, naming the required protocol revision. Amendment (see DECISIONS.md D6): the integrator MAY opt in per facade (`compat.legacyElicitation`) to serving suspensions to legacy clients through the SDK's server→client `elicitation/create` shim; the shim's re-invocation carries the same `requestState` echo and `inputResponses` as an MRTR retry, so S2–S4 verification is unchanged. The opt-in only functions on held connections (stdio); per-request legacy HTTP serving has no server→client channel and fails cleanly. With the opt-in, a legacy client that did not declare the `elicitation` capability MUST also get Projection's structured fail-fast error at suspend time (not the SDK shim's unstructured failure); read-only machines still run. Fail-fast remains the default.
 
+### 6.8 Catalog projection (direct tools)
+
+The catalog projection is the second way to drive the wrapped server: three tools in the lazy-catalog shape (discover → details → polymorphic call) used by Anthropic's tool-search and Block's Goose. It exists for two reasons code mode does not serve well: a single action should not cost a 25-line machine, and a server with hundreds of tools cannot be described inline by `discover_apis` without flooding the context. It is deliberately not a second product: it shares the introspected catalog, the policy engine (R14), the elicitation copy (R16), the redaction hook, the blob sealer (R19–R23), the MRTR adapter and the legacy compat path (R28). Only the sandbox, the machine host and typegen's bridge are bypassed.
+
+R32. The catalog projection consists of exactly three tools: `search_tools`, `describe_tool`, `call_tool`. It is on by default and can be disabled per facade; disabling it leaves code mode unchanged (and vice versa).
+
+R33. `search_tools({ query?: string, cursor?: string })` returns a page of tools — name, a one-line purpose (the first sentence of the server's description, neutralized and capped per S5), and the policy posture in plain words (`runs immediately`, `asks for approval`, `blocked by policy`) — filtered by case-insensitive substring on name and description when `query` is given. Pages are bounded (default 50) and carry a `cursor` when more remain. The result tells the model to call `describe_tool` before calling a tool it has not seen the schema of.
+
+R34. `describe_tool({ name })` returns everything the model needs to call one tool: the neutralized description, `inputSchema` and `outputSchema` as JSON Schema, annotations, the resolved policy posture, and the generated TypeScript types for that tool (the same text `discover_apis` serves in bulk) so the result is equally useful for authoring a machine. An unknown name is a `validate`-phase error whose hint points at `search_tools`.
+
+R35. `call_tool({ name, args })` runs one wrapped tool under the same gate as a machine step:
+
+1. **Validate** the name against the catalog and `args` structurally against `inputSchema` (required properties present; top-level property types match; no unknown top-level properties when the schema forbids them). Failures are `validate`-phase errors whose hint names the offending property and points at `describe_tool`. Full JSON Schema validation is out of scope; the wrapped server remains the authority, and its rejection surfaces as an `upstream` error.
+2. **Decide policy** (R14). `auto` executes immediately. `deny` returns a normal (non-error) result `{ status: "denied_by_policy", tool, reason }`. `ask` suspends.
+3. **Suspend** with one MRTR elicitation built by the R16 copy builder (the footer names the call as a direct call rather than a machine state) and a sealed `call` blob (R36). R28 and `compat.legacyElicitation` apply unchanged; a read-only `call_tool` always works on a legacy connection.
+4. **Resume**: the retry re-sends `{ name, args }` and the echoed `requestState`. After R21 verification an accepted elicitation executes the call with the args recorded in the blob's `pending` entry (S2 — never the retry's own args); a declined, missing or non-elicitation response returns a normal result `{ status: "declined", tool, reason? }` (R17 semantics).
+5. **Result shape**: success is `{ status: "ok", tool, output }` where `output` follows the `TOOL_RESULT.result` rule (structuredContent when present, else the single text block, else `null` / the raw content array); an upstream failure is an `isError` result with phase `upstream`. A decline is an outcome, not an error: the tool description MUST tell the model not to retry an identical call without the user asking for it.
+
+R36. `call` blobs reuse the R20 payload with `kind: "call"`, `snapshot: null`, `trip: 1`, and `codeHash` computed over the canonical JSON of `{ name, args }` (keys sorted recursively). Verification MUST reject a blob whose `kind` does not match the tool opening it, and a `call` blob whose binding hash does not match the retried request — both as `blob_verification` terminal errors, before anything executes.
+
+R37. Catalog scale. When the catalog exceeds a size threshold (default 40 tools), `discover_apis` SHOULD list tool names and one-line purposes only and direct the model to `describe_tool` for schemas and types, instead of inlining the full overview; the `.d.ts` resource stays complete. Below the threshold today's inline behavior is unchanged.
+
 ## 7. Architecture
 
 Seven components, cleanly separable for parallel workstreams:
@@ -173,13 +198,17 @@ Dependency notes: pin XState v5.x exactly (snapshot compatibility across minor v
 
 **Batched approvals.** A parallel state gates three writes; one `input_required` carries three keyed elicitations; the retry carries three verdicts; each maps to its own event.
 
+**Direct call, read-only.** Client calls `search_tools`, then `describe_tool("read_file")`, then `call_tool({ name: "read_file", args })`. Policy is `auto`; the call executes inline; the result is `{ status: "ok", tool, output }` in one round trip.
+
+**Direct call, approved.** `call_tool({ name: "write_file", args })`. Policy is `ask`; the adapter seals a `call` blob binding the canonical request, returns `input_required` with one elicitation; the user approves; the client retries with the echoed blob; verification passes (kind, binding hash, identity, expiry); the recorded args execute; `{ status: "ok", ... }`. A decline returns `{ status: "declined" }` and nothing executes.
+
 **Self-heal.** Submitted code uses v4 `Machine()` syntax. Validation fails in ~tens of milliseconds; `isError` result with phase `validate` and a v5 hint returns; model rewrites; second call succeeds.
 
 **Expiry / tamper.** Retry arrives after TTL or with a modified blob: verification fails, terminal structured error, no side effects executed.
 
 ## 9. Security invariants
 
-S1. The tools bridge is the only I/O channel out of the sandbox (no fetch, no host FS, no env beyond an explicit allowlist). S2. No gated tool call ever executes without a verified approval verdict bound to that exact call (name + args captured in the sealed `pending` map — the approval authorizes the recorded args, not whatever the resumed machine asks for next). S3. Blobs are authenticated and encrypted; clients are treated as honest-but-curious couriers. S4. `codeHash` binding prevents resuming a snapshot under different code. S5. Annotations from third-party wrapped servers are untrusted hints; unannotated tools default to `ask`. S6. Elicitation text is derived only from server-side data (catalog descriptions + resolved args through the redaction hook), never from model-authored free text, to prevent the machine from writing its own misleading approval prompt.
+S1. The tools bridge is the only I/O channel out of the sandbox (no fetch, no host FS, no env beyond an explicit allowlist). S2. No gated tool call ever executes without a verified approval verdict bound to that exact call (name + args captured in the sealed `pending` map — the approval authorizes the recorded args, not whatever the resumed machine asks for next). S3. Blobs are authenticated and encrypted; clients are treated as honest-but-curious couriers. S4. `codeHash` binding prevents resuming a snapshot under different code (for `call_tool`, the same field binds the blob to the canonical `{ name, args }` request, and `kind` prevents a blob minted by one tool from being opened by the other). S5. Annotations from third-party wrapped servers are untrusted hints; unannotated tools default to `ask`. S6. Elicitation text is derived only from server-side data (catalog descriptions + resolved args through the redaction hook), never from model-authored free text, to prevent the machine from writing its own misleading approval prompt.
 
 ## 10. Success metrics
 
@@ -229,6 +258,8 @@ Expose the sandbox's virtual FS to authored code as ephemeral per-segment scratc
 3. **A Postgres/database server** — the adversarial policy case: a `query` tool whose arguments are opaque SQL, where `readOnlyHint` can't be trusted to bound behavior. Exercises developer overrides (force `ask`) and proves the policy engine handles tools whose safety isn't knowable from annotations.
 
 Additionally, one deliberately _unannotated_ server (any small community server) verifies the default-`ask` posture (R14, S5).
+
+**Catalog projection cases** (Section 6.8), all asserting that nothing executes: a `call` blob replayed to `execute_machine` and a `machine` blob to `call_tool` (R36 kind check); an approved `call_tool` retried with different `args` (binding-hash mismatch); a retry whose `inputResponses` omits the key (treated as declined); `call_tool` on a `deny`-policy tool; and, executing exactly once, approve-then-replay within TTL (D4).
 
 **Automated harness.** A test harness drives the wrapped server end-to-end using the Anthropic TypeScript SDK as the reasoning loop and the MCP TypeScript SDK as the client: scripted task prompts → model authors machines → harness auto-answers elicitations per scenario script (approve all / deny one / ignore one / tamper with blob / replay expired blob). Assertions cover the S1–S6 invariants, self-heal attempt counts (Section 10 metrics), and blob-size budgets. Runs in CI against the pinned smoke-test servers with recorded fixtures where upstreams are flaky.
 
