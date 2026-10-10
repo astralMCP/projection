@@ -22,7 +22,13 @@ import {
   neutralizeControlChars,
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
-import type { PolicyDecision, PolicyOverrides, ServerCatalog, ToolCatalogEntry } from '../types.js';
+import {
+  dedupeTools,
+  type PolicyDecision,
+  type PolicyOverrides,
+  type ServerCatalog,
+  type ToolCatalogEntry,
+} from '../types.js';
 
 export interface SearchToolsArgs {
   /** Plain substring filter over name and description (case-insensitive). */
@@ -86,7 +92,8 @@ export function summarizeTool(entry: ToolCatalogEntry, policy?: PolicyOverrides)
 
 /**
  * Run `search_tools`. Throws a `validate`-phase {@link ProjectionError} for a
- * malformed cursor or one issued for a different query (R33).
+ * malformed cursor, one issued for a different query, or one pointing past
+ * the end of the results (R33).
  */
 export function searchTools(
   catalog: ServerCatalog,
@@ -102,12 +109,19 @@ export function searchTools(
   const offset = decodeCursor(args.cursor, query);
 
   const needle = query.toLowerCase();
-  const matches = dedupe(catalog.tools).filter(
+  // First occurrence wins, as for `findTool` and typegen (S5).
+  const matches = dedupeTools(catalog.tools).filter(
     (entry) =>
       needle.length === 0 ||
       entry.name.toLowerCase().includes(needle) ||
       (entry.description ?? '').toLowerCase().includes(needle),
   );
+  // A cursor is only ever issued while more results remain, so an offset at
+  // or beyond the end was not issued by us (or not for this catalog): refuse
+  // it rather than answer with an empty page that contradicts `total`.
+  if (offset > 0 && offset >= matches.length) {
+    throw cursorError('cursor is past the end of the results');
+  }
   const slice = matches.slice(offset, offset + pageSize);
   const tools = slice.map((entry) => summarizeTool(entry, options.policy));
   const end = offset + slice.length;
@@ -121,16 +135,6 @@ export function searchTools(
     content: [{ type: 'text', text: renderPage(catalog, page, query, offset) }],
     structuredContent: { ...page },
   };
-}
-
-/** First occurrence wins, matching `findTool` and the typegen dedupe (S5). */
-function dedupe(tools: ToolCatalogEntry[]): ToolCatalogEntry[] {
-  const seen = new Set<string>();
-  return tools.filter((tool) => {
-    if (seen.has(tool.name)) return false;
-    seen.add(tool.name);
-    return true;
-  });
 }
 
 function renderPage(
@@ -151,10 +155,11 @@ function renderPage(
     for (const tool of page.tools) {
       // Names and purposes are S5-controlled: neutralize so a hostile value
       // cannot forge a line of its own (e.g. relabel a write as "runs
-      // immediately"). The posture is rendered by us, after the data.
+      // immediately"). The purpose is already inline-neutralized and capped
+      // by `purposeSentence`; the posture is rendered by us, after the data.
       const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
       const flags = tool.destructive ? `${tool.posture}, destructive` : tool.posture;
-      lines.push(`- ${name} — ${neutralizeControlChars(tool.purpose)} [${flags}]`);
+      lines.push(`- ${name} — ${tool.purpose} [${flags}]`);
     }
   }
   if (page.nextCursor !== undefined) {
@@ -184,18 +189,26 @@ function encodeCursor(query: string, offset: number): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
+function cursorError(why: string): ProjectionError {
+  return new ProjectionError('validate', `search_tools cursor is not usable: ${why}`, {
+    hint: 'Pass a cursor exactly as a previous search_tools result returned it, with the same query; or omit it to start from the first page.',
+  });
+}
+
+/**
+ * Decode a cursor to its offset. Only the fields read (`q`, `o`) are
+ * validated: a payload carrying extra keys is accepted, since the cursor is
+ * opaque data and nothing else in it is consumed. The offset's upper bound
+ * is checked by the caller once the match count is known.
+ */
 function decodeCursor(cursor: string | undefined, query: string): number {
   if (cursor === undefined || cursor.length === 0) return 0;
-  const invalid = (why: string): ProjectionError =>
-    new ProjectionError('validate', `search_tools cursor is not usable: ${why}`, {
-      hint: 'Pass a cursor exactly as a previous search_tools result returned it, with the same query; or omit it to start from the first page.',
-    });
-  if (cursor.length > 1_024) throw invalid('too long');
+  if (cursor.length > 1_024) throw cursorError('too long');
   let payload: unknown;
   try {
     payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
-    throw invalid('malformed');
+    throw cursorError('malformed');
   }
   if (
     typeof payload !== 'object' ||
@@ -203,10 +216,10 @@ function decodeCursor(cursor: string | undefined, query: string): number {
     typeof (payload as CursorPayload).q !== 'string' ||
     typeof (payload as CursorPayload).o !== 'number'
   ) {
-    throw invalid('malformed');
+    throw cursorError('malformed');
   }
   const { q, o } = payload as CursorPayload;
-  if (!Number.isInteger(o) || o < 0) throw invalid('malformed');
-  if (q !== query) throw invalid('it was issued for a different query');
+  if (!Number.isInteger(o) || o < 0) throw cursorError('malformed');
+  if (q !== query) throw cursorError('it was issued for a different query');
   return o;
 }

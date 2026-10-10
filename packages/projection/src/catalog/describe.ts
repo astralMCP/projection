@@ -19,6 +19,7 @@ import { ProjectionError } from '../errors.js';
 import { decidePolicy } from '../policy/index.js';
 import {
   capLength,
+  indentBlock,
   inertIdentity,
   MAX_IDENTITY_CHARS,
   neutralizeControlChars,
@@ -63,7 +64,6 @@ export interface ToolDescription {
 }
 
 const MAX_DESCRIPTION_CHARS = 2_000;
-const BLOCK_INDENT = '    ';
 
 /**
  * Run `describe_tool`. Throws a `validate`-phase {@link ProjectionError}
@@ -143,17 +143,10 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
   }
   // The description is the server's own words (S5): indented as a block so
   // it reads as data and cannot forge one of the labelled lines above.
-  lines.push(
-    'What the server says it does:',
-    tool.description !== undefined ? indent(tool.description) : `${BLOCK_INDENT}(no description)`,
-  );
-  lines.push('', 'Input schema (JSON Schema):', indent(JSON.stringify(tool.inputSchema, null, 2)));
+  lines.push('What the server says it does:', indentBlock(tool.description ?? '(no description)'));
+  lines.push('', 'Input schema (JSON Schema):', jsonBlock(tool.inputSchema));
   if (tool.outputSchema !== undefined) {
-    lines.push(
-      '',
-      'Output schema (JSON Schema):',
-      indent(JSON.stringify(tool.outputSchema, null, 2)),
-    );
+    lines.push('', 'Output schema (JSON Schema):', jsonBlock(tool.outputSchema));
   } else {
     lines.push('', 'Output schema: none declared — results arrive as text.');
   }
@@ -164,14 +157,26 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
     );
   }
   if (tool.types !== undefined) {
-    lines.push('', 'TypeScript (as in projection://types/tools.d.ts):', indent(tool.types));
+    // Typegen neutralizes its doc comments, but the slice is rendered here as
+    // prose for the model, so it gets the block treatment regardless.
+    lines.push(
+      '',
+      'TypeScript (as in projection://types/tools.d.ts):',
+      indentBlock(neutralizeControlChars(tool.types, { allowNewline: true })),
+    );
   }
   return lines.join('\n');
 }
 
-function indent(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => BLOCK_INDENT + line)
-    .join('\n');
+/**
+ * A sanitized schema as an indented JSON block. The sanitizer neutralizes
+ * every string VALUE but keeps property names verbatim, and `JSON.stringify`
+ * leaves C1 controls, U+2028/U+2029 and bidi marks raw — so the rendered text
+ * is neutralized again as a whole (newlines kept: they are the pretty-print).
+ * `structuredContent` carries the schema verbatim; this is the text copy.
+ */
+function jsonBlock(schema: Record<string, unknown>): string {
+  return indentBlock(
+    neutralizeControlChars(JSON.stringify(schema, null, 2), { allowNewline: true }),
+  );
 }

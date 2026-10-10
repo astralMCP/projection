@@ -85,6 +85,7 @@ describe('projections switch (R1, R32)', () => {
     const c = await connect();
     expect(await toolNames(c)).toEqual(['discover_apis', 'execute_machine']);
     expect(facade?.projections).toEqual({ codeMode: true, catalog: false });
+    expect(Object.isFrozen(facade?.projections)).toBe(true);
     expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_CODE_MODE_PREAMBLE}`);
   });
 
@@ -123,13 +124,17 @@ describe('projections switch (R1, R32)', () => {
     expect(facade?.instructions).toBe('A tiny file server.\n\nCustom copy.');
   });
 
-  it('disabling both projections is refused at wrap time', async () => {
-    await expect(
-      wrapMcpServer(buildWrappedServer(), {
+  it('disabling both projections is refused at wrap time as a terminal error', async () => {
+    try {
+      await wrapMcpServer(buildWrappedServer(), {
         blob: { key: KEY },
         projections: { codeMode: false, catalog: false },
-      }),
-    ).rejects.toBeInstanceOf(ProjectionError);
+      });
+      expect.unreachable('expected a throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProjectionError);
+      expect(err).toMatchObject({ phase: 'terminal' });
+    }
   });
 });
 

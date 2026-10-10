@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { searchTools, type SearchToolsPage } from '../../src/catalog/index.js';
+import { MAX_QUERY_CHARS, searchTools, type SearchToolsPage } from '../../src/catalog/index.js';
 import { ProjectionError } from '../../src/errors.js';
 import type { ServerCatalog } from '../../src/types.js';
 import { CATALOG, entry } from '../machine-host/fixtures.js';
@@ -123,10 +123,47 @@ describe('search_tools (R33)', () => {
     expect(() => searchTools(CATALOG, { cursor: forged })).toThrow(ProjectionError);
   });
 
+  it('a cursor past the end of the results is a validate error, not an empty page', () => {
+    // 4 tools: offset 4 is already past the last one; 1e300 is a safe integer
+    // as far as Number.isInteger is concerned.
+    for (const o of [4, 1e300]) {
+      const forged = Buffer.from(JSON.stringify({ q: '', o })).toString('base64url');
+      try {
+        searchTools(CATALOG, { cursor: forged });
+        expect.unreachable('expected a throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ProjectionError);
+        expect((err as ProjectionError).phase).toBe('validate');
+        expect((err as ProjectionError).message).toContain('past the end');
+      }
+    }
+  });
+
+  it('accepts a cursor carrying extra keys: only the fields it reads are validated', () => {
+    // Pinned leniency — the cursor is opaque data and nothing else in it is
+    // consumed, so an unknown key is not evidence of tampering worth refusing.
+    const lenient = Buffer.from(JSON.stringify({ q: '', o: 3, extra: 'ignored' })).toString(
+      'base64url',
+    );
+    expect(page(searchTools(CATALOG, { cursor: lenient })).tools.map((t) => t.name)).toEqual([
+      'delete_file',
+    ]);
+  });
+
   it('caps the query at 200 characters and never treats it as a regex', () => {
     const regexy = '.*';
     expect(page(searchTools(CATALOG, { query: regexy })).total).toBe(0);
     expect(() => searchTools(CATALOG, { query: 'x'.repeat(5_000) })).not.toThrow();
+    // The 201st character is ignored: a query of a 200-char token plus a
+    // character that never follows the token still matches on the token.
+    const token = 't'.repeat(MAX_QUERY_CHARS);
+    const long: ServerCatalog = {
+      ...CATALOG,
+      tools: [entry({ name: 'needle', description: `Finds ${token}Z.` })],
+    };
+    expect(page(searchTools(long, { query: `${token}Q` })).total).toBe(1);
+    // …whereas within the cap the extra character is matched for real.
+    expect(page(searchTools(long, { query: `${token.slice(1)}Q` })).total).toBe(0);
   });
 
   it('renders hostile names and descriptions inert in the text, verbatim in structuredContent (S5)', () => {

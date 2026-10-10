@@ -134,6 +134,77 @@ describe('sanitizeSchema (R34, S5)', () => {
     expect(minimal.schema).toEqual({ $truncated: true, type: 'object', required: ['field0'] });
   });
 
+  it('falls back to the bare marker when not even the type fits the cap', () => {
+    expect(sanitizeSchema({ type: 'object', required: ['a'] }, 20)).toEqual({
+      schema: { $truncated: true },
+      truncated: true,
+    });
+  });
+
+  it('drops a property name longer than the string cap, with its required entry, and flags the cut', () => {
+    const long = 'n'.repeat(100_000);
+    const { schema, truncated } = sanitizeSchema({
+      type: 'object',
+      properties: { [long]: { type: 'string' }, ok: { type: 'string' } },
+      required: [long, 'ok'],
+    });
+    expect(truncated).toBe(true);
+    expect(JSON.stringify(schema).length).toBeLessThanOrEqual(MAX_SCHEMA_CHARS);
+    expect(schema).toEqual({
+      type: 'object',
+      properties: { ok: { type: 'string' } },
+      required: ['ok'],
+    });
+    // In `required` alone (no matching property) it is dropped just the same.
+    const requiredOnly = sanitizeSchema({ type: 'object', required: [long] });
+    expect(requiredOnly).toEqual({ schema: { type: 'object', required: [] }, truncated: true });
+  });
+
+  it('a required list that alone exceeds the cap keeps the longest prefix that fits', () => {
+    const names = Array.from({ length: 5_000 }, (_, i) => `field_${i}`);
+    const { schema, truncated } = sanitizeSchema({ type: 'object', required: names });
+    expect(truncated).toBe(true);
+    expect(JSON.stringify(schema).length).toBeLessThanOrEqual(MAX_SCHEMA_CHARS);
+    expect(schema['$truncated']).toBe(true);
+    expect(schema['type']).toBe('object');
+    const required = schema['required'] as string[];
+    expect(required.length).toBeGreaterThan(0);
+    expect(required.length).toBeLessThan(names.length);
+    expect(required).toEqual(names.slice(0, required.length));
+  });
+
+  it('a schema deeper than the depth cap is marked AND flagged truncated', () => {
+    let deep: Record<string, unknown> = { type: 'string' };
+    for (let i = 0; i < 40; i += 1) deep = { type: 'object', properties: { n: deep } };
+    const { schema, truncated } = sanitizeSchema(deep);
+    expect(truncated).toBe(true);
+    expect(JSON.stringify(schema)).toContain('"$truncated":true');
+  });
+
+  it('keeps a __proto__ property name as an own key without reparenting the map (S5)', () => {
+    // Built with JSON.parse, as a wire catalog is: an own `__proto__` data
+    // property, which `map['__proto__'] = …` on a plain object would
+    // misread as a prototype assignment.
+    const input = JSON.parse(
+      '{"properties":{"__proto__":{"type":"string"},"ok":{"type":"number"}},"required":["__proto__"]}',
+    ) as Record<string, unknown>;
+    const { schema } = sanitizeSchema(input);
+    const properties = schema['properties'] as Record<string, unknown>;
+    expect(Object.getPrototypeOf(properties)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(properties, '__proto__')?.value).toEqual({
+      type: 'string',
+    });
+    expect(properties['ok']).toEqual({ type: 'number' });
+    expect(schema['required']).toEqual(['__proto__']);
+
+    // Same for an object-valued enum member (literal data).
+    const literal = JSON.parse('{"enum":[{"__proto__":{"x":1},"a":1}]}') as Record<string, unknown>;
+    const [member] = sanitizeSchema(literal).schema['enum'] as Record<string, unknown>[];
+    expect(Object.getPrototypeOf(member)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(member, '__proto__')?.value).toEqual({ x: 1 });
+    expect(member?.['a']).toBe(1);
+  });
+
   it('the default cap is 16 KB and a realistic schema is untouched', () => {
     expect(MAX_SCHEMA_CHARS).toBe(16 * 1024);
     const realistic = {

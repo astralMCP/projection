@@ -2,9 +2,10 @@
  * `wrapMcpServer` — the integrating developer's entry point (PRD G1, R1).
  *
  * Introspects a wrapped MCP server, generates its `@astral-mcp/tools`
- * artifacts, and returns a facade exposing exactly two tools —
- * `execute_machine` and `discover_apis` — plus the resources backing
- * discovery. The wrapped server's own tools are never exposed (R1).
+ * artifacts, and returns a facade exposing Projection's own tools — code
+ * mode's `execute_machine` and `discover_apis`, the catalog projection's
+ * `search_tools` and `describe_tool` (R32) — plus the resources backing
+ * them. The wrapped server's own tools are never exposed (R1).
  *
  * The facade's primary shape is an SDK **server factory**, because that is
  * the only place the SDK tells a server which protocol era it is serving:
@@ -18,8 +19,8 @@
  *
  * `createMcpHandler` (and `serveStdio`) call the factory once per serving
  * unit with `McpRequestContext.era`, so `createServer` can both apply the
- * code-mode `instructions` (R29 — `Server` only accepts them in its
- * constructor) and hand the era to the MRTR adapter for down-negotiation
+ * `instructions` (R29 — `Server` only accepts them in its constructor) and
+ * hand the era to the MRTR adapter for down-negotiation
  * (R28). `registerOn` remains for callers who build the `McpServer`
  * themselves, and takes the era explicitly for the same reason.
  *
@@ -74,7 +75,10 @@ export interface WrapOptions {
   policy?: PolicyOverrides;
   /** Masks sensitive argument fields before they reach an approval prompt (R16). */
   redact?: RedactionHook;
-  /** Replaces the library's code-mode preamble (R29). */
+  /**
+   * Replaces the whole R29 preamble, whichever projections are on (the
+   * code-mode, catalog or routing copy).
+   */
   codeModePreamble?: string;
   /** Compatibility switches for pre-2026-07-28 clients. */
   compat?: {
@@ -91,9 +95,14 @@ export interface WrapOptions {
   serverInfo?: Implementation;
   /**
    * Which projections the facade serves (R1, R32). Code mode
-   * (`execute_machine`, `discover_apis`) defaults on. The catalog projection
-   * (`search_tools`, `describe_tool`, `call_tool`) defaults OFF until
-   * `call_tool` ships; disabling both is an error at wrap time.
+   * (`execute_machine`, `discover_apis`) defaults on.
+   *
+   * Staged rollout: the catalog projection ships in parts, and until
+   * `call_tool` lands it is incomplete — `search_tools` / `describe_tool`
+   * describe tools the model cannot yet call directly, and the preambles
+   * already name `call_tool`. It therefore defaults OFF for now (opt in with
+   * `catalog: true`) and flips to the R32 default of on when `call_tool`
+   * ships. Disabling both projections is an error at wrap time.
    */
   projections?: ProjectionsOptions;
 }
@@ -106,7 +115,7 @@ export interface ProjectionsOptions {
 
 const DEFAULT_PROJECTIONS: ProjectionSelection = { codeMode: true, catalog: false };
 
-/** Options for registering the code-mode surface on a server the caller built. */
+/** Options for registering the projections on a server the caller built. */
 export interface RegisterOptions {
   /**
    * The protocol era this server instance serves (R28). Omitted means
@@ -127,8 +136,8 @@ export interface ProjectionFacade {
   readonly resources: ProjectionResource[];
   /**
    * Server factory to hand to `createMcpHandler` or `serveStdio` (R28, R29).
-   * Every instance it builds carries the code-mode `instructions` and knows
-   * the era it is serving.
+   * Every instance it builds carries the `instructions` and knows the era it
+   * is serving.
    */
   readonly serverFactory: McpServerFactory;
 
@@ -148,11 +157,11 @@ export interface ProjectionFacade {
   searchTools(args: { query?: string; cursor?: string }): CallToolResult;
   /** Run `describe_tool` (R34). Failures come back as R25 structured error results. */
   describeTool(args: { name: string }): CallToolResult;
-  /** The projections this facade serves (R32). */
-  readonly projections: ProjectionSelection;
-  /** Build an `McpServer` carrying the instructions, both tools and the resources. */
+  /** The projections this facade serves (R32). Frozen: fixed at wrap time. */
+  readonly projections: Readonly<ProjectionSelection>;
+  /** Build an `McpServer` carrying the instructions, the enabled projections' tools and the resources. */
   createServer(ctx?: RegisterOptions): McpServer;
-  /** Register both tools and the resources on an `McpServer` the caller built. */
+  /** Register the enabled projections' tools and the resources on an `McpServer` the caller built. */
   registerOn(server: McpServer, options?: RegisterOptions): void;
   /** Close the connection to the wrapped server. */
   close(): Promise<void>;
@@ -172,12 +181,16 @@ const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and 
 
 /**
  * Wrap an MCP server (an in-process instance or a connected client) into a
- * code-mode facade.
+ * Projection facade.
  */
 export async function wrapMcpServer(
   source: McpServer | Client,
   options: WrapOptions,
 ): Promise<ProjectionFacade> {
+  // Validate the selection BEFORE connecting: the throw must not leave an
+  // in-process wrapped server attached to a transport nobody will close.
+  const projections = resolveProjections(options.projections);
+
   const introspector = await createIntrospector({ [DEFAULT_SERVER_ALIAS]: source });
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
   if (catalog === undefined) {
@@ -190,7 +203,6 @@ export async function wrapMcpServer(
     );
   }
 
-  const projections = resolveProjections(options.projections);
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog);
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
@@ -209,18 +221,23 @@ export async function wrapMcpServer(
   });
 }
 
-/** R1: at least one projection must be on, or the facade serves nothing. */
-function resolveProjections(options: ProjectionsOptions | undefined): ProjectionSelection {
+/**
+ * R1: at least one projection must be on, or the facade serves nothing. The
+ * selection is frozen: it is exposed on the facade and read per request.
+ */
+function resolveProjections(
+  options: ProjectionsOptions | undefined,
+): Readonly<ProjectionSelection> {
   const selection: ProjectionSelection = {
     codeMode: options?.codeMode ?? DEFAULT_PROJECTIONS.codeMode,
     catalog: options?.catalog ?? DEFAULT_PROJECTIONS.catalog,
   };
   if (!selection.codeMode && !selection.catalog) {
     throw new ProjectionError('terminal', 'at least one projection must be enabled', {
-      hint: 'Set projections.codeMode and/or projections.catalog to true (both default to on).',
+      hint: 'Set projections.codeMode and/or projections.catalog to true (code mode defaults on; the catalog projection is opt-in until call_tool ships).',
     });
   }
-  return selection;
+  return Object.freeze(selection);
 }
 
 interface FacadeDeps {
@@ -233,7 +250,7 @@ interface FacadeDeps {
   resources: ProjectionResource[];
   instructions: string;
   options: WrapOptions;
-  projections: ProjectionSelection;
+  projections: Readonly<ProjectionSelection>;
 }
 
 class Facade implements ProjectionFacade {
@@ -242,7 +259,7 @@ class Facade implements ProjectionFacade {
   readonly dts: string;
   readonly resources: ProjectionResource[];
   readonly serverFactory: McpServerFactory;
-  readonly projections: ProjectionSelection;
+  readonly projections: Readonly<ProjectionSelection>;
   private readonly deps: FacadeDeps;
 
   constructor(deps: FacadeDeps) {
@@ -307,9 +324,9 @@ class Facade implements ProjectionFacade {
 
   /**
    * R29: `Server` accepts `instructions` only in its constructor, so the
-   * code-mode preamble can be delivered from here and nowhere else. This is
-   * also where the era arrives, which is why the factory shape is the
-   * library's recommended entry point.
+   * preamble can be delivered from here and nowhere else. This is also where
+   * the era arrives, which is why the factory shape is the library's
+   * recommended entry point.
    */
   createServer(ctx?: RegisterOptions): McpServer {
     const server = new McpServer(

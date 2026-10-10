@@ -10,6 +10,7 @@
  * correctness gate (G5: no host-side type checking in the hot path).
  */
 
+import { neutralizeControlChars } from '../text-safety.js';
 import { isRecord } from '../types.js';
 
 const MAX_DEPTH = 24;
@@ -72,9 +73,19 @@ export function propertyKey(name: string): string {
   return BARE_KEY_RE.test(name) ? name : JSON.stringify(name);
 }
 
-/** Format a description as a doc comment block at the given indent. */
+/**
+ * Format a description as a doc comment block at the given indent.
+ *
+ * The text is the wrapped server's (S5): `*\/` is escaped so it cannot close
+ * the comment, and control/bidi characters are neutralized so the `.d.ts`
+ * the model reads — and the `describe_tool` slice of it (R34) — carry no
+ * ESC/ANSI sequences or reordering marks. Newlines stay: each becomes a
+ * ` * ` comment line.
+ */
 export function docComment(description: string, indent: string): string {
-  const safe = description.replaceAll('*/', '*\\/').trimEnd();
+  const safe = neutralizeControlChars(description, { allowNewline: true })
+    .replaceAll('*/', '*\\/')
+    .trimEnd();
   const lines = safe.split('\n');
   if (lines.length === 1) return `${indent}/** ${lines[0]} */`;
   return [

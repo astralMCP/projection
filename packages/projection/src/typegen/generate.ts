@@ -15,7 +15,12 @@ import {
   MAX_IDENTITY_CHARS,
   neutralizeControlChars,
 } from '../text-safety.js';
-import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
+import {
+  dedupeTools,
+  type ServerCatalog,
+  type ToolCatalog,
+  type ToolCatalogEntry,
+} from '../types.js';
 import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
 
 /**
@@ -69,7 +74,11 @@ export interface ToolTypeText {
   inputAlias: string;
   /** `<Pascal>Output` alias name, when the tool declares an `outputSchema`. */
   outputAlias?: string;
-  /** Alias declarations plus the member signature, verbatim from the `.d.ts`. */
+  /**
+   * The alias declarations verbatim from the `.d.ts`, then the member
+   * signature verbatim modulo indentation: the `tools` member is re-indented
+   * to column 0 under a `// Member of the \`tools\` surface:` line.
+   */
   dts: string;
 }
 
@@ -340,14 +349,10 @@ export function generateToolTypes(catalog: ToolCatalog | ServerCatalog): Generat
  * `.d.ts` object type — invalid TypeScript — and a silently last-wins
  * shadowed key in the bridge, so the types and the runtime would disagree
  * about which schema the tool takes. Collapsing to the first occurrence
- * matches what `callTool` reaches on the wrapped server.
+ * (`dedupeTools`, shared with `findTool` and the catalog projection) matches
+ * what `callTool` reaches on the wrapped server.
  */
 function dedupeToolNames(server: ServerCatalog): ServerCatalog {
-  const seen = new Set<string>();
-  const tools = server.tools.filter((tool) => {
-    if (seen.has(tool.name)) return false;
-    seen.add(tool.name);
-    return true;
-  });
+  const tools = dedupeTools(server.tools);
   return tools.length === server.tools.length ? server : { ...server, tools };
 }
