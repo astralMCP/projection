@@ -5,7 +5,8 @@
  * scripted answer policy, records the side effects that actually reached the
  * wrapped server, and reports enough to assert the approval invariants and
  * the Section 10 budgets (blob size, round-trip counts). The bundled tests
- * cover S1 (only two tools exposed), S2 (approval binds the sealed call),
+ * cover S1 (only Projection's five tools are exposed, never the wrapped
+ * server's own), S2 (approval binds the sealed call),
  * S3/S4 (tampered blobs execute nothing), S5 (annotation-driven policy) and
  * S6 (server-derived prompt copy).
  *

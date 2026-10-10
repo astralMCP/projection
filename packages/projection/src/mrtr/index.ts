@@ -10,6 +10,7 @@ export {
   assertNotReplayed,
   errorResult,
   executeMachine,
+  type ApprovalGateDeps,
   type ExecuteMachineArgs,
   type ExecuteMachineDeps,
 } from './adapter.js';

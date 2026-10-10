@@ -9,6 +9,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { findTool } from '../types.js';
 import type {
   PendingToolCall,
@@ -19,6 +20,7 @@ import type {
 } from '../types.js';
 
 const VALID_DECISIONS: ReadonlySet<string> = new Set(['auto', 'ask', 'deny']);
+const MAX_TOOL_NAME_CHARS = 200;
 
 /**
  * Decide the policy for a catalog tool (R14).
@@ -96,7 +98,9 @@ export const POLICY_DENIED_REASON = 'denied by server policy';
  * which call was blocked.
  */
 export function policyDeniedReason(toolName?: string): string {
-  return toolName === undefined
-    ? POLICY_DENIED_REASON
-    : `${POLICY_DENIED_REASON}: tool "${toolName}" is configured as deny`;
+  if (toolName === undefined) return POLICY_DENIED_REASON;
+  // The name comes from the wrapped server's catalog (S5) and is shown to
+  // the model and recorded in the audit trail: inert and bounded.
+  const safeName = neutralizeControlChars(capLength(toolName, MAX_TOOL_NAME_CHARS));
+  return `${POLICY_DENIED_REASON}: tool "${safeName}" is configured as deny`;
 }

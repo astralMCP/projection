@@ -209,7 +209,7 @@ export interface ProjectionSelection {
 export function buildInstructions(
   catalog: ServerCatalog,
   preamble?: string,
-  projections: ProjectionSelection = { codeMode: true, catalog: false },
+  projections: ProjectionSelection = { codeMode: true, catalog: true },
 ): string {
   const wrapped = catalog.instructions?.trim();
   const copy = preamble ?? defaultPreamble(projections);

@@ -2,10 +2,12 @@
  * Projection — turn any MCP server into a code-mode server with
  * human-approved side effects.
  *
- * The library exposes exactly two tools (R1): `execute_machine`, which runs
- * an LLM-authored XState v5 machine in a QuickJS sandbox, and
- * `discover_apis`, which describes the wrapped server's tool API. Read-only
- * calls execute immediately; every other call suspends the machine into a
+ * The library exposes only its own tools, never the wrapped server's (R1):
+ * code mode's `execute_machine`, which runs an LLM-authored XState v5
+ * machine in a QuickJS sandbox, and `discover_apis`, which describes the
+ * wrapped server's tool API; and the catalog projection's `search_tools`,
+ * `describe_tool` and `call_tool`, which run one tool at a time (R32–R38).
+ * Read-only calls execute immediately; every other call suspends into a
  * sealed, encrypted blob and asks the user to approve that exact action.
  *
  * Because all suspension state travels in the MRTR `requestState` payload,
@@ -38,7 +40,7 @@ export {
   type WrapOptions,
 } from './wrap.js';
 
-// Catalog projection — search_tools / describe_tool (PRD §6.8)
+// Catalog projection — search_tools / describe_tool / call_tool (PRD §6.8, R32–R38)
 export {
   callTool,
   canonicalJson,
@@ -141,13 +143,11 @@ export {
   acceptedContent,
   buildInstructions,
   buildResources,
-  assertNotReplayed,
   defaultPreamble,
   discoverApis,
   errorResult,
   executeMachine,
   inputRequired,
-  legacySuspendError,
   inputResponse,
   isInputRequiredResult,
   supportsMrtr,
@@ -159,6 +159,7 @@ export {
   EXAMPLE_HAPPY_PATH,
   MRTR_PROTOCOL_REVISION,
   RESOURCE_URIS,
+  type ApprovalGateDeps,
   type CallToolResult,
   type ContentBlock,
   type ExecuteMachineArgs,

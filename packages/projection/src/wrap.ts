@@ -47,6 +47,7 @@ import {
   discoverApis,
   errorResult,
   executeMachine,
+  type ApprovalGateDeps,
   type CallToolResult,
   type ExecuteMachineArgs,
   type ProjectionResource,
@@ -291,19 +292,9 @@ class Facade implements ProjectionFacade {
     era?: ProtocolEra,
     clientCanElicit?: boolean,
   ): Promise<ToolCallResult> {
-    const { options } = this.deps;
     return executeMachine(args, {
-      catalog: this.deps.catalog,
+      ...this.gateDeps(era, clientCanElicit),
       bridgeSource: this.deps.bridgeSource,
-      executor: this.deps.introspector,
-      blob: options.blob,
-      ...(options.caps !== undefined ? { caps: options.caps } : {}),
-      ...(options.policy !== undefined ? { policy: options.policy } : {}),
-      ...(options.redact !== undefined ? { redact: options.redact } : {}),
-      ...(era !== undefined ? { protocolEra: era } : {}),
-      ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
-      ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
-      ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
     });
   }
 
@@ -312,8 +303,21 @@ class Facade implements ProjectionFacade {
     era?: ProtocolEra,
     clientCanElicit?: boolean,
   ): Promise<ToolCallResult> {
+    return callTool(args, this.gateDeps(era, clientCanElicit));
+  }
+
+  /**
+   * The approval-gate dependencies both gated tools share (R35, R38): one
+   * place to wire the facade's options, so `execute_machine` and `call_tool`
+   * can never drift on policy, redaction, caps or replay protection.
+   * `exactOptionalPropertyTypes`: absent options stay absent.
+   */
+  private gateDeps(
+    era: ProtocolEra | undefined,
+    clientCanElicit: boolean | undefined,
+  ): ApprovalGateDeps {
     const { options } = this.deps;
-    return callTool(args, {
+    return {
       catalog: this.deps.catalog,
       executor: this.deps.introspector,
       blob: options.blob,
@@ -324,7 +328,7 @@ class Facade implements ProjectionFacade {
       ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
       ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
       ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
-    });
+    };
   }
 
   discoverApis(): CallToolResult {
@@ -408,8 +412,9 @@ class Facade implements ProjectionFacade {
 
   /** Catalog projection (R32–R35): `search_tools`, `describe_tool`, `call_tool`. */
   private registerCatalog(server: McpServer, era: ProtocolEra | undefined): void {
-    // Both are pure reads over the catalog; the annotation lets hosts that
-    // gate on annotations run them without a prompt (R35).
+    // `search_tools` and `describe_tool` are pure reads over the catalog; the
+    // annotation lets hosts that gate on annotations run them without a
+    // prompt (R35).
     server.registerTool(
       'search_tools',
       {
@@ -555,13 +560,6 @@ class Facade implements ProjectionFacade {
 }
 
 /**
- * `ctx.mcpReq.requestState()` is typed as a caller-asserted cast, so it is
- * read as `unknown` and narrowed here: without a configured
- * `ServerOptions.requestState.verify` hook the SDK hands back the raw wire
- * string, and anything else means someone wired a decoding hook Projection
- * does not own.
- */
-/**
  * Legacy compat: whether the SDK's elicitation shim has a channel to this
  * client. Read per call — capabilities are negotiated on the connection, not
  * known at registration — and left unknown when the SDK has none to report
@@ -579,6 +577,13 @@ function clientCanElicit(server: McpServer): boolean | undefined {
   );
 }
 
+/**
+ * `ctx.mcpReq.requestState()` is typed as a caller-asserted cast, so it is
+ * read as `unknown` and narrowed here: without a configured
+ * `ServerOptions.requestState.verify` hook the SDK hands back the raw wire
+ * string, and anything else means someone wired a decoding hook Projection
+ * does not own.
+ */
 function maybeRequestState(state: unknown): { requestState?: string } {
   return typeof state === 'string' ? { requestState: state } : {};
 }

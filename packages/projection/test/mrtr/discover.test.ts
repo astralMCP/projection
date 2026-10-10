@@ -3,6 +3,7 @@ import {
   buildInstructions,
   buildResources,
   DEFAULT_CODE_MODE_PREAMBLE,
+  DEFAULT_ROUTING_PREAMBLE,
   discoverApis,
   EXAMPLE_DENIAL_FALLBACK,
   EXAMPLE_HAPPY_PATH,
@@ -96,18 +97,26 @@ describe('instructions forwarding (R29)', () => {
     const instructions = buildInstructions({ ...CATALOG, instructions: wrapped });
 
     expect(instructions.startsWith(wrapped)).toBe(true);
-    expect(instructions).toContain(DEFAULT_CODE_MODE_PREAMBLE);
+    // Both projections are on by default (R32), so the routing copy applies.
+    expect(instructions).toContain(DEFAULT_ROUTING_PREAMBLE);
     expect(instructions).toContain('execute_machine');
     expect(instructions).toContain('discover_apis');
+    expect(instructions).toContain('call_tool');
   });
 
   it('uses the preamble alone when the wrapped server has no instructions', () => {
-    expect(buildInstructions(CATALOG)).toBe(DEFAULT_CODE_MODE_PREAMBLE);
+    expect(buildInstructions(CATALOG)).toBe(DEFAULT_ROUTING_PREAMBLE);
+  });
+
+  it('selects the code-mode preamble when only code mode is on', () => {
+    expect(buildInstructions(CATALOG, undefined, { codeMode: true, catalog: false })).toBe(
+      DEFAULT_CODE_MODE_PREAMBLE,
+    );
   });
 
   it('lets the integrating developer override the preamble', () => {
     const instructions = buildInstructions(CATALOG, 'Custom copy.');
     expect(instructions).toBe('Custom copy.');
-    expect(instructions).not.toContain(DEFAULT_CODE_MODE_PREAMBLE);
+    expect(instructions).not.toContain(DEFAULT_ROUTING_PREAMBLE);
   });
 });

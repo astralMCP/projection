@@ -344,6 +344,14 @@ export interface ReplayCache {
   /**
    * Record `nonce` until `exp` (Unix ms) and resolve `true` when it had
    * already been recorded — i.e. this approval is being replayed.
+   *
+   * Contract: this MUST be an atomic test-and-set across every instance that
+   * can serve a retry (a SETNX-style primitive, not a read followed by a
+   * write), or two concurrent replays of one approval both execute. The
+   * nonce is recorded on FIRST SIGHT, before the verdict is read and
+   * regardless of what follows — a decline, a policy denial, an upstream
+   * failure — so a blob is single-use whatever happens to the call it
+   * carried. A retry that fails verification never reaches this method.
    */
   seen(nonce: string, exp: number): Promise<boolean>;
 }

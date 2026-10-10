@@ -57,11 +57,18 @@ export interface ElicitationCopyOptions {
    * (R35). Selects the footer; nothing else differs.
    */
   origin?: 'machine' | 'direct';
-  /** Cap on the rendered args JSON, in characters. Default 4096. */
+  /**
+   * Backstop cap on the whole rendered args JSON, in characters. Default
+   * 4096. Each string leaf is independently capped at 512 characters first.
+   */
   maxArgsChars?: number;
 }
 
 const DEFAULT_MAX_ARGS_CHARS = 4096;
+// Per-string-leaf cap inside the rendered args: long enough to recognize a
+// file body or a message, short enough that one value cannot crowd out the
+// other arguments before the global cap.
+const MAX_STRING_LEAF_CHARS = 512;
 const MAX_STATE_NAME_CHARS = 200;
 const MAX_TOOL_NAME_CHARS = 200;
 const MAX_PURPOSE_CHARS = 200;
@@ -92,10 +99,14 @@ export function buildElicitationCopy(
 
   // R16: redact BEFORE rendering anywhere. Fail closed if the hook throws:
   // render a placeholder for ALL args rather than risk leaking any of them.
+  //
+  // The hook sees a COPY (S2): `call.args` is what gets sealed into the blob
+  // and executed on approval, so a hook that edits its input in place must
+  // not be able to change what the approver's "yes" authorizes.
   let renderedArgs: string;
   try {
     const displayArgs =
-      options.redact !== undefined ? options.redact(entry.name, call.args) : call.args;
+      options.redact !== undefined ? options.redact(entry.name, cloneArgs(call.args)) : call.args;
     renderedArgs = renderArgsJson(displayArgs, maxArgsChars);
   } catch {
     renderedArgs = REDACTION_FAILED;
@@ -179,10 +190,31 @@ export function purposeSentence(description: string | undefined): string | undef
 }
 
 /**
+ * A deep copy of the arguments for the redaction hook. `structuredClone`
+ * rejects functions and symbols, which only a direct (non-wire) caller can
+ * put in args; fall back to the original there and let the fail-closed
+ * rendering path deal with whatever the hook does.
+ */
+function cloneArgs(args: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return structuredClone(args);
+  } catch {
+    return args;
+  }
+}
+
+/**
  * Render argument values as pretty-printed JSON, defensively:
  * circular references, bigints, functions, symbols and `undefined` become
  * inert placeholder strings; a throwing `toJSON` falls back to a
- * placeholder; output beyond `maxChars` is cut with a truncation marker.
+ * placeholder.
+ *
+ * Two caps, so the approver always sees every top-level argument (S6): each
+ * STRING leaf is cut at `MAX_STRING_LEAF_CHARS` with an inline marker — one
+ * oversized `content` can no longer push `path` out of view — and the whole
+ * rendering is cut at `maxChars` as a backstop. When the backstop fires, the
+ * marker names the top-level arguments that were cut off entirely, so a key
+ * never silently disappears from the prompt.
  */
 function renderArgsJson(args: Record<string, unknown>, maxChars: number): string {
   let json: string;
@@ -195,11 +227,33 @@ function renderArgsJson(args: Record<string, unknown>, maxChars: number): string
     return json;
   }
   const total = json.length;
-  return `${json.slice(0, maxChars)}\n… [truncated: showing first ${maxChars} of ${total} characters]`;
+  const kept = json.slice(0, maxChars);
+  const hidden = hiddenTopLevelKeys(args, kept);
+  const notShown =
+    hidden.length > 0
+      ? `; arguments not shown: ${hidden.map((key) => JSON.stringify(key)).join(', ')}`
+      : '';
+  return `${kept}\n… [truncated: showing first ${maxChars} of ${total} characters${notShown}]`;
 }
 
 /**
- * JSON.stringify replacer neutralizing values JSON cannot represent.
+ * Top-level argument names whose member never made it into the kept slice.
+ * A top-level member of a 2-space pretty-print starts the line `  "key": `
+ * — nested members are indented deeper and string values never contain a
+ * raw newline — so the line prefix identifies the key unambiguously. A key
+ * whose value was cut mid-way still counts as shown.
+ */
+function hiddenTopLevelKeys(args: Record<string, unknown>, kept: string): string[] {
+  const hidden: string[] = [];
+  for (const key of Object.keys(args)) {
+    if (!kept.includes(`\n  ${JSON.stringify(key)}: `)) hidden.push(key);
+  }
+  return hidden;
+}
+
+/**
+ * JSON.stringify replacer neutralizing values JSON cannot represent and
+ * capping string leaves (see {@link renderArgsJson}).
  *
  * Cycle detection tracks only the current ancestor chain (popping on the
  * way back up via the `this` holder), so shared non-circular references
@@ -211,6 +265,10 @@ function makeSafeReplacer(): (this: unknown, key: string, value: unknown) => unk
   const ancestors: object[] = [];
   return function replacer(this: unknown, _key: string, value: unknown): unknown {
     switch (typeof value) {
+      case 'string':
+        return value.length > MAX_STRING_LEAF_CHARS
+          ? `${value.slice(0, MAX_STRING_LEAF_CHARS)}…[+${value.length - MAX_STRING_LEAF_CHARS} chars]`
+          : value;
       case 'bigint':
         return `[bigint ${value.toString()}]`;
       case 'function':

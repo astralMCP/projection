@@ -72,8 +72,14 @@ import { LIB_VERSION, XSTATE_VERSION } from './versions.js';
 /** Envelope format version prefix. Bump (proj2, …) on any wire-format change. */
 export const ENVELOPE_PREFIX = 'proj1';
 
-/** Default blob TTL: 15 minutes (R20). */
+/** Default blob TTL for `machine` blobs: 15 minutes (R20). */
 export const DEFAULT_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Default TTL for `call` blobs: 5 minutes (R38). An approved `call` blob has
+ * no forward step, so it is a standing capability until it expires (D4, D9).
+ */
+export const DEFAULT_CALL_TTL_MS = 5 * 60 * 1000;
 
 /** Default sealed-blob size ceiling: 128 KB (R23). */
 export const DEFAULT_MAX_BLOB_BYTES = 128 * 1024;
@@ -241,7 +247,8 @@ function malformed(field: string): ProjectionError {
  */
 function assertPayloadShape(payload: Record<string, unknown>): void {
   // R36: `kind` is required; a payload without it predates the field and is
-  // already fenced by the exact `libv` match, so here it is simply malformed.
+  // fenced by the exact `libv` match once the release that introduced `kind`
+  // ships, so here it is simply malformed.
   if (payload['kind'] !== 'machine' && payload['kind'] !== 'call') {
     throw malformed('kind');
   }
@@ -284,11 +291,25 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload['audit'])) {
     throw malformed('audit');
   }
-  // R36: a `call` blob carries exactly one pending entry, keyed `call`.
+  // R36: a `call` blob is the degenerate one-call machine, so its shape is
+  // fixed — exactly one pending entry keyed `call` whose id is `call`, no
+  // snapshot, no prior audit, and trip 1 (there is no second round trip).
   if (payload['kind'] === 'call') {
     const keys = Object.keys(pending);
-    if (keys.length !== 1 || keys[0] !== 'call' || payload['snapshot'] !== null) {
+    if (keys.length !== 1 || keys[0] !== 'call') {
       throw malformed('pending (call blob)');
+    }
+    if ((pending['call'] as Record<string, unknown>)['id'] !== 'call') {
+      throw malformed('pending["call"].id (call blob)');
+    }
+    if (payload['snapshot'] !== null) {
+      throw malformed('snapshot (call blob)');
+    }
+    if ((payload['audit'] as unknown[]).length !== 0) {
+      throw malformed('audit (call blob)');
+    }
+    if (payload['trip'] !== 1) {
+      throw malformed('trip (call blob)');
     }
   }
 }
@@ -382,7 +403,12 @@ export function sealBlob(payload: BlobPayload, config: BlobSealerConfig): string
       'terminal',
       `sealed suspension blob is ${size} bytes, exceeding the ${maxBlobBytes}-byte ceiling`,
       {
-        hint: 'Machine context is too large to suspend. Keep large tool results out of context — store only the fields later states need — then re-run execute_machine.',
+        // A `call` blob holds nothing but the request, so only the args can
+        // be what is too big; a `machine` blob is dominated by its snapshot.
+        hint:
+          payload.kind === 'call'
+            ? 'The arguments are too large to seal for approval; shrink them and call call_tool again.'
+            : 'Machine context is too large to suspend. Keep large tool results out of context — store only the fields later states need — then re-run execute_machine.',
       },
     );
   }

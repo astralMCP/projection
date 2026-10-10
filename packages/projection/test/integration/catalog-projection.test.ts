@@ -91,6 +91,7 @@ describe('projections switch (R1, R32)', () => {
       'search_tools',
     ]);
     expect(facade?.projections).toEqual({ codeMode: true, catalog: true });
+    expect(Object.isFrozen(facade?.projections)).toBe(true);
     expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_ROUTING_PREAMBLE}`);
   });
 

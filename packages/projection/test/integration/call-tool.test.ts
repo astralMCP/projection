@@ -204,6 +204,30 @@ describe('call_tool over the 2026-07-28 wire', () => {
     expect(files['/notes.txt']).toBe('via call_tool');
   });
 
+  it('the SDK drives an accepted round trip through the elicitation handler: one prompt, the write lands', async () => {
+    const prompts: string[] = [];
+    const c = await connectModern(await serve(), {
+      onElicit: (message) => {
+        prompts.push(message);
+        expect(files['/notes.txt']).toBe('original notes');
+        return { action: 'accept' };
+      },
+    });
+    const result = (await c.callTool({
+      name: 'call_tool',
+      arguments: { name: 'write_file', args: { path: '/notes.txt', content: 'approved' } },
+    })) as { isError?: boolean; structuredContent?: Structured };
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('requested directly by the model');
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual({
+      status: 'ok',
+      tool: 'write_file',
+      output: 'wrote 8 bytes',
+    });
+    expect(files['/notes.txt']).toBe('approved');
+  });
+
   it('the SDK drives the whole round trip through an elicitation handler; a decline is a normal result', async () => {
     const prompts: string[] = [];
     const handler = await serve();

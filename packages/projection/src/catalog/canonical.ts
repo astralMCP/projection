@@ -11,6 +11,9 @@
  * closed. Values JSON cannot represent (`undefined`, functions, symbols,
  * bigint, non-finite numbers) throw a `validate` error rather than being
  * dropped: the facade is callable outside the SDK (R27), so they can occur.
+ * Non-plain objects (`Date`, `Map`, class instances) canonicalize by their
+ * own enumerable keys, i.e. typically to `{}` — JSON over the wire never
+ * produces them, so this too is reachable only by a direct caller.
  *
  * The hash is a coherence check, not the approval binding — S2 is carried
  * by the blob's `pending` entry alone (R36, D9).
@@ -47,7 +50,10 @@ function render(value: unknown, path: string, depth: number): string {
         return `[${value.map((item, index) => render(item, `${path}[${index}]`, depth + 1)).join(',')}]`;
       }
       return renderObject(value as Record<string, unknown>, path, depth);
+    case 'undefined':
+      throw invalid(path, 'is undefined, which JSON cannot carry');
     default:
+      // function, symbol, bigint
       throw invalid(path, `is a ${typeof value}, which JSON cannot carry`);
   }
 }

@@ -51,6 +51,12 @@ describe('canonical JSON for the call_tool binding hash (R36)', () => {
     }
   });
 
+  it('names what the offending value is, grammatically', () => {
+    expect(() => canonicalJson({ a: undefined })).toThrow(/\$\.a is undefined, which JSON/);
+    expect(() => canonicalJson([() => 1])).toThrow(/\$\[0\] is a function, which JSON/);
+    expect(() => canonicalJson({ a: 10n })).toThrow(/\$\.a is a bigint, which JSON/);
+  });
+
   it('bounds nesting depth', () => {
     let deep: unknown = 1;
     for (let i = 0; i < 100; i += 1) deep = [deep];

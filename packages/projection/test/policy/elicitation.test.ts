@@ -118,13 +118,58 @@ describe('buildElicitationCopy', () => {
     expect(copy.message).not.toContain('/tmp/x');
   });
 
-  it('truncates large arguments with an explicit marker', () => {
-    const copy = buildElicitationCopy(call({ args: { blob: 'x'.repeat(50_000) } }), entry(), {
-      maxArgsChars: 1_000,
-    });
-    expect(copy.args.length).toBeLessThan(1_200);
+  it('truncates large arguments with an explicit marker naming the arguments cut off', () => {
+    // Each string leaf is capped at 512 chars first, so it takes several
+    // oversized values to reach the global backstop.
+    const args: Record<string, unknown> = {};
+    for (let i = 0; i < 10; i += 1) args[`field${i}`] = 'x'.repeat(600);
+    const copy = buildElicitationCopy(call({ args }), entry(), { maxArgsChars: 1_000 });
+    expect(copy.args.length).toBeLessThan(1_300);
     expect(copy.args).toContain('[truncated: showing first 1000 of');
+    expect(copy.args).toContain('arguments not shown: ');
+    expect(copy.args).toContain('"field9"');
     expect(copy.message).toContain('[truncated');
+  });
+
+  it('caps each string leaf so one oversized value cannot hide the other arguments (S6)', () => {
+    const copy = buildElicitationCopy(
+      call({ args: { content: 'x'.repeat(5_000), path: '/etc/passwd' } }),
+      entry(),
+    );
+    expect(copy.message).toContain('"path": "/etc/passwd"');
+    expect(copy.args).toContain('…[+4488 chars]');
+    expect(copy.args).not.toContain('[truncated');
+  });
+
+  it('every top-level argument name reaches the approver even when the backstop fires (S6)', () => {
+    const args: Record<string, unknown> = {};
+    for (let i = 0; i < 20; i += 1) args[`argument_${i}`] = 'v'.repeat(1_000);
+    const copy = buildElicitationCopy(call({ args }), entry());
+    expect(copy.args).toContain('[truncated');
+    for (const key of Object.keys(args)) {
+      expect(copy.message).toContain(`"${key}"`);
+    }
+  });
+
+  it('the redaction hook works on a copy: mutating it changes the prompt, not the sealed args (S2)', () => {
+    const args = { path: '/tmp/x', apiKey: 'sk-secret-123', nested: { token: 't-1' } };
+    const pending = call({ args });
+    const copy = buildElicitationCopy(pending, entry(), {
+      redact: (_toolName, shown) => {
+        shown['apiKey'] = '[redacted]';
+        (shown['nested'] as Record<string, unknown>)['token'] = '[redacted]';
+        return shown;
+      },
+    });
+    expect(copy.message).toContain('[redacted]');
+    expect(copy.message).not.toContain('sk-secret-123');
+    expect(copy.message).not.toContain('t-1');
+    expect(pending.args).toEqual({
+      path: '/tmp/x',
+      apiKey: 'sk-secret-123',
+      nested: { token: 't-1' },
+    });
+    expect(args.apiKey).toBe('sk-secret-123');
   });
 
   it('renders non-JSON-safe values defensively', () => {

@@ -123,9 +123,73 @@ describe('call_tool: validation (R35.1)', () => {
     }
     // Nothing reached the executor or asked for approval.
     expect(d.executor.calls).toEqual([]);
-    // Valid shapes pass: null is allowed by the type union, __proto__ is data.
+    // Valid shapes pass: null is allowed by the type union.
     const ok = await callTool({ name: 'write_file', args: { ...WRITE, retries: null } }, d);
     expect(isSuspended(ok)).toBe(true);
+  });
+
+  it('the validate hint names the offending argument as well as the tool', async () => {
+    const result = completed(
+      await callTool({ name: 'write_file', args: { path: '/x' } }, deps({ catalog: TYPED })),
+    );
+    expect(String(structured(result)['hint'])).toContain('"write_file"');
+    expect(String(structured(result)['hint'])).toContain('"content"');
+  });
+
+  it('a non-object inputSchema ({} or type string) imposes nothing: the call reaches the executor', async () => {
+    const loose: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({ name: 'read_file', inputSchema: {}, annotations: { readOnlyHint: true } }),
+        entry({
+          name: 'list_dir',
+          inputSchema: { type: 'string' },
+          annotations: { readOnlyHint: true },
+        }),
+      ],
+    };
+    const d = deps({ catalog: loose });
+    expect(
+      completed(await callTool({ name: 'read_file', args: { path: '/n' } }, d)).isError,
+    ).toBeUndefined();
+    expect(
+      completed(await callTool({ name: 'list_dir', args: { path: '/d', depth: 2 } }, d)).isError,
+    ).toBeUndefined();
+    expect(d.executor.calls).toEqual([
+      { name: 'read_file', args: { path: '/n' } },
+      { name: 'list_dir', args: { path: '/d', depth: 2 } },
+    ]);
+  });
+
+  it('__proto__ as an argument name is data: a closed schema rejects it by name, an open one passes it through (S5/S6)', async () => {
+    const closed = deps({ catalog: TYPED });
+    const rejected = completed(
+      await callTool(
+        {
+          name: 'write_file',
+          args: JSON.parse('{"path":"/x","content":"c","__proto__":{"p":1}}') as unknown,
+        },
+        closed,
+      ),
+    );
+    expect(rejected.isError).toBe(true);
+    expect(structured(rejected)['phase']).toBe('validate');
+    expect(String(structured(rejected)['message'])).toContain('"__proto__"');
+    expect(closed.executor.calls).toEqual([]);
+
+    const open = deps();
+    const passed = completed(
+      await callTool(
+        { name: 'read_file', args: JSON.parse('{"path":"/x","__proto__":{"p":1}}') as unknown },
+        open,
+      ),
+    );
+    expect(passed.isError).toBeUndefined();
+    const received = open.executor.calls[0]?.args ?? {};
+    expect(Object.hasOwn(received, '__proto__')).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(received, '__proto__')?.value).toEqual({ p: 1 });
+    // The own key never became a prototype write.
+    expect(({} as { p?: unknown }).p).toBeUndefined();
   });
 });
 
@@ -144,6 +208,35 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     const d = deps();
     await callTool({ name: 'list_dir' }, d);
     expect(d.executor.calls).toEqual([{ name: 'list_dir', args: {} }]);
+  });
+
+  it('a result over maxResultBytes is still ok — the call ran — with a bounded preview (R12)', async () => {
+    const huge = 'x'.repeat(5 * 1024 * 1024);
+    const d = deps({ executor: new FakeExecutor({ read_file: { ok: true, result: huge } }) });
+    const result = completed(await callTool({ name: 'read_file', args: { path: '/big' } }, d));
+    expect(result.isError).toBeUndefined();
+    const out = outcome(result);
+    expect(out.status).toBe('ok');
+    if (out.status !== 'ok') throw new Error('unreachable');
+    expect(out.tool).toBe('read_file');
+    expect(out.truncated).toBe(true);
+    // The JSON of the string: 5 MB plus the two quotes.
+    expect(out.outputBytes).toBe(huge.length + 2);
+    expect(typeof out.output).toBe('string');
+    expect((out.output as string).length).toBe(1_000);
+    expect((out.output as string).startsWith('"xxx')).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('preview');
+    expect(text).toContain('The call ran');
+    // Under the cap, the result passes through untouched.
+    const small = deps({
+      executor: new FakeExecutor({ read_file: { ok: true, result: { a: 1 } } }),
+    });
+    expect(outcome(completed(await callTool({ name: 'read_file', args: {} }, small)))).toEqual({
+      status: 'ok',
+      tool: 'read_file',
+      output: { a: 1 },
+    });
   });
 
   it('a deny policy is a normal (non-error) denied_by_policy result and nothing executes', async () => {
@@ -247,6 +340,52 @@ describe('call_tool: suspend and resume (R35.3–4, R36, S2)', () => {
     expect(err['phase']).toBe('blob_verification');
     expect(String(err['message'])).toContain('request mismatch');
     expect(d.executor.calls).toEqual([]);
+  });
+
+  it('a retry naming another tool — known or not — is a request mismatch, not a validate error (R36)', async () => {
+    const d = deps();
+    const state = sealedState(await callTool({ name: 'write_file', args: WRITE }, d));
+    for (const name of ['nope', 'delete_file']) {
+      const result = completed(
+        await callTool(
+          { name, args: WRITE, requestState: state, inputResponses: { [CALL_KEY]: ACCEPT } },
+          d,
+        ),
+      );
+      expect(result.isError).toBe(true);
+      expect(structured(result)['phase']).toBe('blob_verification');
+      expect(String(structured(result)['message'])).toContain('request mismatch');
+    }
+    expect(d.executor.calls).toEqual([]);
+  });
+
+  it('a deny policy set after the blob was minted wins on the retry, before the blob is opened (D9)', async () => {
+    const minted = deps();
+    const state = sealedState(await callTool({ name: 'write_file', args: WRITE }, minted));
+    let nonceChecks = 0;
+    const replayCache: ReplayCache = {
+      seen() {
+        nonceChecks += 1;
+        return Promise.resolve(false);
+      },
+    };
+    const d = deps({ executor: minted.executor, policy: { write_file: 'deny' }, replayCache });
+    const result = completed(
+      await callTool(
+        {
+          name: 'write_file',
+          args: WRITE,
+          requestState: state,
+          inputResponses: { [CALL_KEY]: ACCEPT },
+        },
+        d,
+      ),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(outcome(result)).toMatchObject({ status: 'denied_by_policy', tool: 'write_file' });
+    expect(d.executor.calls).toEqual([]);
+    // Refused without opening the blob: no replay nonce was spent.
+    expect(nonceChecks).toBe(0);
   });
 
   it('a decline (with reason), a missing response and a non-elicitation response all mean declined (R17)', async () => {

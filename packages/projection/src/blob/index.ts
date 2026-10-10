@@ -19,7 +19,9 @@
  *
  * - `buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload`
  *   Fills v, libv, xstatev, codeHash, nonce, iat, and exp (ttlMs default 15
- *   minutes) around the caller-supplied snapshot/pending/trip fields.
+ *   minutes for `machine` blobs — `DEFAULT_TTL_MS`; `call_tool` passes
+ *   `DEFAULT_CALL_TTL_MS`, 5 minutes, per R38) around the caller-supplied
+ *   snapshot/pending/trip fields.
  *
  * - `hashCode(code: string): string` — SHA-256 hex of a code argument.
  *
@@ -28,6 +30,7 @@
 
 export {
   buildBlobPayload,
+  DEFAULT_CALL_TTL_MS,
   DEFAULT_MAX_BLOB_BYTES,
   DEFAULT_TTL_MS,
   ENVELOPE_PREFIX,

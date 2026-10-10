@@ -427,7 +427,20 @@ describe('blob kind (R36)', () => {
     expect(() => open({ ...call, pending: { other: call.pending['call'] as never } })).toThrow(
       /malformed/,
     );
-    expect(() => open({ ...call, snapshot: { status: 'active' } })).toThrow(/malformed/);
+    expect(() => open({ ...call, snapshot: { status: 'active' } })).toThrow(
+      /snapshot \(call blob\)/,
+    );
+    // The one-call shape is fixed: trip 1, no prior audit, the entry's id is
+    // the key. Each failure names its field.
+    expect(() => open({ ...call, trip: 2 })).toThrow(/trip \(call blob\)/);
+    expect(() =>
+      open({ ...call, audit: [{ callId: 'call', tool: 'x', args: {}, decision: 'auto' }] }),
+    ).toThrow(/audit \(call blob\)/);
+    const recorded = call.pending['call'];
+    if (recorded === undefined) throw new Error('fixture lost its pending entry');
+    expect(() => open({ ...call, pending: { call: { ...recorded, id: 'other' } } })).toThrow(
+      /id \(call blob\)/,
+    );
     // Opening it as a machine blob is a kind mismatch.
     expect(() =>
       openBlob(sealBlob(call, makeConfig()), {

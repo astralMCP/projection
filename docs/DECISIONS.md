@@ -248,7 +248,8 @@ default, and route between them in the instructions preamble (R29): one step
 `execute_machine`. Not a mode switch; both are live unless the integrator
 turns one off. Staged default: the projection lands in parts, and until
 `call_tool` ships it defaults off (`projections.catalog` is opt-in), flipping
-to the R32 default of on in the part that adds `call_tool`.
+to the R32 default of on in the part that adds `call_tool` (flipped in part
+2, #36).
 
 Why one gate rather than a proxy. `call_tool` is the degenerate one-call
 machine, so it reuses the machine's approval path end to end: the R16 copy
@@ -293,6 +294,12 @@ away. The mitigation is unchanged — the R14 override forces such tools to
 `ask`, and the §13 Postgres case exercises exactly this — but the catalog
 projection turns it from a setting an integrator could defer into one they
 should set before enabling the projection on a server they do not control.
+
+Policy outranks a stale approval. A `deny` configured after a `call` blob was
+minted wins on the retry: `call_tool` decides policy on the retried name
+before it opens the blob, so nothing executes and no replay nonce is spent.
+Follow-up: mirror this in the machine host's `applyVerdicts`, which today
+executes an approved `pending` entry without re-deciding policy.
 
 `call_tool` makes the D4 window more consequential. After an approved machine
 step the workflow moves forward (fresh blob, fresh nonce, incremented trip),

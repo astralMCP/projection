@@ -8,6 +8,7 @@ import { hashCode, openBlob, sealBlob, buildBlobPayload } from '../blob/index.js
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { legacySuspendError } from './legacy-gate.js';
 import {
   clampCaps,
@@ -39,6 +40,17 @@ import {
   type ToolCallResult,
 } from './protocol.js';
 
+/**
+ * `execute_machine` arguments plus the MRTR retry envelope.
+ *
+ * **Security (S2):** `requestState` and `inputResponses` are the retry
+ * envelope — siblings of `arguments` in a `tools/call` that the SDK lifts off
+ * the request params onto the handler context. They are NOT tool arguments.
+ * A direct caller of `executeMachine` MUST populate them only from the
+ * transport's retry fields, never from model-authored tool arguments: a
+ * model that has seen a `requestState` could otherwise echo it back with a
+ * fabricated `accept` and approve its own gated call.
+ */
 export interface ExecuteMachineArgs extends RetryEnvelope {
   /** The authored module source (R2). */
   code: string;
@@ -47,9 +59,14 @@ export interface ExecuteMachineArgs extends RetryEnvelope {
   input?: unknown;
 }
 
-export interface ExecuteMachineDeps {
+/**
+ * What every gated entry point needs: the catalog and executor of the wrapped
+ * server, the blob sealer, and the per-facade policy, redaction, caps,
+ * protocol-era and replay settings. `execute_machine` adds the sandbox
+ * bridge; `call_tool` needs nothing more (R35, R38).
+ */
+export interface ApprovalGateDeps {
   catalog: ServerCatalog;
-  bridgeSource: string;
   executor: ToolExecutor;
   blob: BlobSealerConfig;
   caps?: Partial<ResourceCaps>;
@@ -84,6 +101,11 @@ export interface ExecuteMachineDeps {
   clientCanElicit?: boolean;
   /** Optional shared replay cache (R38); consulted after verification, before execution. */
   replayCache?: ReplayCache;
+}
+
+export interface ExecuteMachineDeps extends ApprovalGateDeps {
+  /** The `@astral-mcp/tools` bridge module source the sandbox loads (R2). */
+  bridgeSource: string;
 }
 
 /**
@@ -199,9 +221,18 @@ async function openResume(
   };
 }
 
-function readReason(content: Record<string, unknown> | undefined): string | undefined {
+const MAX_REASON_CHARS = 500;
+
+/**
+ * The optional decline reason from an elicitation's `content`, shared by
+ * `execute_machine` and `call_tool`. Client-supplied free text that is shown
+ * back to the model (as `TOOL_DENIED.reason` or the `declined` outcome) and
+ * recorded in the audit trail, so it is rendered inert and bounded.
+ */
+export function readReason(content: Record<string, unknown> | undefined): string | undefined {
   const reason = content?.['reason'];
-  return typeof reason === 'string' && reason.length > 0 ? reason : undefined;
+  if (typeof reason !== 'string' || reason.length === 0) return undefined;
+  return neutralizeControlChars(capLength(reason, MAX_REASON_CHARS));
 }
 
 // ---------------------------------------------------------------------------

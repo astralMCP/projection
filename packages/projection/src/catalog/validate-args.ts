@@ -28,7 +28,7 @@ export function validateArgsShape(
   const safeTool = inert(toolName);
   const fail = (property: string, why: string): ProjectionError =>
     new ProjectionError('validate', `call_tool ${safeTool}: argument ${inert(property)} ${why}`, {
-      hint: `Call describe_tool with name ${safeTool} and match its input schema exactly.`,
+      hint: `Call describe_tool with name ${safeTool} and fix argument ${inert(property)} to match its input schema.`,
     });
 
   const properties = isRecord(schema['properties']) ? schema['properties'] : {};
