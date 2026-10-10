@@ -14,7 +14,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { decidePolicy } from '../policy/index.js';
+import { decidePolicy, postureOf, type ToolPosture } from '../policy/index.js';
 import {
   capLength,
   inertIdentity,
@@ -25,7 +25,6 @@ import {
 import type { CallToolResult } from '../mrtr/protocol.js';
 import {
   dedupeTools,
-  type PolicyDecision,
   type PolicyOverrides,
   type ServerCatalog,
   type ToolCatalogEntry,
@@ -51,9 +50,6 @@ const MAX_PAGE_SIZE = 200;
 /** `query` is capped (R33): it is matched as a plain substring, never a regex. */
 export const MAX_QUERY_CHARS = 200;
 
-/** The three normative posture strings (R33) — models match on these. */
-export type ToolPosture = 'runs immediately' | 'asks for approval' | 'blocked by policy';
-
 /** One entry of a `search_tools` page (R33). */
 export interface ToolSummary {
   name: string;
@@ -67,18 +63,6 @@ export interface SearchToolsPage {
   /** Matching tools across all pages. */
   total: number;
   nextCursor?: string;
-}
-
-/** Map a policy decision to its plain-words posture (R33). */
-export function postureOf(decision: PolicyDecision): ToolPosture {
-  switch (decision) {
-    case 'auto':
-      return 'runs immediately';
-    case 'ask':
-      return 'asks for approval';
-    case 'deny':
-      return 'blocked by policy';
-  }
 }
 
 /** Summarize one catalog entry (R33). */
@@ -106,7 +90,9 @@ export function searchTools(
     Math.max(1, options.pageSize ?? DEFAULT_SEARCH_PAGE_SIZE),
   );
   // Slice, not capLength: an ellipsis would change what the filter matches.
-  const query = (args.query ?? '').slice(0, MAX_QUERY_CHARS);
+  const rawQuery = args.query ?? '';
+  const query = rawQuery.slice(0, MAX_QUERY_CHARS);
+  const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
   const offset = decodeCursor(args.cursor, query);
 
   const needle = query.toLowerCase();
@@ -133,7 +119,7 @@ export function searchTools(
   };
 
   return {
-    content: [{ type: 'text', text: renderPage(catalog, page, query, offset) }],
+    content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
     structuredContent: { ...page },
   };
 }
@@ -143,8 +129,12 @@ function renderPage(
   page: SearchToolsPage,
   query: string,
   offset: number,
+  queryTruncated: boolean,
 ): string {
   const lines: string[] = [];
+  if (queryTruncated) {
+    lines.push(`(query truncated to its first ${MAX_QUERY_CHARS} characters)`, '');
+  }
   const scope =
     query.length > 0 ? ` matching ${JSON.stringify(neutralizeControlChars(query))}` : '';
   if (page.tools.length === 0) {

@@ -339,10 +339,27 @@ function outcome(value: CallToolOutcome): CallToolResult {
 
 function renderOutcome(value: CallToolOutcome): string {
   switch (value.status) {
-    case 'ok':
-      return value.truncated === true
-        ? `${JSON.stringify(value, null, 2)}\n\nThe call ran, but its result is ${value.outputBytes} bytes, over this server's result limit; output is a preview of the first ${RESULT_PREVIEW_CHARS} characters of its JSON. Retrying returns the same preview — work from it, or call the tool with arguments that return less.`
-        : JSON.stringify(value, null, 2);
+    case 'ok': {
+      // Text-only upstream results arrive as a string (TOOL_RESULT rule);
+      // print them raw rather than JSON-in-JSON so the model reads what
+      // the wrapped tool returned, not an escaped copy of it. Structured
+      // results are pretty-printed. Either way the body is the wrapped
+      // server's own text (S5): control and bidi characters are neutralized
+      // — newlines kept, they are the result's own lines, and the head
+      // above is line 1 regardless — while `structuredContent.output`
+      // carries the result verbatim.
+      const head = `call_tool ${inert(value.tool)}: ok`;
+      const body = neutralizeControlChars(
+        typeof value.output === 'string'
+          ? value.output
+          : (JSON.stringify(value.output, null, 2) ?? 'null'),
+        { allowNewline: true },
+      );
+      if (value.truncated === true) {
+        return `${head} (result truncated)\n\n${body}\n\nThe call ran, but its result is ${value.outputBytes} bytes, over this server's result limit; the output above is the first ${RESULT_PREVIEW_CHARS} characters of its JSON. Retrying returns the same preview — work from it, or call the tool with arguments that return less.`;
+      }
+      return `${head}\n\n${body}`;
+    }
     case 'declined':
       return `The user declined ${inert(value.tool)}${value.reason !== undefined ? ` — ${JSON.stringify(value.reason)}` : ''}. Nothing was executed. Do not retry this call unless the user asks for it.`;
     case 'denied_by_policy':

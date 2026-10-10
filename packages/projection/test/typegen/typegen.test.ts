@@ -2,13 +2,14 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { describeTool, type ToolDescription } from '../../src/catalog/index.js';
 import {
   generateToolTypes,
   TOOL_CALL_HOST_GLOBAL,
   TOOLS_MODULE_SPECIFIER,
 } from '../../src/typegen/index.js';
 import { schemaToTsType } from '../../src/typegen/json-schema.js';
-import type { ServerAlias, ServerCatalog, ToolCatalog } from '../../src/types.js';
+import type { PolicyOverrides, ServerAlias, ServerCatalog, ToolCatalog } from '../../src/types.js';
 import { fixtureCatalog } from './fixture.js';
 
 const generated = generateToolTypes(fixtureCatalog);
@@ -136,12 +137,56 @@ describe('generateToolTypes — overview block', () => {
   });
 
   it('lists every tool with a read-only/approval flag on one line', () => {
-    expect(generated.overview).toContain('- get_weather [read-only] — Get the current weather');
     expect(generated.overview).toContain(
-      '- create-ticket! [approval, destructive] — Create a ticket.',
+      '- get_weather [runs immediately] — Get the current weather',
     );
-    expect(generated.overview).toContain('- search [approval] —');
-    expect(generated.overview).toContain('- 123 spaced name [approval] — (no description)');
+    expect(generated.overview).toContain(
+      '- create-ticket! [asks for approval, destructive] — Create a ticket.',
+    );
+    expect(generated.overview).toContain('- search [asks for approval] —');
+    expect(generated.overview).toContain(
+      '- 123 spaced name [asks for approval] — (no description)',
+    );
+  });
+});
+
+describe('generateToolTypes — policy overrides (R14, R33)', () => {
+  const policy: PolicyOverrides = { get_weather: 'deny' };
+  const denied = generateToolTypes(fixtureCatalog, { policy });
+
+  it('a deny override reads "blocked by policy" in the overview and the .d.ts', () => {
+    expect(denied.overview).toContain(
+      '- get_weather [blocked by policy] — Get the current weather for a city.',
+    );
+    expect(denied.dts).toContain('Blocked by policy: calls to this tool are refused.');
+    expect(denied.toolTypes.get('get_weather')?.dts).toContain('Blocked by policy:');
+  });
+
+  it('describe_tool, the overview flag and the per-tool .d.ts slice agree on the posture', () => {
+    const described = describeTool(fixtureCatalog, { name: 'get_weather' }, { policy })
+      .structuredContent as ToolDescription;
+    expect(described.posture).toBe('blocked by policy');
+    const overviewLine = denied.overview.split('\n').find((l) => l.startsWith('- get_weather '));
+    expect(overviewLine).toContain(`[${described.posture}]`);
+    // The doc comment leads with the same words, in sentence case.
+    const sentenceCase = `${described.posture[0]?.toUpperCase() ?? ''}${described.posture.slice(1)}:`;
+    expect(denied.toolTypes.get('get_weather')?.dts).toContain(sentenceCase);
+  });
+
+  it('keeps the destructive marker on every posture', () => {
+    for (const [decision, lead] of [
+      ['auto', 'Runs immediately'],
+      ['ask', 'Asks for approval'],
+      ['deny', 'Blocked by policy'],
+    ] as const) {
+      const { toolTypes } = generateToolTypes(fixtureCatalog, {
+        policy: { 'create-ticket!': decision },
+      });
+      const slice = toolTypes.get('create-ticket!')?.dts ?? '';
+      expect(slice, decision).toMatch(
+        new RegExp(`${lead}: [^\\n]*\\. The server marks this tool destructive\\.`),
+      );
+    }
   });
 });
 

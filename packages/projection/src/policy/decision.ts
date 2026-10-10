@@ -47,6 +47,21 @@ export function decidePolicy(entry: ToolCatalogEntry, overrides?: PolicyOverride
   return entry.annotations?.readOnlyHint === true ? 'auto' : 'ask';
 }
 
+/** The three normative posture strings (R33) — models match on these. */
+export type ToolPosture = 'runs immediately' | 'asks for approval' | 'blocked by policy';
+
+/** Map a policy decision to its plain-words posture (R33). Shared by every surface that names one. */
+export function postureOf(decision: PolicyDecision): ToolPosture {
+  switch (decision) {
+    case 'auto':
+      return 'runs immediately';
+    case 'ask':
+      return 'asks for approval';
+    case 'deny':
+      return 'blocked by policy';
+  }
+}
+
 /** Result of resolving a pending call against a server catalog. */
 export type ResolvedCallPolicy =
   | { ok: true; decision: PolicyDecision; entry: ToolCatalogEntry }

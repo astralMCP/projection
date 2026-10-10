@@ -72,8 +72,10 @@ const MAX_STRING_LEAF_CHARS = 512;
 const MAX_STATE_NAME_CHARS = 200;
 const MAX_TOOL_NAME_CHARS = 200;
 
+// The title line already carries the ⚠ glyph; repeating it here read as
+// noise to approvers, so the warning line is plain text.
 const DESTRUCTIVE_WARNING =
-  '⚠ This can permanently change or delete data. Review the details before approving.';
+  'This can permanently change or delete data. Review the details before approving.';
 
 const REDACTION_FAILED = '[redaction failed]';
 
@@ -114,7 +116,12 @@ export function buildElicitationCopy(
   const friendly = friendlyAction(entry, safeName);
   const purpose = purposeSentence(entry.description);
 
-  const title = destructive ? `⚠ Approve: ${friendly}` : `Approve: ${friendly}`;
+  // Method-dispatched tools ("issue_write" with method: "create") hide the
+  // real action behind an umbrella title; surface the enum-constrained
+  // dispatch value so the approver sees "… — create", not just "issue".
+  const method = dispatchMethod(call.args, entry);
+  const action = method !== undefined ? `${friendly} — ${method}` : friendly;
+  const title = destructive ? `⚠ Approve: ${action}` : `Approve: ${action}`;
 
   const lines: string[] = [];
   if (destructive) lines.push(DESTRUCTIVE_WARNING, '');
@@ -124,14 +131,16 @@ export function buildElicitationCopy(
   if (purpose !== undefined)
     lines.push(`What the server says it does: ${JSON.stringify(purpose)}`, '');
   lines.push('Details:', indentBlock(neutralizeControlChars(renderedArgs, { allowNewline: true })));
-  // Compact technical footer: exact tool id + the workflow step that asked
-  // (R16). The state is model-authored, so quoted as an inert JSON literal.
+  // Compact technical footer: exact tool id and, for a machine step, the
+  // workflow step that asked (R16). Kept plain — "requested by the model"
+  // style phrasing was jargon to approvers. The state is model-authored, so
+  // quoted as an inert JSON literal.
   const safeState = neutralizeControlChars(capLength(call.stateName, MAX_STATE_NAME_CHARS));
   lines.push(
     '',
     options.origin === 'direct'
-      ? `Tool ${safeName} · requested directly by the model`
-      : `Tool ${safeName} · requested by step ${JSON.stringify(safeState)}`,
+      ? `Tool: ${safeName}`
+      : `Tool: ${safeName} · workflow step ${JSON.stringify(safeState)}`,
   );
 
   return {
@@ -142,6 +151,46 @@ export function buildElicitationCopy(
     args: renderedArgs,
     destructive,
   };
+}
+
+/** Top-level argument names that conventionally select a tool's sub-action. */
+const DISPATCH_ARGS = ['method', 'action'] as const;
+
+/**
+ * The dispatch value of a method-style tool, when the call carries one and
+ * the schema constrains it: a top-level `method` / `action` string argument
+ * whose schema property has an `enum` listing that exact value. Only
+ * enum-listed values qualify, so the suffix is server-defined vocabulary
+ * (neutralized and capped like every other S5 string), never free text
+ * the model typed. Every dispatch key the call carries must pass: one that
+ * is present but not enum-listed means no suffix at all, so a rejected
+ * `method` cannot be routed around with an `action` the model added.
+ */
+function dispatchMethod(
+  args: Record<string, unknown>,
+  entry: ToolCatalogEntry,
+): string | undefined {
+  const properties = entry.inputSchema['properties'];
+  if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
+    return undefined;
+  }
+  let suffix: string | undefined;
+  for (const key of DISPATCH_ARGS) {
+    if (!Object.hasOwn(args, key)) continue;
+    const value = args[key];
+    const property = (properties as Record<string, unknown>)[key];
+    if (
+      typeof value !== 'string' ||
+      typeof property !== 'object' ||
+      property === null ||
+      !Array.isArray((property as Record<string, unknown>)['enum']) ||
+      !((property as Record<string, unknown>)['enum'] as unknown[]).includes(value)
+    ) {
+      return undefined;
+    }
+    suffix ??= neutralizeControlChars(capLength(value, MAX_TOOL_NAME_CHARS));
+  }
+  return suffix;
 }
 
 /**

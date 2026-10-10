@@ -73,7 +73,10 @@ export interface WrapOptions {
   blob: BlobSealerConfig;
   /** Resource cap overrides, clamped at the hard maxima (R12). */
   caps?: Partial<ResourceCaps>;
-  /** Per-tool policy overrides (R14). */
+  /**
+   * Per-tool policy overrides (R14). Read once, at wrap time: the facade
+   * keeps its own frozen copy, so later changes to this object are not seen.
+   */
   policy?: PolicyOverrides;
   /** Masks sensitive argument fields before they reach an approval prompt (R16). */
   redact?: RedactionHook;
@@ -165,7 +168,7 @@ export interface ProjectionFacade {
   /** Run `search_tools` (R33). Failures come back as R25 structured error results. */
   searchTools(args: { query?: string; cursor?: string }): CallToolResult;
   /** Run `describe_tool` (R34). Failures come back as R25 structured error results. */
-  describeTool(args: { name: string }): CallToolResult;
+  describeTool(args: { name: string; types?: boolean }): CallToolResult;
   /**
    * Run `call_tool` (R35) for one `tools/call`, first attempt or retry.
    * `era` / `clientCanElicit` as for `executeMachine`.
@@ -193,11 +196,11 @@ Call discover_apis first for the tool types, the full authoring contract, and wo
 
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
-const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally filtered by a plain substring on name and description. Each entry gives the tool's name, a one-line purpose, whether it runs immediately or asks the user for approval, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally filtered by a plain substring on name and description. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
 const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
-const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, its approval posture, and its generated TypeScript types. Call this before call_tool, or when authoring a machine that uses the tool.`;
+const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
 /**
  * Wrap an MCP server (an in-process instance or a connected client) into a
@@ -223,7 +226,14 @@ export async function wrapMcpServer(
     );
   }
 
-  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog);
+  // The policy is snapshotted once, here, and that one frozen copy feeds
+  // typegen AND the gate / catalog tools: the posture baked into the `.d.ts`
+  // resource and the overview must be the posture `describe_tool` and the
+  // approval gate decide with, which a caller mutating their policy object
+  // after wrap could otherwise drift apart.
+  const policy = options.policy !== undefined ? Object.freeze({ ...options.policy }) : undefined;
+
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, { policy });
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
@@ -237,6 +247,7 @@ export async function wrapMcpServer(
     resources,
     instructions,
     options,
+    ...(policy !== undefined ? { policy } : {}),
     projections,
   });
 }
@@ -270,6 +281,8 @@ interface FacadeDeps {
   resources: ProjectionResource[];
   instructions: string;
   options: WrapOptions;
+  /** The wrap-time snapshot of `options.policy` (see `WrapOptions.policy`). */
+  policy?: PolicyOverrides;
   projections: Readonly<ProjectionSelection>;
 }
 
@@ -322,13 +335,13 @@ class Facade implements ProjectionFacade {
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
   ): ApprovalGateDeps {
-    const { options } = this.deps;
+    const { options, policy } = this.deps;
     return {
       catalog: this.deps.catalog,
       executor: this.deps.introspector,
       blob: options.blob,
       ...(options.caps !== undefined ? { caps: options.caps } : {}),
-      ...(options.policy !== undefined ? { policy: options.policy } : {}),
+      ...(policy !== undefined ? { policy } : {}),
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
       ...(era !== undefined ? { protocolEra: era } : {}),
       ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
@@ -353,7 +366,7 @@ class Facade implements ProjectionFacade {
     }
   }
 
-  describeTool(args: { name: string }): CallToolResult {
+  describeTool(args: { name: string; types?: boolean }): CallToolResult {
     try {
       return describeTool(this.deps.catalog, args, {
         ...this.policyOption(),
@@ -366,7 +379,7 @@ class Facade implements ProjectionFacade {
 
   /** `exactOptionalPropertyTypes`: an absent policy must stay absent. */
   private policyOption(): { policy?: PolicyOverrides } {
-    const { policy } = this.deps.options;
+    const { policy } = this.deps;
     return policy !== undefined ? { policy } : {};
   }
 
@@ -453,10 +466,20 @@ class Facade implements ProjectionFacade {
         description: DESCRIBE_TOOL_DESCRIPTION,
         inputSchema: z.object({
           name: z.string().describe('Tool name as listed by search_tools.'),
+          types: z
+            .boolean()
+            .optional()
+            .describe(
+              'Also return the generated TypeScript for this tool (for authoring a machine).',
+            ),
         }),
         annotations: { readOnlyHint: true },
       },
-      (args) => this.describeTool({ name: args.name }),
+      (args) =>
+        this.describeTool({
+          name: args.name,
+          ...(args.types !== undefined ? { types: args.types } : {}),
+        }),
     );
 
     // No annotations on purpose (R35): hosts that gate on annotations must

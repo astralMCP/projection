@@ -46,7 +46,6 @@ export {
   canonicalJson,
   canonicalRequest,
   describeTool,
-  postureOf,
   sanitizeSchema,
   searchTools,
   summarizeTool,
@@ -67,7 +66,6 @@ export {
   type SearchToolsOptions,
   type SearchToolsPage,
   type ToolDescription,
-  type ToolPosture,
   type ToolSummary,
 } from './catalog/index.js';
 
@@ -104,12 +102,14 @@ export {
   buildElicitationCopy,
   decidePolicy,
   policyDeniedReason,
+  postureOf,
   purposeSentence,
   resolveCallPolicy,
   POLICY_DENIED_REASON,
   type ElicitationCopy,
   type ElicitationCopyOptions,
   type ResolvedCallPolicy,
+  type ToolPosture,
 } from './policy/index.js';
 
 // Blob sealer — the sealed `requestState` payload

@@ -1,6 +1,6 @@
 Tools (server: "fixture-server@1.2.3"):
-- get_weather [read-only] — Get the current weather for a city.
-- create-ticket! [approval, destructive] — Create a ticket.
-- search [approval] — Search things.
-- noargs [read-only] — Takes no arguments.
-- 123 spaced name [approval] — (no description)
+- get_weather [runs immediately] — Get the current weather for a city.
+- create-ticket! [asks for approval, destructive] — Create a ticket.
+- search [asks for approval] — Search things.
+- noargs [runs immediately] — Takes no arguments.
+- 123 spaced name [asks for approval] — (no description)

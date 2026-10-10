@@ -44,7 +44,7 @@ describe('discover_apis (R3)', () => {
     expect(inline).toMatch(/XState version: 5\./);
     // Every tool, with its approval posture.
     expect(inline).toContain('read_file');
-    expect(inline).toContain('[read-only]');
+    expect(inline).toContain('[runs immediately]');
     expect(inline).toContain('delete_file');
     expect(inline).toContain('destructive');
   });

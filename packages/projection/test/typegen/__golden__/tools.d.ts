@@ -77,29 +77,29 @@ export declare const tools: {
   /**
    * Get the current weather for a city.
    *
-   * Read-only: executes immediately, no user approval required.
+   * Runs immediately: no user approval required.
    */
   get_weather: (args: GetWeatherInput) => Promise<GetWeatherOutput>;
   /**
    * Create a ticket.
    * Second description line with details.
    *
-   * DESTRUCTIVE write: pauses the machine for user approval before executing.
+   * Asks for approval: pauses for the user to approve this exact call before it runs. The server marks this tool destructive.
    */
   "create-ticket!": (args: CreateTicketInput) => Promise<unknown>;
   /**
    * Search things. Unannotated, so it defaults to approval-gated.
    *
-   * Write (or unannotated): pauses the machine for user approval before executing.
+   * Asks for approval: pauses for the user to approve this exact call before it runs.
    */
   search: (args: SearchInput) => Promise<SearchOutput>;
   /**
    * Takes no arguments.
    *
-   * Read-only: executes immediately, no user approval required.
+   * Runs immediately: no user approval required.
    */
   noargs: (args?: NoargsInput) => Promise<unknown>;
-  /** Write (or unannotated): pauses the machine for user approval before executing. */
+  /** Asks for approval: pauses for the user to approve this exact call before it runs. */
   "123 spaced name": (args?: Tool123SpacedNameInput) => Promise<unknown>;
 };
 

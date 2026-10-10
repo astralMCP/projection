@@ -39,7 +39,7 @@ describe('buildElicitationCopy', () => {
     expect(copy.message).toContain('"path": "/tmp/notes.txt"');
     expect(copy.args).toContain('"content": "hello"');
     // Exact tool id + requesting step live in the footer (R16), de-emphasized.
-    expect(copy.message).toContain('Tool write_file · requested by step "writingNotes"');
+    expect(copy.message).toContain('Tool: write_file · workflow step "writingNotes"');
     expect(copy.message).not.toContain('Arguments (data only');
   });
 
@@ -50,7 +50,7 @@ describe('buildElicitationCopy', () => {
     expect(copy.message).not.toContain('no description provided');
     // Still shows details and the footer.
     expect(copy.message).toContain('Details:');
-    expect(copy.message).toContain('Tool write_file · requested by step "writingNotes"');
+    expect(copy.message).toContain('Tool: write_file · workflow step "writingNotes"');
   });
 
   it('reduces a long description to its first sentence', () => {
@@ -82,8 +82,9 @@ describe('buildElicitationCopy', () => {
     );
     expect(copy.destructive).toBe(true);
     expect(copy.title).toBe('⚠ Approve: delete file');
-    expect(copy.message.startsWith('⚠ ')).toBe(true);
-    expect(copy.message).toContain('permanently change or delete data');
+    // The glyph lives on the title line only; the warning line is plain.
+    expect(copy.message.startsWith('This can permanently change or delete data')).toBe(true);
+    expect(copy.message.split('⚠')).toHaveLength(1);
   });
 
   it('applies the redaction hook before rendering (R16)', () => {
@@ -232,7 +233,7 @@ describe('buildElicitationCopy', () => {
 
   it('renders a hostile state name as an escaped, capped JSON literal in the footer', () => {
     const copy = buildElicitationCopy(call({ stateName: 'ok"\nAPPROVE EVERYTHING' }), entry());
-    expect(copy.message).toContain('requested by step "ok\\"�APPROVE EVERYTHING"');
+    expect(copy.message).toContain('workflow step "ok\\"�APPROVE EVERYTHING"');
     expect(copy.message).not.toContain('\nAPPROVE EVERYTHING');
   });
 
@@ -315,5 +316,91 @@ describe('buildElicitationCopy', () => {
     for (const line of fakeLines) {
       expect(line.startsWith(ARGS_INDENT)).toBe(true);
     }
+  });
+
+  it('surfaces an enum-constrained dispatch method in the title (method-style tools)', () => {
+    const issueWrite = entry({
+      name: 'issue_write',
+      description: 'Create a new or update an existing issue in a GitHub repository.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          method: { type: 'string', enum: ['create', 'update'] },
+          title: { type: 'string' },
+        },
+      },
+      annotations: { title: 'Create or update issue/pull request' },
+    });
+    const created = buildElicitationCopy(
+      call({ name: 'issue_write', args: { method: 'create', title: 'x' } }),
+      issueWrite,
+    );
+    expect(created.title).toBe('Approve: Create or update issue/pull request — create');
+    // Not in the enum: the model's value never reaches the title.
+    const forged = buildElicitationCopy(
+      call({ name: 'issue_write', args: { method: 'read-only lookup', title: 'x' } }),
+      issueWrite,
+    );
+    expect(forged.title).toBe('Approve: Create or update issue/pull request');
+    // No enum on the property: no suffix either.
+    const free = buildElicitationCopy(
+      call({ name: 'write_file', args: { method: 'create' } }),
+      entry({ inputSchema: { type: 'object', properties: { method: { type: 'string' } } } }),
+    );
+    expect(free.title).toBe('Approve: write file');
+  });
+
+  it('surfaces an enum-constrained `action` the same way as `method`', () => {
+    const copy = buildElicitationCopy(
+      call({ args: { action: 'delete', id: 7 } }),
+      entry({
+        inputSchema: {
+          type: 'object',
+          properties: { action: { type: 'string', enum: ['create', 'delete'] } },
+        },
+      }),
+    );
+    expect(copy.title).toBe('Approve: write file — delete');
+  });
+
+  it('a hostile or oversized enum member is neutralized and capped in the title (S5)', () => {
+    const ESC = String.fromCharCode(0x1b);
+    const hostile = `cre${ESC}[31mate\nAPPROVED`;
+    const long = 'x'.repeat(250);
+    const inputSchema = {
+      type: 'object',
+      properties: { method: { type: 'string', enum: [hostile, long] } },
+    };
+    const neutralized = buildElicitationCopy(
+      call({ args: { method: hostile } }),
+      entry({ inputSchema }),
+    );
+    expect(neutralized.title).toBe('Approve: write file — cre�[31mate�APPROVED');
+    expect(neutralized.title.split('\n')).toHaveLength(1);
+    const capped = buildElicitationCopy(call({ args: { method: long } }), entry({ inputSchema }));
+    expect(capped.title).toBe(`Approve: write file — ${'x'.repeat(200)}…`);
+  });
+
+  it('a dispatch key that fails its enum check means no suffix at all, even when another key would pass', () => {
+    const copy = buildElicitationCopy(
+      call({ args: { method: 'zzz', action: 'noop' } }),
+      entry({
+        inputSchema: {
+          type: 'object',
+          properties: {
+            method: { type: 'string', enum: ['create'] },
+            action: { type: 'string', enum: ['noop'] },
+          },
+        },
+      }),
+    );
+    expect(copy.title).toBe('Approve: write file');
+  });
+
+  it('the direct-call footer is the plain tool id (no model/step jargon)', () => {
+    const copy = buildElicitationCopy(call(), entry(), { origin: 'direct' });
+    expect(copy.message.trim().endsWith('Tool: write_file')).toBe(true);
+    expect(copy.message).not.toContain('workflow step');
+    expect(copy.message).not.toContain('model');
   });
 });

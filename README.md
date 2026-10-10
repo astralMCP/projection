@@ -12,7 +12,7 @@ Projection wraps an existing MCP server and exposes two projections of it over o
 **Catalog** — for single actions and large tool surfaces:
 
 - **`search_tools`** — a paged, filterable list of the wrapped tools with their approval posture.
-- **`describe_tool`** — one tool's description, JSON Schemas, annotations and generated types.
+- **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
 - **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
 
 The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).

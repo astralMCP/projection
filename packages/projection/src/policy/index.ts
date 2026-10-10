@@ -33,9 +33,11 @@
 export {
   decidePolicy,
   policyDeniedReason,
+  postureOf,
   POLICY_DENIED_REASON,
   resolveCallPolicy,
   type ResolvedCallPolicy,
+  type ToolPosture,
 } from './decision.js';
 export {
   buildElicitationCopy,

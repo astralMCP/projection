@@ -204,7 +204,7 @@ export function discoverApis(
   const toolCount = dedupeTools(catalog.tools).length;
   const deferred = options.catalog === true && toolCount > threshold;
   const toolsSection = deferred
-    ? `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments and types; the full definitions are in ${RESOURCE_URIS.toolTypes}.`
+    ? `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`
     : overview;
   const inline = [
     // The identity is S5-untrusted; inertIdentity supplies its own quotes.
