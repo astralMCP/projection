@@ -3,6 +3,7 @@ import {
   buildInstructions,
   buildResources,
   DEFAULT_CODE_MODE_PREAMBLE,
+  DEFAULT_INLINE_TOOL_THRESHOLD,
   DEFAULT_ROUTING_PREAMBLE,
   discoverApis,
   EXAMPLE_DENIAL_FALLBACK,
@@ -118,5 +119,46 @@ describe('instructions forwarding (R29)', () => {
     const instructions = buildInstructions(CATALOG, 'Custom copy.');
     expect(instructions).toBe('Custom copy.');
     expect(instructions).not.toContain(DEFAULT_ROUTING_PREAMBLE);
+  });
+});
+
+describe('discover_apis catalog scale (R37)', () => {
+  const big = {
+    ...CATALOG,
+    tools: Array.from({ length: DEFAULT_INLINE_TOOL_THRESHOLD + 1 }, (_, i) => ({
+      name: `tool_${i}`,
+      description: `Tool number ${i}.`,
+      inputSchema: { type: 'object' },
+    })),
+  };
+  const bigOverview = generateToolTypes(big).overview;
+
+  function inline(result: { content: { type: string; text?: string }[] }): string {
+    return result.content[0]?.text ?? '';
+  }
+
+  it('above the threshold with the catalog projection on, defers the tool list to search_tools', () => {
+    const text = inline(discoverApis(big, bigOverview, { catalog: true }));
+    expect(text).toContain(`Tools: ${DEFAULT_INLINE_TOOL_THRESHOLD + 1} on this server`);
+    expect(text).toContain('search_tools');
+    expect(text).toContain('describe_tool');
+    expect(text).not.toContain('- tool_0 ');
+    // The authoring contract is still inline.
+    expect(text).toContain('toolCall');
+  });
+
+  it('inlines the full overview when the catalog projection is off, or at or below the threshold', () => {
+    expect(inline(discoverApis(big, bigOverview, { catalog: false }))).toContain('- tool_0 ');
+    expect(inline(discoverApis(big, bigOverview))).toContain('- tool_0 ');
+    expect(inline(discoverApis(CATALOG, overview, { catalog: true }))).toContain('- read_file ');
+    expect(
+      inline(discoverApis(big, bigOverview, { catalog: true, inlineThreshold: 1_000 })),
+    ).toContain('- tool_0 ');
+  });
+
+  it('the threshold is configurable downwards too', () => {
+    const text = inline(discoverApis(CATALOG, overview, { catalog: true, inlineThreshold: 2 }));
+    expect(text).toContain('Tools: 4 on this server');
+    expect(text).not.toContain('- read_file ');
   });
 });

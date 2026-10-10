@@ -96,6 +96,12 @@ export interface WrapOptions {
   /** Identity the servers built by `createServer` advertise. */
   serverInfo?: Implementation;
   /**
+   * R37: above this many tools, `discover_apis` omits the per-tool list and
+   * points at `search_tools` / `describe_tool` (only when the catalog
+   * projection is on). Default 40.
+   */
+  catalogInlineThreshold?: number;
+  /**
    * Shared replay cache (R38). Consulted after blob verification and before
    * any gated execution, for both `execute_machine` and `call_tool`. None
    * ships by default; supply a store shared across instances.
@@ -332,7 +338,11 @@ class Facade implements ProjectionFacade {
   }
 
   discoverApis(): CallToolResult {
-    return discoverApis(this.deps.catalog, this.deps.overview);
+    const { catalogInlineThreshold } = this.deps.options;
+    return discoverApis(this.deps.catalog, this.deps.overview, {
+      catalog: this.projections.catalog,
+      ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
+    });
   }
 
   searchTools(args: { query?: string; cursor?: string }): CallToolResult {

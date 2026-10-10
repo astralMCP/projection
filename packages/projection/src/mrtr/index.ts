@@ -21,11 +21,13 @@ export {
   defaultPreamble,
   discoverApis,
   DEFAULT_CATALOG_PREAMBLE,
+  DEFAULT_INLINE_TOOL_THRESHOLD,
   DEFAULT_CODE_MODE_PREAMBLE,
   DEFAULT_ROUTING_PREAMBLE,
   EXAMPLE_DENIAL_FALLBACK,
   EXAMPLE_HAPPY_PATH,
   RESOURCE_URIS,
+  type DiscoverApisOptions,
   type ProjectionResource,
   type ProjectionSelection,
 } from './discover.js';

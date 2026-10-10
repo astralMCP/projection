@@ -2,10 +2,20 @@
 
 Turn any MCP server into a **code-mode** server with **human-approved side effects**, built on MCP MRTR (Multi Round-Trip Requests) and XState v5.
 
-Projection wraps an existing MCP server and exposes two tools:
+Projection wraps an existing MCP server and exposes two projections of it over one facade — five tools, never the wrapped server's own:
+
+**Code mode** — for workflows:
 
 - **`execute_machine`** — runs an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox. Read-only tool calls execute immediately; any write suspends the machine into a sealed, encrypted blob and asks the human for approval via MRTR elicitation.
 - **`discover_apis`** — returns generated TypeScript type definitions and the authoring contract for the wrapped server's tools.
+
+**Catalog** — for single actions and large tool surfaces:
+
+- **`search_tools`** — a paged, filterable list of the wrapped tools with their approval posture.
+- **`describe_tool`** — one tool's description, JSON Schemas, annotations and generated types.
+- **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human to approve that exact call first.
+
+The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
 
 Because all suspension state travels in the MRTR `requestState` payload, Projection is fully stateless: any server instance can resume any workflow.
 
@@ -26,7 +36,7 @@ const facade = await wrapMcpServer(myMcpServer, {
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
 
-// Serves exactly the two tools, with the code-mode instructions attached.
+// Serves the five Projection tools, with the routing instructions attached.
 export default createMcpHandler(facade.serverFactory);
 ```
 
@@ -57,7 +67,7 @@ const client = new Client(info, {
 A client that stays on the 2025 era still runs read-only machines; the moment a
 machine needs approval it gets a structured error naming the revision it needs.
 
-The wrapped server's tools are never exposed directly. A model calls `discover_apis`, authors a machine, and runs it:
+The wrapped server's tools are never exposed directly. For a single action a model calls `search_tools`, `describe_tool`, then `call_tool({ name, args })` — a write pauses for approval exactly like a machine step, and a declined call comes back as a normal `{ status: "declined" }` result, not an error. For a workflow it calls `discover_apis`, authors a machine, and runs it:
 
 ```ts
 import { setup, assign } from 'xstate';
@@ -92,7 +102,8 @@ The `write_file` call suspends the machine, seals its state into an encrypted bl
 | The tools bridge is the only way out of the sandbox     | No `fetch`, no filesystem, no host globals; only `xstate` and `@astral-mcp/tools` resolve as imports |
 | No gated call runs without a matching approval          | The approved name and arguments are sealed in the blob and executed from there                       |
 | Clients are untrusted couriers                          | Blobs are AES-256-GCM encrypted under a per-blob HKDF-derived key and authenticated                  |
-| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code`                                                 |
+| A snapshot cannot resume under different code           | The blob binds a SHA-256 hash of the original `code` (a `call_tool` blob, of the canonical request)  |
+| A blob answers only the tool that issued it             | Blobs carry their kind; a `call_tool` blob cannot resume `execute_machine` or vice versa             |
 | A wrapped server's annotations are hints, not authority | Unannotated tools default to asking; developer overrides always win                                  |
 | Approval prompts cannot be forged                       | Prompt text comes from the catalog and redacted arguments, rendered inert                            |
 

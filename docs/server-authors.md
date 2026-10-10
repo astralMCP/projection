@@ -1,10 +1,13 @@
 # Projection for server authors
 
-You have an MCP server. `wrapMcpServer` turns it into a code-mode server:
-clients see exactly two tools — `discover_apis` and `execute_machine` — plus
-`projection://` resources. Models author XState v5 machines against generated
-types; read-only calls run inline; everything else pauses for human approval
-over MRTR (MCP 2026-07-28).
+You have an MCP server. `wrapMcpServer` turns it into a Projection server:
+clients see five tools — never your own — plus `projection://` resources.
+**Code mode** (`discover_apis`, `execute_machine`) lets models author XState v5
+machines against generated types; the **catalog projection** (`search_tools`,
+`describe_tool`, `call_tool`) lets them find and run one tool at a time. Both
+run through one gate: read-only calls run inline; everything else pauses for
+human approval over MRTR (MCP 2026-07-28). The advertised instructions route
+the model — one step → `call_tool`; a workflow → `execute_machine`.
 
 ## Wrap and serve
 
@@ -69,10 +72,42 @@ const facade = await wrapMcpServer(myServer, {
   redact: (tool, args) => (tool === 'send_email' ? { ...args, body: '[hidden]' } : args),
 
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
-  codeModePreamble: '...', // replaces the code-mode instructions text
+  codeModePreamble: '...', // replaces the whole instructions preamble
   serverInfo: { name: 'acme-code-mode', version: '2.0.0' }, // advertised identity
 });
 ```
+
+## Two projections, one gate
+
+Both projections are on by default. Turn one off when it does not fit your
+deployment — a chat product may want only single calls, an automation
+product only workflows:
+
+```ts
+const facade = await wrapMcpServer(myServer, {
+  blob: { key: blobKey },
+  projections: { codeMode: true, catalog: false }, // disabling both is an error
+});
+```
+
+`call_tool` is not a pass-through. It validates the name and the shape of
+`args` against your schema, applies the same policy as a machine step, and
+for an `ask` tool suspends with the same approval prompt — the retry executes
+the arguments the human saw, never the retry's own. A declined call is a
+normal result (`{ status: "declined" }`), so the model does not retry it; a
+`deny` policy comes back as `{ status: "denied_by_policy" }`; a failure from
+your tool is an `isError` result with phase `upstream`.
+
+For servers with many tools, `describe_tool` is how the model learns a
+schema without paying for the whole catalog up front. Above 40 tools
+(`catalogInlineThreshold`) `discover_apis` stops listing tools inline and
+points at `search_tools` / `describe_tool`; the `.d.ts` resource stays
+complete.
+
+Approval blobs for `call_tool` live 5 minutes by default (`blob.callTtlMs`),
+shorter than machine blobs: once approved there is no further step, so a
+captured approved retry is a standing capability until it expires (see
+"Lifecycle" on replay).
 
 ## Legacy clients (pre-2026-07-28)
 
@@ -140,8 +175,27 @@ self-heal within the same run, only be restructured and resubmitted.
 - Every failure is a normal `isError` result with a structured body
   (`phase`, `message`, `hint`, `logs`) — nothing throws across the wire.
 - Known limitation (documented in `docs/DECISIONS.md` D4): within its TTL a
-  captured approved retry can be replayed; deployments needing hard replay
-  prevention across instances can key a replay cache on the blob nonce.
+  captured approved retry can be replayed. Deployments that need hard replay
+  prevention supply a shared replay cache (R38) — an atomic test-and-set on
+  the blob nonce, consulted after verification and before any gated
+  execution, for both `execute_machine` and `call_tool`:
+
+  ```ts
+  const facade = await wrapMcpServer(myServer, {
+    blob: { key: blobKey, callTtlMs: 2 * 60_000 },
+    replayCache: {
+      // true when the nonce was already recorded — this approval is a replay
+      seen: (nonce, exp) => store.setIfAbsent(nonce, exp).then((added) => !added),
+    },
+  });
+  ```
+
+  No default implementation ships: an in-memory one would silently break
+  horizontal scaling.
+
+- Blobs are bound to the wrapped server's identity (`name@version`). Two
+  facades that share a blob key over same-identity servers can resume each
+  other's blobs — use one key per wrapped server.
 
 ## Try it against your server
 

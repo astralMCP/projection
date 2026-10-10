@@ -164,18 +164,41 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
   ];
 }
 
+/** R37: above this many tools, `discover_apis` defers the per-tool list to the catalog tools. */
+export const DEFAULT_INLINE_TOOL_THRESHOLD = 40;
+
+export interface DiscoverApisOptions {
+  /** Whether the catalog projection (`search_tools` / `describe_tool`) is served (R37). */
+  catalog?: boolean;
+  /** Tool count above which the inline per-tool list is omitted. Default {@link DEFAULT_INLINE_TOOL_THRESHOLD}. */
+  inlineThreshold?: number;
+}
+
 /**
  * The `discover_apis` result: an inline overview sufficient to author a
  * simple machine unaided, plus resource links for the full artifacts.
+ *
+ * R37: when the catalog projection is on and the catalog is large, the
+ * per-tool overview is replaced by the tool count and a pointer to
+ * `search_tools` / `describe_tool` — the `.d.ts` resource stays complete.
  */
-export function discoverApis(catalog: ServerCatalog, overview: string): CallToolResult {
+export function discoverApis(
+  catalog: ServerCatalog,
+  overview: string,
+  options: DiscoverApisOptions = {},
+): CallToolResult {
+  const threshold = options.inlineThreshold ?? DEFAULT_INLINE_TOOL_THRESHOLD;
+  const deferred = options.catalog === true && catalog.tools.length > threshold;
+  const toolsSection = deferred
+    ? `Tools: ${catalog.tools.length} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments and types; the full definitions are in ${RESOURCE_URIS.toolTypes}.`
+    : overview;
   const inline = [
     // The identity is S5-untrusted; inertIdentity supplies its own quotes.
     `Projection code mode over ${inertIdentity(catalog.identity)}.`,
     '',
     `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',
-    overview,
+    toolsSection,
     '',
     AUTHORING_CONTRACT,
   ].join('\n');
