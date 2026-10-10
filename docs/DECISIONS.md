@@ -22,7 +22,7 @@ MRTR does not model (`codeHash` S4, `serverIdentity` R30, `pending` S2,
 `trip` R18) and key rotation (R22). The SDK's `bind` concept is the model
 for principal binding (PRD §12.4).
 
-**Era is instance state.** v2 models the protocol era per serving instance:
+**Era is instance state.** SDK 2.x models the protocol era per serving instance:
 `createMcpHandler`/`serveStdio` call a server factory with
 `McpRequestContext.era`. So the facade's primary shape is
 `facade.serverFactory`; `createServer(ctx)` closes over the era;
@@ -32,7 +32,7 @@ legacy by construction (`registerOn` defaults to legacy — fail-safe).
 also delivers the R29 preamble.
 
 **R28.** A modern client suspends; a legacy client gets the fail-fast
-`protocol` error. v2 would otherwise fulfil `input_required` on a legacy
+`protocol` error. SDK 2.x would otherwise fulfil `input_required` on a legacy
 connection through its own elicitation shim; we refuse by default because
 the shim holds the connection open (R27). D6 makes it opt-in.
 
@@ -224,7 +224,7 @@ are clean too.
 `call_tool` also changes the S5 effort calculus. A mislabelled
 `readOnlyHint: true` tool used to be a machine away; now it is one model call
 away. The mitigation is unchanged — the R14 override forces such tools to
-`ask`, and the §13 Postgres case exercises exactly this — but the catalog
+`ask`, and the §13 SQLite case (`mcp-sqlite`) exercises exactly this — but the catalog
 projection turns it from a setting an integrator could defer into one they
 should set before enabling the projection on a server they do not control.
 

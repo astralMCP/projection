@@ -1,8 +1,8 @@
 # PRD — Projection
 
-**A TypeScript library that turns any MCP server into a code-mode server with human-approved side effects, built on MCP 2026-07-28 MRTR and XState.**
+**A TypeScript library that wraps any MCP server in code mode (LLM-authored XState workflows) and a tool catalog (search, describe, call), with human-approved side effects, built on MCP 2026-07-28 MRTR and XState.**
 
-Status: Living requirements, implemented through 0.7.0 · Package: `@astral-mcp/projection` (npm) · Target spec: MCP 2026-07-28 (final)
+Status: Living requirements, implemented through the current release · Package: `@astral-mcp/projection` (npm) · Target spec: MCP 2026-07-28 (final)
 
 "v1" in this document means the scope the PRD commits to, not a package version (the package is 0.x).
 
@@ -28,7 +28,7 @@ XState v5 is the execution substrate because its actors are designed to be persi
 
 ## 3. Goals
 
-G1. Wrap any MCP server — from a server class instance in-process, or from a remote server via `tools/list` introspection — into a code-mode server with no changes to the wrapped server.
+G1. Wrap any MCP server — from a server class instance in-process, or from a remote server via `tools/list` introspection — into code mode and a tool catalog with no changes to the wrapped server.
 
 G2. Execute LLM-authored XState v5 machines (JS or TS) in an isolated QuickJS sandbox with hard resource caps.
 
@@ -64,7 +64,7 @@ Requirement numbers are stable identifiers, not an ordering; R29–R31 sit with 
 
 ### 6.1 Exposed tool surface
 
-R1. The library exposes two projections of the wrapped server over one facade, both on by default: **code mode** (`execute_machine`, `discover_apis`) and the **catalog projection** (`search_tools`, `describe_tool`, `call_tool`; §6.8). The integrating developer MAY disable either projection: `WrapOptions.projections?: { codeMode?: boolean; catalog?: boolean }`, each default `true`; both `false` is a `terminal` `ProjectionError` at wrap time. The wrapped server's own tools MUST NOT be exposed directly to the client: `call_tool` is a mediated entry point that validates, applies policy and binds approval to the exact call, never a pass-through. The facade also serves the `projection://` resources (R3) and two prompts, `save-workflow` and `visualize-workflow` (D8).
+R1. The library exposes two projections of the wrapped server over one facade, both on by default: **code mode** (`execute_machine`, `discover_apis`) and the **catalog projection** (`search_tools`, `describe_tool`, `call_tool`; §6.8). The integrating developer MAY disable either projection: `WrapOptions.projections?: { codeMode?: boolean; catalog?: boolean }`, each default `true`; both `false` is a `terminal` `ProjectionError` at wrap time. The wrapped server's own tools MUST NOT be exposed directly to the client: `call_tool` is a mediated entry point that validates, applies policy and binds approval to the exact call, never a pass-through. The facade also serves the `projection://` resources (R3) and two prompts (prompts: code mode only), `save-workflow` and `visualize-workflow` (D8).
 
 R2. `execute_machine` accepts `{ code, lang?, input? }`. `lang` defaults to `"js"`; TypeScript syntax requires `lang: "ts"` (transpiled, not type-checked, R10). `input` is passed as the machine's input. A completed run returns `structuredContent { output, approvals, logs }`, where `approvals` is the audit trail `[{ callId, tool, args, decision: auto | approved | declined | denied_by_policy | error, reason? }]`, plus a text rendering of `output` and any console output. The tool also carries `_meta.ui.resourceUri` for MCP Apps hosts (D5). The description MUST summarize the authoring contract and point to `discover_apis`.
 
@@ -72,7 +72,7 @@ R3. `discover_apis` returns a compact inline overview (pinned XState version, al
 
 R4. Types are generated from the wrapped server's `tools/list` JSON Schemas. An in-process `McpServer` is introspected over an in-memory transport exactly like a remote `Client`, so there is one path (a hand-rolled JSON Schema → TypeScript converter that degrades unsupported constructs to `unknown`). Tool names are namespaced into a single `tools` API surface importable as `@astral-mcp/tools`.
 
-R29. The library forwards the wrapped server's `instructions` field verbatim, then appends a short (2–4 sentence) preamble that states the **routing rule** between the two projections: a single action goes through `call_tool` (with `search_tools` / `describe_tool` to find the tool and its arguments); several steps, branching on results, or a workflow worth saving are authored as a state machine and run with `execute_machine` (after `discover_apis`); and either way any non-read-only action pauses for user approval. When a projection is disabled the preamble describes only the one that is on. The preamble is library-supplied copy, overridable by the integrating developer (`codeModePreamble` replaces the whole preamble, whichever projections are on).
+R29. The library forwards the wrapped server's `instructions` field verbatim, then appends a short (2–3 sentence) preamble that states the **routing rule** between the two projections: a single action goes through `call_tool` (with `search_tools` / `describe_tool` to find the tool and its arguments); several steps, branching on results, or a workflow worth saving are authored as a state machine and run with `execute_machine` (after `discover_apis`); and either way any non-read-only action pauses for user approval. When a projection is disabled the preamble describes only the one that is on. The preamble is library-supplied copy, overridable by the integrating developer (`codeModePreamble` replaces the whole preamble, whichever projections are on).
 
 R30. The internal tool catalog, generated types, and blob format MUST NOT assume a single wrapped server. The catalog is keyed by server alias (v1 ships with exactly one, default alias omitted from generated type paths for ergonomics), and the blob records the server identity it was minted against. This keeps the door open for the multi-server stretch goal (§12.2) without a blob-format break.
 
@@ -156,7 +156,7 @@ R24. Before first execution of any submitted code, the library transpiles (if TS
 
 R25. Every failure — transpile, validation, runtime exception, cap exceeded, blob verification, upstream — returns a normal tool result with `isError: true` and a structured body: `{ phase, message, diagnostics[], hint, logs[] }`, where `hint` is a one-line actionable fix (e.g. "Tool calls must use the toolCall action, not fromPromise; see discover_apis"). `upstream` is an `isError` result or transport failure from the wrapped tool, surfaced only by `call_tool` — inside a machine the same condition is a `TOOL_ERROR` event. Outcomes that are not failures — a human decline, a policy denial — are normal results: `TOOL_DENIED` in code mode, `{ status: "declined" | "denied_by_policy" }` from `call_tool` (D9). The design goal is that the model can rewrite and resucceed in one attempt without any human involvement. Phases: `transpile` (TS syntax); `validate` (contract violations, bad args, unknown tool, disallowed import, bad cursor); `runtime` (uncaught sandbox error, stuck machine); `cap_exceeded` (any R12 cap); `blob_verification` (R21/R36 failures, replay); `protocol` (era/capability, introspection); `upstream` (wrapped tool failure, `call_tool` only); `terminal` (the workflow cannot continue: trip cap, blob over the R23 ceiling, key misconfiguration, no projection enabled).
 
-R31. The sandbox captures all `console.log/info/warn/error/debug` output as structured entries `{ level, message, ts, segment }` and includes them in every completed result, every `isError` result and the first result after a resume, so the model can printf-debug its own machines. Capture is capped per the R12 table with an explicit truncation marker (drop middle, keep head and tail). Logs are execution telemetry only: never rendered into elicitation prompts (S6) and not persisted in the blob. Exception: the 2026-07-28 `input_required` result carries only `resultType`, `inputRequests` and `requestState` (D1), so the console output of the segment that suspends is not delivered.
+R31. The sandbox captures all `console.log/info/warn/error/debug` output as structured entries `{ level, message, ts, segment }` and includes them in every completed result, every completed result and every `isError` result (a resumed segment's logs ride its own response), so the model can printf-debug its own machines. Capture is capped per the R12 table with an explicit truncation marker (drop middle, keep head and tail). Logs are execution telemetry only: never rendered into elicitation prompts (S6) and not persisted in the blob. Exception: the 2026-07-28 `input_required` result carries only `resultType`, `inputRequests` and `requestState` (D1), so the console output of the segment that suspends is not delivered.
 
 R26. There is no compile-only or lint-only tool in v1. Validation always runs as the front of `execute_machine`, keeping the **code-mode** surface at two tools and the loop reactive.
 
@@ -194,7 +194,7 @@ R38. Replay cache (optional). `WrapOptions.replayCache?: { seen(nonce: string, e
 
 Eight components, cleanly separable for parallel workstreams:
 
-**Introspector** — connects to the wrapped server (instance or remote), reads `tools/list`, annotations, and `instructions`, maintains the tool catalog. Interfaces accept a set of aliased server connections even though v1 instantiates exactly one (R30). **Typegen** — produces `@astral-mcp/tools` runtime bridge + `.d.ts` from the catalog (JSON Schema → TypeScript). **Sandbox runtime** — `@sebastianwessel/quickjs` lifecycle, module mounting, caps, interrupts, marshaling. **Machine host** — evaluates the module, validates the contract, drives the actor, translates `toolCall` effects into host-side execution or suspension, injects result/verdict events. **Policy engine** — annotation defaults plus developer overrides; decides auto/ask/deny per resolved call. **Blob sealer** — snapshot packaging, AEAD, versioning, verification. **MRTR adapter** — maps suspensions to `InputRequiredResult`, parses `inputResponses` on retry, enforces trip caps; the only component that builds or reads MRTR wire shapes (`input_required`, `inputResponses`). **Catalog projection** — search/describe over the catalog plus `call_tool`'s structural validation and canonical request hashing; reuses the policy engine, sealer and MRTR adapter.
+**Introspector** — connects to the wrapped server (instance or remote), reads `tools/list`, annotations, and `instructions`, maintains the tool catalog. Interfaces accept a set of aliased server connections even though v1 instantiates exactly one (R30). **Typegen** — produces `@astral-mcp/tools` runtime bridge + `.d.ts` from the catalog (JSON Schema → TypeScript). **Sandbox runtime** — `@sebastianwessel/quickjs` lifecycle, module mounting, caps, interrupts, marshaling. **Machine host** — evaluates the module, validates the contract, drives the actor, translates `toolCall` effects into host-side execution or suspension, injects result/verdict events. **Policy engine** — annotation defaults plus developer overrides; decides auto/ask/deny per resolved call. **Blob sealer** — snapshot packaging, AEAD, versioning, verification. **MRTR adapter** — maps suspensions to `InputRequiredResult`, parses `inputResponses` on retry, enforces trip caps; owns the MRTR vocabulary (`mrtr/protocol.ts`); the catalog projection builds its single `input_required` and reads its verdict through that same module. **Catalog projection** — search/describe over the catalog plus `call_tool`'s structural validation and canonical request hashing; reuses the policy engine, sealer and MRTR adapter.
 
 Two modules sit beside them: the MCP Apps dashboard (D5) and the workflow prompts (D8).
 
@@ -224,7 +224,7 @@ S1. The tools bridge is the only I/O channel out of the sandbox (no fetch, no ho
 
 S2. No gated tool call ever executes without a verified approval verdict bound to that exact call (name + args captured in the sealed `pending` map — the approval authorizes the recorded args, not whatever the resumed machine asks for next).
 
-S3. Blobs are authenticated and encrypted; clients are treated as untrusted couriers.
+S3. Blobs are authenticated and encrypted; clients carry them but can neither read nor alter them.
 
 S4. `codeHash` binding prevents resuming a snapshot under different code. For `call_tool` the same field binds the blob to the canonical request as a coherence check (the approval itself is bound by `pending`, S2), and `kind` prevents a blob minted by one tool from being opened by the other.
 
@@ -277,7 +277,7 @@ Expose the sandbox's virtual FS to authored code as ephemeral per-segment scratc
 
 1. **Official filesystem reference server** — `@modelcontextprotocol/server-filesystem`, pinned, spawned over stdio; well-annotated, genuinely destructive writes (delete/move). Exercises annotation-driven policy and destructive-warning copy (`packages/harness/test/smoke/filesystem.test.ts`).
 2. **GitHub MCP server** — a large remote API surface, rich JSON Schemas, mixed read/write. Stresses typegen fidelity and catalog size. Live and opt-in (`PROJ_LIVE_GITHUB=1` plus a token; `github.live.test.ts`).
-3. **A SQLite server** — `mcp-sqlite`, pinned, spawned over stdio: the adversarial policy case, a `query` tool whose arguments are opaque SQL, where `readOnlyHint` can't be trusted to bound behavior. Exercises developer overrides (force `ask`) and proves the policy engine handles tools whose safety isn't knowable from annotations (`sqlite.test.ts`).
+3. **A SQLite server** — `mcp-sqlite`, pinned, spawned over stdio: a fully unannotated server whose `query` tool takes opaque SQL: exercises the default-`ask` posture (S5) and developer overrides (`auto` for a vouched-for read, `deny` for `query`), and proves the policy engine copes with tools whose safety isn't knowable from annotations (`sqlite.test.ts`).
 
 A fourth smoke test, `pack-install.test.ts`, packs the library with `npm pack`, installs the tarball into a fresh project and runs a machine end to end — the only check that catches works-in-workspace, broken-when-published bugs. R37 (catalog scale) is covered only by synthetic-catalog tests; the one smoke server over the threshold (GitHub) is live-only.
 
@@ -289,4 +289,4 @@ A fourth smoke test, `pack-install.test.ts`, packs the library with `npm pack`, 
 
 ## 14. Milestones
 
-M1–M5 and MT are delivered (0.1–0.7). Remaining: Stretch (§12).
+M1–M5 and MT are delivered. Remaining: Stretch (§12).
