@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_QUERY_CHARS, searchTools, type SearchToolsPage } from '../../src/catalog/index.js';
+import {
+  MAX_QUERY_CHARS,
+  searchTools,
+  tokenize,
+  type SearchToolsPage,
+} from '../../src/catalog/index.js';
 import { ProjectionError } from '../../src/errors.js';
 import type { ServerCatalog } from '../../src/types.js';
 import { generateToolTypes } from '../../src/typegen/index.js';
@@ -66,7 +71,7 @@ describe('search_tools (R33)', () => {
     });
   });
 
-  it('filters by case-insensitive substring on name and full description', () => {
+  it('matches a word case-insensitively against the name and the full description', () => {
     expect(page(searchTools(CATALOG, { query: 'FILE' })).tools.map((t) => t.name)).toEqual([
       'read_file',
       'write_file',
@@ -290,12 +295,142 @@ describe('search_tools (R33)', () => {
         ),
       );
       expect(second.tools.map((t) => t.name)).toEqual(['merge_pull_request']);
+      // `total` is the whole ranked result, the same on every page.
+      expect(second.total).toBe(first.total);
+      expect(first.total).toBe(names('pull request').length);
+    });
+
+    it('a whitespace-only query matches nothing, unlike an empty one', () => {
+      const blank = searchTools(github, { query: '   ' });
+      expect(page(blank)).toEqual({ tools: [], total: 0 });
+      expect(text(blank)).toContain('No tools matching "   "');
+      expect(page(searchTools(github, { query: '\t\n' })).total).toBe(0);
+    });
+
+    it('one-letter words fall back to the literal whole query, not an OR of the letters', () => {
+      const literal: ServerCatalog = {
+        ...CATALOG,
+        tools: [
+          entry({ name: 'alpha', description: 'Keeps a b together.' }),
+          entry({ name: 'beta', description: 'Has a, then b.' }),
+        ],
+      };
+      expect(page(searchTools(literal, { query: 'a b' })).tools.map((t) => t.name)).toEqual([
+        'alpha',
+      ]);
+    });
+
+    it('matches Unicode words: a decomposed é equals a precomposed one, a CJK run is one token', () => {
+      const unicode: ServerCatalog = {
+        ...CATALOG,
+        tools: [
+          entry({ name: 'menu', description: 'Lists caf\u00e9 items.' }),
+          entry({ name: 'read_doc', description: '读取文件。' }),
+        ],
+      };
+      const found = (query: string) =>
+        page(searchTools(unicode, { query })).tools.map((t) => t.name);
+      expect(found('caf\u00e9')).toEqual(['menu']);
+      expect(found('cafe\u0301')).toEqual(['menu']);
+      expect(found('CAF\u00c9')).toEqual(['menu']);
+      // No segmentation: the two ideographs are matched as one run.
+      expect(found('文件')).toEqual(['read_doc']);
+      expect(found('件文')).toEqual([]);
+    });
+
+    it('a title-only hit and a description-only hit tie, keeping catalog order', () => {
+      const titled = entry({
+        name: 'first',
+        description: 'Nothing here.',
+        annotations: { title: 'Sprocket tool' },
+      });
+      const described = entry({ name: 'second', description: 'Handles a sprocket.' });
+      const forward: ServerCatalog = { ...CATALOG, tools: [titled, described] };
+      const reversed: ServerCatalog = { ...CATALOG, tools: [described, titled] };
+      expect(page(searchTools(forward, { query: 'sprocket' })).tools.map((t) => t.name)).toEqual([
+        'first',
+        'second',
+      ]);
+      expect(page(searchTools(reversed, { query: 'sprocket' })).tools.map((t) => t.name)).toEqual([
+        'second',
+        'first',
+      ]);
+    });
+
+    it('a token in both the name and the description scores 3 and outranks a name-only hit', () => {
+      // Name-only hit first in the catalog: only the additive score reorders them.
+      const additive: ServerCatalog = {
+        ...CATALOG,
+        tools: [
+          entry({ name: 'list_branch', description: 'Lists them.' }),
+          entry({ name: 'branch_create', description: 'Create a branch.' }),
+        ],
+      };
+      expect(page(searchTools(additive, { query: 'branch' })).tools.map((t) => t.name)).toEqual([
+        'branch_create',
+        'list_branch',
+      ]);
+    });
+
+    it('a repeated word counts once', () => {
+      const repeated: ServerCatalog = {
+        ...CATALOG,
+        tools: [
+          entry({ name: 'first', description: 'Mentions xx.' }),
+          entry({ name: 'yy_second', description: 'Nothing.' }),
+        ],
+      };
+      // Counted three times, the "xx" description hits (3) would outrank the
+      // single "yy" name hit (2).
+      expect(
+        page(searchTools(repeated, { query: 'xx xx xx yy' })).tools.map((t) => t.name),
+      ).toEqual(['yy_second', 'first']);
     });
 
     it('never builds a regex from the query', () => {
       expect(
         page(searchTools(github, { query: '(issue|branch)+' })).tools.map((t) => t.name),
       ).toEqual(['list_issues', 'issue_write', 'create_branch']);
+    });
+  });
+
+  describe('tokenize (D10)', () => {
+    it('lowercases and splits on anything that is not a letter, mark or digit', () => {
+      expect(tokenize('Comment on a Pull-Request #42')).toEqual([
+        'comment',
+        'on',
+        'pull',
+        'request',
+        '42',
+      ]);
+      expect(tokenize('pr')).toEqual(['pr']);
+    });
+
+    it('yields nothing for an empty or whitespace-only query', () => {
+      expect(tokenize('')).toEqual([]);
+      expect(tokenize('   ')).toEqual([]);
+      expect(tokenize('\t\n')).toEqual([]);
+    });
+
+    it('falls back to the whole trimmed query when no word is two characters long', () => {
+      expect(tokenize('a')).toEqual(['a']);
+      expect(tokenize(' a b ')).toEqual(['a b']);
+      expect(tokenize('.*')).toEqual(['.*']);
+      expect(tokenize('\u{1f680}')).toEqual(['\u{1f680}']);
+    });
+
+    it('keeps combining marks inside a word and normalizes to NFC', () => {
+      expect(tokenize('cafe\u0301 menu')).toEqual(['caf\u00e9', 'menu']);
+      expect(tokenize('caf\u00e9')).toEqual(['caf\u00e9']);
+    });
+
+    it('treats a CJK run as one token: no word segmentation', () => {
+      expect(tokenize('读取文件')).toEqual(['读取文件']);
+      expect(tokenize('读取 文件')).toEqual(['读取', '文件']);
+    });
+
+    it('emoji separate words rather than joining them', () => {
+      expect(tokenize('ship \u{1f680} it')).toEqual(['ship', 'it']);
     });
   });
 });

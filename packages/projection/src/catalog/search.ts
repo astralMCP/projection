@@ -7,16 +7,18 @@
  * alternative to `discover_apis`' inline overview: O(tools the model looks
  * at), not O(tools the server has).
  *
- * Matching is token-based (DECISIONS D10): the query is split on
- * non-alphanumerics, and a tool matches when ANY token is a case-insensitive
- * substring of its name, its annotation title, or its full description.
- * Matches are ranked by `2 × (tokens hitting the name) + (tokens hitting the
- * title or description)`, ties in catalog order, so a guessed name like
- * `create_issue` finds `issue_write` instead of nothing. A title hit counts
- * like a description hit — it catches words the description lacks — but
- * never outranks a name hit, so "pull request" lists the `*pull_request*`
- * tools before a tool whose title merely mentions them. No regex is ever
- * built from the query (S5: descriptions are hostile input).
+ * Matching is token-based (DECISIONS D10): the query is split into words on
+ * anything that is not a letter, combining mark, or digit, and a tool
+ * matches when ANY word is a case-insensitive substring of its name, its
+ * annotation title, or its full description. Each word scores +2 when it is
+ * in the name and, independently, +1 when it is in the title or description
+ * (a word in both scores 3); matches are ranked by score, ties in catalog
+ * order, so a guessed name like `create_issue` finds `issue_write` instead
+ * of nothing. A title hit counts like a description hit — it catches words
+ * the description lacks — but never outweighs a name hit, so "pull request"
+ * lists the `*pull_request*` tools before a tool whose title merely mentions
+ * them. No regex is ever built from the query (S5: descriptions are hostile
+ * input).
  *
  * Everything rendered comes from the S5-untrusted catalog, so names and
  * purposes are neutralized in the text rendering. `structuredContent.tools[].name`
@@ -42,7 +44,10 @@ import {
 } from '../types.js';
 
 export interface SearchToolsArgs {
-  /** Plain substring filter over name and description (case-insensitive). */
+  /**
+   * Words to match against tool names, titles and descriptions; any word
+   * matches, name hits weigh more (case-insensitive).
+   */
   query?: string;
   /** Opaque cursor from a previous page's `nextCursor`. */
   cursor?: string;
@@ -58,7 +63,7 @@ export interface SearchToolsOptions {
 /** Page size — a transport bound, independent of the R37 inline threshold. */
 export const DEFAULT_SEARCH_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
-/** `query` is capped (R33): it is matched as a plain substring, never a regex. */
+/** `query` is capped (R33): its words are matched as plain substrings, never a regex. */
 export const MAX_QUERY_CHARS = 200;
 
 /** One entry of a `search_tools` page (R33). */
@@ -129,12 +134,18 @@ export function searchTools(
   };
 }
 
-/** Tokens of a query: lowercase, split on anything that is not a letter or digit. */
+/**
+ * Tokens of a query: lowercased, NFC-normalized, split on anything that is
+ * not a letter, combining mark, or digit — so a decomposed `é` stays inside
+ * its word and matches a precomposed one in the catalog. Tokens under two
+ * characters are dropped; when nothing survives, the whole trimmed query is
+ * the one token.
+ */
 export function tokenize(query: string): string[] {
-  const lowered = query.toLowerCase();
-  const tokens = lowered.split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
-  // Nothing survived (a one-letter query, or punctuation only): fall back
-  // to the whole query as the single token so `pr` still means `pr`.
+  const lowered = query.toLowerCase().normalize('NFC');
+  const tokens = lowered.split(/[^\p{L}\p{M}\p{N}]+/u).filter((token) => token.length >= 2);
+  // Nothing survived (one-letter words, or punctuation only): fall back to
+  // the whole query as the single token so `a b` still means the literal `a b`.
   if (tokens.length > 0) return tokens;
   const whole = lowered.trim();
   return whole.length > 0 ? [whole] : [];
@@ -142,12 +153,14 @@ export function tokenize(query: string): string[] {
 
 /**
  * Filter and rank the catalog for a query (D10). An empty query returns
- * every tool in catalog order. The sort is stable, so equal scores keep
- * catalog order and paging stays deterministic for a given query.
+ * every tool in catalog order; a query with no token at all (whitespace
+ * only) matches nothing. The sort is stable, so equal scores keep catalog
+ * order and paging stays deterministic for a given query.
  */
 function rankTools(tools: ToolCatalogEntry[], query: string): ToolCatalogEntry[] {
-  const tokens = tokenize(query);
-  if (tokens.length === 0) return tools;
+  // Deduplicated: a repeated word must not count twice.
+  const tokens = new Set(tokenize(query));
+  if (tokens.size === 0) return query.length === 0 ? tools : [];
   const scored: { entry: ToolCatalogEntry; score: number }[] = [];
   for (const entry of tools) {
     const name = entry.name.toLowerCase();
@@ -155,8 +168,9 @@ function rankTools(tools: ToolCatalogEntry[], query: string): ToolCatalogEntry[]
     const description = (entry.description ?? '').toLowerCase();
     let score = 0;
     for (const token of tokens) {
+      // Additive: a token in both the name and the description scores 3.
       if (name.includes(token)) score += 2;
-      else if (title.includes(token) || description.includes(token)) score += 1;
+      if (title.includes(token) || description.includes(token)) score += 1;
     }
     if (score > 0) scored.push({ entry, score });
   }

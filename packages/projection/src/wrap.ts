@@ -196,7 +196,7 @@ Call discover_apis first for the tool types, the full authoring contract, and wo
 
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
-const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked with name hits first — so a guessed name like create_issue or a phrase like "comment on a pull request" works. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more), so a guessed name like create_issue or a phrase like "comment on a pull request" works. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
 const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
@@ -447,7 +447,9 @@ class Facade implements ProjectionFacade {
           query: z
             .string()
             .optional()
-            .describe('Plain substring to match on name and description.'),
+            .describe(
+              'Words to match against tool names, titles and descriptions; any word matches, name hits weigh more.',
+            ),
           cursor: z.string().optional().describe('nextCursor from a previous page.'),
         }),
         annotations: { readOnlyHint: true },
