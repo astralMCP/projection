@@ -246,7 +246,9 @@ Decision: add the lazy-catalog shape — `search_tools`, `describe_tool`,
 default, and route between them in the instructions preamble (R29): one step
 → `call_tool`; several steps, branching, or anything worth saving →
 `execute_machine`. Not a mode switch; both are live unless the integrator
-turns one off.
+turns one off. Staged default: the projection lands in parts, and until
+`call_tool` ships it defaults off (`projections.catalog` is opt-in), flipping
+to the R32 default of on in the part that adds `call_tool`.
 
 Why one gate rather than a proxy. `call_tool` is the degenerate one-call
 machine, so it reuses the machine's approval path end to end: the R16 copy
@@ -281,9 +283,9 @@ wrapped server's own words to the model, and not only in the description:
 `enum` and `pattern`. Both get the S5 treatment `discover_apis` gets:
 description neutralized and capped, schemas rendered through a key allowlist
 with every string neutralized and the rendering capped per tool (R34),
-annotations presented as hints, identity inert. Follow-up: typegen's
-`docComment` only escapes `*/` today and should get the same neutralization
-(implementation follow-up, not a PRD change).
+annotations presented as hints, identity inert. Typegen's `docComment`
+originally escaped only `*/`; it now applies the same neutralization, so the
+`.d.ts` resource and the `describe_tool` slice of it are clean too.
 
 `call_tool` also changes the S5 effort calculus. A mislabelled
 `readOnlyHint: true` tool used to be a machine away; now it is one model call

@@ -349,7 +349,7 @@ function suspendResult(
 }
 
 /** Every failure is a normal result with `isError: true` and a structured body (R25). */
-function errorResult(error: StructuredError): CallToolResult {
+export function errorResult(error: StructuredError): CallToolResult {
   return {
     isError: true,
     content: [{ type: 'text', text: JSON.stringify(error, null, 2) }],

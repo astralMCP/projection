@@ -61,9 +61,9 @@ const catalogIndex = new WeakMap<ServerCatalog, Map<string, ToolCatalogEntry>>()
  * Look up a tool by name in a catalog, O(1) after the first call.
  *
  * Duplicate names resolve to the FIRST occurrence, matching `Array#find` and
- * typegen's `dedupeToolNames` (S5): a hostile server declaring the same name
- * twice must not be able to make the policy gate see a different entry (e.g.
- * a later `readOnlyHint: true` copy) than the one typegen exposed.
+ * {@link dedupeTools} (S5): a hostile server declaring the same name twice
+ * must not be able to make the policy gate see a different entry (e.g. a
+ * later `readOnlyHint: true` copy) than the one typegen exposed.
  */
 export function findTool(catalog: ServerCatalog, name: string): ToolCatalogEntry | undefined {
   let index = catalogIndex.get(catalog);
@@ -75,6 +75,22 @@ export function findTool(catalog: ServerCatalog, name: string): ToolCatalogEntry
     catalogIndex.set(catalog, index);
   }
   return index.get(name);
+}
+
+/**
+ * Drop tools whose name repeats an earlier one; the first occurrence wins.
+ *
+ * The single dedupe rule for every consumer of the catalog (typegen, the
+ * catalog projection), so they all agree with {@link findTool} on which
+ * entry a name denotes (S5).
+ */
+export function dedupeTools(tools: ToolCatalogEntry[]): ToolCatalogEntry[] {
+  const seen = new Set<string>();
+  return tools.filter((tool) => {
+    if (seen.has(tool.name)) return false;
+    seen.add(tool.name);
+    return true;
+  });
 }
 
 /** Narrow to a non-null, non-array object. */
@@ -362,6 +378,9 @@ export interface ProjectionConfig {
   blob: BlobSealerConfig;
   /** Redaction hook for elicitation copy (R16). */
   redact?: RedactionHook;
-  /** Override the code-mode preamble appended to instructions (R29). */
+  /**
+   * Replaces the whole R29 preamble appended to `instructions`, whichever
+   * projections are on (code mode, catalog, or the routing copy for both).
+   */
   codeModePreamble?: string;
 }

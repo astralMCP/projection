@@ -6,16 +6,25 @@
  * (docs/DECISIONS.md D1).
  */
 
-export { executeMachine, type ExecuteMachineArgs, type ExecuteMachineDeps } from './adapter.js';
+export {
+  errorResult,
+  executeMachine,
+  type ExecuteMachineArgs,
+  type ExecuteMachineDeps,
+} from './adapter.js';
 export {
   buildInstructions,
   buildResources,
+  defaultPreamble,
   discoverApis,
+  DEFAULT_CATALOG_PREAMBLE,
   DEFAULT_CODE_MODE_PREAMBLE,
+  DEFAULT_ROUTING_PREAMBLE,
   EXAMPLE_DENIAL_FALLBACK,
   EXAMPLE_HAPPY_PATH,
   RESOURCE_URIS,
   type ProjectionResource,
+  type ProjectionSelection,
 } from './discover.js';
 export {
   acceptedContent,

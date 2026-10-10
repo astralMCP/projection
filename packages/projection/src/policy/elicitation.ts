@@ -30,7 +30,7 @@
  * Pure: no I/O, deterministic for a given input.
  */
 
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { capLength, indentBlock, neutralizeControlChars } from '../text-safety.js';
 import type { PendingToolCall, RedactionHook, ToolCatalogEntry } from '../types.js';
 
 /** Structured approval copy for one gated call (input to the MRTR adapter). */
@@ -64,7 +64,6 @@ const MAX_PURPOSE_CHARS = 200;
 // bound the raw text before the extraction passes run over it (a hostile
 // multi-MB description would otherwise cost CPU proportional to its length).
 const MAX_RAW_DESCRIPTION_CHARS = 2_000;
-const ARGS_INDENT = '    ';
 
 const DESTRUCTIVE_WARNING =
   '⚠ This can permanently change or delete data. Review the details before approving.';
@@ -153,7 +152,7 @@ function friendlyAction(entry: ToolCatalogEntry, safeName: string): string {
  * description does not render as a wall of `�`. Undefined when the server
  * gave no usable description.
  */
-function purposeSentence(description: string | undefined): string | undefined {
+export function purposeSentence(description: string | undefined): string | undefined {
   if (description === undefined) return undefined;
   description = capLength(description, MAX_RAW_DESCRIPTION_CHARS);
   // Work on the RAW first line: a newline is a hard boundary, so a hostile
@@ -224,12 +223,4 @@ function makeSafeReplacer(): (this: unknown, key: string, value: unknown) => unk
     }
     return value;
   };
-}
-
-/** Prefix every line so the block reads as data, not prose. */
-function indentBlock(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => ARGS_INDENT + line)
-    .join('\n');
 }

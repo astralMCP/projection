@@ -46,6 +46,21 @@ export function capLength(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
 }
 
+/** Indent used for untrusted blocks embedded in prompt copy. */
+const BLOCK_INDENT = '    ';
+
+/**
+ * Prefix every line of an untrusted block so it reads as data, not prose:
+ * an indented line can never forge one of the labelled top-level lines the
+ * surrounding copy is built from (approval details, `Posture:`, …).
+ */
+export function indentBlock(text: string, indent: string = BLOCK_INDENT): string {
+  return text
+    .split('\n')
+    .map((line) => indent + line)
+    .join('\n');
+}
+
 /**
  * Longest wrapped-server identity rendered into prompt copy or generated
  * artifacts (S5: a hostile wrapped server controls the string).

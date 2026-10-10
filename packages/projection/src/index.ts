@@ -33,9 +33,32 @@
 export {
   wrapMcpServer,
   type ProjectionFacade,
+  type ProjectionsOptions,
   type RegisterOptions,
   type WrapOptions,
 } from './wrap.js';
+
+// Catalog projection — search_tools / describe_tool (PRD §6.8)
+export {
+  describeTool,
+  postureOf,
+  sanitizeSchema,
+  searchTools,
+  summarizeTool,
+  DEFAULT_SEARCH_PAGE_SIZE,
+  MAX_QUERY_CHARS,
+  MAX_SCHEMA_CHARS,
+  SCHEMA_KEY_ALLOWLIST,
+  type DescribeToolArgs,
+  type DescribeToolOptions,
+  type SanitizedSchema,
+  type SearchToolsArgs,
+  type SearchToolsOptions,
+  type SearchToolsPage,
+  type ToolDescription,
+  type ToolPosture,
+  type ToolSummary,
+} from './catalog/index.js';
 
 // Shared contract
 export * from './types.js';
@@ -59,6 +82,7 @@ export {
   TOOLS_MODULE_SPECIFIER,
   TOOL_CALL_HOST_GLOBAL,
   type GeneratedToolTypes,
+  type ToolTypeText,
 } from './typegen/index.js';
 
 // Text safety — inert rendering of untrusted strings (S5, S6)
@@ -69,6 +93,7 @@ export {
   buildElicitationCopy,
   decidePolicy,
   policyDeniedReason,
+  purposeSentence,
   resolveCallPolicy,
   POLICY_DENIED_REASON,
   type ElicitationCopy,
@@ -107,14 +132,18 @@ export {
   acceptedContent,
   buildInstructions,
   buildResources,
+  defaultPreamble,
   discoverApis,
+  errorResult,
   executeMachine,
   inputRequired,
   inputResponse,
   isInputRequiredResult,
   supportsMrtr,
   APPROVAL_SCHEMA,
+  DEFAULT_CATALOG_PREAMBLE,
   DEFAULT_CODE_MODE_PREAMBLE,
+  DEFAULT_ROUTING_PREAMBLE,
   EXAMPLE_DENIAL_FALLBACK,
   EXAMPLE_HAPPY_PATH,
   MRTR_PROTOCOL_REVISION,
@@ -130,6 +159,7 @@ export {
   type InputResponses,
   type InputResponseView,
   type ProjectionResource,
+  type ProjectionSelection,
   type ProtocolEra,
   type RetryEnvelope,
   type ToolCallResult,

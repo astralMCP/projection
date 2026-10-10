@@ -15,7 +15,12 @@ import {
   MAX_IDENTITY_CHARS,
   neutralizeControlChars,
 } from '../text-safety.js';
-import type { ServerCatalog, ToolCatalog, ToolCatalogEntry } from '../types.js';
+import {
+  dedupeTools,
+  type ServerCatalog,
+  type ToolCatalog,
+  type ToolCatalogEntry,
+} from '../types.js';
 import { docComment, propertyKey, schemaRequiresArgs, schemaToTsType } from './json-schema.js';
 
 /**
@@ -54,6 +59,27 @@ export interface GeneratedToolTypes {
   bridgeSource: string;
   /** Compact per-tool overview block for inline embedding by discover_apis (R3). */
   overview: string;
+  /**
+   * Per-tool slice of `dts`, keyed by tool name (R34): the alias
+   * declarations and the `tools.<name>` member signature exactly as they
+   * appear in the full file, so `describe_tool` output type-checks against
+   * the `projection://types/tools.d.ts` resource.
+   */
+  toolTypes: Map<string, ToolTypeText>;
+}
+
+/** The generated types for one tool, as served by `describe_tool` (R34). */
+export interface ToolTypeText {
+  /** `<Pascal>Input` alias name, unique within the `.d.ts`. */
+  inputAlias: string;
+  /** `<Pascal>Output` alias name, when the tool declares an `outputSchema`. */
+  outputAlias?: string;
+  /**
+   * The alias declarations verbatim from the `.d.ts`, then the member
+   * signature verbatim modulo indentation: the `tools` member is re-indented
+   * to column 0 under a `// Member of the \`tools\` surface:` line.
+   */
+  dts: string;
 }
 
 const PASCAL_FALLBACK = 'Tool';
@@ -122,10 +148,11 @@ function toolDoc(tool: ToolCatalogEntry): string {
   return lines.join('\n');
 }
 
-function generateDts(server: ServerCatalog): string {
+function generateDts(server: ServerCatalog): { dts: string; toolTypes: Map<string, ToolTypeText> } {
   const taken = new Set<string>();
-  const names = new Map<string, ToolTypeNames>();
   const sections: string[] = [];
+  const memberLines: string[] = [];
+  const toolTypes = new Map<string, ToolTypeText>();
 
   sections.push(
     [
@@ -147,31 +174,35 @@ function generateDts(server: ServerCatalog): string {
       input: `${base}Input`,
       output: tool.outputSchema !== undefined ? `${base}Output` : undefined,
     };
-    names.set(tool.name, typeNames);
 
-    sections.push(
+    // Alias declarations: emitted into the file in catalog order, and kept
+    // per tool for describe_tool (R34).
+    const aliasSections = [
       `${docComment(`Input for tool "${tool.name}".`, '')}\n` +
         `export type ${typeNames.input} = ${schemaToTsType(tool.inputSchema)};`,
-    );
+    ];
     if (typeNames.output !== undefined) {
-      sections.push(
+      aliasSections.push(
         `${docComment(`Output of tool "${tool.name}".`, '')}\n` +
           `export type ${typeNames.output} = ${schemaToTsType(tool.outputSchema)};`,
       );
     }
-  }
+    sections.push(...aliasSections);
 
-  const memberLines: string[] = [];
-  for (const tool of server.tools) {
-    // Names are set for every tool in the loop above (dedupeToolNames ran
-    // first), so the lookup is always present.
-    const typeNames = names.get(tool.name) as ToolTypeNames;
-    memberLines.push(docComment(toolDoc(tool), '  '));
+    // Member signature inside the `tools` surface.
     const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
     const returnType = typeNames.output ?? 'unknown';
-    memberLines.push(
-      `  ${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`,
-    );
+    const signature = `${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`;
+    memberLines.push(docComment(toolDoc(tool), '  '), `  ${signature}`);
+
+    toolTypes.set(tool.name, {
+      inputAlias: typeNames.input,
+      ...(typeNames.output !== undefined ? { outputAlias: typeNames.output } : {}),
+      dts: [
+        ...aliasSections,
+        `// Member of the \`tools\` surface:\n${docComment(toolDoc(tool), '')}\n${signature}`,
+      ].join('\n\n'),
+    });
   }
 
   const surfaceDoc = docComment(
@@ -184,7 +215,7 @@ function generateDts(server: ServerCatalog): string {
       : 'export declare const tools: Record<string, never>;';
   sections.push(`${surfaceDoc}\n${body}\n\nexport default tools;`);
 
-  return `${sections.join('\n\n')}\n`;
+  return { dts: `${sections.join('\n\n')}\n`, toolTypes };
 }
 
 function generateBridgeSource(server: ServerCatalog): string {
@@ -301,10 +332,12 @@ function resolveSingleServer(catalog: ToolCatalog | ServerCatalog): ServerCatalo
  */
 export function generateToolTypes(catalog: ToolCatalog | ServerCatalog): GeneratedToolTypes {
   const server = dedupeToolNames(resolveSingleServer(catalog));
+  const { dts, toolTypes } = generateDts(server);
   return {
-    dts: generateDts(server),
+    dts,
     bridgeSource: generateBridgeSource(server),
     overview: generateOverview(server),
+    toolTypes,
   };
 }
 
@@ -316,14 +349,10 @@ export function generateToolTypes(catalog: ToolCatalog | ServerCatalog): Generat
  * `.d.ts` object type — invalid TypeScript — and a silently last-wins
  * shadowed key in the bridge, so the types and the runtime would disagree
  * about which schema the tool takes. Collapsing to the first occurrence
- * matches what `callTool` reaches on the wrapped server.
+ * (`dedupeTools`, shared with `findTool` and the catalog projection) matches
+ * what `callTool` reaches on the wrapped server.
  */
 function dedupeToolNames(server: ServerCatalog): ServerCatalog {
-  const seen = new Set<string>();
-  const tools = server.tools.filter((tool) => {
-    if (seen.has(tool.name)) return false;
-    seen.add(tool.name);
-    return true;
-  });
+  const tools = dedupeTools(server.tools);
   return tools.length === server.tools.length ? server : { ...server, tools };
 }
