@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MAX_QUERY_CHARS, searchTools, type SearchToolsPage } from '../../src/catalog/index.js';
 import { ProjectionError } from '../../src/errors.js';
 import type { ServerCatalog } from '../../src/types.js';
+import { generateToolTypes } from '../../src/typegen/index.js';
 import { CATALOG, entry } from '../machine-host/fixtures.js';
 
 const ESC = String.fromCharCode(0x1b);
@@ -198,5 +199,22 @@ describe('search_tools (R33)', () => {
     const result = page(searchTools(dup, {}));
     expect(result.total).toBe(1);
     expect(result.tools[0]).toMatchObject({ purpose: 'First.', posture: 'runs immediately' });
+  });
+
+  it('describes a tool with the same one-line purpose as the discover_apis overview', () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'search',
+          description: 'Search things. Unannotated, so it defaults to approval-gated.\nMore prose.',
+        }),
+        entry({ name: 'bare' }),
+      ],
+    };
+    const { overview } = generateToolTypes(catalog);
+    for (const tool of page(searchTools(catalog, {})).tools) {
+      expect(overview).toContain(`- ${tool.name} [approval] — ${tool.purpose}`);
+    }
   });
 });

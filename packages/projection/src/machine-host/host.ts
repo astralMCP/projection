@@ -436,6 +436,11 @@ class SegmentRunner {
    * The arguments executed are the ones sealed in `pending` — the approval
    * authorized those exact arguments, not whatever the restored machine
    * might ask for now (S2).
+   *
+   * Policy outranks a stale approval (D9): a tool flipped to `deny` while
+   * its blob was outstanding is denied here even if the human approved it —
+   * "flip to deny" is the incident-response move, and the integrator's
+   * policy must win over an approval minted under the old one.
    */
   private async applyVerdicts(
     pending: Record<string, PendingToolCall>,
@@ -443,6 +448,24 @@ class SegmentRunner {
   ): Promise<HostEvent[]> {
     const events: HostEvent[] = [];
     for (const [key, call] of Object.entries(pending)) {
+      const resolved = resolveCallPolicy(call, this.deps.catalog, this.deps.policy);
+      // A sealed entry naming a tool this catalog does not declare can only
+      // have come from another deployment sharing the identity string (the
+      // same reasoning as `catalog/call.ts`): refuse it before anything
+      // reaches the executor.
+      if (!resolved.ok) throw resolved.error;
+      if (resolved.decision === 'deny') {
+        const reason = policyDeniedReason(call.name);
+        events.push({ type: 'TOOL_DENIED', callId: call.id, reason });
+        this.deps.audit.push({
+          callId: call.id,
+          tool: call.name,
+          args: call.args,
+          decision: 'denied_by_policy',
+          reason,
+        });
+        continue;
+      }
       const verdict = Object.hasOwn(verdicts, key) ? verdicts[key] : undefined;
       // R17: a request missing from inputResponses is treated as declined.
       if (verdict === undefined || verdict.kind === 'declined') {

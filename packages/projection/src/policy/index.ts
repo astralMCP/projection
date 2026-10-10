@@ -25,6 +25,9 @@
  *   and stronger warning language for `destructiveHint` tools.
  * - `ElicitationCopy` / `ElicitationCopyOptions` — the structured copy
  *   shape consumed by the MRTR adapter, and its options.
+ * - `purposeSentence(description)` — the one-line purpose rule the copy
+ *   shares with typegen and `search_tools`; defined in `text-safety.ts`,
+ *   re-exported here so the public surface is unchanged.
  */
 
 export {
@@ -36,7 +39,7 @@ export {
 } from './decision.js';
 export {
   buildElicitationCopy,
-  purposeSentence,
   type ElicitationCopy,
   type ElicitationCopyOptions,
 } from './elicitation.js';
+export { purposeSentence } from '../text-safety.js';

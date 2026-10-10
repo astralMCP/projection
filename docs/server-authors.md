@@ -79,6 +79,10 @@ const facade = await wrapMcpServer(myServer, {
 });
 ```
 
+A `deny` also wins over approvals already in flight: a call the user approved
+under an earlier policy comes back as `TOOL_DENIED` / `denied_by_policy`.
+Flipping a tool to `deny` is safe as an incident-response move.
+
 ## Two projections, one gate
 
 Both projections are on by default. Turn one off when it does not fit your

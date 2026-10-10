@@ -14,6 +14,7 @@ import {
   inertIdentity,
   MAX_IDENTITY_CHARS,
   neutralizeControlChars,
+  purposeSentence,
 } from '../text-safety.js';
 import {
   dedupeTools,
@@ -269,11 +270,13 @@ function overviewFlags(tool: ToolCatalogEntry): string {
   return '[approval]';
 }
 
-function firstLine(text: string | undefined): string {
-  if (text === undefined) return '(no description)';
-  const line = (text.split('\n')[0] ?? '').trim();
-  if (line.length === 0) return '(no description)';
-  return line.length > 100 ? `${line.slice(0, 97)}...` : line;
+/**
+ * The one-line purpose shown per tool: the first sentence of the
+ * description, neutralized and capped — the same rule `search_tools` uses
+ * (R33), so both projections describe a tool identically.
+ */
+function purposeLine(text: string | undefined): string {
+  return purposeSentence(text) ?? '(no description)';
 }
 
 function generateOverview(server: ServerCatalog): string {
@@ -292,10 +295,10 @@ function generateOverview(server: ServerCatalog): string {
     // `- name [flags] — description` shape the model matches against
     // readable; the flags stay trustworthy because any injected copy is
     // flattened into the (capped) name field of its single line.
-    // `firstLine` already caps descriptions at 100 chars; names get the
-    // identity cap.
+    // `purposeLine` neutralizes and caps the description (first sentence, at
+    // most 200 chars — see `purposeSentence`); names get the identity cap.
     const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
-    const description = neutralizeControlChars(firstLine(tool.description));
+    const description = purposeLine(tool.description);
     lines.push(`- ${name} ${overviewFlags(tool)} — ${description}`);
   }
   return `${lines.join('\n')}\n`;

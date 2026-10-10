@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { runSegment } from '../../src/machine-host/index.js';
-import type { ApprovalVerdict, PendingToolCall } from '../../src/types.js';
-import { baseOptions, FakeExecutor } from './fixtures.js';
+import { policyDeniedReason } from '../../src/policy/index.js';
+import type { ApprovalVerdict, PendingToolCall, ServerCatalog } from '../../src/types.js';
+import { baseOptions, CATALOG, FakeExecutor } from './fixtures.js';
 
 const WRITE_MACHINE = `
 import { setup, assign } from 'xstate';
@@ -81,6 +82,104 @@ describe('single approval (PRD §8)', () => {
         decision: 'approved',
       },
     ]);
+  });
+
+  it('a deny policy on resume outranks a stale approval (D9): TOOL_DENIED, nothing executes', async () => {
+    const { outcome } = await suspendOnce();
+    const executor = new FakeExecutor();
+    // The tool was `ask` when the blob was minted; the integrator has since
+    // flipped it to `deny`. The human's approval must not win.
+    const resumed = await runSegment({
+      ...baseOptions,
+      code: WRITE_MACHINE,
+      executor,
+      policy: { write_file: 'deny' },
+      segment: 1,
+      resume: {
+        snapshot: outcome.snapshot,
+        pending: outcome.pending,
+        verdicts: { w1: { kind: 'approved' } },
+        audit: outcome.audit,
+        trip: outcome.trip,
+      },
+    });
+    expect(resumed.status).toBe('completed');
+    if (resumed.status !== 'completed') return;
+    expect(resumed.output).toEqual({ status: 'skipped', result: null });
+    expect(executor.calls).toEqual([]);
+    expect(resumed.audit).toEqual([
+      {
+        callId: 'w1',
+        tool: 'write_file',
+        args: { path: '/notes.txt', content: 'hello' },
+        decision: 'denied_by_policy',
+        reason: policyDeniedReason('write_file'),
+      },
+    ]);
+  });
+
+  it('a deny policy on resume records denied_by_policy even when the verdict is declined', async () => {
+    const { outcome } = await suspendOnce();
+    const executor = new FakeExecutor();
+    const resumed = await runSegment({
+      ...baseOptions,
+      code: WRITE_MACHINE,
+      executor,
+      policy: { write_file: 'deny' },
+      segment: 1,
+      resume: {
+        snapshot: outcome.snapshot,
+        pending: outcome.pending,
+        verdicts: { w1: { kind: 'declined', reason: 'not now' } },
+        audit: outcome.audit,
+        trip: outcome.trip,
+      },
+    });
+    expect(resumed.status).toBe('completed');
+    if (resumed.status !== 'completed') return;
+    expect(resumed.output).toEqual({ status: 'skipped', result: null });
+    expect(executor.calls).toEqual([]);
+    // Policy is decided first, so the stronger fact is recorded — matching `call_tool`.
+    expect(resumed.audit).toEqual([
+      {
+        callId: 'w1',
+        tool: 'write_file',
+        args: { path: '/notes.txt', content: 'hello' },
+        decision: 'denied_by_policy',
+        reason: policyDeniedReason('write_file'),
+      },
+    ]);
+  });
+
+  it('refuses a pending entry naming a tool this catalog does not declare (nothing executes)', async () => {
+    const { outcome } = await suspendOnce();
+    const executor = new FakeExecutor();
+    // The sealed `pending` names `write_file`; this deployment's catalog does
+    // not declare it, so the blob can only have come from another deployment
+    // sharing the identity string. The approval must not reach the executor.
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: CATALOG.tools.filter((tool) => tool.name !== 'write_file'),
+    };
+    const resumed = await runSegment({
+      ...baseOptions,
+      catalog,
+      code: WRITE_MACHINE,
+      executor,
+      segment: 1,
+      resume: {
+        snapshot: outcome.snapshot,
+        pending: outcome.pending,
+        verdicts: { w1: { kind: 'approved' } },
+        audit: outcome.audit,
+        trip: outcome.trip,
+      },
+    });
+    expect(resumed.status).toBe('error');
+    if (resumed.status !== 'error') return;
+    expect(resumed.error.phase).toBe('validate');
+    expect(resumed.error.message).toContain('Unknown tool "write_file"');
+    expect(executor.calls).toEqual([]);
   });
 
   it('takes the authored fallback branch when declined (denial is not an abort)', async () => {
@@ -266,6 +365,54 @@ export default setup({}).createMachine({
     if (resumed.status !== 'completed') return;
     expect(resumed.output).toEqual({ a: 'ok', b: 'denied', c: 'ok' });
     expect(executor.calls.map((c) => c.args['path']).sort()).toEqual(['/a', '/c']);
+  });
+
+  it('a deny policy on resume denies only that call; approved siblings still run (D9)', async () => {
+    const first = await runSegment({
+      ...baseOptions,
+      code: PARALLEL_MACHINE,
+      executor: new FakeExecutor(),
+    });
+    if (first.status !== 'suspended') throw new Error('expected suspension');
+
+    const executor = new FakeExecutor();
+    const verdicts: Record<string, ApprovalVerdict> = {
+      a: { kind: 'approved' },
+      b: { kind: 'approved' },
+      c: { kind: 'approved' },
+    };
+    const resumed = await runSegment({
+      ...baseOptions,
+      code: PARALLEL_MACHINE,
+      executor,
+      // `delete_file` was `ask` when the blob was minted; it is `deny` now.
+      policy: { delete_file: 'deny' },
+      segment: 1,
+      resume: {
+        snapshot: first.snapshot,
+        pending: first.pending as Record<string, PendingToolCall>,
+        verdicts,
+        audit: first.audit,
+        trip: first.trip,
+      },
+    });
+
+    expect(resumed.status).toBe('completed');
+    if (resumed.status !== 'completed') return;
+    expect(resumed.output).toEqual({ a: 'ok', b: 'ok', c: 'denied' });
+    expect(executor.calls.map((c) => c.args['path']).sort()).toEqual(['/a', '/b']);
+    const byCallId = [...resumed.audit].sort((x, y) => x.callId.localeCompare(y.callId));
+    expect(byCallId).toEqual([
+      { callId: 'a', tool: 'write_file', args: { path: '/a' }, decision: 'approved' },
+      { callId: 'b', tool: 'write_file', args: { path: '/b' }, decision: 'approved' },
+      {
+        callId: 'c',
+        tool: 'delete_file',
+        args: { path: '/c' },
+        decision: 'denied_by_policy',
+        reason: policyDeniedReason('delete_file'),
+      },
+    ]);
   });
 });
 

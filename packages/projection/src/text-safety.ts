@@ -76,3 +76,37 @@ export const MAX_IDENTITY_CHARS = 200;
 export function inertIdentity(identity: string): string {
   return JSON.stringify(neutralizeControlChars(capLength(identity, MAX_IDENTITY_CHARS)));
 }
+
+/** Longest one-line tool purpose rendered anywhere (approval copy, overview, `search_tools`). */
+const MAX_PURPOSE_CHARS = 200;
+// The catalog stores the S5 server's description verbatim and uncapped, so
+// bound the raw text before the extraction passes run over it (a hostile
+// multi-MB description would otherwise cost CPU proportional to its length).
+const MAX_RAW_DESCRIPTION_CHARS = 2_000;
+
+/**
+ * The one-line human purpose: the first sentence of the server's
+ * description, neutralized and capped. Runs of replacement characters
+ * (neutralized control bytes) are collapsed so a hostile or malformed
+ * description does not render as a wall of `�`. Undefined when the server
+ * gave no usable description.
+ *
+ * One rule, three consumers — the approval copy (R16), the `discover_apis`
+ * overview and `search_tools` (R33) — so every projection describes a tool
+ * identically.
+ */
+export function purposeSentence(description: string | undefined): string | undefined {
+  if (description === undefined) return undefined;
+  description = capLength(description, MAX_RAW_DESCRIPTION_CHARS);
+  // Work on the RAW first line: a newline is a hard boundary, so a hostile
+  // description cannot smuggle a forged block past the first sentence. Then
+  // trim to the first sentence, and only then neutralize — collapsing runs
+  // of replacement characters so a malformed byte run does not render as a
+  // wall of `�`.
+  const firstLine = description.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  if (firstLine.length === 0) return undefined;
+  const match = /^.*?[.!?](\s|$)/.exec(firstLine);
+  const sentence = (match ? match[0] : firstLine).trim();
+  const neutralized = neutralizeControlChars(sentence).replace(/�{2,}/g, '�').trim();
+  return neutralized.length > 0 ? capLength(neutralized, MAX_PURPOSE_CHARS) : undefined;
+}
