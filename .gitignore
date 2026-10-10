@@ -8,3 +8,6 @@ coverage/
 .env.*
 *.db
 apps/demo-host/public/host.iife.js
+# The harness's tool-choice eval (PR #41) writes its JSON results here.
+eval-results/
+.claude/worktrees/

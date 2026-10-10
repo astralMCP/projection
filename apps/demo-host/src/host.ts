@@ -1,5 +1,5 @@
 /**
- * Browser-side MCP Apps host (bundled to public/host.js).
+ * Browser-side MCP Apps host (bundled to public/host.iife.js).
  *
  * A real SDK `Client` over StreamableHTTP to the Projection facade at /mcp,
  * pinned to the 2026-07-28 revision with `autoFulfill: false` so this page
