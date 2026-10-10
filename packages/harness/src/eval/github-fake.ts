@@ -226,6 +226,9 @@ export const HARD_ROOT_FILES: readonly { name: string; type: 'file' | 'dir' }[] 
   { name: 'src', type: 'dir' },
 ];
 export const HARD_README_TEXT = '# widgets\n\nSmall, sturdy widgets.\n';
+export const HARD_SRC_FILES: readonly string[] = ['auth.ts', 'fetch.ts', 'index.ts'];
+/** The number the fake gives any issue it "creates". */
+export const CREATED_ISSUE_NUMBER = 101;
 
 /** The user's own repositories; only toolbox has open Dependabot alerts. */
 export const USER_REPOS: readonly string[] = ['blog', 'dotfiles', 'toolbox'];
@@ -286,9 +289,24 @@ function searchScopedTo(args: FakeArgs, ref: { owner: string; repo: string }): b
   );
 }
 
+/** Every value of a `name:value` qualifier in the query, lower-cased and unquoted. */
+function qualifiers(query: string, name: string): string[] {
+  return [...query.matchAll(new RegExp(`(?:^|\\s)${name}:("[^"]*"|\\S+)`, 'gi'))].map((m) =>
+    (m[1] ?? '').replace(/^"|"$/g, '').toLowerCase(),
+  );
+}
+
 function qualifier(query: string, name: string): string | undefined {
-  const match = new RegExp(`(?:^|\\s)${name}:("[^"]*"|\\S+)`, 'i').exec(query);
-  return match?.[1]?.replace(/^"|"$/g, '').toLowerCase();
+  return qualifiers(query, name)[0];
+}
+
+/** The `is:`/`state:` state a search asks for (`pr`/`issue` are type qualifiers, not states). */
+function searchState(query: string): string {
+  return (
+    [...qualifiers(query, 'is'), ...qualifiers(query, 'state')].find(
+      (v) => v !== 'pr' && v !== 'issue',
+    ) ?? ''
+  );
 }
 
 const STOPWORDS = new Set([
@@ -419,13 +437,13 @@ function hardIssues(args: FakeArgs): FakeIssue[] {
 }
 
 function hardPulls(args: FakeArgs, query?: string): FakePullRequest[] {
-  const state = lower(args['state']) || (query !== undefined ? (qualifier(query, 'is') ?? '') : '');
+  const state = lower(args['state']) || (query !== undefined ? searchState(query) : '');
   const author = query !== undefined ? qualifier(query, 'author') : undefined;
   const head = lower(args['head']).replace(/^[^:]*:/, '');
   const terms = query !== undefined ? queryTerms(query) : [];
   let pulls = HARD_PULLS.filter(
     (pull) =>
-      (state === '' || state === 'all' || state === 'pr' || pull.state === state) &&
+      (state === '' || state === 'all' || pull.state === state) &&
       (author === undefined || pull.author === author) &&
       (head === '' || pull.head === head) &&
       textMatches(pull.title, terms),
@@ -440,10 +458,18 @@ function searchIssuesFor(args: FakeArgs): unknown {
   if (!searchScopedTo(args, HARD_REPO)) {
     return { total_count: 1, items: [BASIC_ISSUE] };
   }
-  const terms = queryTerms(args['query']);
-  const items = HARD_ISSUES.filter((issue) =>
-    textMatches(`${issue.title} ${issue.body}`, terms),
-  ).map(issueView);
+  const query = str(args['query']) ?? '';
+  const state = searchState(query);
+  const labels = qualifiers(query, 'label');
+  const terms = queryTerms(query);
+  let issues = HARD_ISSUES.filter(
+    (issue) =>
+      (state === '' || issue.state === state) &&
+      labels.every((label) => issue.labels.map((l) => l.toLowerCase()).includes(label)) &&
+      textMatches(`${issue.title} ${issue.body}`, terms),
+  );
+  if (lower(args['order']) === 'asc') issues = issues.toReversed();
+  const items = issues.map(issueView);
   return { total_count: items.length, items };
 }
 
@@ -459,6 +485,8 @@ function fileContentsFor(args: FakeArgs): unknown {
   if (path === 'readme.md') {
     return { type: 'file', path, encoding: 'utf-8', content: HARD_README_TEXT };
   }
+  if (path === 'src')
+    return HARD_SRC_FILES.map((name) => ({ name, type: 'file', path: `src/${name}` }));
   return fakeError(
     `404 Not Found: no file or directory at path "${path}" in ${HARD_REPO.owner}/${HARD_REPO.repo}.`,
   );
@@ -512,7 +540,17 @@ function issueReadFor(args: FakeArgs): unknown {
   }
   const number = num(args['issue_number']);
   const issue = HARD_ISSUES.find((i) => i.number === number);
-  if (issue === undefined) return fakeError(`404 Not Found: issue #${String(number)}.`);
+  if (issue === undefined) {
+    // Pull requests are issues too: reading one by number works on GitHub.
+    const pull = HARD_PULLS.find((p) => p.number === number);
+    if (pull !== undefined && lower(args['method']) !== 'get_labels') {
+      return lower(args['method']) === 'get' || lower(args['method']) === ''
+        ? { ...(pullView(pull) as Record<string, unknown>), pull_request: { url: '' } }
+        : [];
+    }
+    if (pull !== undefined) return [];
+    return fakeError(`404 Not Found: issue #${String(number)}.`);
+  }
   switch (lower(args['method'])) {
     case 'get_labels':
       return issue.labels.map((name) => ({ name }));
@@ -551,7 +589,32 @@ function searchRepositoriesFor(args: FakeArgs): unknown {
       ],
     };
   }
-  return { total_count: 0, items: [] };
+  // Any other query finds the basic tier's repository, as it did before the
+  // hard tier existed (a non-empty answer keeps the basic episodes short).
+  return {
+    total_count: 1,
+    items: [
+      {
+        full_name: `${BASIC_REPO.owner}/${BASIC_REPO.repo}`,
+        name: BASIC_REPO.repo,
+        owner: { login: BASIC_REPO.owner },
+        default_branch: 'main',
+      },
+    ],
+  };
+}
+
+function issueWriteFor(args: FakeArgs): unknown {
+  const slug = `${lower(args['owner'])}/${lower(args['repo'])}`;
+  if (lower(args['method']) === 'create') {
+    return {
+      number: CREATED_ISSUE_NUMBER,
+      title: str(args['title']) ?? '',
+      state: 'open',
+      html_url: `https://github.com/${slug}/issues/${CREATED_ISSUE_NUMBER}`,
+    };
+  }
+  return { ok: true, number: num(args['issue_number']) ?? null };
 }
 
 function dependabotAlertsFor(args: FakeArgs): unknown {
@@ -590,8 +653,17 @@ export const GITHUB_FAKE_ANSWERS: Readonly<Record<string, FakeAnswer>> = {
     return { total_count: items.length, items };
   },
   pull_request_read: pullRequestReadFor,
+  issue_write: issueWriteFor,
   list_label: (args) =>
     isRepo(args, HARD_REPO) ? HARD_LABELS.map((name) => ({ name })) : { ok: true },
+  get_label: (args) => {
+    if (!isRepo(args, HARD_REPO)) return { ok: true };
+    const name = lower(args['name']);
+    return HARD_LABELS.includes(name)
+      ? { name, color: 'ededed' }
+      : fakeError(`404 Not Found: no label "${name}" in ${HARD_REPO.owner}/${HARD_REPO.repo}.`);
+  },
+  semantic_issue_similarity_search: (args) => (isRepo(args, HARD_REPO) ? [] : { ok: true }),
   list_branches: (args) =>
     isRepo(args, HARD_REPO)
       ? pageOf(

@@ -682,31 +682,50 @@ describe('tool-choice tasks', () => {
       ).toBe(true);
     });
 
-    it('merge-alice-changelog-pr: #11 squash after a lookup; any other merge forbidden', () => {
+    it('merge-alice-changelog-pr: lookup → files of #11 or #10 → #11 squash; any other merge forbidden', () => {
       const t = task('merge-alice-changelog-pr');
       const merge = (n: number, method = 'squash'): SideEffect => ({
         tool: 'merge_pull_request',
         args: { ...ACME, pullNumber: n, merge_method: method },
+      });
+      const files = (n: number, method = 'get_files'): SideEffect => ({
+        tool: 'pull_request_read',
+        args: { ...ACME, method, pullNumber: n },
       });
       const list: SideEffect = { tool: 'list_pull_requests', args: { ...ACME } };
       const search: SideEffect = {
         tool: 'search_pull_requests',
         args: { query: 'repo:acme/widgets is:open author:alice' },
       };
-      expect(scores(t, [list, merge(11)])).toBe(true);
-      expect(scores(t, [search, merge(11)])).toBe(true);
+      expect(scores(t, [list, files(11), merge(11)])).toBe(true);
+      expect(scores(t, [list, files(10), files(11), merge(11)])).toBe(true);
+      // Ruling out alice's other PR is enough.
+      expect(scores(t, [list, files(10), merge(11)])).toBe(true);
+      expect(scores(t, [list, files(11, 'get_diff'), merge(11)])).toBe(true);
+      expect(scores(t, [search, files(11), merge(11)])).toBe(true);
       expect(
         scores(t, [
           { tool: 'search_pull_requests', args: { ...ACME, query: 'author:alice' } },
+          files(11),
           merge(11),
         ]),
       ).toBe(true);
-      expect(scores(t, [list, merge(11, 'merge')])).toBe(false);
-      expect(scores(t, [merge(11)])).toBe(false);
-      expect(scores(t, [list, merge(12)])).toBe(false);
-      expect(scores(t, [list, merge(10), merge(11)])).toBe(false);
+      // Guessing from the title without looking at the files does not count.
+      expect(scores(t, [list, merge(11)])).toBe(false);
+      expect(scores(t, [list, files(11, 'get'), merge(11)])).toBe(false);
+      expect(scores(t, [list, files(12), merge(11)])).toBe(false);
+      expect(scores(t, [files(11), list, merge(11)])).toBe(false);
+      expect(scores(t, [list, merge(11), files(11)])).toBe(false);
+      expect(scores(t, [list, files(11), merge(11, 'merge')])).toBe(false);
+      expect(scores(t, [files(11), merge(11)])).toBe(false);
+      expect(scores(t, [list, files(11), merge(12)])).toBe(false);
+      expect(scores(t, [list, files(11), merge(10), merge(11)])).toBe(false);
       expect(
-        scores(t, [{ tool: 'search_pull_requests', args: { query: 'author:alice' } }, merge(11)]),
+        scores(t, [
+          { tool: 'search_pull_requests', args: { query: 'author:alice' } },
+          files(11),
+          merge(11),
+        ]),
       ).toBe(false);
     });
 
@@ -775,6 +794,26 @@ describe('tool-choice tasks', () => {
       expect(scores(t, [create('main'), create()])).toBe(true);
       expect(scores(t, [create()])).toBe(false);
       expect(scores(t, [create(), create('main')])).toBe(false);
+      // Omitting from_branch is also fine once a listing has shown every branch
+      // (no main among them), or a repository search reported the default.
+      const list = (args: Record<string, unknown>): SideEffect => ({
+        tool: 'list_branches',
+        args: { ...ACME, ...args },
+      });
+      expect(scores(t, [list({}), list({ page: 2 }), create()])).toBe(true);
+      expect(scores(t, [list({ perPage: 100 }), create()])).toBe(true);
+      expect(scores(t, [list({}), create()])).toBe(false);
+      expect(scores(t, [list({ page: 2 }), create()])).toBe(false);
+      expect(scores(t, [create(), list({ perPage: 100 })])).toBe(false);
+      expect(
+        scores(t, [
+          { tool: 'search_repositories', args: { query: 'repo:acme/widgets' } },
+          create(),
+        ]),
+      ).toBe(true);
+      expect(
+        scores(t, [{ tool: 'search_repositories', args: { query: 'user:vibdev' } }, create()]),
+      ).toBe(false);
       expect(scores(t, [create('main')])).toBe(false);
       expect(scores(t, [create('main'), create('develop')])).toBe(false);
       expect(scores(t, [create('main'), create('master', 'hotfix/logins')])).toBe(false);
@@ -927,6 +966,21 @@ describe('tool-choice tasks', () => {
       expect(scores(t, [repos('user:vibdev'), good])).toBe(false);
       expect(
         scores(t, [repos('user:vibdev'), alerts('toolbox'), create('toolbox', 'lodash only')]),
+      ).toBe(false);
+      // The CVE ids identify the alerts as well as the package names do.
+      expect(
+        scores(t, [
+          repos('user:vibdev'),
+          alerts('toolbox'),
+          create('toolbox', '- #1 high: CVE-2021-23337\n- #2 medium: CVE-2021-44906'),
+        ]),
+      ).toBe(true);
+      expect(
+        scores(t, [
+          repos('user:vibdev'),
+          alerts('toolbox'),
+          create('toolbox', '- #1 high\n- #2 medium'),
+        ]),
       ).toBe(false);
       expect(
         scores(t, [

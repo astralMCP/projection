@@ -186,6 +186,15 @@ describe('github fake', () => {
       ).toMatchObject({ ok: true });
       expect(answer('get_file_contents', { ...BASIC, path: 'README.md' })).toEqual({ ok: true });
       expect(answer('star_repository', { ...BASIC })).toEqual({ ok: true });
+      expect(
+        answer('issue_write', { ...BASIC, method: 'create', title: 'Crash on startup' }),
+      ).toMatchObject({ number: 101 });
+      // The basic search still finds something (its repo), so episodes stay short.
+      expect(answer('search_repositories', { query: 'model context protocol' })).toMatchObject({
+        total_count: 1,
+        items: [{ full_name: 'modelcontextprotocol/servers' }],
+      });
+      expect(answer('get_label', { ...BASIC, name: 'bug' })).toEqual({ ok: true });
     });
   });
 
@@ -270,10 +279,32 @@ describe('github fake', () => {
       expect(numbers(answer('search_issues', { ...ACME, query: 'crash config missing' }))).toEqual([
         17,
       ]);
-      // No text terms: everything in the repo.
+      // Qualifiers are honoured the way the real server honours them.
       expect(numbers(answer('search_issues', { ...ACME, query: 'is:open label:bug' }))).toEqual([
-        30, 25, 23, 17,
+        23, 17,
       ]);
+      expect(
+        numbers(answer('search_issues', { query: 'repo:acme/widgets state:open label:bug' })),
+      ).toEqual([23, 17]);
+      expect(numbers(answer('search_issues', { ...ACME, query: 'is:closed' }))).toEqual([30]);
+      expect(
+        numbers(answer('search_issues', { ...ACME, query: 'is:issue label:documentation' })),
+      ).toEqual([25]);
+      expect(
+        numbers(answer('search_issues', { ...ACME, query: 'label:bug label:needs-triage' })),
+      ).toEqual([17]);
+      expect(
+        numbers(
+          answer('search_issues', {
+            ...ACME,
+            query: 'is:open label:bug',
+            sort: 'created',
+            order: 'asc',
+          }),
+        ),
+      ).toEqual([17, 23]);
+      // No text terms and no qualifiers: everything in the repo.
+      expect(numbers(answer('search_issues', { ...ACME, query: '' }))).toEqual([30, 25, 23, 17]);
     });
 
     it('issue_read: get, get_labels, and a 404 for unknown numbers', () => {
@@ -289,9 +320,18 @@ describe('github fake', () => {
       expect(answer('issue_read', { ...ACME, method: 'get', issue_number: 99 })).toBeInstanceOf(
         FakeError,
       );
+      // PRs are issues: reading one by number works, with a pull_request marker.
+      expect(answer('issue_read', { ...ACME, method: 'get', issue_number: 12 })).toMatchObject({
+        number: 12,
+        pull_request: {},
+      });
+      expect(answer('issue_read', { ...ACME, method: 'get_comments', issue_number: 12 })).toEqual(
+        [],
+      );
+      expect(answer('issue_read', { ...ACME, method: 'get_labels', issue_number: 12 })).toEqual([]);
     });
 
-    it('list_pull_requests / search_pull_requests: three candidates, author and head filters', () => {
+    it('list_pull_requests / search_pull_requests: four open PRs (three per page), author and head filters', () => {
       const listed = answer('list_pull_requests', { ...ACME, state: 'open' }) as {
         items: unknown[];
         has_next_page: boolean;
@@ -323,6 +363,13 @@ describe('github fake', () => {
       ]);
       expect(numbers(answer('search_pull_requests', { ...ACME, query: 'CHANGELOG' }))).toEqual([]); // titles only
       expect(numbers(answer('search_pull_requests', { ...ACME, query: 'release' }))).toEqual([11]);
+      // `is:pr` is a type, not a state; a later `is:closed` still filters.
+      expect(
+        numbers(answer('search_pull_requests', { ...ACME, query: 'is:pr is:closed' })),
+      ).toEqual([]);
+      expect(numbers(answer('search_pull_requests', { ...ACME, query: 'is:pr is:open' }))).toEqual([
+        12, 11, 10, 8,
+      ]);
     });
 
     it('pull_request_read: files per PR and the review thread on #8', () => {
@@ -448,6 +495,11 @@ describe('github fake', () => {
         path: 'readme.md',
       });
       expect(answer('get_file_contents', { ...ACME, path: 'Readme.md' })).toBeInstanceOf(FakeError);
+      expect(answer('get_file_contents', { ...ACME, path: 'src/' })).toEqual([
+        { name: 'auth.ts', type: 'file', path: 'src/auth.ts' },
+        { name: 'fetch.ts', type: 'file', path: 'src/fetch.ts' },
+        { name: 'index.ts', type: 'file', path: 'src/index.ts' },
+      ]);
       expect(answer('get_repository_tree', { ...ACME })).toMatchObject({
         tree: expect.arrayContaining([{ path: 'readme.md', type: 'file' }]),
       });
@@ -459,7 +511,7 @@ describe('github fake', () => {
       expect(answer('list_starred_repositories', { username: 'vibdev' })).toEqual(starred);
     });
 
-    it("search_repositories: the user's repos by user:/@me, acme/widgets by name, else nothing", () => {
+    it("search_repositories: the user's repos by user:/@me, acme/widgets by name, else the basic repo", () => {
       const mine = answer('search_repositories', { query: 'user:vibdev' }) as {
         items: { full_name: string }[];
       };
@@ -474,9 +526,9 @@ describe('github fake', () => {
       expect(answer('search_repositories', { query: 'widgets in:name' })).toMatchObject({
         items: [{ full_name: 'acme/widgets', default_branch: 'master' }],
       });
-      expect(answer('search_repositories', { query: 'model context protocol' })).toEqual({
-        total_count: 0,
-        items: [],
+      expect(answer('search_repositories', { query: 'model context protocol' })).toMatchObject({
+        total_count: 1,
+        items: [{ full_name: 'modelcontextprotocol/servers', default_branch: 'main' }],
       });
     });
 
@@ -496,13 +548,31 @@ describe('github fake', () => {
       expect(answer('list_dependabot_alerts', { ...ACME })).toEqual([]);
     });
 
-    it('list_label: the labels the hard tasks need already exist', () => {
+    it('list_label / get_label: the labels the hard tasks need already exist', () => {
       expect(answer('list_label', { ...ACME })).toEqual([
         { name: 'bug' },
         { name: 'documentation' },
         { name: 'good first issue' },
         { name: 'needs-triage' },
       ]);
+      expect(answer('get_label', { ...ACME, name: 'Good First Issue' })).toEqual({
+        name: 'good first issue',
+        color: 'ededed',
+      });
+      expect(answer('get_label', { ...ACME, name: 'nope' })).toBeInstanceOf(FakeError);
+      expect(answer('semantic_issue_similarity_search', { ...ACME, issue_number: 23 })).toEqual([]);
+    });
+
+    it('issue_write: a create answers with a number and url; an update acknowledges', () => {
+      expect(answer('issue_write', { ...ACME, method: 'create', title: 'Add dark mode' })).toEqual({
+        number: 101,
+        title: 'Add dark mode',
+        state: 'open',
+        html_url: 'https://github.com/acme/widgets/issues/101',
+      });
+      expect(
+        answer('issue_write', { ...ACME, method: 'update', issue_number: 17, state: 'closed' }),
+      ).toEqual({ ok: true, number: 17 });
     });
 
     it('writes that are not scripted still answer ok and are recorded', async () => {

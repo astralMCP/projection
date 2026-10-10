@@ -26,7 +26,7 @@
  */
 
 import type { SideEffect } from '../types.js';
-import { BASIC_REPO, branchesListed, FAKE_USER, HARD_REPO } from './github-fake.js';
+import { BASIC_REPO, branchesListed, FAKE_USER, HARD_BRANCHES, HARD_REPO } from './github-fake.js';
 
 export type TaskKind = 'single' | 'multi';
 export type TaskTier = 'basic' | 'hard';
@@ -608,16 +608,30 @@ export const HARD_TASKS: readonly EvalTask[] = [
     tier: 'hard',
     kind: 'multi',
     prompt: `In ${HARD_SLUG}, squash-merge the open pull request by alice that touches CHANGELOG.md.`,
-    steps: [['list_pull_requests', 'search_pull_requests'], ['merge_pull_request']],
-    // #10 is by alice (no CHANGELOG), #12 touches CHANGELOG (by bob); only #11 is both.
+    steps: [
+      ['list_pull_requests', 'search_pull_requests'],
+      ['pull_request_read'],
+      ['merge_pull_request'],
+    ],
+    // #10 is by alice (no CHANGELOG), #12 touches CHANGELOG (by bob); only
+    // #11 is both. The listing shows authors, not files, so a merge counts
+    // only after the files (or diff) of one of alice's PRs were looked at —
+    // #11's directly, or #10's, which rules it out.
     expect: (calls) => {
       const listed = calls.findIndex((call) => looksUpPrs(call, HARD));
+      const checked = calls.findIndex(
+        (call, i) =>
+          i > listed &&
+          call.tool === 'pull_request_read' &&
+          ['get_files', 'get_diff'].includes(str(call.args['method']) ?? '') &&
+          (targets(call.args, 11, HARD) || targets(call.args, 10, HARD)),
+      );
       const merged = find(
         calls,
         'merge_pull_request',
         (args) => targets(args, 11, HARD) && sameText(args['merge_method'], 'squash'),
       );
-      return listed >= 0 && merged > listed;
+      return listed >= 0 && checked > listed && merged > checked;
     },
     forbid: (call) => call.tool === 'merge_pull_request' && !targets(call.args, 11, HARD),
   },
@@ -674,22 +688,39 @@ export const HARD_TASKS: readonly EvalTask[] = [
     prompt: `Create a branch named hotfix/login in ${HARD_SLUG}, based on main — or on the default branch if there is no main.`,
     steps: [['create_branch']],
     // The fake rejects from_branch main (no such branch; default is master).
-    // The corrected call names master, or omits from_branch after that
-    // failure (letting the server pick the default). Omitting it without
-    // ever trying main is not the stated task.
+    // The corrected call names master; or it omits from_branch (letting the
+    // server pick the default) once the model has established there is no
+    // main — by that failure, by a listing that showed every branch, or by a
+    // repository search that reported the default branch. Omitting it blind
+    // is not the stated task.
     expect: (calls) => {
-      const failed = find(
-        calls,
-        'create_branch',
-        (args) => inRepo(args, HARD) && sameText(branchName(args['from_branch']), 'main'),
-      );
+      const knowsNoMain = (before: number): boolean => {
+        const earlier = calls.slice(0, before);
+        if (
+          earlier.some(
+            (c) =>
+              c.tool === 'create_branch' &&
+              inRepo(c.args, HARD) &&
+              sameText(branchName(c.args['from_branch']), 'main'),
+          )
+        ) {
+          return true;
+        }
+        const seen = new Set(
+          earlier.filter((c) => c.tool === 'list_branches').flatMap((c) => branchesListed(c.args)),
+        );
+        if (HARD_BRANCHES.every((b) => seen.has(b))) return true;
+        return earlier.some(
+          (c) => c.tool === 'search_repositories' && containsText(c.args['query'], HARD.repo),
+        );
+      };
       return calls.some(
         (call, i) =>
           call.tool === 'create_branch' &&
           inRepo(call.args, HARD) &&
           sameText(branchName(call.args['branch']), 'hotfix/login') &&
           (sameText(branchName(call.args['from_branch']), 'master') ||
-            (call.args['from_branch'] === undefined && failed >= 0 && i > failed)),
+            (call.args['from_branch'] === undefined && knowsNoMain(i))),
       );
     },
   },
@@ -777,15 +808,16 @@ export const HARD_TASKS: readonly EvalTask[] = [
         (args) => containsText(args['query'], FAKE_USER) || containsText(args['query'], '@me'),
       );
       const alerts = find(calls, 'list_dependabot_alerts', (args) => inRepo(args, USER_TOOLBOX));
-      const created = find(
-        calls,
-        'issue_write',
-        (args) =>
+      // Each alert is named by its package or its CVE, in the title or body.
+      const created = find(calls, 'issue_write', (args) => {
+        const text = `${str(args['title']) ?? ''}\n${str(args['body']) ?? ''}`;
+        return (
           sameText(args['method'], 'create') &&
           inRepo(args, USER_TOOLBOX) &&
-          containsText(`${str(args['title']) ?? ''}\n${str(args['body']) ?? ''}`, 'lodash') &&
-          containsText(`${str(args['title']) ?? ''}\n${str(args['body']) ?? ''}`, 'minimist'),
-      );
+          (containsText(text, 'lodash') || containsText(text, 'CVE-2021-23337')) &&
+          (containsText(text, 'minimist') || containsText(text, 'CVE-2021-44906'))
+        );
+      });
       return repos >= 0 && alerts > repos && created > alerts;
     },
     forbid: (call) => isIssueCreate(call) && !inRepo(call.args, USER_TOOLBOX),
