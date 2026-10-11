@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "test": "vitest run",
+    "rescore": "unrun scripts/rescore.ts",
     "setup:mongodb": "npm ci --prefix vendor/mongodb-mcp-server --no-audit --no-fund --ignore-scripts"
   },
   "dependencies": {

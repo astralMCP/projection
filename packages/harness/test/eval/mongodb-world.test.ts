@@ -259,6 +259,43 @@ describe.skipIf(!installed)('mongodb world', () => {
       );
     }
   });
+
+  describe('golden variants: each runs clean against the real server and scores', () => {
+    for (const task of MONGODB_TASKS) {
+      const golden = GOLDEN[task.name] as Golden;
+      for (const [i, variant] of (golden.variants ?? []).entries()) {
+        it(`${task.name} variant ${i + 1}`, async () => {
+          const world = await openWorld('mongodb');
+          try {
+            const session = await openDirectSession(world);
+            const texts: string[] = [];
+            try {
+              for (const call of variant) {
+                const result = await session.runtime.call(call.tool, call.args);
+                expect(result.isError, `${call.tool}: ${result.text}`).toBeUndefined();
+                texts.push(result.text);
+              }
+            } finally {
+              await session.close();
+            }
+            // The key value really came back: a pipeline that runs clean
+            // but returns [] does not pass.
+            const text = texts.join('\n');
+            for (const pattern of golden.variantResult ?? []) expect(text).toMatch(pattern);
+            expect(task.expect(world.calls)).toBe(true);
+            if (task.verify !== undefined) {
+              const finalText = golden.answer ?? '';
+              expect(await task.verify({ calls: world.calls, finalText, facts: world.facts })).toBe(
+                true,
+              );
+            }
+          } finally {
+            await world.close();
+          }
+        }, 120_000);
+      }
+    }
+  });
 });
 
 describe('mongodb server lookup', () => {

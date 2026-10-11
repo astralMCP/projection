@@ -147,6 +147,15 @@ function readThenEdits(calls: SideEffect[], source: string, target: string): boo
   return read >= 0 && edit > read;
 }
 
+/**
+ * A line of the answer that lists debug.log as a tree or list entry: only
+ * tree-drawing characters, bullets, a list number or a table bar before a
+ * path ending in it (`│   ├── debug.log`, `- legacy/debug.log`,
+ * `1. debug.log`, `    debug.log`). A mention inside prose —
+ * "(debug.log was excluded)", "I left out debug.log" — is not an entry.
+ */
+const LISTS_DEBUG_LOG = /^[ \t│├└─┬┼╰|*+>-]*(?:\d+[.)][ \t]+)?[^\s(]*debug\.log/m;
+
 const LOG_FILES = ['app.log', 'access.log', 'error.log', 'debug.log'];
 
 export const FILESYSTEM_TASKS: readonly EvalTask[] = [
@@ -158,6 +167,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-move-todo-into-archive',
     tier: 'filesystem',
     kind: 'multi',
+    needsWorld: true,
     prompt: (facts) =>
       `In my project at ${facts.root}, move notes/todo.txt to notes/archive/tasks.txt.`,
     steps: [['create_directory', 'move_file'], ['move_file']],
@@ -182,6 +192,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-bump-version',
     tier: 'filesystem',
     kind: 'single',
+    needsWorld: true,
     prompt: (facts) =>
       `The version in ${facts.root}/package.json is out of date — bump the patch number. Change nothing else.`,
     steps: [FILE_READ_TOOLS, EDIT_TOOLS],
@@ -231,6 +242,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-append-todo',
     tier: 'filesystem',
     kind: 'single',
+    needsWorld: true,
     prompt: (facts) => `Add the line "- write tests" at the end of ${facts.root}/notes/todo.txt.`,
     steps: [EDIT_TOOLS],
     expect: (calls) => has(calls, EDIT_TOOLS, (args) => editsFile(args, 'notes/todo.txt')),
@@ -245,13 +257,16 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-make-nested-dir',
     tier: 'filesystem',
     kind: 'multi',
+    needsWorld: true,
     prompt: (facts) => `Create the folder src/components/buttons in my project at ${facts.root}.`,
     steps: [['create_directory']],
     expect: (calls) =>
       has(calls, 'create_directory', (args) => pathIs(args['path'], 'src/components/buttons')),
     verify: (context) => {
+      // Outside the try: an unset `facts.root` is a harness error, not a miss.
+      const target = join(root(context), 'src/components/buttons');
       try {
-        return statSync(join(root(context), 'src/components/buttons')).isDirectory();
+        return statSync(target).isDirectory();
       } catch {
         return false;
       }
@@ -297,6 +312,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-archive-tmp',
     tier: 'filesystem',
     kind: 'multi',
+    needsWorld: true,
     prompt: (facts) =>
       `Move everything inside ${facts.root}/tmp into ${facts.root}/archive/old (create that folder if it does not exist).`,
     steps: [['create_directory', 'move_file'], ['move_file']],
@@ -345,6 +361,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-retitle-changelog-from-package',
     tier: 'filesystem',
     kind: 'single',
+    needsWorld: true,
     prompt: (facts) =>
       `In ${facts.root}/CHANGELOG.md, rename the "Unreleased" section heading to the current version from package.json.`,
     steps: [FILE_READ_TOOLS, EDIT_TOOLS],
@@ -380,6 +397,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-create-unless-exists',
     tier: 'filesystem',
     kind: 'single',
+    needsWorld: true,
     prompt: (facts) =>
       `Create ${facts.root}/notes/ideas.txt containing just "TBD" — unless it already exists, in which case leave it alone and tell me what is in it.`,
     steps: [READ_TOOLS],
@@ -395,6 +413,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     name: 'fs-dry-run-colour',
     tier: 'filesystem',
     kind: 'single',
+    needsWorld: true,
     prompt: (facts) =>
       `In ${facts.root}/src/util.js, show me what would change if every "colour" became "color" — but do not modify the file.`,
     steps: [['edit_file', ...FILE_READ_TOOLS]],
@@ -408,8 +427,13 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     verify: (context) => sameContent(readText(root(context), 'src/util.js'), FIXTURE_UTIL_JS),
   },
   // --- A tree, not a flat listing (or flat listings of every level). The
-  // "leaving out log files" clause is answered either by directory_tree's
-  // excludePatterns or by hand; verify checks the answer, not the argument.
+  // "leaving out log files" clause is the model's to honour: the server's
+  // `directory_tree` `excludePatterns: ['*.log']` does not filter nested
+  // files (observed: `src/legacy/debug.log` still comes back), so the model
+  // has to drop it from the tree by hand. verify wants every source file
+  // somewhere in the answer and debug.log on no line that reads as a tree
+  // or list entry (`LISTS_DEBUG_LOG`), so a sentence saying debug.log was left
+  // out does not fail an answer whose tree correctly omits it.
   {
     name: 'fs-src-tree',
     tier: 'filesystem',
@@ -423,6 +447,6 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
         has(calls, FLAT_LISTINGS, (args) => pathIs(args['path'], 'src/legacy'))),
     verify: (context) =>
       ['index.js', 'util.js', 'old.js'].every((name) => context.finalText.includes(name)) &&
-      !context.finalText.includes('debug.log'),
+      !LISTS_DEBUG_LOG.test(context.finalText),
   },
 ];

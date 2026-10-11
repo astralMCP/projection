@@ -90,9 +90,14 @@ describe('filesystem tasks', () => {
           expect(await verify(context(golden.answer ?? ''))).toBe(false);
           golden.apply(root);
         }
-        expect(await verify(context(golden.answer ?? ''))).toBe(true);
-        if (golden.wrongAnswer !== undefined) {
-          expect(await verify(context(golden.wrongAnswer))).toBe(false);
+        for (const answer of [golden.answer ?? '', ...(golden.answers ?? [])]) {
+          expect(await verify(context(answer)), answer).toBe(true);
+        }
+        for (const wrong of [
+          ...(golden.wrongAnswer !== undefined ? [golden.wrongAnswer] : []),
+          ...(golden.wrongAnswers ?? []),
+        ]) {
+          expect(await verify(context(wrong)), wrong).toBe(false);
         }
       });
     }

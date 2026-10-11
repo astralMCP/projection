@@ -140,7 +140,9 @@ the two stale orders flipped), a delete that must carry a filter, dropping
 one collection but not the database, a rename, a conditional insert that
 must _not_ happen, a which-database question with a decoy `reports` database
 to rule out, and a query-plan question — and every tool needs the opaque
-`connectionId: "preconfigured"` the schema describes. The server's
+`connectionId: "preconfigured"` the schema describes. Reads also count
+through the database-level `aggregate-db`, which models reach a collection
+from with a `$documents` seed and a `$lookup` (or a `$unionWith`). The server's
 dependency tree needs a newer MCP SDK than the workspace pins, so it is
 installed in isolation once with `pnpm run setup:mongodb` (in
 `packages/harness`; CI does this); the `mongod` binary (~80 MB) is
@@ -176,6 +178,19 @@ calls it made (and flagged `turnCapped`); refusals, `max_tokens`, API errors
 and harness exceptions are harness errors, excluded from the success
 denominators but still counted toward spend. The results file records the
 budget and ceiling it ran under (`maxTurns`, `maxTotalTurns`).
+
+A grader fix does not need a new (paid) run: from the repo root,
+`pnpm --filter @astral-mcp/harness run rescore packages/harness/eval-results/<timestamp>.json`
+re-scores a saved results file offline with the current tasks
+(`rescoreRecords`), writes `<timestamp>.rescored.json` next to it with the
+summary recomputed, and prints the report plus every episode whose verdict
+changed. `expect`, `forbid` and the step groups are re-run on the recorded
+upstream calls, and `verify` on the recorded final text — except for tasks
+marked `needsWorld` (their verify reads files on disk or the deployment,
+which are gone), whose recorded verdict stands unless `expect` or `forbid`
+now fail (DECISIONS D13). It also prints any episode a grader threw on
+(left as recorded) and how many recorded `needsWorld` failures it could not
+re-check offline — re-run those tasks to confirm.
 
 The plumbing is proven offline in `test/eval/`: a scripted model drives both
 modes end to end without an API key — against the fake and against the real
