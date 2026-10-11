@@ -92,16 +92,17 @@ prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
 - **Perf-budget tests** (`test/integration/budgets.test.ts`) can flake under
   parallel turbo load; a p95 failure that passes on a solo re-run (command
   above) is load noise, not a regression.
-- **Sandbox memory-cap test** (`test/sandbox/caps.test.ts`) used to flake
-  on CI by hitting the wall-clock budget first. In the emscripten QuickJS
-  build the memory limit bounds the size of a single allocation request
-  (plus ~8 bytes of bookkeeping per live allocation), not total sandbox
-  memory: any number of sub-cap allocations adds up to ~2 GB (WASM linear
-  memory) at any cap setting, including the 1 MB floor (DECISIONS D14). It
-  is no longer a known flake. A memory-cap test must use a single request
-  larger than the cap (or assert the iteration count of a doubling
-  sequence), because any pattern of sub-cap allocations ends in the same
-  out-of-memory error regardless of the cap.
+- **Sandbox memory-cap tests** (`test/sandbox/caps.test.ts`) once flaked on
+  CI by racing the wall-clock budget: QuickJS's own `memoryLimit` bounds a
+  single allocation request, not total memory, so a hoard of sub-cap
+  allocations ran to ~2 GB. Since DECISIONS D15 each session's WebAssembly
+  memory `maximum` is the cap, hoards fail within tens of milliseconds, and
+  the floor is 16 MB (the module's initial heap). A memory-cap test may
+  hoard, but keep the per-request and doubling-sequence cases (D14): they
+  pin the refusal of a single oversize request and the cap-determined end
+  of a doubling sequence independently of machine load. Both are now
+  enforced by the memory `maximum`; QuickJS's `memoryLimit` stays as a
+  cheap early refusal, and no test detects its removal.
 - `src/types.ts` is the shared contract. Export new public API through
   `src/index.ts` deliberately (DECISIONS D3).
 

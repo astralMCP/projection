@@ -109,7 +109,8 @@
  * ### Caps enforced here vs. elsewhere
  *
  * Enforced by this module: `segmentWallClockMs` (in-VM interrupt),
- * `wasmMemoryBytes` (QuickJS memory limit), `maxCodeBytes` (pre-eval check),
+ * `wasmMemoryBytes` (the WebAssembly memory's `maximum`, one module
+ * instance per session), `maxCodeBytes` (pre-eval check),
  * `maxConsoleBytes` (log truncation). The remaining R12 caps (tool-call
  * counts, event counts, round trips, result size, state-node count) are the
  * machine host / MRTR adapter's responsibility.

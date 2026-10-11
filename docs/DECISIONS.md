@@ -438,3 +438,90 @@ Alternatives rejected: keeping a hoard test with a wall-clock bound — it
 passes with no limit at all and races the segment budget under CI load;
 asserting the cap value in the error message — the message is formatted
 from `caps.wasmMemoryBytes` on the host side, not reported by QuickJS.
+
+## D15 — The memory cap is the WebAssembly memory's `maximum`; one module instance per session (2026-10-10)
+
+This closes the follow-up D14 left open. `wasmMemoryBytes` (R12) used to be
+passed to QuickJS's `setMemoryLimit` and nothing else. That limit never bounded real bytes: QuickJS charges each
+allocation `malloc_usable_size + overhead`, and the emscripten build returns
+0 for `malloc_usable_size`, so the running total counted bookkeeping only.
+Only a single request larger than the cap was refused. Measured in this
+repo: a loop pushing `'x'.repeat(4096)` under an 8 MB cap ran ~466k
+iterations (~2 GB of linear memory, 6-7 s) before "out of memory", the same
+count under 64 MB, and a loop of `new Uint8Array(1 << 20)` reached 2 GB in
+2041 iterations. A hostile or sloppy machine could grow the host process by
+~2 GB per sandbox, and WebAssembly memories never shrink.
+
+The fix: every session runs on its own QuickJS WASM module instance
+(`newVariant(variant, { wasmMemory, wasmModule })`) with a
+`WebAssembly.Memory` whose `maximum` is the cap in pages. The binary is
+compiled once per process and shared (`wasmModule`); where it cannot be
+located the glue's loader is the fallback. Instances are pooled: after a
+session ends, an instance whose heap is still at its 16 MB initial size is
+kept (up to eight, keyed by `maximum`) for the next session with the same
+cap, and an instance that grew is dropped so its memory is reclaimed.
+Reusing a disposed-runtime instance in sequence is what the old shared
+singleton did for every session; the pool keeps that cost profile while
+giving each instance its own bound. The engine enforces `maximum` on every
+`grow`; the emscripten glue catches the failed grow, `malloc` returns NULL,
+QuickJS throws its ordinary "out of memory" InternalError, and the session
+reports the memory `cap_exceeded`. All hoard shapes — small strings, 1 MB
+typed arrays, a doubling array — now fail in under 100 ms with the heap at
+most the cap, the VM survives the failure, a neighbouring session is
+untouched, and disposing the session releases the whole heap. The
+emscripten glue grows the heap in steps (the larger of the request and
+~5-20% of the current size), so near the cap a request that would fit can
+be refused, leaving up to a few percent of the cap unusable. QuickJS's own
+`memoryLimit` is still set; it is cheap and refuses a single oversize
+request before the heap has to grow, and D14's per-request tests remain
+alongside the hoard tests this change adds. The caveat D14 placed under the
+caps table in `server-authors.md` is removed.
+
+Consequences: the floor rises from 1 MB to 16 MB, the module's
+`INITIAL_MEMORY`, because an imported memory cannot be smaller than the
+import declares — a lower cap would be a promise the engine cannot keep.
+The cap is per session, so concurrency multiplies it (documented in
+`server-authors.md`); 20 idle sessions cost ~29 MB of RSS, since the
+memory's pages are committed only when touched. Cost, measured on the §10
+resume leg: solo, p95 12.5 ms / median 11.3 ms against 12-14 / 11-12 on
+main; under the package's parallel test load, alternating runs gave p95
+35-47 ms / median 18-21 ms against 35-40 / 20-29 on main. Without the pool
+the loaded figures were p95 61-65 / median 38-42 — instantiating per
+session doubled the leg under contention and would have turned the known
+p95 flake into a regular CI failure. (Under the full `pnpm run check` load
+on the development machine both main and this change exceed the 100 ms
+p95; that is the flake the contributing skill documents.) An instance is
+reused only after its run promise settled cleanly and every evaluate of its
+session, the boot evaluates included, returned ok; any failure drops it
+(re-instantiation costs ~3-5 ms, and at the 16 MB floor `maximum` equals
+`initial`, so an exhausted heap does not show in its size). The
+instance's `_malloc` export is wrapped to throw "out of memory" instead of
+returning NULL: quickjs-emscripten copies evaluate sources, and so tool
+results the machine host embeds in them, through `_malloc` unchecked and
+would otherwise write at address 0 when the heap is full, corrupting the
+instance; thrown, it is the ordinary memory `cap_exceeded`. `quickjs-emscripten-core` becomes a direct, exactly
+pinned dependency for `newVariant`, and `src/sandbox/webassembly.d.ts`
+declares the slice of the WebAssembly API the package uses, since TypeScript
+ships those types only in its DOM lib.
+
+Alternatives rejected:
+
+- **A composite interrupt handler** that keeps the wall-clock deadline and
+  periodically compares `runtime.computeMemoryUsage().memory_used_size`
+  (accurate: it sums payload sizes) against the cap. The walk is O(live
+  values) (~5 ms per 500k) and so needs throttling, but the real problem is
+  cadence: QuickJS polls the handler every ~10 000 bytecode back-edges,
+  which was every ~2 500 iterations (10 MB) of the 4 KB-string loop and
+  never once during 300 MB of 1 MB typed-array pushes (8 ms). A check that
+  runs only when the machine happens to loop cannot bound allocation.
+- **A hook on heap growth** (wrapping `wasmMemory.grow` on a shared memory
+  and attributing growth to the running sandbox): with one process-wide
+  memory the allocator cannot be identified from JavaScript, an idle
+  over-cap session would get its neighbour's allocation refused, and the
+  heap read goes through `getFFI()`, which quickjs-emscripten marks
+  experimental.
+- **Another QuickJS variant or library option.** Every emscripten variant
+  shares the `malloc_usable_size` stub, and `@sebastianwessel/quickjs`
+  exposes no accounting hook; `newVariant` is the public seam.
+- **Documenting the gap** and leaving the limit as advisory. The PRD states
+  the cap as a bound, and the §9 threat model assumes a hostile machine.
