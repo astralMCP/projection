@@ -19,7 +19,6 @@ import { openFilesystemWorld } from './filesystem-world.js';
 import { createGithubFake, type GithubFakeOptions } from './github-fake.js';
 
 export type WorldName = 'github' | 'filesystem';
-export const WORLD_NAMES: readonly WorldName[] = ['github', 'filesystem'];
 
 /** One tool as a world serves it (the model sees name, description, schema). */
 export interface WorldTool {

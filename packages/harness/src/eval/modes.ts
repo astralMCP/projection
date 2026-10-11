@@ -19,8 +19,9 @@
  *   everything is safe: the GitHub fake has no side effects and the real
  *   servers act on a throwaway sandbox.
  *
- * Tool results are the result's text blocks joined, which is what a host
- * like Claude Code shows the model.
+ * Tool results are the result's content blocks joined in order: text
+ * verbatim, anything else as a one-line placeholder (`[image image/png,
+ * N bytes]`), which is what a host like Claude Code shows the model.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -77,13 +78,44 @@ function isTextBlock(block: unknown): block is { type: 'text'; text: string } {
   );
 }
 
+/**
+ * A non-text block as a host would summarise it to the model: an image's
+ * type and size, not its bytes. Rendering a placeholder (rather than
+ * dropping the block) keeps `read_media_file` distinguishable from an empty
+ * result in the transcript.
+ */
+function placeholder(block: unknown): string {
+  const view = (typeof block === 'object' && block !== null ? block : {}) as {
+    type?: unknown;
+    data?: unknown;
+    mimeType?: unknown;
+    resource?: { uri?: unknown; mimeType?: unknown };
+  };
+  const type = typeof view.type === 'string' ? view.type : 'unknown';
+  const size = typeof view.data === 'string' ? `, ${view.data.length} bytes` : '';
+  const mime = typeof view.mimeType === 'string' ? ` ${view.mimeType}` : '';
+  switch (type) {
+    case 'image':
+    case 'audio':
+      return `[${type}${mime}${size}]`;
+    case 'resource': {
+      const uri = typeof view.resource?.uri === 'string' ? ` ${view.resource.uri}` : '';
+      const resourceMime =
+        typeof view.resource?.mimeType === 'string' ? ` ${view.resource.mimeType}` : '';
+      return `[resource${uri}${resourceMime}]`;
+    }
+    default:
+      return `[${type} block]`;
+  }
+}
+
 /** The text a host shows the model for a tools/call result. */
 export function toolResultText(result: ToolCallResultView): AgentToolResult {
   const blocks = Array.isArray(result.content) ? result.content : [];
-  const texts = blocks.flatMap((block) => (isTextBlock(block) ? [block.text] : []));
+  const lines = blocks.map((block) => (isTextBlock(block) ? block.text : placeholder(block)));
   const text =
-    texts.length > 0
-      ? texts.join('\n')
+    lines.length > 0
+      ? lines.join('\n')
       : result.structuredContent !== undefined
         ? JSON.stringify(result.structuredContent)
         : '';
@@ -137,19 +169,28 @@ export async function openProjectionSession(world: EvalWorld): Promise<ModeSessi
     state.approvals += 1;
     return { action: 'accept' as const, content: {} };
   });
-  await client.connect(
-    new StreamableHTTPClientTransport(PROJECTION_ENDPOINT, {
-      fetch: (url, init) => handler.fetch(new Request(url, init)),
-    }),
-  );
-
-  const listed = await client.listTools();
-  const tools: AgentTool[] = listed.tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description ?? '',
-    inputSchema: tool.inputSchema as Record<string, unknown>,
-  }));
-  const system = client.getInstructions() ?? facade.instructions;
+  let tools: AgentTool[];
+  let system: string;
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(PROJECTION_ENDPOINT, {
+        fetch: (url, init) => handler.fetch(new Request(url, init)),
+      }),
+    );
+    const listed = await client.listTools();
+    tools = listed.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description ?? '',
+      inputSchema: tool.inputSchema as Record<string, unknown>,
+    }));
+    system = client.getInstructions() ?? facade.instructions;
+  } catch (err) {
+    // Nobody else holds the facade: release it (and the half-open client)
+    // rather than leak a wrapped server per failed episode.
+    await client.close().catch(() => {});
+    await facade.close().catch(() => {});
+    throw err;
+  }
 
   return {
     mode: 'projection',

@@ -4,20 +4,23 @@
  * directory and nothing about the server's tools.
  *
  * Built to discriminate between the server's near-duplicate tools and
- * between argument choices: a rename (`move_file`, never read-then-write);
- * a one-line change (`edit_file`, or a `write_file` that preserves every
- * other byte); a size question (`list_directory_with_sizes` /
- * `get_file_info`); a recursive search where a flat listing misses a nested
- * file; an image (`read_media_file`, not a text read); `head` to read only
- * the first lines of a large log; a conditional create that must NOT happen
- * because the file exists; a `dryRun` edit that must leave the file alone;
- * a multi-step move into a directory that has to be created first.
+ * between argument choices: a move into a directory that does not exist yet
+ * (`move_file` after `create_directory`, never read-then-write); a one-line
+ * change that needs a read first (`edit_file`, or a `write_file` that
+ * preserves every other byte); a size question (`list_directory_with_sizes`
+ * / `get_file_info`); a recursive search where a flat listing misses a
+ * nested file; an image (`read_media_file`, not a text read); `head` to
+ * read only the first lines of a large log; a conditional create that must
+ * NOT happen because the file exists; a `dryRun` edit that must leave the
+ * file alone; a multi-step move into a directory that has to be created
+ * first.
  *
  * Every task's `expect` scores the recorded calls; mutation tasks also
  * `verify` the tree on disk, and question tasks verify the answer names
- * the right thing. Paths are matched by suffix (`…/notes/todo.txt`), so a
- * model that passes the absolute path and one that resolves relative to
- * the root both match.
+ * the right thing (and only the right thing — the prompts ask for just the
+ * file name so a hedge that lists every candidate does not pass). Paths are
+ * matched by suffix (`…/notes/todo.txt`), so a model that passes the
+ * absolute path and one that resolves relative to the root both match.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -31,15 +34,7 @@ import {
   FIXTURE_TODO,
   FIXTURE_UTIL_JS,
 } from './filesystem-world.js';
-import {
-  containsText,
-  has,
-  sameNumber,
-  str,
-  type Args,
-  type EvalTask,
-  type VerifyContext,
-} from './task-core.js';
+import { find, has, str, type Args, type EvalTask, type VerifyContext } from './task-core.js';
 
 /** Slashes normalized, trailing slash and `./` dropped. */
 function normalizePath(value: unknown): string | undefined {
@@ -55,13 +50,9 @@ function pathIs(value: unknown, relative: string): boolean {
   return path !== undefined && (path === relative || path.endsWith(`/${relative}`));
 }
 
-/** The value names `relative` or something inside it. */
-function pathWithin(value: unknown, relative: string): boolean {
-  const path = normalizePath(value);
-  return (
-    path !== undefined &&
-    (pathIs(path, relative) || path.startsWith(`${relative}/`) || path.includes(`/${relative}/`))
-  );
+/** The value names some path at all (the right tool with no arguments is not a hit). */
+function anyPath(args: Args): boolean {
+  return normalizePath(args['path']) !== undefined;
 }
 
 /** Any entry of `paths` (read_multiple_files) names `relative`. */
@@ -88,17 +79,26 @@ function root(context: VerifyContext): string {
   return value;
 }
 
+/** The tools that show a file's contents. */
+const FILE_READ_TOOLS = ['read_text_file', 'read_file', 'read_multiple_files'];
+
 /** The tools that can read a file's contents or metadata. */
 const READ_TOOLS = [
-  'read_text_file',
-  'read_file',
-  'read_multiple_files',
+  ...FILE_READ_TOOLS,
   'get_file_info',
   'list_directory',
   'list_directory_with_sizes',
   'directory_tree',
   'search_files',
 ];
+
+/** The tools that list a directory flat (`directory_tree` recurses). */
+const FLAT_LISTINGS = ['list_directory', 'list_directory_with_sizes'];
+
+/** A call to one of `FILE_READ_TOOLS` that shows `relative`. */
+function readsFile(args: Args, relative: string): boolean {
+  return pathIs(args['path'], relative) || pathsInclude(args['paths'], relative);
+}
 
 /** A tool that changes the tree, aimed at `relative`. */
 function mutates(call: SideEffect, relative: string): boolean {
@@ -136,38 +136,56 @@ function editsFile(args: Args, relative: string): boolean {
   return pathIs(args['path'], relative) && args['dryRun'] !== true;
 }
 
+/**
+ * A read of `source` happened before the first edit/write of `target`: the
+ * model cannot know the current text (or the value it is copying) without
+ * one, so an edit that comes first is a guess.
+ */
+function readThenEdits(calls: SideEffect[], source: string, target: string): boolean {
+  const read = find(calls, FILE_READ_TOOLS, (args) => readsFile(args, source));
+  const edit = find(calls, EDIT_TOOLS, (args) => editsFile(args, target));
+  return read >= 0 && edit > read;
+}
+
 const LOG_FILES = ['app.log', 'access.log', 'error.log', 'debug.log'];
 
 export const FILESYSTEM_TASKS: readonly EvalTask[] = [
-  // --- Rename: move_file, not read + write (there is no delete tool, so a
-  // copy leaves the original behind and verify catches it).
+  // --- Move into a directory that does not exist: the server rejects the
+  // move until `create_directory` has run, so this takes two calls and a
+  // recovery from an isError. Not read + write (there is no delete tool, so
+  // a copy leaves the original behind and verify catches it).
   {
-    name: 'fs-rename-todo',
+    name: 'fs-move-todo-into-archive',
     tier: 'filesystem',
-    kind: 'single',
-    prompt: (facts) => `In my project at ${facts.root}, rename notes/todo.txt to notes/tasks.txt.`,
-    steps: [['move_file']],
+    kind: 'multi',
+    prompt: (facts) =>
+      `In my project at ${facts.root}, move notes/todo.txt to notes/archive/tasks.txt.`,
+    steps: [['create_directory', 'move_file'], ['move_file']],
     expect: (calls) =>
       has(
         calls,
         'move_file',
         (args) =>
           pathIs(args['source'], 'notes/todo.txt') &&
-          pathIs(args['destination'], 'notes/tasks.txt'),
+          pathIs(args['destination'], 'notes/archive/tasks.txt'),
       ),
+    forbid: (call) =>
+      call.tool === 'write_file' && pathIs(call.args['path'], 'notes/archive/tasks.txt'),
     verify: (context) =>
-      sameContent(readText(root(context), 'notes/tasks.txt'), FIXTURE_TODO) &&
+      sameContent(readText(root(context), 'notes/archive/tasks.txt'), FIXTURE_TODO) &&
       !existsSync(join(root(context), 'notes/todo.txt')),
   },
-  // --- One-line change: edit_file, or a write_file that keeps every other byte.
+  // --- One-line change: the prompt does not say the current version, so
+  // the file has to be read first; then edit_file, or a write_file that
+  // keeps every other byte.
   {
     name: 'fs-bump-version',
     tier: 'filesystem',
     kind: 'single',
     prompt: (facts) =>
-      `In ${facts.root}/package.json, bump the version from 1.2.0 to 1.2.1. Change nothing else.`,
-    steps: [EDIT_TOOLS],
-    expect: (calls) => has(calls, EDIT_TOOLS, (args) => editsFile(args, 'package.json')),
+      `The version in ${facts.root}/package.json is out of date — bump the patch number. Change nothing else.`,
+    steps: [FILE_READ_TOOLS, EDIT_TOOLS],
+    expect: (calls) => readThenEdits(calls, 'package.json', 'package.json'),
     verify: (context) =>
       sameContent(
         readText(root(context), 'package.json'),
@@ -175,32 +193,37 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
       ),
   },
   // --- Sizes: a plain listing has no sizes; list_directory_with_sizes or
-  // get_file_info per file does.
+  // get_file_info per file does. The answer must name app.log alone: a
+  // model that lists all three files has not answered.
   {
     name: 'fs-largest-log',
     tier: 'filesystem',
     kind: 'single',
-    prompt: (facts) => `Which file in ${facts.root}/logs is the largest? Tell me its name.`,
+    prompt: (facts) =>
+      `Which file in ${facts.root}/logs is the largest? Answer with just the file name.`,
     steps: [['list_directory_with_sizes', 'get_file_info']],
     expect: (calls) =>
       has(calls, 'list_directory_with_sizes', (args) => pathIs(args['path'], 'logs')) ||
       has(calls, 'get_file_info', (args) => pathIs(args['path'], 'logs/app.log')),
     verify: (context) =>
-      /app\.log/i.test(context.finalText) &&
-      !/(access|error)\.log is the largest/i.test(context.finalText),
+      /app\.log/i.test(context.finalText) && !/(access|error)\.log/i.test(context.finalText),
   },
   // --- Recursive search: logs/ holds three, src/legacy/debug.log is the
-  // fourth that a flat listing of logs/ misses.
+  // fourth that a flat listing of logs/ misses. Any recursive call counts
+  // (the server's `*` does not cross `/`, so the pattern is the model's
+  // problem — verify checks it found all four); so does a flat listing of
+  // src/legacy, which only a model that walked the tree would make.
   {
     name: 'fs-find-logs',
     tier: 'filesystem',
     kind: 'single',
     prompt: (facts) =>
       `List every .log file anywhere in my project at ${facts.root}, including subfolders.`,
-    steps: [['search_files', 'directory_tree']],
+    steps: [['search_files', 'directory_tree', ...FLAT_LISTINGS]],
     expect: (calls) =>
-      has(calls, 'search_files', (args) => containsText(args['pattern'], 'log')) ||
-      has(calls, 'directory_tree', () => true),
+      has(calls, 'search_files', (args) => str(args['pattern']) !== undefined) ||
+      has(calls, 'directory_tree', anyPath) ||
+      has(calls, FLAT_LISTINGS, (args) => pathIs(args['path'], 'src/legacy')),
     verify: (context) => LOG_FILES.every((name) => context.finalText.includes(name)),
   },
   // --- Append a line.
@@ -214,11 +237,14 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     verify: (context) =>
       sameContent(readText(root(context), 'notes/todo.txt'), `${FIXTURE_TODO}- write tests\n`),
   },
-  // --- Nested directory in one call.
+  // --- Nested directory. The description promises nested creation in one
+  // call, but the server's path check rejects a path whose parent does not
+  // exist, so the honest route is an isError, then the parent, then the
+  // target; `expect` only insists the target itself was created.
   {
     name: 'fs-make-nested-dir',
     tier: 'filesystem',
-    kind: 'single',
+    kind: 'multi',
     prompt: (facts) => `Create the folder src/components/buttons in my project at ${facts.root}.`,
     steps: [['create_directory']],
     expect: (calls) =>
@@ -231,7 +257,8 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
       }
     },
   },
-  // --- An image is not text.
+  // --- An image is not text. This measures the first choice: a text read
+  // of the PNG fails the episode even when read_media_file follows.
   {
     name: 'fs-view-logo',
     tier: 'filesystem',
@@ -240,24 +267,32 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     steps: [['read_media_file']],
     expect: (calls) =>
       has(calls, 'read_media_file', (args) => pathIs(args['path'], 'assets/logo.png')),
+    forbid: (call) =>
+      FILE_READ_TOOLS.includes(call.tool) && readsFile(call.args, 'assets/logo.png'),
   },
-  // --- Two files, one question: read_multiple_files, or two reads.
+  // --- Two files, one question: read_multiple_files, or two reads. BOTH
+  // files must be read — dev.json alone shows debug on, but the question
+  // is which of the two has it, and prod.json might too; a model that
+  // reads one and answers has guessed. The answer must name dev.json and
+  // not prod.json.
   {
     name: 'fs-which-debug',
     tier: 'filesystem',
     kind: 'single',
     prompt: (facts) =>
-      `Which of ${facts.root}/config/dev.json and ${facts.root}/config/prod.json has debug enabled?`,
-    steps: [['read_multiple_files', 'read_text_file', 'read_file']],
+      `Which of ${facts.root}/config/dev.json and ${facts.root}/config/prod.json has debug enabled? Answer with just the file name.`,
+    steps: [FILE_READ_TOOLS],
     expect: (calls) => {
       const read = (relative: string): boolean =>
-        has(calls, ['read_text_file', 'read_file'], (args) => pathIs(args['path'], relative)) ||
-        has(calls, 'read_multiple_files', (args) => pathsInclude(args['paths'], relative));
+        has(calls, FILE_READ_TOOLS, (args) => readsFile(args, relative));
       return read('config/dev.json') && read('config/prod.json');
     },
-    verify: (context) => /dev\.json|\bdev\b/i.test(context.finalText),
+    verify: (context) =>
+      /dev\.json/i.test(context.finalText) && !/prod\.json/i.test(context.finalText),
   },
-  // --- Multi-step: the destination has to exist before the moves.
+  // --- Multi-step: the destination has to exist before the moves. A move
+  // of either file, or of the whole directory, counts; verify settles
+  // whether everything arrived.
   {
     name: 'fs-archive-tmp',
     tier: 'filesystem',
@@ -265,7 +300,15 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     prompt: (facts) =>
       `Move everything inside ${facts.root}/tmp into ${facts.root}/archive/old (create that folder if it does not exist).`,
     steps: [['create_directory', 'move_file'], ['move_file']],
-    expect: (calls) => has(calls, 'move_file', (args) => pathWithin(args['source'], 'tmp')),
+    expect: (calls) =>
+      has(
+        calls,
+        'move_file',
+        (args) =>
+          pathIs(args['source'], 'tmp/scratch.txt') ||
+          pathIs(args['source'], 'tmp/draft.md') ||
+          pathIs(args['source'], 'tmp'),
+      ),
     verify: (context) => {
       const base = root(context);
       const moved =
@@ -280,37 +323,42 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
       return moved && tmpLeft.length === 0;
     },
   },
-  // --- Metadata: size in bytes and mtime come from get_file_info.
+  // --- Metadata: size in bytes and mtime come from get_file_info (a sized
+  // listing has the bytes but not the mtime). The answer must give the
+  // byte count as a byte count, not as a line number or a stray digit run.
   {
     name: 'fs-readme-info',
     tier: 'filesystem',
     kind: 'single',
     prompt: (facts) =>
       `How big is ${facts.root}/README.md in bytes, and when was it last modified?`,
-    steps: [['get_file_info', 'list_directory_with_sizes']],
-    expect: (calls) =>
-      has(calls, 'get_file_info', (args) => pathIs(args['path'], 'README.md')) ||
-      has(calls, 'list_directory_with_sizes', (args) => normalizePath(args['path']) !== undefined),
+    steps: [['get_file_info']],
+    expect: (calls) => has(calls, 'get_file_info', (args) => pathIs(args['path'], 'README.md')),
     verify: (context) =>
-      context.finalText.includes(String(Buffer.byteLength(FIXTURE_README, 'utf8'))),
+      new RegExp(`\\b${Buffer.byteLength(FIXTURE_README, 'utf8')}\\s*(bytes?|B)\\b`, 'i').test(
+        context.finalText,
+      ),
   },
-  // --- Retitle a heading.
+  // --- Retitle a heading with a value from another file: package.json
+  // has to be read before CHANGELOG.md is edited.
   {
-    name: 'fs-retitle-changelog',
+    name: 'fs-retitle-changelog-from-package',
     tier: 'filesystem',
     kind: 'single',
     prompt: (facts) =>
-      `In ${facts.root}/CHANGELOG.md, change the heading "## Unreleased" to "## 1.2.1".`,
-    steps: [EDIT_TOOLS],
-    expect: (calls) => has(calls, EDIT_TOOLS, (args) => editsFile(args, 'CHANGELOG.md')),
+      `In ${facts.root}/CHANGELOG.md, rename the "Unreleased" section heading to the current version from package.json.`,
+    steps: [FILE_READ_TOOLS, EDIT_TOOLS],
+    expect: (calls) => readThenEdits(calls, 'package.json', 'CHANGELOG.md'),
     verify: (context) =>
       sameContent(
         readText(root(context), 'CHANGELOG.md'),
-        FIXTURE_CHANGELOG.replace('## Unreleased', '## 1.2.1'),
+        FIXTURE_CHANGELOG.replace('## Unreleased', '## 1.2.0'),
       ),
   },
   // --- Argument choice: `head` reads five lines of a 36 KB log; reading the
-  // whole file is tool-correct but not the asked-for call.
+  // whole file is tool-correct but not the asked-for call. The server's
+  // schema wants a number — a string "5" is rejected before the handler
+  // runs, so it is never recorded.
   {
     name: 'fs-head-of-log',
     tier: 'filesystem',
@@ -321,7 +369,10 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
       has(
         calls,
         ['read_text_file', 'read_file'],
-        (args) => pathIs(args['path'], 'logs/app.log') && sameNumber(args['head'], 5),
+        (args) =>
+          pathIs(args['path'], 'logs/app.log') &&
+          typeof args['head'] === 'number' &&
+          args['head'] === 5,
       ),
   },
   // --- Conditional create that must NOT happen: the file exists.
@@ -346,31 +397,32 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt: (facts) =>
       `In ${facts.root}/src/util.js, show me what would change if every "colour" became "color" — but do not modify the file.`,
-    steps: [['edit_file', 'read_text_file', 'read_file']],
+    steps: [['edit_file', ...FILE_READ_TOOLS]],
     expect: (calls) =>
       has(
         calls,
         'edit_file',
         (args) => pathIs(args['path'], 'src/util.js') && args['dryRun'] === true,
-      ) ||
-      has(calls, ['read_text_file', 'read_file'], (args) => pathIs(args['path'], 'src/util.js')),
+      ) || has(calls, FILE_READ_TOOLS, (args) => readsFile(args, 'src/util.js')),
     forbid: (call) => mutates(call, 'src/util.js'),
     verify: (context) => sameContent(readText(root(context), 'src/util.js'), FIXTURE_UTIL_JS),
   },
-  // --- A tree, not a flat listing (or flat listings of every level).
+  // --- A tree, not a flat listing (or flat listings of every level). The
+  // "leaving out log files" clause is answered either by directory_tree's
+  // excludePatterns or by hand; verify checks the answer, not the argument.
   {
     name: 'fs-src-tree',
     tier: 'filesystem',
     kind: 'single',
-    prompt: (facts) => `Give me a tree view of everything under ${facts.root}/src.`,
-    steps: [['directory_tree', 'list_directory']],
+    prompt: (facts) =>
+      `Give me a tree view of everything under ${facts.root}/src, leaving out log files.`,
+    steps: [['directory_tree', ...FLAT_LISTINGS]],
     expect: (calls) =>
-      has(calls, 'directory_tree', (args) => pathIs(args['path'], 'src')) ||
-      (has(calls, 'list_directory', (args) => pathIs(args['path'], 'src')) &&
-        has(calls, 'list_directory', (args) => pathIs(args['path'], 'src/legacy'))),
+      has(calls, 'directory_tree', anyPath) ||
+      (has(calls, FLAT_LISTINGS, (args) => pathIs(args['path'], 'src')) &&
+        has(calls, FLAT_LISTINGS, (args) => pathIs(args['path'], 'src/legacy'))),
     verify: (context) =>
-      ['index.js', 'util.js', 'old.js', 'debug.log'].every((name) =>
-        context.finalText.includes(name),
-      ),
+      ['index.js', 'util.js', 'old.js'].every((name) => context.finalText.includes(name)) &&
+      !context.finalText.includes('debug.log'),
   },
 ];

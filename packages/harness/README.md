@@ -102,15 +102,23 @@ happened) and assert that a write follows the lookup that justified it. The
 fake's hard-tier behaviours are pure functions of the call's arguments, and
 every episode gets a fresh fake, so the world is identical for every run.
 The **filesystem** tier (15 tasks on the real reference server) targets its
-near-duplicate tools and argument choices: a rename (`move_file`, never
-read-then-write), a one-line change that must keep every other byte, a size
-question a plain listing cannot answer, a recursive search where a flat
-listing misses `src/legacy/debug.log`, an image (`read_media_file`, not a
-text read), `head: 5` on a 36 KB log, a conditional create that must _not_
-happen because the file exists, a `dryRun` edit that must leave the file
-alone, and a move into a directory that has to be created first. Prompts
+near-duplicate tools and argument choices: a move into a directory that does
+not exist yet (`move_file` after the server rejects the first attempt, never
+read-then-write), edits that need a read first (bump a patch version the
+prompt does not state; retitle a changelog heading to the version in
+`package.json`), a size question a plain listing cannot answer, a recursive
+search where a flat listing misses `src/legacy/debug.log`, an image
+(`read_media_file` as the _first_ choice — a text read of the PNG fails the
+episode), `head: 5` on a 36 KB log (a string `"5"` is rejected by the
+schema), a conditional create that must _not_ happen because the file
+exists, a `dryRun` edit that must leave the file alone, and a two-file move
+into a directory that has to be created first. Question tasks ask for "just
+the file name" and fail an answer that hedges across candidates. Prompts
 carry the episode's temp directory, so they are functions of the world's
-facts (`promptFor`).
+facts (`promptFor`). Two inherent Projection costs show up on a server this
+small: `search_tools` returns only the first sentence of each description,
+so a parameter like `head` is visible only after `describe_tool`, and those
+discovery turns count against the same turn cap the direct mode has.
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 

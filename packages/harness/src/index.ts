@@ -145,7 +145,6 @@ export {
   githubWorld,
   openWorld,
   GITHUB_DIRECT_SYSTEM_PROMPT,
-  WORLD_NAMES,
   type EvalWorld,
   type WorldFacts,
   type WorldName,

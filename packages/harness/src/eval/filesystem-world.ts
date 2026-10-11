@@ -8,10 +8,12 @@
  * apart: `read_file` (deprecated) vs `read_text_file` vs `read_media_file`
  * vs `read_multiple_files`; `edit_file` (line edits, `dryRun`) vs
  * `write_file` (overwrite); `list_directory` vs `list_directory_with_sizes`
- * vs `directory_tree` vs `search_files`; `move_file` for renames. Writes
- * carry `destructiveHint: true` (`create_directory` does not), so under
- * Projection they ask for approval and the eval's approve-all client
- * answers — the effects then land on the real throwaway tree.
+ * vs `directory_tree` vs `search_files`; `move_file` for renames. Every
+ * tool that is not `readOnlyHint: true` (the writes, the move, and
+ * `create_directory`) asks for approval under Projection, and the eval's
+ * approve-all client answers — the effects then land on the real throwaway
+ * tree. Note the server's path check wants a path's parent to exist, so a
+ * nested `create_directory` takes one call per missing level.
  */
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -50,7 +52,7 @@ const LOGO_PNG = Buffer.from(
 export const FIXTURE_PACKAGE_JSON =
   '{\n  "name": "widgets",\n  "version": "1.2.0",\n  "private": true,\n  "scripts": {\n    "test": "node --test"\n  }\n}\n';
 export const FIXTURE_CHANGELOG =
-  '# Changelog\n\n## Unreleased\n\n- Add CSV export\n\n## 1.2.0\n\n- Initial public release\n';
+  '# Changelog\n\n## Unreleased\n\n- Add CSV export\n\n## 1.1.0\n\n- Initial public release\n';
 export const FIXTURE_TODO = '- buy milk\n- call bob\n- ship v1.2\n';
 export const FIXTURE_IDEAS = 'Ideas\n- dark mode\n- plugins\n';
 export const FIXTURE_README = '# Widgets\n\nA small demo project.\n\nCurrent version: 1.2.0\n';
@@ -110,24 +112,28 @@ export function filesystemServerEntry(): string {
  * server and removes the tree.
  */
 export async function openFilesystemWorld(): Promise<EvalWorld> {
-  // realpath: macOS puts tmpdir under a symlink, and the server compares
-  // resolved paths against its allowed directories.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'projection-eval-fs-')));
-  writeFilesystemFixture(root);
-
+  // A neutral prefix: the prompts carry this path, and a name like
+  // "projection-eval" would tell the model what it is being measured for.
+  let root: string | undefined;
   const stderr: Buffer[] = [];
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [filesystemServerEntry(), root],
-    stderr: 'pipe',
-  });
-  transport.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
   const client = new Client({ name: 'tool-choice-eval', version: '0.0.0' }, { capabilities: {} });
   const close = async (): Promise<void> => {
     await client.close().catch(() => {});
-    rmSync(root, { recursive: true, force: true });
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
   };
   try {
+    // realpath: macOS puts tmpdir under a symlink, and the server compares
+    // resolved paths against its allowed directories. Inside the try so a
+    // fixture write that fails half-way still removes the directory.
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'widgets-')));
+    writeFilesystemFixture(root);
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [filesystemServerEntry(), root],
+      stderr: 'pipe',
+    });
+    transport.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
     await client.connect(transport);
     const proxy = await createRecordingProxy(client, { name: 'filesystem-eval', version: '0.0.0' });
     return {

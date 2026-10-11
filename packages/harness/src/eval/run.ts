@@ -281,12 +281,14 @@ async function runPlanned(
           options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {},
         );
       } finally {
-        await session.close();
+        // A close that fails must not discard an episode that ran, nor mask
+        // the error that is already propagating.
+        await session.close().catch(() => {});
       }
       // Score while the world is still up: `verify` reads its end state.
       return await scoreEpisode(planned, world, session.approvals, episode);
     } finally {
-      await world.close();
+      await world.close().catch(() => {});
     }
   } catch (err) {
     return harnessFailureRecord(planned, err, world, session, episode, startedAt);

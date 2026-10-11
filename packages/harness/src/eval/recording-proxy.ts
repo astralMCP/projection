@@ -73,6 +73,10 @@ export async function createRecordingProxy(
         inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema as JsonSchemaType),
         ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
       },
+      // The mirrored schema validates the arguments before this handler
+      // runs, so a call with wrong-typed arguments (`head: "5"`) is
+      // rejected by the proxy and never recorded — exactly as the real
+      // server would reject it, and as the GitHub fake behaves.
       async (args) => {
         const recorded = args ?? {};
         calls.push({ tool: tool.name, args: recorded });

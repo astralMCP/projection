@@ -67,8 +67,10 @@ export interface EvalTask {
   /**
    * End-state check, run after the episode and before the world is torn
    * down: the file really moved, the answer names the right file. Success
-   * requires `expect` AND `verify` (when present). A thrown check counts as
-   * false.
+   * requires `expect` AND `verify` (when present). A check that throws is a
+   * harness error — the episode is excluded from the success denominator,
+   * not scored `false` — so a verify must catch what it means to tolerate
+   * (a missing file is `false`, not a throw).
    */
   verify?(context: VerifyContext): boolean | Promise<boolean>;
 }
