@@ -122,7 +122,12 @@ discovery turns are many. The turn budget therefore counts _action_ turns:
 a Projection turn that only called `search_tools`, `describe_tool` or
 `discover_apis` is free (direct mode has that information inline), up to an
 absolute ceiling of twice the budget so a model that loops on discovery
-still stops; both modes get the same budget.
+still stops; both modes get the same budget. Free is by tool name, not
+outcome: a failed `call_tool` counts like a direct call with bad arguments,
+while a failed `describe_tool` or endless `search_tools` paging is bounded
+only by the ceiling. The ceiling bounds calls, not tokens: each extra turn
+resends the growing context (softened by cache reads), so the discovery
+cost stays visible in the turns, tokens and cost columns.
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
@@ -140,11 +145,12 @@ and harness-error counts, a per-tier summary, a per-task table grouped by
 tier, and Projection's route split) is printed, and the records are written
 to `eval-results/<timestamp>.json`
 (gitignored), rewritten after every episode so a timeout or crash keeps the
-partial results. An episode that spends its 12-turn budget (or 24 calls in
-all) is scored on the upstream calls it made (and flagged `turnCapped`);
-refusals, `max_tokens`,
-API errors and harness exceptions are harness errors, excluded from the
-success denominators but still counted toward spend.
+partial results. An episode that spends its turn budget (12 by default) or
+reaches the absolute ceiling (twice the budget) is scored on the upstream
+calls it made (and flagged `turnCapped`); refusals, `max_tokens`, API errors
+and harness exceptions are harness errors, excluded from the success
+denominators but still counted toward spend. The results file records the
+budget and ceiling it ran under (`maxTurns`, `maxTotalTurns`).
 
 The plumbing is proven offline in `test/eval/`: a scripted model drives both
 modes end to end without an API key — against the fake and against the real

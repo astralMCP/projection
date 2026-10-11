@@ -120,7 +120,7 @@ export interface ToolChoiceEvalOptions {
   caller?: ModelCaller;
   /** Turn budget per episode (turns that are not pure discovery). Default 12. */
   maxTurns?: number;
-  /** Absolute ceiling on Messages API calls per episode. Default 24. */
+  /** Absolute ceiling on Messages API calls per episode. Default: twice `maxTurns`. */
   maxTotalTurns?: number;
   /** Episodes in flight at once. Default 1. */
   concurrency?: number;
@@ -693,7 +693,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
 
   lines.push(
     'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
-      'The turn budget counts action turns (Projection discovery turns are free, up to twice the budget in all); ' +
+      'The turn budget counts action turns (Projection discovery turns are free, up to an absolute ceiling of twice the budget); ' +
       'turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
@@ -728,6 +728,10 @@ export interface ResultsMeta {
   tiers?: TaskTier[];
   tasks?: string[];
   runs?: number;
+  /** The turn budget the episodes ran under (action turns). */
+  maxTurns?: number;
+  /** The absolute ceiling on Messages API calls per episode. */
+  maxTotalTurns?: number;
 }
 
 export interface ResultsWriter {

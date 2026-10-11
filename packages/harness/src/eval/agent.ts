@@ -162,26 +162,33 @@ export interface AgentEpisode {
 export interface AgentEpisodeOptions {
   /**
    * The turn budget: Messages API calls that count. Default 12. A turn
-   * counts unless every tool it called is in `budgetFreeTools`.
+   * counts unless it stopped for `tool_use`, called at least one tool, and
+   * every tool it called is in `budgetFreeTools`.
    */
   maxTurns?: number;
   /**
    * Tools whose turns do not consume the budget — Projection's discovery
    * surface (`search_tools`, `describe_tool`, `discover_apis`), which direct
-   * mode gets for free in its inline schemas. A turn that mixes a free tool
-   * with any other tool counts. Default: none.
+   * mode gets for free in its inline schemas. Free is by tool NAME, not by
+   * outcome: a turn that mixes a free tool with any other tool counts, and a
+   * failed `call_tool` (unknown name, bad arguments) counts exactly like a
+   * direct-mode call with bad arguments; a failed `describe_tool`, or
+   * endless `search_tools` paging, does not count and is bounded only by
+   * `maxTotalTurns`. Default: none.
    */
   budgetFreeTools?: ReadonlySet<string>;
   /**
    * Absolute ceiling on Messages API calls, free turns included, so a model
-   * that loops on discovery still stops. Default {@link DEFAULT_MAX_TOTAL_TURNS}.
+   * that loops on discovery still stops. Default: twice `maxTurns`. Never
+   * below `maxTurns`.
    */
   maxTotalTurns?: number;
   maxTokens?: number;
 }
 
 export const DEFAULT_MAX_TURNS = 12;
-export const DEFAULT_MAX_TOTAL_TURNS = 24;
+/** The default ceiling is twice the default budget; see `maxTotalTurns`. */
+export const DEFAULT_MAX_TOTAL_TURNS = 2 * DEFAULT_MAX_TURNS;
 export const DEFAULT_MAX_TOKENS = 16000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -201,7 +208,8 @@ export async function runAgentEpisode(
   options: AgentEpisodeOptions = {},
 ): Promise<AgentEpisode> {
   const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
-  const maxTotalTurns = Math.max(maxTurns, options.maxTotalTurns ?? DEFAULT_MAX_TOTAL_TURNS);
+  // A ceiling below the budget would make the budget unreachable.
+  const maxTotalTurns = Math.max(maxTurns, options.maxTotalTurns ?? 2 * maxTurns);
   const free = options.budgetFreeTools ?? new Set<string>();
   const tools: Anthropic.Tool[] = runtime.tools.map((tool) => ({
     name: tool.name,
@@ -258,15 +266,24 @@ export async function runAgentEpisode(
     finalText = message.content
       .flatMap((block) => (block.type === 'text' ? [block.text] : []))
       .join('\n');
+    // The one place the budget is charged. A turn is free only when it is
+    // pure discovery: it stopped to call tools, called at least one (an
+    // empty tool_use turn is not discovery), and every one is a free tool.
+    // Every other stop reason — end_turn, pause_turn, refusal, max_tokens,
+    // null — counts, so without free tools budgetTurns === apiTurns.
+    const called = message.content.flatMap((block) =>
+      block.type === 'tool_use' ? [block.name] : [],
+    );
+    const isDiscovery =
+      message.stop_reason === 'tool_use' &&
+      called.length > 0 &&
+      called.every((name) => free.has(name));
+    if (!isDiscovery) budgetTurns += 1;
 
     if (message.stop_reason === 'tool_use') {
       // Echo the whole assistant turn (thinking blocks included), then
       // answer every tool_use block in ONE user message.
       messages.push({ role: 'assistant', content: message.content });
-      const called = message.content.flatMap((block) =>
-        block.type === 'tool_use' ? [block.name] : [],
-      );
-      if (!called.every((name) => free.has(name))) budgetTurns += 1;
       const results: Anthropic.ToolResultBlockParam[] = [];
       for (const block of message.content) {
         if (block.type !== 'tool_use') continue;
@@ -291,12 +308,10 @@ export async function runAgentEpisode(
 
     if (message.stop_reason === 'pause_turn') {
       messages.push({ role: 'assistant', content: message.content });
-      budgetTurns += 1;
       continue;
     }
 
     if (message.stop_reason === 'end_turn' || message.stop_reason === 'stop_sequence') {
-      budgetTurns += 1;
       return finish();
     }
 
