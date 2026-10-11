@@ -17,6 +17,12 @@ export interface Golden {
    * test runs each on a fresh deployment and checks the same answers.
    */
   variants?: SideEffect[][];
+  /**
+   * What every variant's tool results (joined) must contain — the key
+   * value of the answer — so a pipeline that runs clean but returns `[]`
+   * fails the fidelity test.
+   */
+  variantResult?: RegExp[];
   /** The golden changes the deployment, so `verify` must be false before it runs. */
   mutates?: boolean;
   /** A correct final answer. */
@@ -66,6 +72,7 @@ export const GOLDEN: Record<string, Golden> = {
   'db-count-shipped': {
     calls: [{ tool: 'count', args: { ...shop('orders'), query: { status: 'shipped' } } }],
     variants: [[viaLookup('shop', 'orders', [{ $match: { status: 'shipped' } }, { $count: 'n' }])]],
+    variantResult: [/"n":\s*4\b/],
     answer: '4',
     wrongAnswer: '12',
     wrong: [{ tool: 'count', args: { ...shop('orders') } }],
@@ -79,6 +86,7 @@ export const GOLDEN: Record<string, Golden> = {
   'db-schema-customers': {
     calls: [{ tool: 'collection-schema', args: shop('customers') }],
     variants: [[viaLookup('shop', 'customers', [{ $limit: 1 }])]],
+    variantResult: [/"email"/, /"tier"/],
     answer: 'name, email, city and tier (plus _id)',
     wrongAnswer: 'name and email',
     wrong: [{ tool: 'collection-schema', args: shop('orders') }],
@@ -89,6 +97,7 @@ export const GOLDEN: Record<string, Golden> = {
     ],
     // Haiku through Projection, from the first full matrix.
     variants: [[viaLookup('shop', 'products', [{ $sort: { price: -1 } }, { $limit: 3 }])]],
+    variantResult: [/Gadget Max/, /Charging Dock/, /Gadget Mini/],
     answer: 'Gadget Max, Charging Dock, Gadget Mini',
     wrongAnswer: 'Gadget Max, Charging Dock, Carry Case',
     // Read off an unsorted page: with 120 products the top three are not on it.
@@ -185,6 +194,13 @@ export const GOLDEN: Record<string, Golden> = {
         { tool: 'list-databases', args: { connectionId: C } },
         viaLookup('analytics', 'daily', [{ $limit: 1 }]),
       ],
+      [
+        { tool: 'list-databases', args: { connectionId: C } },
+        {
+          tool: 'find',
+          args: { connectionId: C, database: 'analytics', collection: 'daily', limit: 1 },
+        },
+      ],
     ],
     answer: 'analytics',
     answers: ['The analytics database has it (shop and reports do not).'],
@@ -242,6 +258,7 @@ export const GOLDEN: Record<string, Golden> = {
         },
       ],
     ],
+    variantResult: [/"n":\s*2\b/],
     answer: '2',
     wrongAnswer: '4',
     wrong: [{ tool: 'count', args: { ...shop('customers'), query: { tier: 'gold' } } }],
@@ -255,6 +272,12 @@ export const GOLDEN: Record<string, Golden> = {
     ],
     // Sonnet through Projection, from the first full matrix.
     variants: [[viaLookup('shop', 'orders', [{ $group: { _id: '$status', count: { $sum: 1 } } }])]],
+    variantResult: [
+      /"_id":\s*"shipped",\s*"count":\s*4\b/,
+      /"_id":\s*"delivered",\s*"count":\s*3\b/,
+      /"_id":\s*"pending",\s*"count":\s*3\b/,
+      /"_id":\s*"cancelled",\s*"count":\s*2\b/,
+    ],
     answer: 'shipped: 4, delivered: 3, pending: 3, cancelled: 2',
     answers: [
       'Shipped orders: 4\nDelivered orders: 3\nPending orders: 3\nCancelled orders: 2',

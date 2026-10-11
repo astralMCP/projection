@@ -148,14 +148,13 @@ function readThenEdits(calls: SideEffect[], source: string, target: string): boo
 }
 
 /**
- * The answer's fenced code blocks (```…```), joined, when it has any; else
- * the whole text. Lets a verify grade the artefact (a tree, a listing) and
- * not the prose around it.
+ * A line of the answer that lists debug.log as a tree or list entry: only
+ * tree-drawing characters, bullets, a list number or a table bar before a
+ * path ending in it (`│   ├── debug.log`, `- legacy/debug.log`,
+ * `1. debug.log`, `    debug.log`). A mention inside prose —
+ * "(debug.log was excluded)", "I left out debug.log" — is not an entry.
  */
-function fencedOrWhole(text: string): string {
-  const blocks = [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => m[1] ?? '');
-  return blocks.length > 0 ? blocks.join('\n') : text;
-}
+const LISTS_DEBUG_LOG = /^[ \t│├└─┬┼╰|*+>-]*(?:\d+[.)][ \t]+)?[^\s(]*debug\.log/m;
 
 const LOG_FILES = ['app.log', 'access.log', 'error.log', 'debug.log'];
 
@@ -264,7 +263,7 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
     expect: (calls) =>
       has(calls, 'create_directory', (args) => pathIs(args['path'], 'src/components/buttons')),
     verify: (context) => {
-      // Outside the try: a missing root is a harness error, not a miss.
+      // Outside the try: an unset `facts.root` is a harness error, not a miss.
       const target = join(root(context), 'src/components/buttons');
       try {
         return statSync(target).isDirectory();
@@ -431,10 +430,10 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
   // "leaving out log files" clause is the model's to honour: the server's
   // `directory_tree` `excludePatterns: ['*.log']` does not filter nested
   // files (observed: `src/legacy/debug.log` still comes back), so the model
-  // has to drop it from the tree by hand. verify grades the tree itself —
-  // the fenced code block(s) when the answer has any, else the whole text
-  // — so a sentence saying debug.log was left out does not fail an answer
-  // whose tree correctly omits it.
+  // has to drop it from the tree by hand. verify wants every source file
+  // somewhere in the answer and debug.log on no line that reads as a tree
+  // or list entry (`LISTS_DEBUG_LOG`), so a sentence saying debug.log was left
+  // out does not fail an answer whose tree correctly omits it.
   {
     name: 'fs-src-tree',
     tier: 'filesystem',
@@ -446,12 +445,8 @@ export const FILESYSTEM_TASKS: readonly EvalTask[] = [
       has(calls, 'directory_tree', anyPath) ||
       (has(calls, FLAT_LISTINGS, (args) => pathIs(args['path'], 'src')) &&
         has(calls, FLAT_LISTINGS, (args) => pathIs(args['path'], 'src/legacy'))),
-    verify: (context) => {
-      const tree = fencedOrWhole(context.finalText);
-      return (
-        ['index.js', 'util.js', 'old.js'].every((name) => tree.includes(name)) &&
-        !tree.includes('debug.log')
-      );
-    },
+    verify: (context) =>
+      ['index.js', 'util.js', 'old.js'].every((name) => context.finalText.includes(name)) &&
+      !LISTS_DEBUG_LOG.test(context.finalText),
   },
 ];

@@ -332,7 +332,7 @@ instead of API turns — a model that loops on discovery makes no upstream
 calls and never ends; charging discovery at a fraction of a turn — a
 weight with no principled value, and a column nobody can read at a glance.
 
-## D12 — Saved eval runs are re-scored offline; world-reading verifies keep their verdict (2026-10-10)
+## D13 — Saved eval runs are re-scored offline; world-reading verifies keep their verdict (2026-10-10)
 
 Grader fixes are applied to saved results with `rescoreRecords` (script:
 `pnpm --filter @astral-mcp/harness run rescore <results.json>`) instead of
@@ -343,8 +343,10 @@ disk, documents in the deployment) is marked `needsWorld` on its task and
 cannot be re-run: the recorded verdict stands while `expect` and `forbid`
 still pass, and is downgraded when they do not. Such an episode can never
 be upgraded offline — upgrading would assert an end state nobody checked.
-A test keeps the flag honest: every `needsWorld` verify throws without
-facts, and every other verify answers from the calls and text alone.
+A test keeps the flag honest: every `needsWorld` verify throws on facts
+whose every read throws, and every other verify answers from the calls and
+text alone — the re-scorer hands non-`needsWorld` verifies the same
+throwing facts and reports any throw instead of keeping the old verdict.
 
 Alternatives rejected: replaying the recorded calls against a fresh world
 to re-run world verifies — the replay would not reproduce the model's

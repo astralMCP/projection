@@ -252,14 +252,20 @@ export const GOLDEN: Record<string, Golden> = {
   'fs-src-tree': {
     calls: [{ tool: 'directory_tree', args: { path: at('src'), excludePatterns: ['**/*.log'] } }],
     answer: 'src/\n  index.js\n  util.js\n  legacy/\n    old.js',
-    // The tree omits the log; the prose saying so does not count against it.
+    // The tree omits the log; prose saying so does not count against it.
     answers: [
       "```\nsrc/\n├── index.js\n├── legacy/\n│   └── old.js\n└── util.js\n```\n\n(debug.log was excluded as it's a log file)",
+      'src/\n  index.js\n  util.js\n  legacy/\n    old.js\n(debug.log was excluded)',
+      '- index.js\n- util.js\n- legacy/old.js\n\nI left out legacy/debug.log, the only log file.',
     ],
     // The log file was not left out.
     wrongAnswer: 'src/\n  index.js\n  util.js\n  legacy/\n    old.js\n    debug.log',
+    // A tree line, a bullet or a numbered entry listing it, fenced or not.
     wrongAnswers: [
       '```\nsrc/\n├── index.js\n├── legacy/\n│   ├── debug.log\n│   └── old.js\n└── util.js\n```\n\nLog files are left out.',
+      '- index.js\n- util.js\n- legacy/old.js\n- legacy/debug.log',
+      '* src/index.js\n* src/util.js\n* src/legacy/old.js\n* `src/legacy/debug.log`',
+      '1. index.js\n2. util.js\n3. legacy/old.js\n4. legacy/debug.log',
     ],
     wrong: [{ tool: 'list_directory', args: { path: at('src') } }],
   },

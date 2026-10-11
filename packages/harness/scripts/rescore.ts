@@ -2,16 +2,22 @@
  * Re-score a saved tool-choice eval results file with the current graders,
  * offline (no API calls, no worlds):
  *
- *   pnpm --filter @astral-mcp/harness run rescore eval-results/<timestamp>.json
+ *   pnpm --filter @astral-mcp/harness run rescore packages/harness/eval-results/<timestamp>.json
+ *
+ * The path is resolved against the directory the command was typed in
+ * (`INIT_CWD`), then against the package directory, so both the repo-root
+ * path above and `eval-results/<timestamp>.json` work.
  *
  * Writes `<name>.rescored.json` next to the input (same metadata, records
- * re-scored, summary recomputed), then prints the report and every episode
- * whose verdict changed. See `rescoreRecords` for what can and cannot be
- * re-scored offline.
+ * re-scored, summary recomputed), then prints the report, every episode
+ * whose verdict changed, every episode a grader threw on, and how many
+ * world-verified failures could not be re-checked. See `rescoreRecords`
+ * (and DECISIONS D13) for what can and cannot be re-scored offline.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   formatToolChoiceReport,
   rescoreRecords,
@@ -31,14 +37,21 @@ async function main(): Promise<void> {
     process.exit(arg === undefined ? 1 : 0);
   }
   // `pnpm --filter … run` executes in the package directory; resolve
-  // against the directory the command was typed in.
-  const input = resolve(process.env['INIT_CWD'] ?? process.cwd(), arg);
+  // against the directory the command was typed in first.
+  const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const candidates = [
+    resolve(process.env['INIT_CWD'] ?? process.cwd(), arg),
+    resolve(packageDir, arg),
+  ];
+  const input = candidates.find((path) => existsSync(path));
+  if (input === undefined)
+    throw new Error(`${arg}: not found (looked at ${candidates.join(', ')})`);
   const saved = JSON.parse(readFileSync(input, 'utf8')) as {
     records?: EpisodeRecord[];
   } & Record<string, unknown>;
   if (!Array.isArray(saved.records)) throw new Error(`${input}: no "records" array`);
 
-  const { records, changed } = await rescoreRecords(saved.records);
+  const { records, changed, errors, worldFailuresKept } = await rescoreRecords(saved.records);
   const output = input.replace(/\.json$/, '') + '.rescored.json';
   writeFileSync(
     output,
@@ -63,6 +76,16 @@ async function main(): Promise<void> {
       `  ${c.model}/${c.mode} ${c.task} #${c.run}: ${verdict(c.before)} -> ${verdict(c.after)}`,
     );
   }
+  if (errors.length > 0) {
+    console.log('');
+    console.log(`Grader errors, left as recorded (${errors.length}):`);
+    for (const e of errors) console.log(`  ${e.model}/${e.mode} ${e.task} #${e.run}: ${e.message}`);
+  }
+  console.log('');
+  console.log(
+    `World-verified failures kept as recorded: ${worldFailuresKept} ` +
+      '(expect and forbid pass now; cannot tell offline; re-run to confirm)',
+  );
   console.log('');
   console.log(`Wrote ${output}`);
 }

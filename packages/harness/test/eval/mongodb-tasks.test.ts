@@ -96,15 +96,133 @@ describe('mongodb tasks', () => {
     expect(task('db-top3-expensive').expect(db('shop', lookup('products', [{ $limit: 3 }])))).toBe(
       false,
     );
-    // orders-per-status: the pipeline must mention both orders and status.
+    // orders-per-status: a grouping of orders by status, not a pipeline
+    // that merely mentions both words.
+    const perStatus = task('db-orders-per-status');
+    expect(perStatus.expect(db('shop', lookup('orders', [{ $count: 'n' }])))).toBe(false);
     expect(
-      task('db-orders-per-status').expect(db('shop', lookup('orders', [{ $count: 'n' }]))),
+      perStatus.expect(db('shop', lookup('customers', [{ $group: { _id: '$status' } }]))),
     ).toBe(false);
+    expect(perStatus.expect(db('shop', [{ $documents: [{ q: 'orders by status' }] }]))).toBe(false);
     expect(
-      task('db-orders-per-status').expect(
-        db('shop', lookup('customers', [{ $group: { _id: '$status' } }])),
+      perStatus.expect(
+        db('shop', [
+          { $documents: [{}] },
+          { $lookup: { from: 'customers', pipeline: [], as: 'orders' } },
+          { $project: { status: 1 } },
+        ]),
       ),
     ).toBe(false);
+    expect(
+      perStatus.expect(
+        db('shop', [
+          { $documents: [{}] },
+          { $lookup: { from: 'orders', pipeline: [{ $match: { status: 'shipped' } }], as: 'r' } },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('aggregate-db: only stages that run on the joined collection count as reading it', () => {
+    const db = (pipeline: unknown[]): SideEffect[] => [
+      { tool: 'aggregate-db', args: { connectionId: 'preconfigured', database: 'shop', pipeline } },
+    ];
+    // A sub-pipeline lookup without the unwrap: the outer $sort/$limit sort
+    // the one seed document, not the products.
+    expect(
+      task('db-top3-expensive').expect(
+        db([
+          { $documents: [{}] },
+          { $lookup: { from: 'products', pipeline: [{ $limit: 5 }], as: 'r' } },
+          { $sort: { price: -1 } },
+          { $limit: 3 },
+        ]),
+      ),
+    ).toBe(false);
+    // ...but with the $unwind + $replaceRoot (or $replaceWith) unwrap, the
+    // later stages do run on the products.
+    for (const replace of [{ $replaceRoot: { newRoot: '$r' } }, { $replaceWith: '$r' }]) {
+      expect(
+        task('db-top3-expensive').expect(
+          db([
+            { $documents: [{}] },
+            { $lookup: { from: 'products', pipeline: [], as: 'r' } },
+            { $unwind: { path: '$r' } },
+            replace,
+            { $sort: { price: -1 } },
+            { $limit: 3 },
+          ]),
+        ),
+      ).toBe(true);
+    }
+    // An unwrap of a different field is not an unwrap of the join.
+    expect(
+      task('db-top3-expensive').expect(
+        db([
+          { $documents: [{}] },
+          { $lookup: { from: 'products', pipeline: [], as: 'r' } },
+          { $unwind: '$other' },
+          { $replaceRoot: { newRoot: '$other' } },
+          { $sort: { price: -1 } },
+          { $limit: 3 },
+        ]),
+      ),
+    ).toBe(false);
+    // A localField join: the outer $match filters the outer documents.
+    expect(
+      task('db-count-shipped').expect(
+        db([
+          { $documents: [{ id: 1 }] },
+          { $lookup: { from: 'orders', localField: 'id', foreignField: 'orderId', as: 'r' } },
+          { $match: { status: 'shipped' } },
+          { $count: 'n' },
+        ]),
+      ),
+    ).toBe(false);
+    // Collection names are case-sensitive.
+    const shipped = [{ $match: { status: 'shipped' } }, { $count: 'n' }];
+    expect(
+      task('db-count-shipped').expect(
+        db([{ $documents: [{}] }, { $lookup: { from: 'ORDERS', pipeline: shipped, as: 'r' } }]),
+      ),
+    ).toBe(false);
+    expect(
+      task('db-count-shipped').expect(
+        db([{ $documents: [] }, { $unionWith: 'Orders' }, ...shipped]),
+      ),
+    ).toBe(false);
+  });
+
+  it('db-which-db-has-daily: an aggregate-db on analytics must reach daily', () => {
+    const t = task('db-which-db-has-daily');
+    const listing: SideEffect = { tool: 'list-databases', args: { connectionId: 'preconfigured' } };
+    const analytics = (pipeline: unknown[]): SideEffect => ({
+      tool: 'aggregate-db',
+      args: { connectionId: 'preconfigured', database: 'analytics', pipeline },
+    });
+    expect(t.expect([listing, analytics([{ $documents: [{}] }])])).toBe(false);
+    expect(
+      t.expect([
+        listing,
+        analytics([{ $documents: [{}] }, { $lookup: { from: 'daily', pipeline: [], as: 'r' } }]),
+      ]),
+    ).toBe(true);
+    // A collection read must name daily; any listing of analytics counts.
+    const read = (collection: string): SideEffect => ({
+      tool: 'find',
+      args: { connectionId: 'preconfigured', database: 'analytics', collection, limit: 1 },
+    });
+    expect(t.expect([listing, read('other')])).toBe(false);
+    expect(t.expect([listing, read('daily')])).toBe(true);
+    expect(
+      t.expect([
+        listing,
+        {
+          tool: 'list-collections',
+          args: { connectionId: 'preconfigured', database: 'analytics' },
+        },
+      ]),
+    ).toBe(true);
   });
 
   it('accepts the common filter spellings', () => {

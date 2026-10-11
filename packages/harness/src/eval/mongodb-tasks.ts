@@ -29,8 +29,8 @@
  * aggregate (no `collection` argument): models reach a collection from it
  * with a `$documents` seed and a `$lookup` (`from` + sub-pipeline), or a
  * `$unionWith`. {@link viaDatabaseAggregate} turns such a call back into
- * an `aggregate` on the collection it names, so every read predicate sees
- * both shapes.
+ * the `aggregate`(s) on the collection it reads, so every read predicate
+ * sees both shapes.
  */
 
 import type { SideEffect } from '../types.js';
@@ -95,36 +95,74 @@ function stage(args: Args, name: string): unknown {
 }
 
 /**
- * An `aggregate-db` call on `database` that reads `collection`, as the
- * arguments of the equivalent collection `aggregate`; undefined when it
- * does not name the collection. The collection is named by a `$lookup`
- * (`{from, pipeline?}`) or a `$unionWith` (`'coll'` or `{coll, pipeline?}`);
- * the equivalent pipeline is that stage's sub-pipeline followed by every
- * stage after it — the usual `$documents` → `$lookup` → `$unwind` →
- * `$replaceRoot` shape puts the work inside the sub-pipeline, while a
- * `$unionWith` (or a `$lookup` without one) leaves it to the later stages.
- * Deliberately loose about what the later stages operate on: `verify`
- * carries the answer's correctness.
+ * The `$unwind` / `$replaceRoot` / `$replaceWith` spec names `$<field>`.
+ * `$unwind` takes `'$r'` or `{path: '$r'}`; `$replaceRoot` takes
+ * `{newRoot: '$r'}`; `$replaceWith` takes `'$r'`.
+ */
+function namesField(spec: unknown, field: string, key?: string): boolean {
+  const value = isDoc(spec) && key !== undefined ? spec[key] : spec;
+  return value === `$${field}`;
+}
+
+/**
+ * The `$lookup` at `stages[i]` is unwrapped by the next two stages — an
+ * `$unwind` of its `as` field, then a `$replaceRoot`/`$replaceWith` to it —
+ * so the stages after them run on the joined collection's documents.
+ */
+function unwrapsLookup(stages: Doc[], i: number, as: unknown): boolean {
+  if (typeof as !== 'string') return false;
+  const unwind = stages[i + 1];
+  const replace = stages[i + 2];
+  return (
+    unwind !== undefined &&
+    replace !== undefined &&
+    (namesField(unwind['$unwind'], as) || namesField(unwind['$unwind'], as, 'path')) &&
+    (namesField(replace['$replaceRoot'], as, 'newRoot') || namesField(replace['$replaceWith'], as))
+  );
+}
+
+/**
+ * Every way an `aggregate-db` call on `database` reads `collection`, each as
+ * the arguments of the equivalent collection `aggregate`; empty when it does
+ * not reach the collection. Collection names compare case-sensitively, as
+ * MongoDB's do.
+ *
+ * - `$unionWith` (`'coll'` or `{coll, pipeline?}`): its sub-pipeline, then
+ *   every stage after it — the union's documents flow on down the outer
+ *   pipeline.
+ * - `$lookup {from, pipeline?, as}` immediately followed by `$unwind` and
+ *   `$replaceRoot`/`$replaceWith` of `as` (the usual `$documents` →
+ *   `$lookup` → `$unwind` → `$replaceRoot` shape): its sub-pipeline, then
+ *   every stage after the unwrap.
+ * - Any other `$lookup` of it: its sub-pipeline only (empty for a
+ *   `localField` join). Later stages run on the outer documents, with the
+ *   joined ones nested under `as`, so they are not reads of the collection.
  */
 function viaDatabaseAggregate(
   call: SideEffect,
   collection: string,
   database: string = SHOP_DB,
-): Args | undefined {
-  if (call.tool !== 'aggregate-db' || !sameText(call.args['database'], database)) return undefined;
+): Args[] {
+  if (call.tool !== 'aggregate-db' || !sameText(call.args['database'], database)) return [];
   const stages = stagesOf(call.args);
+  const reads: Args[] = [];
+  const read = (inner: unknown, after: Doc[]): void => {
+    const sub = Array.isArray(inner) ? inner.filter(isDoc) : [];
+    reads.push({ database, collection, pipeline: [...sub, ...after] });
+  };
   for (const [i, entry] of stages.entries()) {
     const lookup = entry['$lookup'];
     const union = entry['$unionWith'];
-    let inner: unknown;
-    if (isDoc(lookup) && sameText(lookup['from'], collection)) inner = lookup['pipeline'];
-    else if (sameText(union, collection)) inner = [];
-    else if (isDoc(union) && sameText(union['coll'], collection)) inner = union['pipeline'];
-    else continue;
-    const sub = Array.isArray(inner) ? inner.filter(isDoc) : [];
-    return { database, collection, pipeline: [...sub, ...stages.slice(i + 1)] };
+    if (isDoc(lookup) && lookup['from'] === collection) {
+      const unwrapped = unwrapsLookup(stages, i, lookup['as']);
+      read(lookup['pipeline'], unwrapped ? stages.slice(i + 3) : []);
+    } else if (union === collection) {
+      read([], stages.slice(i + 1));
+    } else if (isDoc(union) && union['coll'] === collection) {
+      read(union['pipeline'], stages.slice(i + 1));
+    }
   }
-  return undefined;
+  return reads;
 }
 
 /**
@@ -135,11 +173,11 @@ function aggregates(
   calls: SideEffect[],
   collection: string,
   where: (args: Args) => boolean,
+  database: string = SHOP_DB,
 ): boolean {
   return calls.some((call) => {
-    if (call.tool === 'aggregate') return on(call.args, collection) && where(call.args);
-    const args = viaDatabaseAggregate(call, collection);
-    return args !== undefined && where(args);
+    if (call.tool === 'aggregate') return on(call.args, collection, database) && where(call.args);
+    return viaDatabaseAggregate(call, collection, database).some(where);
   });
 }
 
@@ -478,12 +516,15 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     prompt:
       'One of the databases on this deployment has a collection called daily. Which database is it? Answer with just the database name.',
     steps: [['list-databases'], ['list-collections', ...READ_TOOLS]],
-    // `aggregate-db` is in READ_TOOLS: a database-level aggregate on
-    // analytics looked inside it too.
+    // A database-level `aggregate-db` on analytics counts only when it
+    // reaches `daily`: `[{$documents: [{}]}]` runs there without touching
+    // a collection.
     expect: (calls) =>
-      has(calls, ['list-collections', ...READ_TOOLS], (args) =>
-        sameText(args['database'], 'analytics'),
-      ),
+      has(calls, 'list-collections', (args) => sameText(args['database'], 'analytics')) ||
+      has(calls, ['find', 'count', 'aggregate', 'collection-schema'], (args) =>
+        on(args, 'daily', 'analytics'),
+      ) ||
+      aggregates(calls, 'daily', () => true, 'analytics'),
     verify: (context) => firstDatabaseNamed(context.finalText) === 'analytics',
   },
   // --- A scoped delete: a filter, never an empty one, never a drop.
@@ -554,10 +595,10 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     verify: (context) => number(2).test(context.finalText.trim()),
   },
   // --- Group by: one aggregate ($group or $sortByCount), or a count per
-  // status. A database-level `aggregate-db` on shop counts when its
-  // pipeline mentions both orders and status anywhere (the observed shape:
-  // `$documents` → `$lookup {from: 'orders', pipeline: [$group by status]}`
-  // → `$unwind` → `$replaceRoot`); `verify` checks every status's count.
+  // status. A database-level `aggregate-db` counts through `groupsBy` (the
+  // observed shape: `$documents` → `$lookup {from: 'orders', pipeline:
+  // [$group by status]}` → `$unwind` → `$replaceRoot`); `verify` checks
+  // every status's count.
   {
     name: 'db-orders-per-status',
     tier: 'mongodb',
@@ -566,14 +607,6 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     steps: [['aggregate', 'aggregate-db', 'count']],
     expect: (calls) =>
       groupsBy(calls, 'orders', 'status') ||
-      has(calls, 'aggregate-db', (args) => {
-        const pipeline = JSON.stringify(args['pipeline']) ?? '';
-        return (
-          sameText(args['database'], SHOP_DB) &&
-          pipeline.includes('orders') &&
-          pipeline.includes('status')
-        );
-      }) ||
       Object.keys(ORDER_STATUS_COUNTS).every((status) =>
         filteredRead(calls, 'orders', (f) => fieldIs(f, 'status', status)),
       ),

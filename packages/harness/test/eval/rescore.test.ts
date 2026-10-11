@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  OFFLINE_FACTS,
   rescoreRecords,
   TOOL_CHOICE_TASKS,
   type EpisodeRecord,
@@ -125,7 +126,12 @@ describe('rescoreRecords', () => {
       ),
       record('gone', [], { success: true, toolCorrect: true, forbidden: false }),
     ];
-    const { records: out, changed } = await rescoreRecords(records, { tasks: TASKS });
+    const {
+      records: out,
+      changed,
+      errors,
+      worldFailuresKept,
+    } = await rescoreRecords(records, { tasks: TASKS });
 
     expect(out.map((r) => [r.success, r.toolCorrect, r.forbidden])).toEqual([
       [true, true, false],
@@ -162,6 +168,52 @@ describe('rescoreRecords', () => {
         after: { success: false, toolCorrect: false, forbidden: false },
       }),
     ]);
+    expect(errors).toEqual([]);
+    // world #1: recorded as failed, expect and forbid pass now, verify not re-run.
+    expect(worldFailuresKept).toBe(1);
+  });
+
+  it('reports a grader that throws (or reads facts offline) and leaves the record as recorded', async () => {
+    const tasks: EvalTask[] = [
+      {
+        // Reads facts without being marked needsWorld: caught, not graded.
+        name: 'peeks',
+        tier: 'filesystem',
+        kind: 'single',
+        prompt: 'p',
+        steps: [['read']],
+        expect: () => true,
+        verify: ({ facts }) => facts.root !== undefined,
+      },
+      {
+        name: 'broken',
+        tier: 'filesystem',
+        kind: 'single',
+        prompt: 'p',
+        steps: [['read']],
+        expect: () => {
+          throw new Error('expect blew up');
+        },
+      },
+    ];
+    const records = [
+      record('peeks', [read], { success: true, toolCorrect: true, forbidden: false }),
+      record('broken', [read], { success: false, toolCorrect: true, forbidden: false }, { run: 4 }),
+    ];
+    const { records: out, changed, errors } = await rescoreRecords(records, { tasks });
+    expect(out[0]).toBe(records[0]);
+    expect(out[1]).toBe(records[1]);
+    expect(changed).toEqual([]);
+    expect(errors).toEqual([
+      {
+        task: 'peeks',
+        model: 'm',
+        mode: 'direct',
+        run: 0,
+        message: expect.stringContaining('facts.root'),
+      },
+      { task: 'broken', model: 'm', mode: 'direct', run: 4, message: 'expect blew up' },
+    ]);
   });
 
   it('defaults to the built-in tasks', async () => {
@@ -179,15 +231,15 @@ describe('rescoreRecords', () => {
   });
 
   it('needsWorld is set on exactly the built-in tasks whose verify needs the world', async () => {
-    // Without facts, a world-reading verify throws (no root, no deployment);
-    // every other verify answers from the calls and text alone.
+    // On the re-scorer's facts (any read throws), a world-reading verify
+    // throws; every other verify answers from the calls and text alone.
     for (const task of TOOL_CHOICE_TASKS) {
       if (task.verify === undefined) {
         expect(task.needsWorld, task.name).toBeUndefined();
         continue;
       }
       const offline = Promise.resolve().then(() =>
-        task.verify?.({ calls: [], finalText: '', facts: {} }),
+        task.verify?.({ calls: [], finalText: '', facts: OFFLINE_FACTS }),
       );
       if (task.needsWorld === true) await expect(offline, task.name).rejects.toThrow();
       else await expect(offline, task.name).resolves.toBeTypeOf('boolean');

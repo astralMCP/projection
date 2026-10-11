@@ -222,8 +222,10 @@ export {
   type ToolChoiceSummary,
 } from './eval/run.js';
 export {
+  OFFLINE_FACTS,
   rescoreRecords,
   type RescoreChange,
+  type RescoreError,
   type RescoreOptions,
   type RescoreResult,
   type RescoreVerdict,
