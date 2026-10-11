@@ -38,22 +38,37 @@ describe('resource caps (R12/R13)', () => {
   });
 
   it('enforces the WASM memory cap inside the VM', async () => {
+    // Allocation pattern matters here. QuickJS's limit check is
+    // `accounted + request > limit`, but in the emscripten build the
+    // accounted size of a live allocation is only its bookkeeping overhead,
+    // not its payload (malloc_usable_size is 0 under emscripten). So a hoard
+    // of many small strings is refused only once WASM linear memory itself
+    // is exhausted (~2 GB, ~6 s on a fast machine, >20 s under CI load),
+    // which is what made this case race the wall-clock budget. A doubling
+    // array instead makes each `concat` a single request twice the size of
+    // the last, so one request exceeds the 8 MB cap within ~10 iterations
+    // and the memory error is deterministic and fast (tens of ms).
     await withSession(
       { caps: { wasmMemoryBytes: 8 * 1024 * 1024, segmentWallClockMs: 20_000 } },
       async (session) => {
+        const startedAt = Date.now();
         const error = await session
           .evaluate(
-            `const hoard = [];
-             for (let i = 0; i < 1e9; i++) { hoard.push('x'.repeat(4096)); }
+            `let hoard = new Array(1024).fill(0);
+             for (let i = 0; i < 64; i++) { hoard = hoard.concat(hoard); }
              export default hoard.length;`,
           )
           .then(
             () => undefined,
             (err: unknown) => err,
           );
+        const elapsed = Date.now() - startedAt;
         expect(error).toBeInstanceOf(ProjectionError);
         expect((error as ProjectionError).phase).toBe('cap_exceeded');
         expect((error as ProjectionError).message).toMatch(/memory/i);
+        expect((error as ProjectionError).message).toContain(String(8 * 1024 * 1024));
+        // Well under the segment budget: the memory cap, not the wall clock, ended it.
+        expect(elapsed).toBeLessThan(10_000);
       },
     );
   });
