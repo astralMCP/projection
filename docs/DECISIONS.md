@@ -331,3 +331,38 @@ scale, and a number to argue about per tier; a cap on upstream calls
 instead of API turns — a model that loops on discovery makes no upstream
 calls and never ends; charging discovery at a fraction of a turn — a
 weight with no principled value, and a column nobody can read at a glance.
+
+## D12 — Dependency updates: what moves, what holds, and why (2026-10-10)
+
+The pre-0.8.0 dependency pass settled these rules:
+
+- **TypeScript stays on 5.x.** `typescript` is a runtime dependency: the
+  sandbox transpiles authored machines with `ts.transpile` (R10). TypeScript
+  7 (the native compiler) ships `tsc` and `unstable/*` APIs only and drops
+  `ts.transpile`; `src/sandbox/session.ts` already fails closed on such an
+  install. Nothing in the workspace moves to 7 until the transpile path has
+  a TS 7 story.
+- **Fresh releases wait out the pnpm release-age gate.**
+  `@modelcontextprotocol/server-filesystem` resumed semver at 1.0.0 (the
+  date-based 2026.x line is deprecated with a pointer to it). 1.0.0 passes
+  the filesystem suites apart from its self-reported identity string, but
+  was published hours before this pass and pnpm's `minimumReleaseAge`
+  rejected it. We do not add `minimumReleaseAgeExclude` entries to take a
+  release early; the bump lands once the gate clears.
+- **The pack-install smoke installs the SDK version Projection pins.**
+  Projection pins `@modelcontextprotocol/{client,server}` exactly; a
+  consumer that installs a different SDK version gets a second copy whose
+  `McpServer` fails the introspector's `instanceof` check (the smoke
+  reproduced this with a hard-coded 2.0.0). The test now reads the pin from
+  the manifest. Whether the SDK should become a peer dependency, or the
+  check duck-typed, is open for a later release.
+- **SDK ≥ 2.2 walks `tools/list` itself.** `Client.listTools()` without a
+  cursor follows `nextCursor` to the end (cap `listMaxPages`, default 64,
+  failing closed with an `SdkError` that the introspector wraps). The
+  introspector's own 100-page / 2000-tool guard therefore sees one page:
+  endless-chain protection now lives in the SDK, and the tool-count cap no
+  longer throws for a paginated server. Not changed in the update PR;
+  revisit if the cap matters.
+- **Turbo's agent guidance is off.** turbo ≥ 2.11 writes an `AGENTS.md`
+  block on agent-driven runs; `CLAUDE.md` and the skills are this repo's
+  agent instructions, so `turbo.json` sets `"agentGuidance": false`.
