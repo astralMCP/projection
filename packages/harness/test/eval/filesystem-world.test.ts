@@ -26,6 +26,15 @@ import {
 } from '../../src/index.js';
 import { GOLDEN, rebase, type Golden } from './filesystem-goldens.js';
 
+/**
+ * Names of the tools offered to the model. The harness only ever passes
+ * named `Anthropic.Tool`s; the SDK's toolset members (no `name`) are
+ * narrowed away so the union type-checks.
+ */
+function toolNames(tools: Anthropic.ToolUnion[] | undefined): string[] {
+  return (tools ?? []).flatMap((t) => ('name' in t ? [t.name] : []));
+}
+
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
   return {
     id: 'msg_scripted',
@@ -71,7 +80,7 @@ function scripted(
     const prompt = typeof last.content === 'string' ? last.content : '';
     const planned = plan(rootIn(prompt), prompt);
     const upstreams = Array.isArray(planned) ? planned : [planned];
-    const viaProjection = (params.tools ?? []).some((t) => t.name === 'call_tool');
+    const viaProjection = toolNames(params.tools).includes('call_tool');
     return message(
       upstreams.map((upstream, i) => ({
         type: 'tool_use',

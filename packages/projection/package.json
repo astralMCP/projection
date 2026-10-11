@@ -27,16 +27,16 @@
   },
   "dependencies": {
     "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
-    "@modelcontextprotocol/client": "2.0.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "@sebastianwessel/quickjs": "3.1.0",
     "typescript": "^5.7.0",
     "xstate": "5.32.5",
-    "zod": "^4.2.0"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
-    "tsdown": "^0.22.14",
+    "@types/node": "^22.20.5",
+    "tsdown": "^0.23.0",
     "unrun": "^0.3.1",
     "vitest": "^3.2.0"
   },
