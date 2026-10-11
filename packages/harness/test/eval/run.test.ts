@@ -27,6 +27,7 @@ import {
   type ModelCaller,
   type ModelPreset,
 } from '../../src/index.js';
+import { toolNames } from './tool-names.js';
 
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
   return {
@@ -76,7 +77,7 @@ function scriptedCaller(seen: Anthropic.MessageStreamParams[]): ModelCaller {
             body: 'The server crashes on startup when the config file is missing.',
           },
         };
-    const names = new Set((params.tools ?? []).map((t) => t.name));
+    const names = new Set(toolNames(params.tools));
     if (names.has('call_tool')) {
       return message(
         [toolUse('tu_1', 'call_tool', { name: upstream.name, args: upstream.args })],
@@ -137,15 +138,15 @@ describe('tool-choice eval plumbing (offline)', () => {
   });
 
   it('offers the model the right tool surface and system prompt per mode', () => {
-    const directRequest = seen.find((p) => (p.tools ?? []).some((t) => t.name === 'get_me'));
-    const projectionRequest = seen.find((p) => (p.tools ?? []).some((t) => t.name === 'call_tool'));
+    const directRequest = seen.find((p) => toolNames(p.tools).includes('get_me'));
+    const projectionRequest = seen.find((p) => toolNames(p.tools).includes('call_tool'));
     expect(directRequest?.tools).toHaveLength(95);
     expect(String(directRequest?.system)).toContain(
       'You operate GitHub through the tools provided.',
     );
     expect(String(directRequest?.system)).toContain('Tool selection guidance');
 
-    const projectionNames = (projectionRequest?.tools ?? []).map((t) => t.name).toSorted();
+    const projectionNames = toolNames(projectionRequest?.tools).toSorted();
     expect(projectionNames).toEqual([
       'call_tool',
       'describe_tool',
@@ -231,7 +232,7 @@ describe('tool-choice eval plumbing (offline)', () => {
     async () => {
       // A model that never stops: get_me on every turn, forever.
       const looping: ModelCaller = async (params) => {
-        const names = new Set((params.tools ?? []).map((t) => t.name));
+        const names = new Set(toolNames(params.tools));
         return names.has('call_tool')
           ? message([toolUse('tu_loop', 'call_tool', { name: 'get_me', args: {} })], 'tool_use')
           : message([toolUse('tu_loop', 'get_me', {})], 'tool_use');
@@ -282,7 +283,7 @@ describe('tool-choice eval plumbing (offline)', () => {
       // Projection: four search_tools turns, then call_tool, then the answer.
       // Direct: get_me on the first turn, then the answer.
       const discoverThenAct: ModelCaller = async (params) => {
-        const names = new Set((params.tools ?? []).map((t) => t.name));
+        const names = new Set(toolNames(params.tools));
         const assistantTurns = params.messages.filter((m) => m.role === 'assistant').length;
         const last = params.messages.at(-1);
         const sawResult =
@@ -595,7 +596,7 @@ describe('tool-choice eval plumbing (offline)', () => {
         ).length;
         const step = plan[resultsSoFar];
         if (step === undefined) return message([{ type: 'text', text: 'Here it is.' }], 'end_turn');
-        const names = new Set((params.tools ?? []).map((t) => t.name));
+        const names = new Set(toolNames(params.tools));
         return names.has('call_tool')
           ? message(
               [toolUse(`tu_${resultsSoFar}`, 'call_tool', { name: step.name, args: step.args })],

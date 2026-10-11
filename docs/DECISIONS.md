@@ -332,6 +332,66 @@ instead of API turns — a model that loops on discovery makes no upstream
 calls and never ends; charging discovery at a fraction of a turn — a
 weight with no principled value, and a column nobody can read at a glance.
 
+## D12 — Dependency updates: what moves, what holds, and why (2026-10-10)
+
+The pre-0.8.0 dependency pass settled these rules:
+
+- **TypeScript stays on 5.x.** `typescript` is a runtime dependency: the
+  sandbox transpiles authored machines with `ts.transpile` (R10). TypeScript
+  7 (the native compiler) ships `tsc` and `unstable/*` APIs only and drops
+  `ts.transpile`; `src/sandbox/session.ts` already fails closed on such an
+  install. Nothing in the workspace moves to 7 until the transpile path has
+  a TS 7 story.
+- **Fresh releases wait out the pnpm release-age gate.**
+  `@modelcontextprotocol/server-filesystem` resumed semver at 1.0.0 (the
+  date-based 2026.x line is deprecated with a pointer to it). 1.0.0 passes
+  the filesystem suites apart from its self-reported identity string, but
+  was published hours before this pass and pnpm rejected it. The gate is
+  pnpm 11's built-in `minimumReleaseAge` default (24 hours); the workspace
+  does not configure it. pnpm offered to add a `minimumReleaseAgeExclude`
+  entry and we declined: we do not take releases early, and the bump lands
+  once the gate clears.
+- **The pack-install smoke installs the SDK version Projection pins.**
+  Projection pins `@modelcontextprotocol/{client,server}` exactly; a
+  consumer that installs a different SDK version gets a second copy whose
+  `McpServer` fails the introspector's `instanceof` check (the smoke
+  reproduced this with a hard-coded 2.0.0). The test now reads the pin from
+  the manifest. Such an `McpServer` used to fall through to the `Client`
+  path and fail with an unrelated error; the introspector now recognises
+  the shape (a `server` property and `connect`/`registerTool`, no
+  `listTools`) and fails with a `protocol` error naming the pinned version.
+  It still refuses the instance rather than accepting it by shape. Whether
+  the SDK should become a peer dependency is open for a later release.
+- **Projection pages `tools/list` itself; the bounds are its own.** Since
+  SDK 2.0.0, `Client.listTools()` called without a cursor follows
+  `nextCursor` to the end before returning (capped by the client option
+  `listMaxPages`, default 64, `0` = unbounded). The pre-0.8.0 introspector
+  passed no cursor on its first call, so it always received the whole
+  aggregate in one result: its in-loop 100-page and 2000-tool checks never
+  fired, and the only real bound was whatever `listMaxPages` the `Client`
+  carried. 0.8.0 pages explicitly: page 1 through `client.request` (the SDK
+  validates it against its `ListToolsResult` schema, as `listTools()` does
+  internally) and later pages through `listTools({ cursor })`, which fetches
+  exactly one page and is never capped by the SDK. The introspector stops as
+  soon as the running total exceeds 2000 tools, when a 100th page still
+  returns `nextCursor`, or when a cursor repeats, each a `protocol` error.
+  The bounds no longer depend on the caller's `Client` options. Explicit
+  paging skips the SDK's `tools/list` cache, which `callTool` used for
+  output-schema validation (and which a `notifications/tools/list_changed`
+  clears), so every call now passes the `Tool` recorded at introspection
+  as `toolDefinition`. User-visible: a server that returns more than 2000
+  tools, even on a single page, now fails to wrap; a cursor that repeats
+  now fails instead of ending the walk quietly. One gap remains: the SDK's
+  SEP-2243 exclusion of tools with invalid `x-mcp-header` declarations runs
+  inside `listTools()`, so it applies to pages 2 onward but not to page 1;
+  such a tool's calls are sent without mirrored headers.
+- **vitest 5 turns `clearMocks` on by default.** Mock call history resets
+  between tests. The repo does not rely on it either way: the only mock is
+  a `vi.mock` module factory, and there are no `vi.fn` spies.
+- **Turbo's agent guidance is off.** turbo ≥ 2.11 writes an `AGENTS.md`
+  block on agent-driven runs; `CLAUDE.md` and the skills are this repo's
+  agent instructions, so `turbo.json` sets `"agentGuidance": false`.
+
 ## D13 — Saved eval runs are re-scored offline; world-reading verifies keep their verdict (2026-10-10)
 
 Grader fixes are applied to saved results with `rescoreRecords` (script:

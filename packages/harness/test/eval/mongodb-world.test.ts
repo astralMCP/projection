@@ -32,6 +32,7 @@ import {
   type ModelPreset,
 } from '../../src/index.js';
 import { GOLDEN, type Golden } from './mongodb-goldens.js';
+import { toolNames } from './tool-names.js';
 
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
   return {
@@ -59,7 +60,7 @@ function scripted(golden: Golden): ModelCaller {
     if (Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result')) {
       return message([{ type: 'text', text: golden.answer ?? 'Done.' }], 'end_turn');
     }
-    const viaProjection = (params.tools ?? []).some((t) => t.name === 'call_tool');
+    const viaProjection = toolNames(params.tools).includes('call_tool');
     return message(
       golden.calls.map((call, i) => ({
         type: 'tool_use',

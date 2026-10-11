@@ -46,18 +46,28 @@ or `facade.registerOn(server, { era })` — but only the factory gets era
 negotiation for free, and a hand-built server defaults to `legacy`
 (fail-safe). For hosts that are not the SDK at all, the facade's methods
 (`executeMachine`, `discoverApis`, `searchTools`, `describeTool`, `callTool`)
-are plain functions over plain data — call them from your own handler.
+are plain functions over plain data — call them from your own handler. Over
+HTTP, `createMcpHandler` answers a request body larger than 4 MiB with `413`
+before parsing it; pass `createMcpHandler(factory, { maxRequestBodySize })`
+if your clients send larger machine sources or tool arguments.
 
 `wrapMcpServer` introspects once, at wrap time: it reads `tools/list`
-(following `nextCursor` for at most 100 pages or 2,000 tools, then failing
-with a `protocol` error — wrap a server with a bounded tool surface),
+(Projection follows `nextCursor` page by page itself, whatever the `Client`'s
+`listMaxPages` says, and fails with a `protocol` error as soon as the server
+has returned more than 2,000 tools, when a 100th page still carries
+`nextCursor`, or when a cursor repeats — wrap a server with a bounded tool
+surface whose pagination terminates),
 `instructions` and the server identity. Tools you add afterwards are not seen
 until the next wrap, and duplicate names collapse to one tool.
 
 You can also wrap a **connected SDK `Client`** instead of an in-process
 instance — Projection in front of a server you don't own. The smoke tests in
 `packages/harness/test/smoke/` wrap the official filesystem, GitHub, and a
-community SQLite server exactly this way.
+community SQLite server exactly this way. If your `Client` connects over
+`StreamableHTTPClientTransport`, note that the transport's `redirectPolicy`
+now defaults to `'same-origin'`: a remote server that answers with a
+cross-origin redirect fails until you pass `redirectPolicy: 'follow'` (or
+point the transport at the final URL).
 
 ## Annotations drive the policy
 
