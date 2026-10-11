@@ -26,10 +26,25 @@ export interface ModelPreset {
 }
 
 /**
- * Built-in presets. Haiku 5.5 runs adaptive thinking by default, so it gets
- * no `thinking` field (and never `budget_tokens`); effort is the only knob.
+ * Built-in presets. The defaults are deliberately the weaker/cheaper pair —
+ * Haiku 4.5 with no extended thinking and Sonnet 5.5 at low effort — because
+ * Haiku 5.5 (low) and Sonnet 5.5 (medium) scored 100% in every cell of the
+ * basic and hard tiers against the GitHub fake. Haiku 4.5 takes neither
+ * adaptive thinking nor `effort` (both are 4.6+ features), so it gets no
+ * params at all; Haiku 5.5 runs adaptive thinking by default and takes only
+ * `effort` (never `budget_tokens`).
  */
-export const MODEL_PRESETS: Readonly<Record<string, ModelPreset>> = {
+export const MODEL_PRESETS: Record<string, ModelPreset> = {
+  haiku45: {
+    name: 'haiku45',
+    model: 'claude-haiku-4-5',
+    params: {},
+  },
+  'sonnet-low': {
+    name: 'sonnet-low',
+    model: 'claude-sonnet-5-5',
+    params: { thinking: { type: 'adaptive' }, output_config: { effort: 'low' } },
+  },
   'haiku-low': {
     name: 'haiku-low',
     model: 'claude-haiku-5-5',
@@ -42,7 +57,7 @@ export const MODEL_PRESETS: Readonly<Record<string, ModelPreset>> = {
   },
 };
 
-export const DEFAULT_MODEL_PRESETS = ['haiku-low', 'sonnet-medium'];
+export const DEFAULT_MODEL_PRESETS = ['haiku45', 'sonnet-low'];
 
 /**
  * Resolve a comma list of preset names (PROJ_EVAL_MODELS) to presets.

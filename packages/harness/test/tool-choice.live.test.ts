@@ -8,7 +8,7 @@
  * Explicit opt-in only: PROJ_LIVE_EVAL=1 AND a non-empty ANTHROPIC_API_KEY
  * (which may live in the repo-root env file). Knobs:
  *
- *   PROJ_EVAL_MODELS       comma list of presets (haiku-low, sonnet-medium)
+ *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection
  *   PROJ_EVAL_TIERS        basic,hard (default both)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)

@@ -101,8 +101,8 @@ Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-choice.live.test.ts
 ```
 
-Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku-low`,
-`sonnet-medium`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
+Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haiku-low`,
+`sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
 (`basic,hard`, the default), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
