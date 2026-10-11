@@ -46,6 +46,10 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<PendingApproval | undefined>(undefined);
   const [promptIndex, setPromptIndex] = useState(0);
+  // While the task input has focus every printable key belongs to it — a
+  // task like "query the orders" must not trip the global "q quits" binding.
+  // Esc toggles focus off (command mode: q quits) and back on.
+  const [inputFocused, setInputFocused] = useState(true);
   // Verdicts collected so far for the current suspension.
   const verdictsRef = useRef<Record<string, InputResponse>>({});
 
@@ -95,9 +99,16 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
   );
 
   useInput(
-    (input) => {
+    (input, key) => {
       if (pending === undefined) {
-        if (input === 'q' && !busy) exit();
+        if (busy) return;
+        if (key.escape) {
+          setInputFocused((focused) => !focused);
+          return;
+        }
+        if (inputFocused) return; // keystrokes belong to the task input
+        if (input === 'q') exit();
+        else if (key.return) setInputFocused(true);
         return;
       }
       const prompt = pending.info.prompts[promptIndex];
@@ -134,7 +145,7 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
       {!busy && (
         <Box>
           <Text bold>task&gt; </Text>
-          <TextInput value={task} onChange={setTask} onSubmit={startTask} />
+          <TextInput value={task} onChange={setTask} onSubmit={startTask} focus={inputFocused} />
         </Box>
       )}
 
@@ -202,7 +213,12 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
         </Box>
       )}
 
-      {!busy && <Text dimColor>type a task and press enter · q to quit</Text>}
+      {!busy &&
+        (inputFocused ? (
+          <Text dimColor>type a task and press enter · esc then q to quit</Text>
+        ) : (
+          <Text dimColor>q to quit · esc or enter to edit the task</Text>
+        ))}
     </Box>
   );
 }
