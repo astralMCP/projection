@@ -24,13 +24,15 @@ first, so it works on a fresh checkout.
 
 ## Controls
 
-| Key     | When              | Does                                                             |
-| ------- | ----------------- | ---------------------------------------------------------------- |
-| `enter` | at the task input | submit the task to the model                                     |
-| `y`     | on an approval    | approve the shown call                                           |
-| `n`     | on an approval    | decline it (the machine gets `TOOL_DENIED`)                      |
-| `i`     | on an approval    | ignore — omit the response ([R17](../../docs/PRD.md): a decline) |
-| `q`     | when idle         | quit                                                             |
+| Key      | When              | Does                                                             |
+| -------- | ----------------- | ---------------------------------------------------------------- |
+| `enter`  | at the task input | submit the task to the model                                     |
+| `y`      | on an approval    | approve the shown call                                           |
+| `n`      | on an approval    | decline it (the machine gets `TOOL_DENIED`)                      |
+| `i`      | on an approval    | ignore — omit the response ([R17](../../docs/PRD.md): a decline) |
+| `esc`    | when idle         | leave the task input (and `esc`/`enter` to return to it)         |
+| `q`      | input not focused | quit (`q` inside the task input is just a letter)                |
+| `ctrl-c` | always            | quit                                                             |
 
 ## Embedding
 

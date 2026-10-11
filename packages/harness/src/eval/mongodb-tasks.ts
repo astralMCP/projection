@@ -24,6 +24,13 @@
  * Filters are accepted in their common spellings (`{status: 'x'}`,
  * `{status: {$eq: 'x'}}`, `{status: {$in: ['x']}}`, a top-level `$and`, a
  * pipeline whose conditions are spread over several `$match` stages).
+ *
+ * Reads are also accepted through `aggregate-db`, the database-level
+ * aggregate (no `collection` argument): models reach a collection from it
+ * with a `$documents` seed and a `$lookup` (`from` + sub-pipeline), or a
+ * `$unionWith`. {@link viaDatabaseAggregate} turns such a call back into
+ * the `aggregate`(s) on the collection it reads, so every read predicate
+ * sees both shapes.
  */
 
 import type { SideEffect } from '../types.js';
@@ -87,6 +94,93 @@ function stage(args: Args, name: string): unknown {
   return undefined;
 }
 
+/**
+ * The `$unwind` / `$replaceRoot` / `$replaceWith` spec names `$<field>`.
+ * `$unwind` takes `'$r'` or `{path: '$r'}`; `$replaceRoot` takes
+ * `{newRoot: '$r'}`; `$replaceWith` takes `'$r'`.
+ */
+function namesField(spec: unknown, field: string, key?: string): boolean {
+  const value = isDoc(spec) && key !== undefined ? spec[key] : spec;
+  return value === `$${field}`;
+}
+
+/**
+ * The `$lookup` at `stages[i]` is unwrapped by the next two stages — an
+ * `$unwind` of its `as` field, then a `$replaceRoot`/`$replaceWith` to it —
+ * so the stages after them run on the joined collection's documents.
+ */
+function unwrapsLookup(stages: Doc[], i: number, as: unknown): boolean {
+  if (typeof as !== 'string') return false;
+  const unwind = stages[i + 1];
+  const replace = stages[i + 2];
+  return (
+    unwind !== undefined &&
+    replace !== undefined &&
+    (namesField(unwind['$unwind'], as) || namesField(unwind['$unwind'], as, 'path')) &&
+    (namesField(replace['$replaceRoot'], as, 'newRoot') || namesField(replace['$replaceWith'], as))
+  );
+}
+
+/**
+ * Every way an `aggregate-db` call on `database` reads `collection`, each as
+ * the arguments of the equivalent collection `aggregate`; empty when it does
+ * not reach the collection. Collection names compare case-sensitively, as
+ * MongoDB's do.
+ *
+ * - `$unionWith` (`'coll'` or `{coll, pipeline?}`): its sub-pipeline, then
+ *   every stage after it — the union's documents flow on down the outer
+ *   pipeline.
+ * - `$lookup {from, pipeline?, as}` immediately followed by `$unwind` and
+ *   `$replaceRoot`/`$replaceWith` of `as` (the usual `$documents` →
+ *   `$lookup` → `$unwind` → `$replaceRoot` shape): its sub-pipeline, then
+ *   every stage after the unwrap.
+ * - Any other `$lookup` of it: its sub-pipeline only (empty for a
+ *   `localField` join). Later stages run on the outer documents, with the
+ *   joined ones nested under `as`, so they are not reads of the collection.
+ */
+function viaDatabaseAggregate(
+  call: SideEffect,
+  collection: string,
+  database: string = SHOP_DB,
+): Args[] {
+  if (call.tool !== 'aggregate-db' || !sameText(call.args['database'], database)) return [];
+  const stages = stagesOf(call.args);
+  const reads: Args[] = [];
+  const read = (inner: unknown, after: Doc[]): void => {
+    const sub = Array.isArray(inner) ? inner.filter(isDoc) : [];
+    reads.push({ database, collection, pipeline: [...sub, ...after] });
+  };
+  for (const [i, entry] of stages.entries()) {
+    const lookup = entry['$lookup'];
+    const union = entry['$unionWith'];
+    if (isDoc(lookup) && lookup['from'] === collection) {
+      const unwrapped = unwrapsLookup(stages, i, lookup['as']);
+      read(lookup['pipeline'], unwrapped ? stages.slice(i + 3) : []);
+    } else if (union === collection) {
+      read([], stages.slice(i + 1));
+    } else if (isDoc(union) && union['coll'] === collection) {
+      read(union['pipeline'], stages.slice(i + 1));
+    }
+  }
+  return reads;
+}
+
+/**
+ * Some call is a collection `aggregate` on `collection` whose arguments
+ * satisfy `where`, or an `aggregate-db` that reads it the same way.
+ */
+function aggregates(
+  calls: SideEffect[],
+  collection: string,
+  where: (args: Args) => boolean,
+  database: string = SHOP_DB,
+): boolean {
+  return calls.some((call) => {
+    if (call.tool === 'aggregate') return on(call.args, collection, database) && where(call.args);
+    return viaDatabaseAggregate(call, collection, database).some(where);
+  });
+}
+
 /** `filter[field]` equals `value`: plain, `$eq`, or a one-element `$in`. */
 function fieldIs(filter: Doc, field: string, value: string): boolean {
   const spec = filter[field];
@@ -108,7 +202,7 @@ function isEmpty(doc: Doc): boolean {
   return Object.keys(doc).length === 0;
 }
 
-/** A read of `collection` that filters by `where` (count/find/aggregate $match). */
+/** A read of `collection` that filters by `where` (count/find, or an aggregate's $match). */
 function filteredRead(
   calls: SideEffect[],
   collection: string,
@@ -116,15 +210,18 @@ function filteredRead(
 ): boolean {
   return (
     has(calls, ['count', 'find'], (args) => on(args, collection) && where(filterOf(args))) ||
-    has(calls, 'aggregate', (args) => on(args, collection) && where(matchOf(args)))
+    aggregates(calls, collection, (args) => where(matchOf(args)))
   );
 }
 
 /** Any read of `collection`'s contents, filtered or not. */
-const READ_TOOLS = ['find', 'count', 'aggregate', 'collection-schema'];
+const READ_TOOLS = ['find', 'count', 'aggregate', 'aggregate-db', 'collection-schema'];
 
 function reads(calls: SideEffect[], collection: string): boolean {
-  return has(calls, READ_TOOLS, (args) => on(args, collection));
+  return (
+    has(calls, READ_TOOLS, (args) => on(args, collection)) ||
+    aggregates(calls, collection, () => true)
+  );
 }
 
 /**
@@ -134,8 +231,7 @@ function reads(calls: SideEffect[], collection: string): boolean {
  * result.
  */
 function groupsBy(calls: SideEffect[], collection: string, field: string): boolean {
-  return has(calls, 'aggregate', (args) => {
-    if (!on(args, collection)) return false;
+  return aggregates(calls, collection, (args) => {
     const group = stage(args, '$group');
     const sortByCount = stage(args, '$sortByCount');
     return (
@@ -222,7 +318,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt:
       'How many orders in the shop database have status "shipped"? Answer with just the number.',
-    steps: [['count', 'find', 'aggregate']],
+    steps: [['count', 'find', 'aggregate', 'aggregate-db']],
     expect: (calls) =>
       filteredRead(calls, 'orders', (f) => fieldIs(f, 'status', 'shipped')) ||
       groupsBy(calls, 'orders', 'status'),
@@ -245,7 +341,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     tier: 'mongodb',
     kind: 'single',
     prompt: 'What fields does a customer document in the shop database have?',
-    steps: [['collection-schema', 'find', 'aggregate']],
+    steps: [['collection-schema', 'find', 'aggregate', 'aggregate-db']],
     expect: (calls) => reads(calls, 'customers'),
     verify: (context) =>
       ['name', 'email', 'city', 'tier'].every((field) => context.finalText.includes(field)),
@@ -259,7 +355,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt:
       'Which are the three most expensive products in the shop database? Answer with just their names.',
-    steps: [['find', 'aggregate']],
+    steps: [['find', 'aggregate', 'aggregate-db']],
     expect: (calls) =>
       has(
         calls,
@@ -269,13 +365,11 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
           sortedBy(args['sort'], 'price', -1) &&
           limitBetween(args['limit'], 3, 10),
       ) ||
-      has(
+      aggregates(
         calls,
-        'aggregate',
+        'products',
         (args) =>
-          on(args, 'products') &&
-          sortedBy(stage(args, '$sort'), 'price', -1) &&
-          limitBetween(stage(args, '$limit'), 3, 10),
+          sortedBy(stage(args, '$sort'), 'price', -1) && limitBetween(stage(args, '$limit'), 3, 10),
       ),
     verify: (context) =>
       ['Gadget Max', 'Charging Dock', 'Gadget Mini'].every((n) => context.finalText.includes(n)) &&
@@ -288,6 +382,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-index-email',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt: 'Add an index on the email field of the customers collection in the shop database.',
     steps: [['create-index']],
     // The server takes `definition: [{ type: 'classic', keys: { email: 1 } }]`.
@@ -308,6 +403,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-cancel-stale-pending',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt:
       'In the shop database, mark every order that is still "pending" and was placed before 1 September 2026 as "cancelled".',
     steps: [['update-many']],
@@ -335,6 +431,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-drop-tmp',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt:
       'Delete the sessions_tmp collection from the shop database — it is scratch data we no longer need.',
     steps: [['drop-collection']],
@@ -356,6 +453,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-add-product',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt:
       'Add a product to the shop database: sku WID-7, name "Widget Pro", price 49.99, category widgets, stock 25.',
     steps: [['insert-many']],
@@ -387,6 +485,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-rename-audit-log',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt: 'Rename the audit_log collection in the shop database to events.',
     steps: [['rename-collection']],
     expect: (calls) =>
@@ -416,14 +515,16 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     kind: 'multi',
     prompt:
       'One of the databases on this deployment has a collection called daily. Which database is it? Answer with just the database name.',
-    steps: [
-      ['list-databases'],
-      ['list-collections', 'find', 'count', 'aggregate', 'collection-schema'],
-    ],
+    steps: [['list-databases'], ['list-collections', ...READ_TOOLS]],
+    // A database-level `aggregate-db` on analytics counts only when it
+    // reaches `daily`: `[{$documents: [{}]}]` runs there without touching
+    // a collection.
     expect: (calls) =>
-      has(calls, ['list-collections', 'find', 'count', 'aggregate', 'collection-schema'], (args) =>
-        sameText(args['database'], 'analytics'),
-      ),
+      has(calls, 'list-collections', (args) => sameText(args['database'], 'analytics')) ||
+      has(calls, ['find', 'count', 'aggregate', 'collection-schema'], (args) =>
+        on(args, 'daily', 'analytics'),
+      ) ||
+      aggregates(calls, 'daily', () => true, 'analytics'),
     verify: (context) => firstDatabaseNamed(context.finalText) === 'analytics',
   },
   // --- A scoped delete: a filter, never an empty one, never a drop.
@@ -431,6 +532,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-delete-cancelled',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt: 'Remove every cancelled order from the shop database.',
     steps: [['delete-many']],
     expect: (calls) =>
@@ -453,12 +555,14 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     name: 'db-add-customer-unless-exists',
     tier: 'mongodb',
     kind: 'single',
+    needsWorld: true,
     prompt:
       'Add a customer to the shop database: alice@example.com, name "Alice Ng", city Austin, tier silver — unless a customer with that email already exists, in which case add nothing and tell me their current tier.',
     steps: [READ_TOOLS],
     expect: (calls) =>
       filteredRead(calls, 'customers', (f) => fieldIs(f, 'email', 'alice@example.com')) ||
-      has(calls, ['find', 'aggregate'], (args) => on(args, 'customers')),
+      has(calls, 'find', (args) => on(args, 'customers')) ||
+      aggregates(calls, 'customers', () => true),
     forbid: (call) =>
       (call.tool === 'insert-many' && on(call.args, 'customers')) ||
       (call.tool === 'update-many' && on(call.args, 'customers')),
@@ -481,7 +585,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt:
       'How many gold-tier customers in the shop database live in Austin? Answer with just the number.',
-    steps: [['count', 'find', 'aggregate']],
+    steps: [['count', 'find', 'aggregate', 'aggregate-db']],
     expect: (calls) =>
       filteredRead(
         calls,
@@ -490,13 +594,17 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
       ),
     verify: (context) => number(2).test(context.finalText.trim()),
   },
-  // --- Group by: one aggregate ($group or $sortByCount), or a count per status.
+  // --- Group by: one aggregate ($group or $sortByCount), or a count per
+  // status. A database-level `aggregate-db` counts through `groupsBy` (the
+  // observed shape: `$documents` → `$lookup {from: 'orders', pipeline:
+  // [$group by status]}` → `$unwind` → `$replaceRoot`); `verify` checks
+  // every status's count.
   {
     name: 'db-orders-per-status',
     tier: 'mongodb',
     kind: 'single',
     prompt: 'In the shop database, how many orders are there for each status?',
-    steps: [['aggregate', 'count']],
+    steps: [['aggregate', 'aggregate-db', 'count']],
     expect: (calls) =>
       groupsBy(calls, 'orders', 'status') ||
       Object.keys(ORDER_STATUS_COUNTS).every((status) =>

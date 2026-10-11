@@ -30,6 +30,7 @@
     "@modelcontextprotocol/client": "2.3.1",
     "@modelcontextprotocol/server": "2.3.1",
     "@sebastianwessel/quickjs": "3.1.0",
+    "quickjs-emscripten-core": "0.32.0",
     "typescript": "^5.7.0",
     "xstate": "5.32.5",
     "zod": "^4.6.5"

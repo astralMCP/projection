@@ -10,6 +10,8 @@ import {
   type SandboxEvalCode,
   type SandboxOptions,
 } from '@sebastianwessel/quickjs';
+import { readFile } from 'node:fs/promises';
+import { newVariant } from 'quickjs-emscripten-core';
 import type TS from 'typescript';
 import { ProjectionError } from '../errors.js';
 import { clampCaps, type LogEntry, type ResourceCaps } from '../types.js';
@@ -100,24 +102,36 @@ export const SANDBOX_GLOBAL = '__projection';
 export const TOOL_CALL_BINDING = '__projection_toolCall';
 
 // ---------------------------------------------------------------------------
-// Lazy singletons: QuickJS WASM runtime and TypeScript transpiler
+// QuickJS WASM runtime (one module instance per session) and the lazy
+// TypeScript transpiler singleton
 // ---------------------------------------------------------------------------
 
 type QuickJsRuntime = Awaited<ReturnType<typeof loadQuickJs>>;
+type QuickJsVariant = Parameters<typeof loadQuickJs>[0];
 type TsSupport = Awaited<ReturnType<typeof getTypescriptSupport>>;
 
-let quickJsPromise: Promise<QuickJsRuntime> | undefined;
+let variantPromise: Promise<QuickJsVariant> | undefined;
+let wasmModulePromise: Promise<WebAssembly.Module | undefined> | undefined;
 let tsSupportPromise: Promise<TsSupport> | undefined;
 
 const QUICKJS_VARIANT = '@jitl/quickjs-ng-wasmfile-release-sync';
 
-function getQuickJs(): Promise<QuickJsRuntime> {
-  quickJsPromise ??= (async () => {
-    let variant: { default: Parameters<typeof loadQuickJs>[0] };
+/** WebAssembly page size (bytes); memory limits are expressed in pages. */
+const WASM_PAGE_BYTES = 65_536;
+/**
+ * Pages the variant's emscripten build starts with (`INITIAL_MEMORY`,
+ * 16 MB). An imported memory must be at least this large, so the cap can
+ * never bound the heap below it — `MIN_CAPS.wasmMemoryBytes` matches.
+ */
+const WASM_INITIAL_PAGES = 256;
+
+function getQuickJsVariant(): Promise<QuickJsVariant> {
+  variantPromise ??= (async () => {
+    let variant: { default: QuickJsVariant };
     try {
       variant = await import(QUICKJS_VARIANT);
     } catch (cause) {
-      quickJsPromise = undefined;
+      variantPromise = undefined;
       throw new ProjectionError(
         'runtime',
         `QuickJS WASM variant '${QUICKJS_VARIANT}' is not installed`,
@@ -127,9 +141,168 @@ function getQuickJs(): Promise<QuickJsRuntime> {
         },
       );
     }
-    return loadQuickJs(variant.default);
+    return variant.default;
   })();
-  return quickJsPromise;
+  return variantPromise;
+}
+
+/**
+ * A QuickJS WASM module instance together with the memory it was
+ * instantiated on. One instance serves one session at a time.
+ */
+interface BoundedRuntime {
+  runtime: QuickJsRuntime;
+  memory: WebAssembly.Memory;
+  /** The memory's `maximum`, in pages — the pool key. */
+  maximumPages: number;
+}
+
+/**
+ * Instances whose heap never grew, kept for reuse, keyed by `maximumPages`.
+ * See `releaseBoundedRuntime` for what qualifies.
+ */
+const idleRuntimes = new Map<number, BoundedRuntime[]>();
+let idleRuntimeCount = 0;
+/** Idle instances kept across all caps; each holds ~16 MB of address space. */
+const IDLE_RUNTIMES_MAX = 8;
+
+/**
+ * The memory `maximum` (pages) for a cap. This is what makes `wasmMemoryBytes`
+ * a bound on real bytes. QuickJS's own `setMemoryLimit` cannot be: it charges
+ * each allocation `malloc_usable_size + overhead`, and the emscripten build
+ * returns 0 for `malloc_usable_size`, so the running total counts bookkeeping
+ * only and a loop of sub-cap allocations grows the heap to the module's 2 GB
+ * ceiling before "out of memory" fires (measured: ~2 GB under an 8 MB cap).
+ * The engine, by contrast, enforces a memory's `maximum` on every `grow`: the
+ * emscripten glue catches the failed grow, `malloc` returns NULL, and QuickJS
+ * throws its ordinary "out of memory" InternalError — which `classifyEvalError`
+ * reports as the memory `cap_exceeded`.
+ *
+ * Because the bound is a property of the memory, every session needs its own
+ * module instance rather than a share of one process-wide linear memory: a
+ * hoarding machine cannot starve its neighbours, the bound holds under
+ * concurrency without any per-runtime accounting, and a heap that grew can be
+ * reclaimed by dropping the instance (WebAssembly memories never shrink). The
+ * 16 MB `initial` is dictated by the WASM module's import.
+ */
+function maximumPagesFor(capBytes: number): number {
+  return Math.max(WASM_INITIAL_PAGES, Math.ceil(capBytes / WASM_PAGE_BYTES));
+}
+
+/**
+ * Compile the variant's WebAssembly binary once and share the compiled
+ * module across instances. Only instantiation has to happen per instance
+ * (that is what gives each its own memory); letting the emscripten glue read
+ * and compile the file every time costs ~2 ms more per instance with a
+ * ~25 ms tail. The binary sits next to the glue module. Where it cannot be
+ * located — no `import.meta.resolve` (bundler-transformed builds), or a
+ * bundler that moved the file — the glue's own loader is used instead:
+ * slower, otherwise equivalent.
+ */
+function getCompiledWasm(): Promise<WebAssembly.Module | undefined> {
+  wasmModulePromise ??= (async () => {
+    if (typeof import.meta.resolve !== 'function') return undefined;
+    try {
+      const glueUrl = import.meta.resolve(`${QUICKJS_VARIANT}/emscripten-module`);
+      const bytes = await readFile(new URL('emscripten-module.wasm', glueUrl));
+      return await WebAssembly.compile(bytes);
+    } catch {
+      return undefined;
+    }
+  })();
+  return wasmModulePromise;
+}
+
+/**
+ * Take an idle instance for this cap, or instantiate a fresh one whose heap
+ * can never exceed `capBytes`.
+ */
+async function acquireBoundedRuntime(capBytes: number): Promise<BoundedRuntime> {
+  const maximumPages = maximumPagesFor(capBytes);
+  const idle = idleRuntimes.get(maximumPages)?.pop();
+  if (idle !== undefined) {
+    idleRuntimeCount--;
+    return idle;
+  }
+  const memory = new WebAssembly.Memory({ initial: WASM_INITIAL_PAGES, maximum: maximumPages });
+  const [variant, wasmModule] = await Promise.all([getQuickJsVariant(), getCompiledWasm()]);
+  const runtime = await loadQuickJs(
+    newVariant(variant, {
+      wasmMemory: memory,
+      ...(wasmModule !== undefined ? { wasmModule } : {}),
+    }),
+  );
+  guardHostMalloc(runtime.module);
+  return { runtime, memory, maximumPages };
+}
+
+/**
+ * Make the instance's `_malloc` export throw when the heap is full instead
+ * of returning NULL. quickjs-emscripten copies every string and buffer it
+ * hands the VM — `evalCode` sources included, and the machine host delivers
+ * tool results as JSON inside evaluate source — through `_malloc` without
+ * checking the result, so under a bounded heap a NULL would make it write
+ * the copy at address 0 onward, corrupting the instance's static data
+ * (traps, assertion aborts, a poisoned pooled instance). Thrown instead, the
+ * error reaches `@sebastianwessel/quickjs`'s `handleEvalError` with the
+ * message "out of memory", which `classifyEvalError` reports as the memory
+ * `cap_exceeded`, and nothing is written. Only host-side allocations go
+ * through this export; QuickJS's own allocations stay inside the WASM module
+ * and fail the ordinary way.
+ */
+function guardHostMalloc(wasmModule: QuickJsRuntime['module']): void {
+  // `getFFI()` is public but marked experimental; its `module` field is the
+  // emscripten module whose `_malloc` the library's `ModuleMemory` reads at
+  // call time. The field is private in the FFI typings, hence the cast
+  // (relies on quickjs-emscripten-core 0.32.0, pinned exactly).
+  const emscripten = (wasmModule.getFFI() as unknown as { module: HostMalloc }).module;
+  const malloc = emscripten._malloc;
+  emscripten._malloc = (size: number): number => {
+    const ptr = malloc(size);
+    if (ptr === 0 && size > 0) {
+      const error = new Error('out of memory');
+      // The stack would become the error's diagnostics; it holds host paths.
+      error.stack = '';
+      throw error;
+    }
+    return ptr;
+  };
+}
+
+interface HostMalloc {
+  _malloc: (size: number) => number;
+}
+
+/**
+ * Return an instance whose session has ended. An instance is kept only when
+ * its session was clean — every `evaluate`, the two boot evaluates included,
+ * returned ok — and its heap is still at its initial size. Such an instance's
+ * QuickJS runtime has been freed, so for the next session it is as good as
+ * new — and reusing it is what keeps segment start-up at the cost of the old
+ * shared singleton (instantiating per session doubled the resume leg under
+ * parallel load). Anything else is dropped: an instance that grew (a machine
+ * that hoarded, whether or not it hit the cap) so its memory is reclaimed,
+ * and an instance whose session saw any failure — cap exceeded, an in-VM
+ * exception, a thrown error — because a failure is the one place it might
+ * have been left inconsistent. The rule is deliberately that blunt rather
+ * than classifying failures: re-instantiation costs ~3-5 ms and failures are
+ * the exceptional path. (The heap-size check alone is not enough: at the
+ * 16 MB floor `maximum` equals `initial`, so a session that exhausted the
+ * heap never changes its size.) Sharing an instance across sessions in
+ * sequence is the same trust the shared singleton always placed in QuickJS's
+ * memory safety.
+ */
+function releaseBoundedRuntime(bounded: BoundedRuntime, clean: boolean): void {
+  if (!clean) return;
+  if (bounded.memory.buffer.byteLength !== WASM_INITIAL_PAGES * WASM_PAGE_BYTES) return;
+  if (idleRuntimeCount >= IDLE_RUNTIMES_MAX) return;
+  let bucket = idleRuntimes.get(bounded.maximumPages);
+  if (bucket === undefined) {
+    bucket = [];
+    idleRuntimes.set(bounded.maximumPages, bucket);
+  }
+  bucket.push(bounded);
+  idleRuntimeCount++;
 }
 
 /**
@@ -376,7 +549,10 @@ export async function createSandboxSession(
   const sandboxOptions: SandboxOptions = {
     // Hard caps (R12/R13). The wall-clock budget is enforced by a QuickJS
     // interrupt handler installed by the runtime, with an absolute deadline
-    // of `now + segmentWallClockMs` at session creation.
+    // of `now + segmentWallClockMs` at session creation. The memory cap is
+    // enforced by the WebAssembly memory's `maximum` (see `maximumPagesFor`
+    // and `acquireBoundedRuntime`); QuickJS's own limit is set too, but it
+    // only refuses a single request larger than the cap and is not the bound.
     executionTimeout: caps.segmentWallClockMs,
     memoryLimit: caps.wasmMemoryBytes,
     // N3/R11 invariant: `allowFetch` and `allowFs` are never set — they
@@ -426,7 +602,8 @@ export async function createSandboxSession(
     },
   };
 
-  const runtime = await getQuickJs();
+  const bounded = await acquireBoundedRuntime(caps.wasmMemoryBytes);
+  const runtime = bounded.runtime;
 
   // Absolute segment deadline (R13). The QuickJS interrupt handler enforces
   // it inside the VM; this host-side copy makes post-deadline `evaluate`
@@ -437,13 +614,21 @@ export async function createSandboxSession(
   const ready = deferred<{ evalCode: SandboxEvalCode }>();
   const hold = deferred<void>();
   let disposed = false;
+  /** False once any evaluate fails; see `releaseBoundedRuntime`. */
+  let clean = true;
 
   const runPromise = runtime.runSandboxed(async ({ evalCode }) => {
     ready.resolve({ evalCode });
     await hold.promise;
   }, sandboxOptions);
   // The run promise is also awaited in dispose(); avoid unhandled rejections.
-  runPromise.catch(() => {});
+  // The instance can go back to the pool only after the run settled cleanly:
+  // a rejected run means the sandbox itself failed, and such an instance is
+  // never reused.
+  runPromise.then(
+    () => releaseBoundedRuntime(bounded, clean),
+    () => {},
+  );
 
   const { evalCode } = await Promise.race([
     ready.promise,
@@ -491,7 +676,12 @@ export async function createSandboxSession(
       }
       return result.data;
     };
-    const run = queue.then(task, task);
+    const tracked = (): Promise<unknown> =>
+      task().catch((error: unknown) => {
+        clean = false;
+        throw error;
+      });
+    const run = queue.then(tracked, tracked);
     queue = run.then(
       () => undefined,
       () => undefined,

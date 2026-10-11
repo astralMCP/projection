@@ -67,6 +67,14 @@ async function tick(ms = 50): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Type one character per stdin chunk, as a real terminal delivers keystrokes. */
+async function typeKeys(stdin: { write: (data: string) => void }, text: string): Promise<void> {
+  for (const ch of text) {
+    stdin.write(ch);
+    await tick(5);
+  }
+}
+
 async function submitTask(stdin: { write: (data: string) => void }, text: string): Promise<void> {
   // Let Ink attach its stdin listeners before typing (testing-library quirk).
   await tick();
@@ -137,5 +145,81 @@ describe('App', () => {
 
     await waitForFrame(lastFrame, '"status": "declined"');
     expect(recording.files['/out.txt']).toBeUndefined();
+  });
+});
+
+describe('App key bindings', () => {
+  it('typing a task containing "q" does not quit the app', { timeout: 30_000 }, async () => {
+    const { facade, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
+    const { lastFrame, stdin } = render(
+      <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
+    );
+
+    await tick();
+    await typeKeys(stdin, 'query the orders');
+    await tick();
+
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('Projection TUI');
+    expect(frame).toContain('task>');
+    expect(frame).toContain('query the orders');
+  });
+
+  it('esc leaves the task input, then "q" quits', { timeout: 30_000 }, async () => {
+    const { facade, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
+    const { lastFrame, stdin } = render(
+      <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
+    );
+
+    await tick();
+    stdin.write('\u001B');
+    await tick();
+    expect(lastFrame() ?? '').toContain('q to quit');
+    // The input is no longer focused: keystrokes do not land in the task.
+    stdin.write('x');
+    await tick();
+    expect(lastFrame() ?? '').not.toContain('task> x');
+
+    stdin.write('q');
+    await tick();
+    expect(lastFrame() ?? '').not.toContain('Projection TUI');
+  });
+
+  it('esc then a fast "q" (read as Meta-q) does not quit', { timeout: 30_000 }, async () => {
+    const { facade, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
+    const { lastFrame, stdin } = render(
+      <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
+    );
+
+    await tick();
+    stdin.write('\u001B');
+    await tick();
+    expect(lastFrame() ?? '').toContain('q to quit');
+
+    // Esc and q in one chunk: ink 8 parses this as Meta-q, not Esc then q.
+    stdin.write('\u001Bq');
+    await tick();
+    expect(lastFrame() ?? '').toContain('Projection TUI');
+  });
+
+  it('esc again returns to the task input', { timeout: 30_000 }, async () => {
+    const { facade, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
+    const { lastFrame, stdin } = render(
+      <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
+    );
+
+    await tick();
+    stdin.write('\u001B');
+    await tick();
+    stdin.write('\u001B');
+    await tick();
+    await typeKeys(stdin, 'quit later');
+    await tick();
+    expect(lastFrame() ?? '').toContain('task> quit later');
+    expect(lastFrame() ?? '').toContain('Projection TUI');
   });
 });

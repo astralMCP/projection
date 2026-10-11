@@ -230,7 +230,7 @@ misconfiguration cannot disable the flow; non-finite values are ignored.
 | Cap                      | Floor  | Default | Max    | What it bounds                                      |
 | ------------------------ | ------ | ------- | ------ | --------------------------------------------------- |
 | `segmentWallClockMs`     | 100 ms | 30 s    | 60 s   | wall clock per execution segment (per round trip)   |
-| `wasmMemoryBytes`        | 1 MB   | 128 MB  | 256 MB | sandbox WASM memory                                 |
+| `wasmMemoryBytes`        | 16 MB  | 128 MB  | 256 MB | the sandbox's WebAssembly linear memory             |
 | `maxCodeBytes`           | 1 KB   | 128 KB  | 256 KB | submitted machine source                            |
 | `maxInputBytes`          | 1 KB   | 128 KB  | 256 KB | machine `input` / `call_tool` args, JSON-encoded    |
 | `maxReadCallsPerSegment` | 1      | 50      | 200    | auto-run (policy `auto`) tool calls per segment     |
@@ -239,6 +239,20 @@ misconfiguration cannot disable the flow; non-finite values are ignored.
 | `maxResultBytes`         | 1 KB   | 256 KB  | 1 MB   | final machine output / `call_tool` output           |
 | `maxStateNodes`          | 1      | 100     | 1 000  | state nodes in the machine                          |
 | `maxConsoleBytes`        | 1 KB   | 64 KB   | 256 KB | captured console output per segment                 |
+
+`wasmMemoryBytes` bounds real bytes: every session instantiates its own
+QuickJS WASM module with a `WebAssembly.Memory` whose `maximum` is the cap,
+so the engine refuses to grow the heap past it and the machine gets an
+ordinary `cap_exceeded` error (QuickJS's own memory limit cannot do this
+under emscripten, where it counts allocation bookkeeping rather than
+payload — DECISIONS D15). The floor is 16 MB because that is the module's
+initial heap, which cannot be lowered. The cap is per session, so `N`
+segments running at once may hold up to `N × wasmMemoryBytes`; size the cap
+for your host with that in mind. Instances whose heap never grew are
+pooled and reused by later segments with the same cap, so steady-state
+segment start-up costs what it did with one shared runtime; an instance
+whose heap grew is discarded when its segment ends, which is how a hoarding
+machine's memory is given back.
 
 Separately, a sealed suspension blob over `blob.maxBlobBytes` (default 128 KB)
 fails the suspension with a `terminal` error advising the model to slim its

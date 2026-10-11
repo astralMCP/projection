@@ -109,7 +109,7 @@ R12. Default resource caps, all configurable downward and clamped at the stated 
 | Machine state nodes (static count at validation)        | 100     | 1 000    |
 | Captured console output per segment                     | 64 KB   | 256 KB   |
 
-Values below a small floor (e.g. 1 round trip, 100 ms) are clamped up so a misconfiguration cannot disable the flow; non-finite values are ignored.
+Values below a small floor (e.g. 1 round trip, 100 ms) are clamped up so a misconfiguration cannot disable the flow; non-finite values are ignored. The WASM memory cap bounds the sandbox's real linear memory — each session owns a WebAssembly memory whose `maximum` is the cap (D15) — and its floor is the module's 16 MB initial heap.
 
 R13. Interrupt handlers enforce the wall-clock budget inside the VM (not only around it), so tight loops cannot outrun the host timer. Each MRTR resume gets a fresh segment budget.
 

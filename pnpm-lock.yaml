@@ -112,6 +112,9 @@ importers:
       '@sebastianwessel/quickjs':
         specifier: 3.1.0
         version: 3.1.0(typescript@5.9.3)
+      quickjs-emscripten-core:
+        specifier: 0.32.0
+        version: 0.32.0
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
