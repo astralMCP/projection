@@ -69,16 +69,23 @@ replay-cache fix has a regression to flip.
 correct arguments** for a task when the wrapped server is exposed (A)
 directly as native tools or (B) through Projection's five tools
 (`search_tools`, `describe_tool`, `call_tool`, `discover_apis`,
-`execute_machine`). The wrapped server is an offline fake of the remote
-GitHub MCP server (`createGithubFake`): the real 95-tool catalog — names,
-descriptions, JSON Schemas, annotations and the server's own `instructions`,
-dumped once into `test/fixtures/github-catalog.json` — answering from a
-small canned world and recording every call. Tasks (`TOOL_CHOICE_TASKS`)
-say what to do, never how, and score the recorded upstream calls; in
-projection mode a scripted approve-all client auto-fulfils every approval
-round trip, so the model only sees results.
+`execute_machine`). Each episode gets a fresh **world** (`openWorld`): an
+MCP server whose tool executions are recorded, so the same task scores
+identically in both modes. Two kinds exist. The GitHub world is an offline
+fake of the remote GitHub MCP server (`createGithubFake`): the real 95-tool
+catalog — names, descriptions, JSON Schemas, annotations and the server's
+own `instructions`, dumped once into `test/fixtures/github-catalog.json` —
+answering from a small canned world. The filesystem world is the _real_
+filesystem reference server (`@modelcontextprotocol/server-filesystem`, a
+pinned devDependency) spawned over stdio on a throwaway fixture tree, behind
+a recording proxy (`createRecordingProxy`) that re-registers its tools
+verbatim and forwards every call. Tasks (`TOOL_CHOICE_TASKS`) say what to
+do, never how, and score the recorded upstream calls — plus, where effects
+are real, a `verify` of the end state (the file really moved; the answer
+names the right file). In projection mode a scripted approve-all client
+auto-fulfils every approval round trip, so the model only sees results.
 
-Tasks come in two tiers. The **basic** tier (15 tasks against
+Tasks come in three tiers. The **basic** tier (15 tasks against
 `modelcontextprotocol/servers`) is one or two obvious calls each; current
 models saturate it. The **hard** tier (15 tasks against `acme/widgets` and
 the user's own repositories) discriminates: write tools whose `method` enum
@@ -94,6 +101,16 @@ Dependabot alerts → issue chain, and PR URLs to parse. Hard tasks may
 happened) and assert that a write follows the lookup that justified it. The
 fake's hard-tier behaviours are pure functions of the call's arguments, and
 every episode gets a fresh fake, so the world is identical for every run.
+The **filesystem** tier (15 tasks on the real reference server) targets its
+near-duplicate tools and argument choices: a rename (`move_file`, never
+read-then-write), a one-line change that must keep every other byte, a size
+question a plain listing cannot answer, a recursive search where a flat
+listing misses `src/legacy/debug.log`, an image (`read_media_file`, not a
+text read), `head: 5` on a 36 KB log, a conditional create that must _not_
+happen because the file exists, a `dryRun` edit that must leave the file
+alone, and a move into a directory that has to be created first. Prompts
+carry the episode's temp directory, so they are functions of the world's
+facts (`promptFor`).
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
@@ -103,7 +120,7 @@ PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-cho
 
 Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haiku-low`,
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
-(`basic,hard`, the default), `PROJ_EVAL_TASKS` (comma list of task names
+(`basic,hard,filesystem`, the default), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
 turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped
@@ -117,6 +134,8 @@ API errors and harness exceptions are harness errors, excluded from the
 success denominators but still counted toward spend.
 
 The plumbing is proven offline in `test/eval/`: a scripted model drives both
-modes end to end without an API key, every task's predicate is checked
-against a golden call sequence and (for the hard tier) a plausible wrong
-one, and each scripted fake behaviour is checked call by call.
+modes end to end without an API key — against the fake and against the real
+filesystem server, whose effects land on disk and whose `verify` is checked
+both ways — every task's predicate is checked against a golden call
+sequence and a plausible wrong one, and each scripted fake behaviour is
+checked call by call.

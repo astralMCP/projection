@@ -8,13 +8,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASIC_TASKS,
+  FILESYSTEM_TASKS,
   HARD_TASKS,
+  promptFor,
   resolveTasks,
   resolveTiers,
   TOOL_CHOICE_TASKS,
   type EvalTask,
   type SideEffect,
 } from '../../src/index.js';
+
+/** The GitHub tiers; the filesystem tier has its own test file. */
+const GITHUB_TASKS = [...BASIC_TASKS, ...HARD_TASKS];
 
 const REPO = { owner: 'modelcontextprotocol', repo: 'servers' };
 const ACME = { owner: 'acme', repo: 'widgets' };
@@ -295,10 +300,11 @@ const WRONG: Record<string, SideEffect[]> = {
 };
 
 describe('tool-choice tasks', () => {
-  it('covers every task with a golden sequence, and names are unique', () => {
+  it('covers every GitHub task with a golden sequence, and names are unique', () => {
     const names = TOOL_CHOICE_TASKS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(Object.keys(GOLDEN).toSorted()).toEqual(names.toSorted());
+    expect(TOOL_CHOICE_TASKS).toEqual([...GITHUB_TASKS, ...FILESYSTEM_TASKS]);
+    expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);
     expect(HARD_TASKS.length).toBeGreaterThanOrEqual(12);
     expect(BASIC_TASKS.every((t) => t.tier === 'basic')).toBe(true);
@@ -309,11 +315,12 @@ describe('tool-choice tasks', () => {
   it('prompts say what, never how: no tool names', () => {
     const toolNames = new Set(TOOL_CHOICE_TASKS.flatMap((t) => t.steps.flat()));
     for (const t of TOOL_CHOICE_TASKS) {
-      for (const name of toolNames) expect(t.prompt).not.toContain(name);
+      const prompt = promptFor(t, { root: '/home/me/project' });
+      for (const name of toolNames) expect(prompt).not.toContain(name);
     }
   });
 
-  for (const t of TOOL_CHOICE_TASKS) {
+  for (const t of GITHUB_TASKS) {
     it(`${t.name}: fires on the golden calls and not on nothing`, () => {
       const golden = GOLDEN[t.name] as SideEffect[];
       expect(t.expect([])).toBe(false);
@@ -1124,8 +1131,9 @@ describe('tool-choice tasks', () => {
   });
 
   it('resolves PROJ_EVAL_TIERS and PROJ_EVAL_TASKS filters and rejects unknown names', () => {
-    expect(resolveTiers(undefined)).toEqual(['basic', 'hard']);
+    expect(resolveTiers(undefined)).toEqual(['basic', 'hard', 'filesystem']);
     expect(resolveTiers('hard')).toEqual(['hard']);
+    expect(resolveTasks(undefined, ['filesystem'])).toEqual(FILESYSTEM_TASKS);
     expect(resolveTiers(' basic , hard ')).toEqual(['basic', 'hard']);
     expect(() => resolveTiers('medium')).toThrow(/unknown tier "medium"/);
 

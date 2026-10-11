@@ -1,10 +1,12 @@
 /**
  * Tool-choice eval runner and report: for each model × mode × task × run,
- * drive one agent episode against a fresh fake, score the recorded upstream
- * calls with the task's predicate, and aggregate.
+ * open a fresh world for the task's tier, drive one agent episode against
+ * it, score the recorded upstream calls with the task's predicate (and the
+ * end state with its `verify`, before the world is torn down), and
+ * aggregate.
  *
- * "Success" is tool AND arguments correct; "tool-correct" is the right
- * upstream tool(s) reached with any arguments. Episodes that ended on a
+ * "Success" is tool AND arguments correct (and `verify` held); "tool-correct"
+ * is the right upstream tool(s) reached with any arguments. Episodes that ended on a
  * harness error (refusal, max_tokens, API error, or an exception thrown by
  * the harness itself) are excluded from both denominators and counted
  * separately — their tokens still count toward spend. Hitting the turn cap
@@ -31,12 +33,15 @@ import {
 } from './agent.js';
 import { EVAL_MODES, openSession, type EvalMode, type ModeSession } from './modes.js';
 import {
+  promptFor,
   TASK_TIERS,
   TOOL_CHOICE_TASKS,
+  worldOf,
   type EvalTask,
   type TaskKind,
   type TaskTier,
 } from './tasks.js';
+import { openWorld, type EvalWorld, type WorldName } from './world.js';
 
 export type ProjectionRoute = 'call_tool' | 'execute_machine' | 'both' | 'neither';
 
@@ -57,10 +62,12 @@ export interface EpisodeRecord {
   mode: EvalMode;
   task: string;
   tier: TaskTier;
+  /** The world the tier runs in. */
+  world: WorldName;
   kind: TaskKind;
   /** Zero-based run index. */
   run: number;
-  /** The task's `expect` held and no forbidden call was made. */
+  /** The task's `expect` (and `verify`, if any) held and no forbidden call was made. */
   success: boolean;
   toolCorrect: boolean;
   /** A call the task forbids was made (always false for tasks without `forbid`). */
@@ -106,8 +113,8 @@ export interface ToolChoiceEvalOptions {
   /** Episodes in flight at once. Default 1. */
   concurrency?: number;
   /**
-   * Whether the fake advertises the real server's `instructions` (both modes
-   * see them). Default true.
+   * Whether the GitHub fake advertises the real server's `instructions`
+   * (both modes see them). Default true.
    */
   serverInstructions?: boolean;
   onEpisode?: (record: EpisodeRecord) => void;
@@ -149,28 +156,40 @@ function errorMessage(err: unknown): string {
 }
 
 /**
- * Score a finished episode against the task. A thrown predicate is the
+ * Score a finished episode against the task. Runs the task's `verify` (if
+ * any) against the still-open world; a throwing predicate or verify is the
  * caller's problem (it surfaces as a harness error there).
  */
-function scoreEpisode(
+async function scoreEpisode(
   planned: PlannedEpisode,
-  session: ModeSession,
+  world: EvalWorld,
+  approvals: number,
   episode: AgentEpisode,
-): EpisodeRecord {
+): Promise<EpisodeRecord> {
   const { model, mode, task, run } = planned;
-  const upstreamCalls = session.fake.calls.slice();
+  const upstreamCalls = world.calls.slice();
   const scored = episode.harnessError === undefined;
   const forbid = task.forbid;
   const forbidden = forbid !== undefined && upstreamCalls.some((call) => forbid(call));
+  const expected = scored && !forbidden && task.expect(upstreamCalls);
+  const success =
+    expected && task.verify !== undefined
+      ? await task.verify({
+          calls: upstreamCalls,
+          finalText: episode.finalText,
+          facts: world.facts,
+        })
+      : expected;
   return {
     model: model.name,
     modelId: model.model,
     mode,
     task: task.name,
     tier: task.tier,
+    world: world.name,
     kind: task.kind,
     run,
-    success: scored && !forbidden && task.expect(upstreamCalls),
+    success,
     toolCorrect:
       scored &&
       task.steps.every((group) => upstreamCalls.some((call) => group.includes(call.tool))),
@@ -182,7 +201,7 @@ function scoreEpisode(
     toolUses: episode.toolUses,
     upstreamCalls,
     ...(mode === 'projection'
-      ? { projection: summarizeProjectionUse(episode.toolUses, session.approvals) }
+      ? { projection: summarizeProjectionUse(episode.toolUses, approvals) }
       : {}),
     usage: episode.usage,
     wallMs: episode.wallMs,
@@ -199,12 +218,13 @@ function scoreEpisode(
 function harnessFailureRecord(
   planned: PlannedEpisode,
   err: unknown,
+  world: EvalWorld | undefined,
   session: ModeSession | undefined,
   episode: AgentEpisode | undefined,
   startedAt: number,
 ): EpisodeRecord {
   const { model, mode, task, run } = planned;
-  const upstreamCalls = session?.fake.calls.slice() ?? [];
+  const upstreamCalls = world?.calls.slice() ?? [];
   const toolUses = episode?.toolUses ?? [];
   return {
     model: model.name,
@@ -212,6 +232,7 @@ function harnessFailureRecord(
     mode,
     task: task.name,
     tier: task.tier,
+    world: worldOf(task.tier),
     kind: task.kind,
     run,
     success: false,
@@ -241,27 +262,34 @@ async function runPlanned(
 ): Promise<EpisodeRecord> {
   const { model, mode, task } = planned;
   const startedAt = performance.now();
+  let world: EvalWorld | undefined;
   let session: ModeSession | undefined;
   let episode: AgentEpisode | undefined;
   try {
-    session = await openSession(
-      mode,
+    world = await openWorld(
+      worldOf(task.tier),
       options.serverInstructions === false ? { instructions: false } : {},
     );
     try {
-      episode = await runAgentEpisode(
-        caller,
-        model,
-        session.runtime,
-        task.prompt,
-        options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {},
-      );
+      session = await openSession(mode, world);
+      try {
+        episode = await runAgentEpisode(
+          caller,
+          model,
+          session.runtime,
+          promptFor(task, world.facts),
+          options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {},
+        );
+      } finally {
+        await session.close();
+      }
+      // Score while the world is still up: `verify` reads its end state.
+      return await scoreEpisode(planned, world, session.approvals, episode);
     } finally {
-      await session.close();
+      await world.close();
     }
-    return scoreEpisode(planned, session, episode);
   } catch (err) {
-    return harnessFailureRecord(planned, err, session, episode, startedAt);
+    return harnessFailureRecord(planned, err, world, session, episode, startedAt);
   }
 }
 
@@ -637,9 +665,9 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
   }
 
   lines.push(
-    'Cost model: Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
+    'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
       'Turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
-      'an episode that makes a call its task forbids is not a success.',
+      "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
   return lines.join('\n');
 }

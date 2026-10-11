@@ -5,7 +5,7 @@
  * same task scores identically whether the model reached the tool directly
  * or through Projection's `call_tool` / `execute_machine`.
  *
- * Two tiers. The **basic** tier (15 tasks, `modelcontextprotocol/servers`)
+ * The GitHub tiers. The **basic** tier (15 tasks, `modelcontextprotocol/servers`)
  * is one or two obvious calls each; current models saturate it. The **hard**
  * tier (15 tasks, `acme/widgets` and the user's own repositories) is built
  * to discriminate: several write tools whose `method` enum the prompt's
@@ -15,7 +15,8 @@
  * when a lookup shows them unnecessary; multi-step chains; and URLs to parse.
  * Hard tasks may also `forbid` calls (a wrong write is a failure even when
  * the right one also happened) and assert ordering (a write must follow the
- * lookup that justified it).
+ * lookup that justified it). The **filesystem** tier, against the real
+ * reference server, lives in filesystem-tasks.ts.
  *
  * Matching is lenient where the API allows synonyms (`issue_number` vs
  * `pullNumber`, numbers as strings, owner/repo case, a defaulted `state`,
@@ -26,66 +27,42 @@
  */
 
 import type { SideEffect } from '../types.js';
+import { FILESYSTEM_TASKS } from './filesystem-tasks.js';
 import { BASIC_REPO, branchesListed, FAKE_USER, HARD_BRANCHES, HARD_REPO } from './github-fake.js';
+import {
+  containsText,
+  count,
+  find,
+  firstOf,
+  has,
+  sameNumber,
+  sameText,
+  str,
+  TASK_TIERS,
+  type Args,
+  type EvalTask,
+  type TaskTier,
+} from './task-core.js';
 
-export type TaskKind = 'single' | 'multi';
-export type TaskTier = 'basic' | 'hard';
-export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard'];
-
-export interface EvalTask {
-  /** Stable identifier (PROJ_EVAL_TASKS filter, report rows). */
-  name: string;
-  tier: TaskTier;
-  kind: TaskKind;
-  /** The user's request. */
-  prompt: string;
-  /**
-   * Upstream tools that solve each step; "tool-correct" means every step
-   * saw a call to one of its tools, regardless of arguments.
-   */
-  steps: string[][];
-  /** Full success: the right tool(s) with the right arguments. */
-  expect(calls: SideEffect[]): boolean;
-  /**
-   * A call that must not appear: any recorded call matching this fails the
-   * episode regardless of `expect`. Absent means nothing is forbidden.
-   */
-  forbid?(call: SideEffect): boolean;
-}
+export {
+  promptFor,
+  TASK_TIERS,
+  TIER_WORLDS,
+  worldOf,
+  type EvalTask,
+  type TaskKind,
+  type TaskTier,
+  type VerifyContext,
+} from './task-core.js';
 
 interface RepoRef {
   owner: string;
   repo: string;
 }
 
-type Args = Record<string, unknown>;
-
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : undefined;
-}
-
-function sameText(value: unknown, expected: string): boolean {
-  return str(value)?.trim().toLowerCase() === expected.toLowerCase();
-}
-
-function containsText(value: unknown, expected: string): boolean {
-  return (str(value)?.toLowerCase() ?? '').includes(expected.toLowerCase());
-}
-
-function sameNumber(value: unknown, expected: number): boolean {
-  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
-  return n === expected;
-}
-
 /** owner/repo as the prompt states them (case-insensitive). */
 function inRepo(args: Args, ref: RepoRef = BASIC_REPO): boolean {
   return sameText(args['owner'], ref.owner) && sameText(args['repo'], ref.repo);
-}
-
-/** The first of these keys that is present. */
-function firstOf(args: Args, keys: string[]): unknown {
-  for (const key of keys) if (args[key] !== undefined) return args[key];
-  return undefined;
 }
 
 /** `labels` as lower-cased names, whether given as strings or `{ name }` objects. */
@@ -100,32 +77,6 @@ function labelNames(value: unknown): string[] {
           : undefined;
     return typeof name === 'string' ? [name.trim().toLowerCase()] : [];
   });
-}
-
-function find(
-  calls: SideEffect[],
-  tool: string | string[],
-  where: (args: Args) => boolean,
-): number {
-  const names = Array.isArray(tool) ? tool : [tool];
-  return calls.findIndex((call) => names.includes(call.tool) && where(call.args));
-}
-
-function has(
-  calls: SideEffect[],
-  tool: string | string[],
-  where: (args: Args) => boolean,
-): boolean {
-  return find(calls, tool, where) >= 0;
-}
-
-function count(
-  calls: SideEffect[],
-  tool: string | string[],
-  where: (args: Args) => boolean,
-): number {
-  const names = Array.isArray(tool) ? tool : [tool];
-  return calls.filter((call) => names.includes(call.tool) && where(call.args)).length;
 }
 
 /** Every tool that can put a comment on a PR or issue (the tool-correct step group). */
@@ -868,7 +819,11 @@ export const HARD_TASKS: readonly EvalTask[] = [
   },
 ];
 
-export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [...BASIC_TASKS, ...HARD_TASKS];
+export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
+  ...BASIC_TASKS,
+  ...HARD_TASKS,
+  ...FILESYSTEM_TASKS,
+];
 
 /** Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names throw. */
 export function resolveTiers(spec: string | undefined): TaskTier[] {
