@@ -11,7 +11,7 @@
  */
 
 /** `@astral-mcp/projection` package version (must match packages/projection/package.json). */
-export const LIB_VERSION = '0.7.0';
+export const LIB_VERSION = '0.8.0';
 
 /** Pinned XState version (must match the exact pin in package.json — D2). */
 export const XSTATE_VERSION = '5.32.5';
