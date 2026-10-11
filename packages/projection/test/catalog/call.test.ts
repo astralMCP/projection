@@ -404,6 +404,38 @@ describe('call_tool: suspend and resume (R35.3–4, R36, S2)', () => {
     expect(d.executor.calls).toEqual([]);
   });
 
+  it('a blob for a tool this catalog does not declare is refused once opened, with the unknown-tool hint (R36)', async () => {
+    // Minted under a catalog that has write_file; retried under one with the
+    // same identity string that does not: another deployment's blob.
+    const minted = deps();
+    const state = sealedState(await callTool({ name: 'write_file', args: WRITE }, minted));
+    const narrower: ServerCatalog = {
+      ...CATALOG,
+      tools: CATALOG.tools.filter((t) => t.name !== 'write_file'),
+    };
+    const d = deps({ catalog: narrower });
+    const result = completed(
+      await callTool(
+        {
+          name: 'write_file',
+          args: WRITE,
+          requestState: state,
+          inputResponses: { [CALL_KEY]: ACCEPT },
+        },
+        d,
+      ),
+    );
+    expect(result.isError).toBe(true);
+    const err = structured(result);
+    expect(err['phase']).toBe('validate');
+    expect(String(err['message'])).toContain('Unknown tool "write_file"');
+    // `file` hits read_file and delete_file by name; list_dir is not offered.
+    expect(String(err['hint'])).toMatch(
+      /^Did you mean "read_file" or "delete_file"\? Call search_tools .* then call_tool with/,
+    );
+    expect(d.executor.calls).toEqual([]);
+  });
+
   it('a deny policy set after the blob was minted wins on the retry, before the blob is opened (D9)', async () => {
     const minted = deps();
     const state = sealedState(await callTool({ name: 'write_file', args: WRITE }, minted));

@@ -449,6 +449,37 @@ describe('search_tools (R33)', () => {
       expect(suggestTools(CATALOG, '')).toEqual([]);
     });
 
+    it('suggests only tools a token hit by NAME: a description-only match is not a near miss', () => {
+      // "directory" is in list_dir's description, not in any name: as a
+      // search_tools query it finds list_dir; as a guessed name it is nothing.
+      expect(page(searchTools(CATALOG, { query: 'directory' })).total).toBe(1);
+      expect(suggestTools(CATALOG, 'directory')).toEqual([]);
+      expect(suggestTools(CATALOG, 'the_directory')).toEqual([]);
+      // A one-letter name falls back to the literal letter (D10); "y" is in
+      // "directory" and in no name, so it suggests nothing rather than list_dir.
+      expect(page(searchTools(CATALOG, { query: 'y' })).total).toBe(1);
+      expect(suggestTools(CATALOG, 'y')).toEqual([]);
+      // A stopword that is in every description and no name: nothing either.
+      expect(suggestTools(CATALOG, 'a_')).toEqual([]);
+      expect(unknownToolError(CATALOG, 'directory', 'call_tool').hint).toBe(
+        'Call search_tools to list the tools this server declares, then call_tool with one of those names exactly.',
+      );
+      // A name hit still qualifies even when the description misses.
+      expect(suggestTools(CATALOG, 'dir')).toEqual(['list_dir']);
+    });
+
+    it('caps the name at MAX_QUERY_CHARS before ranking, as search_tools caps its query (R33)', () => {
+      // 10 KB name: the `dir` token sits past the cap, so list_dir is never
+      // considered — the same suggestions as for the first 200 characters.
+      const long = `read_${'x'.repeat(10_000)}_dir`;
+      expect(suggestTools(CATALOG, long)).toEqual(
+        suggestTools(CATALOG, long.slice(0, MAX_QUERY_CHARS)),
+      );
+      expect(suggestTools(CATALOG, long)).toEqual(['read_file']);
+      // Within the cap, the trailing token counts.
+      expect(suggestTools(CATALOG, 'read_x_dir')).toEqual(['read_file', 'list_dir']);
+    });
+
     it('builds the validate error with a did-you-mean prefix only when something matched', () => {
       // `files` is not a substring of `file`: only the `delete` token matches.
       const near = unknownToolError(CATALOG, 'delete-files', 'call_tool');
