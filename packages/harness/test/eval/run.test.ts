@@ -530,13 +530,13 @@ describe('tool-choice eval plumbing (offline)', () => {
   });
 
   it('resolves model presets from a comma list and rejects unknown names', () => {
-    expect(resolveModelPresets(undefined).map((p) => p.name)).toEqual([
-      'haiku-low',
-      'sonnet-medium',
-    ]);
+    expect(resolveModelPresets(undefined).map((p) => p.name)).toEqual(['haiku45', 'sonnet-low']);
     expect(resolveModelPresets('sonnet-medium')).toEqual([MODEL_PRESETS['sonnet-medium']]);
     expect(() => resolveModelPresets('opus-max')).toThrow(/unknown model preset/);
+    // Haiku 4.5 predates adaptive thinking and `effort`: no params at all.
+    expect(MODEL_PRESETS['haiku45']?.params).toEqual({});
     expect(MODEL_PRESETS['haiku-low']?.params).not.toHaveProperty('thinking');
+    expect(MODEL_PRESETS['sonnet-low']?.params.output_config).toEqual({ effort: 'low' });
     expect(() => resolveModes('stdio')).toThrow(/unknown mode/);
   });
 });
