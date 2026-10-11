@@ -15,3 +15,10 @@ export const LIB_VERSION = '0.7.0';
 
 /** Pinned XState version (must match the exact pin in package.json — D2). */
 export const XSTATE_VERSION = '5.32.5';
+
+/**
+ * Exact pin of `@modelcontextprotocol/server` and `@modelcontextprotocol/client`
+ * (must match package.json). Not a blob stamp: the introspector names it when
+ * a wrapped `McpServer` comes from a second, different copy of the SDK.
+ */
+export const MCP_SDK_VERSION = '2.3.1';

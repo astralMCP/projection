@@ -16,7 +16,7 @@
  *   its lifecycle; `close()` will not touch it.
  */
 
-import { Client, SdkError, SdkErrorCode } from '@modelcontextprotocol/client';
+import { Client } from '@modelcontextprotocol/client';
 import {
   InMemoryTransport,
   McpServer,
@@ -24,6 +24,7 @@ import {
   ProtocolErrorCode,
   type Tool,
 } from '@modelcontextprotocol/server';
+import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { ProjectionError } from '../errors.js';
 import type {
   ServerAlias,
@@ -92,63 +93,130 @@ function toCatalogEntry(tool: Tool): ToolCatalogEntry {
 
 /**
  * Bounds on `tools/list` introspection. A wrapped server is untrusted (S5)
- * and could return an endless chain of `nextCursor` pages, or a tool count
- * large enough to blow up the generated artifacts; either would hang or
- * exhaust the process before any workflow runs.
+ * and could return an endless chain of `nextCursor` pages, a cursor that
+ * repeats, or a tool count large enough to blow up the generated artifacts;
+ * any of these would hang or exhaust the process before any workflow runs.
  *
- * The SDK client walks the pages itself (`listMaxPages`, default 64) and
- * fails closed on an endless chain (D12); the tool-count cap is checked on
- * the listed total.
+ * Projection walks the pages itself and enforces these bounds as each page
+ * arrives (D12). It does not use the SDK's no-cursor `listTools()`, which
+ * aggregates every page before returning and is bounded only by the
+ * caller's `listMaxPages` client option (0 = unlimited).
  */
+const MAX_TOOL_LIST_PAGES = 100;
 const MAX_TOOLS = 2_000;
 
+function limitError(alias: ServerAlias, detail: string): ProjectionError {
+  return new ProjectionError(
+    'protocol',
+    `wrapped server "${alias}" exceeded introspection limits (${detail})`,
+    {
+      hint: `Projection reads at most ${MAX_TOOL_LIST_PAGES} tools/list pages and ${MAX_TOOLS} tools, and rejects a repeated cursor. Wrap a server with a bounded tool surface whose tools/list pagination terminates.`,
+    },
+  );
+}
+
+async function fetchToolsPage(
+  client: Client,
+  cursor: string | undefined,
+): Promise<{ tools: Tool[]; nextCursor?: string | undefined }> {
+  // Page 1 goes through request(): listTools() without a cursor would walk
+  // every page itself before we could count anything. For the spec method
+  // `tools/list`, request() validates the result against the SDK's
+  // ListToolsResult schema, exactly as listTools() does internally. Later
+  // pages use listTools({ cursor }), which fetches exactly one page.
+  if (cursor === undefined) return client.request({ method: 'tools/list', params: {} });
+  return client.listTools({ cursor });
+}
+
 async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]> {
-  let tools: Tool[];
-  try {
-    // No cursor: the SDK follows nextCursor to the end, capped by listMaxPages.
-    ({ tools } = await client.listTools());
-  } catch (err) {
-    // A server with zero registered tools never declares the `tools`
-    // capability (client-side assertion) and answers tools/list with
-    // Method not found; treat both as an empty catalog, not a failure.
-    if (err instanceof ProtocolError && err.code === ProtocolErrorCode.MethodNotFound) {
-      return [];
-    }
-    if (err instanceof Error && /does not support tools/i.test(err.message)) {
-      return [];
-    }
-    if (err instanceof SdkError && err.code === SdkErrorCode.ListPaginationExceeded) {
+  // A server with zero registered tools never declares the `tools`
+  // capability; that is an empty catalog, not a failure.
+  if (client.getServerCapabilities()?.tools === undefined) return [];
+  const tools: Tool[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    let page: { tools: Tool[]; nextCursor?: string | undefined };
+    try {
+      // eslint-disable-next-line no-await-in-loop -- each page needs the previous page's cursor
+      page = await fetchToolsPage(client, cursor);
+    } catch (err) {
+      // A server that declares the capability yet answers Method not found
+      // on the first page still has no tools to offer.
+      if (
+        pages === 0 &&
+        err instanceof ProtocolError &&
+        err.code === ProtocolErrorCode.MethodNotFound
+      ) {
+        return [];
+      }
       throw new ProjectionError(
         'protocol',
-        `wrapped server "${alias}" exceeded introspection limits (${err.message})`,
+        `tools/list failed for wrapped server "${alias}": ${err instanceof Error ? err.message : String(err)}`,
         {
-          hint: `Projection reads tools/list pages until the server stops returning nextCursor, up to the MCP client's listMaxPages cap. Wrap a server whose tools/list pagination terminates, with at most ${MAX_TOOLS} tools.`,
+          hint: 'Check that the wrapped server is running, connected, and supports the tools capability.',
           cause: err,
         },
       );
     }
-    throw new ProjectionError(
-      'protocol',
-      `tools/list failed for wrapped server "${alias}": ${err instanceof Error ? err.message : String(err)}`,
-      {
-        hint: 'Check that the wrapped server is running, connected, and supports the tools capability.',
-        cause: err,
-      },
-    );
-  }
-  if (tools.length > MAX_TOOLS) {
-    throw new ProjectionError(
-      'protocol',
-      `wrapped server "${alias}" exceeded introspection limits (declares ${tools.length} tools, over the cap of ${MAX_TOOLS})`,
-      {
-        hint: `Projection reads at most ${MAX_TOOLS} tools. Wrap a server with a bounded tool surface.`,
-      },
-    );
-  }
+    pages += 1;
+    tools.push(...page.tools);
+    if (tools.length > MAX_TOOLS) {
+      throw limitError(
+        alias,
+        `declares at least ${tools.length} tools, over the cap of ${MAX_TOOLS}`,
+      );
+    }
+    cursor = page.nextCursor;
+    if (cursor === undefined) break;
+    if (cursors.has(cursor)) {
+      throw limitError(
+        alias,
+        `tools/list pagination loops: page ${pages} returned cursor ${JSON.stringify(cursor.slice(0, 64))} a second time`,
+      );
+    }
+    if (pages >= MAX_TOOL_LIST_PAGES) {
+      throw limitError(
+        alias,
+        `tools/list still returns nextCursor after ${pages} pages, over the cap of ${MAX_TOOL_LIST_PAGES}`,
+      );
+    }
+    cursors.add(cursor);
+  } while (cursor !== undefined);
   return tools;
 }
 
-async function buildServerCatalog(alias: ServerAlias, client: Client): Promise<ServerCatalog> {
+/**
+ * True when `source` is shaped like an `McpServer` (a `server` property plus
+ * `connect`/`registerTool`, and no `listTools`, which a `Client` has) yet
+ * failed the `instanceof McpServer` check: the caller's project resolved a
+ * second copy of `@modelcontextprotocol/server`.
+ */
+function looksLikeForeignMcpServer(source: unknown): boolean {
+  if (typeof source !== 'object' || source === null) return false;
+  const candidate = source as Record<string, unknown>;
+  return (
+    'server' in candidate &&
+    (typeof candidate['connect'] === 'function' ||
+      typeof candidate['registerTool'] === 'function') &&
+    typeof candidate['listTools'] !== 'function'
+  );
+}
+
+/**
+ * One wrapped server's introspection result: the public catalog plus the raw
+ * `Tool` definitions by name, which {@link Introspector.callTool} hands to the
+ * SDK as `toolDefinition` so output-schema validation never depends on the
+ * SDK's internal `tools/list` cache (manual paging never fills it, and a
+ * `notifications/tools/list_changed` clears it).
+ */
+interface IntrospectedServer {
+  catalog: ServerCatalog;
+  definitions: Map<string, Tool>;
+}
+
+async function introspectServer(alias: ServerAlias, client: Client): Promise<IntrospectedServer> {
   const tools = await listAllTools(client, alias);
   const info = client.getServerVersion();
   const catalog: ServerCatalog = {
@@ -159,7 +227,7 @@ async function buildServerCatalog(alias: ServerAlias, client: Client): Promise<S
   };
   const instructions = client.getInstructions();
   if (instructions !== undefined) catalog.instructions = instructions;
-  return catalog;
+  return { catalog, definitions: new Map(tools.map((tool) => [tool.name, tool])) };
 }
 
 /** Extract a one-line error message from an `isError` tool result's content. */
@@ -195,10 +263,27 @@ function pickResultValue(result: { structuredContent?: unknown; content?: unknow
 export class Introspector implements ToolExecutor {
   readonly #connections: Map<ServerAlias, Connection>;
   #catalog: ToolCatalog;
+  #definitions: Map<ServerAlias, Map<string, Tool>>;
 
-  private constructor(connections: Map<ServerAlias, Connection>, catalog: ToolCatalog) {
+  private constructor(
+    connections: Map<ServerAlias, Connection>,
+    introspected: Map<ServerAlias, IntrospectedServer>,
+  ) {
     this.#connections = connections;
-    this.#catalog = catalog;
+    this.#catalog = Introspector.#catalogOf(introspected);
+    this.#definitions = Introspector.#definitionsOf(introspected);
+  }
+
+  static #catalogOf(introspected: Map<ServerAlias, IntrospectedServer>): ToolCatalog {
+    return {
+      servers: new Map([...introspected].map(([alias, server]) => [alias, server.catalog])),
+    };
+  }
+
+  static #definitionsOf(
+    introspected: Map<ServerAlias, IntrospectedServer>,
+  ): Map<ServerAlias, Map<string, Tool>> {
+    return new Map([...introspected].map(([alias, server]) => [alias, server.definitions]));
   }
 
   static async create(sources: IntrospectorSources): Promise<Introspector> {
@@ -209,7 +294,7 @@ export class Introspector implements ToolExecutor {
       });
     }
     const connections = new Map<ServerAlias, Connection>();
-    const servers = new Map<ServerAlias, ServerCatalog>();
+    const servers = new Map<ServerAlias, IntrospectedServer>();
     // Each server is an independent host-side connection, so introspect
     // them concurrently (v1 has one; the fan-out matters for R30 multi-server).
     //
@@ -223,7 +308,7 @@ export class Introspector implements ToolExecutor {
         if (source === undefined) return;
         const connection = await Introspector.#connect(alias, source);
         connections.set(alias, connection);
-        servers.set(alias, await buildServerCatalog(alias, connection.client));
+        servers.set(alias, await introspectServer(alias, connection.client));
       }),
     );
     const failed = settled.find(
@@ -233,7 +318,7 @@ export class Introspector implements ToolExecutor {
       await Introspector.#closeConnections(connections);
       throw failed.reason;
     }
-    return new Introspector(connections, { servers });
+    return new Introspector(connections, servers);
   }
 
   static async #connect(alias: ServerAlias, source: ServerSource): Promise<Connection> {
@@ -253,6 +338,15 @@ export class Introspector implements ToolExecutor {
       await client.connect(clientTransport);
       return { client, owned: true };
     }
+    if (looksLikeForeignMcpServer(source)) {
+      throw new ProjectionError(
+        'protocol',
+        `Wrapped server "${alias}" looks like an McpServer from a second copy of @modelcontextprotocol/server, not the one Projection uses.`,
+        {
+          hint: `Projection pins @modelcontextprotocol/server ${MCP_SDK_VERSION} exactly. Depend on that exact version so your package manager installs a single copy (check with \`npm ls @modelcontextprotocol/server\` or \`pnpm why @modelcontextprotocol/server\`).`,
+        },
+      );
+    }
     return { client: source, owned: false };
   }
 
@@ -271,13 +365,16 @@ export class Introspector implements ToolExecutor {
 
   /** Re-read `tools/list` from every wrapped server and rebuild the catalog. */
   async refresh(): Promise<ToolCatalog> {
-    const rebuilt = await Promise.all(
-      [...this.#connections].map(
-        async ([alias, connection]) =>
-          [alias, await buildServerCatalog(alias, connection.client)] as const,
+    const rebuilt = new Map(
+      await Promise.all(
+        [...this.#connections].map(
+          async ([alias, connection]) =>
+            [alias, await introspectServer(alias, connection.client)] as const,
+        ),
       ),
     );
-    this.#catalog = { servers: new Map(rebuilt) };
+    this.#catalog = Introspector.#catalogOf(rebuilt);
+    this.#definitions = Introspector.#definitionsOf(rebuilt);
     return this.#catalog;
   }
 
@@ -303,10 +400,17 @@ export class Introspector implements ToolExecutor {
         hint: `Known aliases: ${[...this.#connections.keys()].join(', ')}. v1 wraps exactly one server under the "default" alias.`,
       });
     }
+    // Validate against the definition recorded at introspection, not the
+    // SDK's tools/list cache (see IntrospectedServer). A name the catalog
+    // does not know has no definition; the server rejects it anyway.
+    const toolDefinition = this.#definitions.get(alias)?.get(name);
     try {
       // The SDK's return type is a union that includes a legacy
       // `{ toolResult }` compatibility shape; narrow to the modern fields.
-      const result = (await connection.client.callTool({ name, arguments: args })) as {
+      const result = (await connection.client.callTool(
+        { name, arguments: args },
+        toolDefinition !== undefined ? { toolDefinition } : undefined,
+      )) as {
         content?: unknown;
         structuredContent?: unknown;
         isError?: unknown;
