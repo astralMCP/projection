@@ -52,6 +52,15 @@ function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Mess
 }
 
 /** The golden calls in one assistant turn (through call_tool under Projection), then the answer. */
+/**
+ * Names of the tools offered to the model. The harness only ever passes
+ * named `Anthropic.Tool`s; the SDK's toolset members (no `name`) are
+ * narrowed away so the union type-checks.
+ */
+function toolNames(tools: Anthropic.ToolUnion[] | undefined): string[] {
+  return (tools ?? []).flatMap((t) => ('name' in t ? [t.name] : []));
+}
+
 function scripted(golden: Golden): ModelCaller {
   return async (params) => {
     const last = params.messages.at(-1);
@@ -59,7 +68,7 @@ function scripted(golden: Golden): ModelCaller {
     if (Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result')) {
       return message([{ type: 'text', text: golden.answer ?? 'Done.' }], 'end_turn');
     }
-    const viaProjection = (params.tools ?? []).some((t) => t.name === 'call_tool');
+    const viaProjection = toolNames(params.tools).includes('call_tool');
     return message(
       golden.calls.map((call, i) => ({
         type: 'tool_use',
