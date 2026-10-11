@@ -47,6 +47,7 @@ import {
   type ToolCatalogEntry,
 } from '../types.js';
 import { canonicalRequest } from './canonical.js';
+import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
 
 /**
@@ -107,7 +108,7 @@ export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<
     }
 
     const entry = findTool(deps.catalog, args.name);
-    if (entry === undefined) throw unknownTool(args.name);
+    if (entry === undefined) throw unknownToolError(deps.catalog, args.name, 'call_tool');
     validateArgsShape(entry.name, toolArgs, entry.inputSchema);
     // The binding text (R36), computed up front so values JSON cannot carry
     // (`undefined`, functions) are refused on every path, not only `ask`.
@@ -152,16 +153,6 @@ function normalizeArgs(raw: unknown, caps: ResourceCaps): Record<string, unknown
     );
   }
   return raw;
-}
-
-function unknownTool(name: string): ProjectionError {
-  return new ProjectionError(
-    'validate',
-    `Unknown tool ${inert(name)}: the wrapped server does not declare it`,
-    {
-      hint: 'Call search_tools to list the tools this server declares, then call_tool with one of those names exactly.',
-    },
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +245,7 @@ async function resume(
   // A blob for a tool this catalog does not declare can only have come from
   // another deployment sharing the identity string: refuse it.
   const entry = findTool(deps.catalog, recorded.name);
-  if (entry === undefined) throw unknownTool(recorded.name);
+  if (entry === undefined) throw unknownToolError(deps.catalog, recorded.name, 'call_tool');
   if (decidePolicy(entry, deps.policy) === 'deny') return denied(entry);
 
   // R17: anything but an accepted elicitation is a decline.
