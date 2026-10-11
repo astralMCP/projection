@@ -92,6 +92,16 @@ prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
 - **Perf-budget tests** (`test/integration/budgets.test.ts`) can flake under
   parallel turbo load; a p95 failure that passes on a solo re-run (command
   above) is load noise, not a regression.
+- **Sandbox memory-cap test** (`test/sandbox/caps.test.ts`) used to flake
+  on CI by hitting the wall-clock budget first. In the emscripten QuickJS
+  build the memory limit bounds the size of a single allocation request
+  (plus ~8 bytes of bookkeeping per live allocation), not total sandbox
+  memory: any number of sub-cap allocations adds up to ~2 GB (WASM linear
+  memory) at any cap setting, including the 1 MB floor (DECISIONS D14). It
+  is no longer a known flake. A memory-cap test must use a single request
+  larger than the cap (or assert the iteration count of a doubling
+  sequence), because any pattern of sub-cap allocations ends in the same
+  out-of-memory error regardless of the cap.
 - `src/types.ts` is the shared contract. Export new public API through
   `src/index.ts` deliberately (DECISIONS D3).
 
