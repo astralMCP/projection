@@ -15,8 +15,12 @@ export interface Golden {
   mutates?: boolean;
   /** A correct final answer. */
   answer?: string;
+  /** Further correct phrasings (verify must accept each). */
+  answers?: string[];
   /** A wrong final answer (verify must reject it). */
   wrongAnswer?: string;
+  /** Further wrong answers (verify must reject each). */
+  wrongAnswers?: string[];
   /** A plausible wrong call sequence (must not score). */
   wrong?: SideEffect[];
 }
@@ -53,8 +57,13 @@ export const GOLDEN: Record<string, Golden> = {
     ],
     answer: 'Gadget Max, Charging Dock, Gadget Mini',
     wrongAnswer: 'Gadget Max, Charging Dock, Carry Case',
+    // Read off an unsorted page: with 120 products the top three are not on it.
+    wrongAnswers: ['Gadget Max, Charging Dock, Part 087'],
+    // Ascending, and a sorted read of everything the server will hand over
+    // (its 100-document cap) — more than the "few" a top-three read may ask for.
     wrong: [
       { tool: 'find', args: { ...shop('products'), filter: {}, sort: { price: 1 }, limit: 3 } },
+      { tool: 'find', args: { ...shop('products'), filter: {}, sort: { price: -1 }, limit: 100 } },
     ],
   },
   'db-index-email': {
@@ -84,14 +93,15 @@ export const GOLDEN: Record<string, Golden> = {
       },
     ],
     mutates: true,
-    // No date bound: cancels the recent pending order too.
+    // The right filter, the wrong status: the update does not cancel anything.
+    // (A missing date bound is caught by `verify`, not by `expect`.)
     wrong: [
       {
         tool: 'update-many',
         args: {
           ...shop('orders'),
-          filter: { status: 'pending' },
-          update: { $set: { status: 'cancelled' } },
+          filter: { status: 'pending', placedAt: { $lt: { $date: '2026-09-01T00:00:00Z' } } },
+          update: { $set: { status: 'shipped' } },
         },
       },
     ],
@@ -134,10 +144,17 @@ export const GOLDEN: Record<string, Golden> = {
       { tool: 'list-databases', args: { connectionId: C } },
       { tool: 'list-collections', args: { connectionId: C, database: 'shop' } },
       { tool: 'list-collections', args: { connectionId: C, database: 'analytics' } },
+      { tool: 'list-collections', args: { connectionId: C, database: 'reports' } },
     ],
     answer: 'analytics',
+    answers: ['The analytics database has it (shop and reports do not).'],
     wrongAnswer: 'shop',
-    wrong: [{ tool: 'list-collections', args: { connectionId: C, database: 'shop' } }],
+    // Hedging between two names: the first one named is what counts.
+    wrongAnswers: ['Either shop or analytics.', 'reports'],
+    wrong: [
+      { tool: 'list-collections', args: { connectionId: C, database: 'shop' } },
+      { tool: 'list-collections', args: { connectionId: C, database: 'reports' } },
+    ],
   },
   'db-delete-cancelled': {
     calls: [{ tool: 'delete-many', args: { ...shop('orders'), filter: { status: 'cancelled' } } }],
@@ -179,7 +196,14 @@ export const GOLDEN: Record<string, Golden> = {
       },
     ],
     answer: 'shipped: 4, delivered: 3, pending: 3, cancelled: 2',
+    answers: [
+      'Shipped orders: 4\nDelivered orders: 3\nPending orders: 3\nCancelled orders: 2',
+      'There are 4 shipped, 3 delivered, 3 pending and 2 canceled orders.',
+    ],
     wrongAnswer: 'shipped: 4, delivered: 3, pending: 2, cancelled: 3',
+    // A vertical listing with the wrong numbers: a line's number must not be
+    // read against the next line's status ("3\npending" is not "3 pending").
+    wrongAnswers: ['shipped\n4\ndelivered\n3\npending\n2\ncancelled\n3'],
     wrong: [{ tool: 'count', args: { ...shop('orders') } }],
   },
   'db-explain-email-lookup': {
@@ -193,6 +217,10 @@ export const GOLDEN: Record<string, Golden> = {
       },
     ],
     answer: 'It would scan the whole collection (COLLSCAN): there is no index on customerEmail.',
+    answers: [
+      'customerEmail is not indexed, so the lookup scans every document.',
+      "The orders collection only has the default _id index, so it couldn't use an index for that.",
+    ],
     wrongAnswer: 'Yes, it uses the customerEmail index.',
     wrong: [
       { tool: 'find', args: { ...shop('orders'), filter: { customerEmail: 'alice@example.com' } } },

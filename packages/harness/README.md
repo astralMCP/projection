@@ -124,17 +124,26 @@ The **mongodb** tier (15 tasks on the real MongoDB MCP server,
 `mongodb-mcp-server` 3.0.5, against a seeded throwaway `mongod` from
 `mongodb-memory-server`) targets JSON-shaped arguments and near-duplicate
 tools: a filtered count, a top-3 by price (`sort` + `limit` or a
-`$sort`/`$limit` pipeline), a group-by, an update whose filter must carry
-both the status and the date cut-off, a delete that must carry a filter,
-dropping one collection but not the database, a rename, a conditional insert
-that must _not_ happen, and a query-plan question — and every tool needs the
-opaque `connectionId: "preconfigured"` the schema describes. The server's
+`$sort`/`$limit` pipeline — the fixture has 120 products, so an unsorted
+read capped at the server's 100 cannot see the most expensive one), a
+group-by, a status update whose scope is checked on the deployment (exactly
+the two stale orders flipped), a delete that must carry a filter, dropping
+one collection but not the database, a rename, a conditional insert that
+must _not_ happen, a which-database question with a decoy `reports` database
+to rule out, and a query-plan question — and every tool needs the opaque
+`connectionId: "preconfigured"` the schema describes. The server's
 dependency tree needs a newer MCP SDK than the workspace pins, so it is
 installed in isolation once with `pnpm run setup:mongodb` (in
 `packages/harness`; CI does this); the `mongod` binary (~80 MB) is
 downloaded once into `~/.cache/mongodb-binaries` (`MONGOMS_DOWNLOAD_DIR`).
-Tools that reach outside the deployment (`connect`, `export`, the
-knowledge-base search) are disabled.
+The server is spawned with a minimal environment (never the inherited
+`MDB_MCP_*` variables, which could silently make it read-only or enable
+Atlas tools), tools that reach outside the deployment (`connect`, `export`,
+the knowledge-base search, the Atlas categories) are disabled, and the world
+asserts the listed tools are exactly the expected 21. The recording proxy
+forwards each result's `structuredContent` along with its content blocks, so
+Projection sees what it would in production and its `call_tool` renders the
+structured result rather than an escaped content array.
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 

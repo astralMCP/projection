@@ -34,6 +34,7 @@ import {
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
+  mongodbServerInstalled,
   resolveModelPresets,
   resolveModes,
   resolveTasks,
@@ -57,6 +58,13 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']);
     const modes = resolveModes(process.env['PROJ_EVAL_MODES']);
     const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
+    // Fail before spending anything: without the vendored server every
+    // mongodb episode would be a harness error, not a measurement.
+    if (tiers.includes('mongodb') && !mongodbServerInstalled()) {
+      throw new Error(
+        'the mongodb tier is selected but the MongoDB MCP server is not installed; run `pnpm run setup:mongodb` in packages/harness, or set PROJ_EVAL_TIERS to exclude mongodb',
+      );
+    }
     const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);

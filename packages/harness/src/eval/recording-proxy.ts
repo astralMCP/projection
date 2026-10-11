@@ -6,9 +6,13 @@
  * Projection — faces exactly the real server's surface, the effects land
  * for real, and `calls` is what the tasks score.
  *
- * Output schemas are not re-registered: the SDK would validate the real
- * server's `structuredContent` against them, which is not this proxy's job.
- * Results pass through as content blocks plus `isError`.
+ * Results pass through whole: content blocks, `structuredContent` and
+ * `isError`. Output schemas are not re-registered — the SDK validates
+ * `structuredContent` only against a declared output schema, so without one
+ * the real server's structured result is forwarded untouched (validating it
+ * is the real server's job, not this proxy's). Projection then sees exactly
+ * what it would in production: its `call_tool` renders the structured value
+ * rather than an escaped copy of the content array.
  */
 
 import type { Client } from '@modelcontextprotocol/client';
@@ -83,6 +87,9 @@ export async function createRecordingProxy(
         const result = await client.callTool({ name: tool.name, arguments: recorded });
         return {
           content: Array.isArray(result.content) ? result.content : [],
+          ...(result.structuredContent !== undefined
+            ? { structuredContent: result.structuredContent }
+            : {}),
           ...(result.isError === true ? { isError: true } : {}),
         };
       },

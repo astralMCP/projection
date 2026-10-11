@@ -5,11 +5,14 @@
  *
  * Built to discriminate between the server's near-duplicate tools and
  * between argument shapes: a count (`count` with a query, or `find` /
- * `aggregate` that filter); a top-N by price (`sort` + `limit`, or a
- * `$sort`/`$limit` pipeline); a group-by (`aggregate` with `$group`, or one
- * `count` per status); a scoped update (`update-many` whose filter names
- * both the status and the cut-off date — never a delete); a scoped delete
- * (`delete-many` with a filter — never an empty filter, never a drop); a
+ * `aggregate` that filter or group); a top-N by price (`sort` + `limit`, or
+ * a `$sort`/`$limit` pipeline — the 120-product fixture puts the top three
+ * out of reach of an unsorted read); a group-by (`aggregate` with `$group`
+ * or `$sortByCount`, or one `count` per status); a scoped update
+ * (`update-many` that sets the status — never a delete; the filter's
+ * correctness is carried by `verify` on the deployment, since a date bound,
+ * an `$expr` or an `$in` of ids found first are all legitimate); a scoped
+ * delete (`delete-many` with a filter — never an empty one, never a drop); a
  * drop of one collection (not the database); a rename; a conditional insert
  * that must NOT happen because the customer exists; and a query-plan
  * question (`explain` or `collection-indexes`). Every tool also needs
@@ -19,12 +22,14 @@
  * `expect` scores the recorded calls; mutation tasks `verify` the
  * deployment through the driver, and question tasks verify the answer.
  * Filters are accepted in their common spellings (`{status: 'x'}`,
- * `{status: {$eq: 'x'}}`, `{status: {$in: ['x']}}`).
+ * `{status: {$eq: 'x'}}`, `{status: {$in: ['x']}}`, a top-level `$and`, a
+ * pipeline whose conditions are spread over several `$match` stages).
  */
 
 import type { SideEffect } from '../types.js';
 import {
   FIXTURE_CUSTOMERS,
+  FIXTURE_PRODUCTS,
   ORDER_STATUS_COUNTS,
   SHOP_COLLECTIONS,
   SHOP_DB,
@@ -44,10 +49,21 @@ function on(args: Args, collection: string, database: string = SHOP_DB): boolean
   return sameText(args['database'], database) && sameText(args['collection'], collection);
 }
 
-/** The filter argument under whichever name the tool uses (`filter`, or `query` for count). */
+/**
+ * One flat filter document: a top-level `$and` is merged into its siblings
+ * (`{$and: [{a: 1}, {b: 2}]}` → `{a: 1, b: 2}`), so `fieldIs`/`boundsBelow`
+ * see every condition regardless of how the model spelt the conjunction.
+ */
+function flatten(filter: Doc): Doc {
+  const { $and, ...rest } = filter;
+  if (!Array.isArray($and)) return filter;
+  return $and.filter(isDoc).reduce<Doc>((acc, clause) => ({ ...acc, ...flatten(clause) }), rest);
+}
+
+/** The filter argument under whichever name the tool uses (`filter`, or `query` for count), flattened. */
 function filterOf(args: Args): Doc {
   const value = args['filter'] ?? args['query'];
-  return isDoc(value) ? value : {};
+  return isDoc(value) ? flatten(value) : {};
 }
 
 /** The pipeline's stages, each `{ $stage: spec }`. */
@@ -56,13 +72,14 @@ function stagesOf(args: Args): Doc[] {
   return Array.isArray(pipeline) ? pipeline.filter(isDoc) : [];
 }
 
-/** The first `$match` stage's filter, if any. */
+/** Every `$match` stage's filter, merged into one flattened document. */
 function matchOf(args: Args): Doc {
-  for (const stage of stagesOf(args)) {
-    const match = stage['$match'];
-    if (isDoc(match)) return match;
+  let merged: Doc = {};
+  for (const entry of stagesOf(args)) {
+    const match = entry['$match'];
+    if (isDoc(match)) merged = { ...merged, ...flatten(match) };
   }
-  return {};
+  return merged;
 }
 
 function stage(args: Args, name: string): unknown {
@@ -85,12 +102,6 @@ function fieldIs(filter: Doc, field: string, value: string): boolean {
     );
   }
   return false;
-}
-
-/** The filter has an upper bound on `field` (`$lt`/`$lte`, any encoding of the date). */
-function boundsBelow(filter: Doc, field: string): boolean {
-  const spec = filter[field];
-  return isDoc(spec) && (spec['$lt'] !== undefined || spec['$lte'] !== undefined);
 }
 
 function isEmpty(doc: Doc): boolean {
@@ -116,6 +127,24 @@ function reads(calls: SideEffect[], collection: string): boolean {
   return has(calls, READ_TOOLS, (args) => on(args, collection));
 }
 
+/**
+ * An `aggregate` over `collection` that groups by `field`: `$group` with an
+ * `_id` naming the field (`'$status'` or `{status: '$status'}`), or a
+ * `$sortByCount` of it. The model then reads the per-group counts off the
+ * result.
+ */
+function groupsBy(calls: SideEffect[], collection: string, field: string): boolean {
+  return has(calls, 'aggregate', (args) => {
+    if (!on(args, collection)) return false;
+    const group = stage(args, '$group');
+    const sortByCount = stage(args, '$sortByCount');
+    return (
+      (isDoc(group) && (JSON.stringify(group['_id']) ?? '').includes(field)) ||
+      (sortByCount !== undefined && JSON.stringify(sortByCount).includes(field))
+    );
+  });
+}
+
 /** `sort[field] === direction` (numbers or the strings "asc"/"desc"). */
 function sortedBy(sort: unknown, field: string, direction: -1 | 1): boolean {
   if (!isDoc(sort)) return false;
@@ -127,8 +156,9 @@ function sortedBy(sort: unknown, field: string, direction: -1 | 1): boolean {
   );
 }
 
-function limitIs(value: unknown, n: number): boolean {
-  return value === n || value === String(n);
+/** A numeric limit (the schema types it as a number) within `[min, max]`. */
+function limitBetween(value: unknown, min: number, max: number): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
 }
 
 /** Writes aimed at `collection` that a task may forbid. */
@@ -140,29 +170,52 @@ function destroys(call: SideEffect, collection: string): boolean {
   );
 }
 
+/** The `update-many` update sets `field` to `value` (`{$set: {field: value}}`). */
+function sets(args: Args, field: string, value: string): boolean {
+  const update = args['update'];
+  return isDoc(update) && isDoc(update['$set']) && sameText(update['$set'][field], value);
+}
+
 const number = (n: number): RegExp => new RegExp(`(^|\\D)${n}(\\D|$)`);
 
 /**
- * `status: n` (prose or table) or `n [orders [are]] status`. The number must
- * sit right after the status or be followed by whitespace, so "delivered: 3,
- * pending" does not read as three pending.
+ * `status: n` (prose or table, optionally "status orders: n") or
+ * `n [orders [are]] status`, on one line: only horizontal whitespace may
+ * separate the words, so a vertical listing cannot bleed one line's number
+ * into the next line's status. "cancelled" also matches "canceled".
  */
-const statusCount = (status: string, n: number): RegExp =>
-  new RegExp(`${status}\\W{0,4}${n}(\\D|$)|(^|\\D)${n}\\s+(\\w+\\s+){0,2}${status}`, 'i');
+const statusCount = (status: string, n: number): RegExp => {
+  const word = status === 'cancelled' ? 'cancel+ed' : status;
+  return new RegExp(
+    `${word}[^\\w\\s]{0,2}(?:[ \\t]+orders?)?[ \\t]*[^\\w\\s]{0,4}[ \\t]*${n}(?:\\D|$)` +
+      `|(?:^|\\D)${n}[ \\t]+(?:\\w+[ \\t]+){0,2}${word}`,
+    'i',
+  );
+};
 
-/** The `create-index` definition (an array of index specs, or a bare keys object) indexes `field`. */
+/**
+ * The `create-index` definition indexes `field`. Only the array form
+ * (`[{ type, keys: { field: 1 } }]`) exists: the mirrored schema rejects a
+ * bare keys object or a top-level `{keys}` before the call is recorded.
+ */
 function indexesField(args: Args, field: string): boolean {
   const definition = args['definition'];
-  const specs = Array.isArray(definition) ? definition : [definition];
-  return specs.some((spec) => {
-    if (!isDoc(spec)) return false;
-    const keys = isDoc(spec['keys']) ? spec['keys'] : spec;
-    return keys[field] !== undefined;
-  });
+  return (
+    Array.isArray(definition) &&
+    definition.some(
+      (spec) => isDoc(spec) && isDoc(spec['keys']) && spec['keys'][field] !== undefined,
+    )
+  );
+}
+
+/** The first database name the answer mentions, among the deployment's three. */
+function firstDatabaseNamed(text: string): string | undefined {
+  return /\b(shop|analytics|reports)\b/i.exec(text)?.[1]?.toLowerCase();
 }
 
 export const MONGODB_TASKS: readonly EvalTask[] = [
-  // --- A filtered count: count with a query, or find/aggregate filtering on status.
+  // --- A filtered count: count with a query, find/aggregate filtering on
+  // status, or a group-by whose shipped row the model reads.
   {
     name: 'db-count-shipped',
     tier: 'mongodb',
@@ -170,7 +223,9 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     prompt:
       'How many orders in the shop database have status "shipped"? Answer with just the number.',
     steps: [['count', 'find', 'aggregate']],
-    expect: (calls) => filteredRead(calls, 'orders', (f) => fieldIs(f, 'status', 'shipped')),
+    expect: (calls) =>
+      filteredRead(calls, 'orders', (f) => fieldIs(f, 'status', 'shipped')) ||
+      groupsBy(calls, 'orders', 'status'),
     verify: (context) => number(ORDER_STATUS_COUNTS['shipped'] ?? 0).test(context.finalText.trim()),
   },
   // --- Discovery: the collection names.
@@ -195,7 +250,9 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     verify: (context) =>
       ['name', 'email', 'city', 'tier'].every((field) => context.finalText.includes(field)),
   },
-  // --- Top N: sort + limit, or a $sort/$limit pipeline.
+  // --- Top N: sort + limit, or a $sort/$limit pipeline. A limit of a few
+  // (3–10) is fine — the model reads the top three off the result; with 120
+  // products an unsorted read cannot (see FIXTURE_PRODUCTS).
   {
     name: 'db-top3-expensive',
     tier: 'mongodb',
@@ -208,7 +265,9 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
         calls,
         'find',
         (args) =>
-          on(args, 'products') && sortedBy(args['sort'], 'price', -1) && limitIs(args['limit'], 3),
+          on(args, 'products') &&
+          sortedBy(args['sort'], 'price', -1) &&
+          limitBetween(args['limit'], 3, 10),
       ) ||
       has(
         calls,
@@ -216,11 +275,13 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
         (args) =>
           on(args, 'products') &&
           sortedBy(stage(args, '$sort'), 'price', -1) &&
-          limitIs(stage(args, '$limit'), 3),
+          limitBetween(stage(args, '$limit'), 3, 10),
       ),
     verify: (context) =>
       ['Gadget Max', 'Charging Dock', 'Gadget Mini'].every((n) => context.finalText.includes(n)) &&
-      !['Widget Basic', 'Widget Plus', 'Carry Case'].some((n) => context.finalText.includes(n)),
+      !['Widget Basic', 'Widget Plus', 'Carry Case', 'Part '].some((n) =>
+        context.finalText.includes(n),
+      ),
   },
   // --- An index.
   {
@@ -229,8 +290,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt: 'Add an index on the email field of the customers collection in the shop database.',
     steps: [['create-index']],
-    // The server takes `definition: [{ type: 'classic', keys: { email: 1 } }]`;
-    // a bare `{ email: 1 }` or `{ keys: ... }` object is accepted here too.
+    // The server takes `definition: [{ type: 'classic', keys: { email: 1 } }]`.
     expect: (calls) =>
       has(calls, 'create-index', (args) => on(args, 'customers') && indexesField(args, 'email')),
     verify: (context) =>
@@ -239,7 +299,11 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
         return indexes.some((index) => isDoc(index['key']) && index['key']['email'] !== undefined);
       }),
   },
-  // --- A scoped update: both conditions in the filter; never a delete.
+  // --- A scoped update: an update-many that sets the status; never a
+  // delete. The filter is not scored — a `$date` bound, an `$expr`, or an
+  // `orderId $in` list after a find are all legitimate — so correctness is
+  // carried by `verify`: exactly the two stale orders flipped, the recent
+  // one kept, nothing removed.
   {
     name: 'db-cancel-stale-pending',
     tier: 'mongodb',
@@ -248,14 +312,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
       'In the shop database, mark every order that is still "pending" and was placed before 1 September 2026 as "cancelled".',
     steps: [['update-many']],
     expect: (calls) =>
-      has(calls, 'update-many', (args) => {
-        const filter = filterOf(args);
-        return (
-          on(args, 'orders') &&
-          fieldIs(filter, 'status', 'pending') &&
-          boundsBelow(filter, 'placedAt')
-        );
-      }),
+      has(calls, 'update-many', (args) => on(args, 'orders') && sets(args, 'status', 'cancelled')),
     forbid: (call) => destroys(call, 'orders'),
     verify: (context) =>
       withMongodb(context.facts, async (client) => {
@@ -321,7 +378,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
           doc['price'] === 49.99 &&
           doc['category'] === 'widgets' &&
           doc['stock'] === 25 &&
-          (await products.countDocuments({})) === 7
+          (await products.countDocuments({})) === FIXTURE_PRODUCTS.length + 1
         );
       }),
   },
@@ -350,18 +407,24 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
         );
       }),
   },
-  // --- Cross-database discovery.
+  // --- Cross-database discovery: any read that looked inside `analytics`
+  // (a listing, or a probe of its collections), and an answer that names
+  // it first — `reports` is a decoy with a `daily_summary` collection.
   {
     name: 'db-which-db-has-daily',
     tier: 'mongodb',
     kind: 'multi',
     prompt:
       'One of the databases on this deployment has a collection called daily. Which database is it? Answer with just the database name.',
-    steps: [['list-databases'], ['list-collections']],
+    steps: [
+      ['list-databases'],
+      ['list-collections', 'find', 'count', 'aggregate', 'collection-schema'],
+    ],
     expect: (calls) =>
-      has(calls, 'list-collections', (args) => sameText(args['database'], 'analytics')),
-    verify: (context) =>
-      /analytics/i.test(context.finalText) && !/\bshop\b/i.test(context.finalText.trim()),
+      has(calls, ['list-collections', 'find', 'count', 'aggregate', 'collection-schema'], (args) =>
+        sameText(args['database'], 'analytics'),
+      ),
+    verify: (context) => firstDatabaseNamed(context.finalText) === 'analytics',
   },
   // --- A scoped delete: a filter, never an empty one, never a drop.
   {
@@ -371,11 +434,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     prompt: 'Remove every cancelled order from the shop database.',
     steps: [['delete-many']],
     expect: (calls) =>
-      has(
-        calls,
-        'delete-many',
-        (args) => on(args, 'orders') && fieldIs(filterOf(args), 'status', 'cancelled'),
-      ),
+      has(calls, 'delete-many', (args) => on(args, 'orders') && !isEmpty(filterOf(args))),
     forbid: (call) =>
       (call.tool === 'delete-many' && on(call.args, 'orders') && isEmpty(filterOf(call.args))) ||
       call.tool === 'drop-collection' ||
@@ -431,7 +490,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
       ),
     verify: (context) => number(2).test(context.finalText.trim()),
   },
-  // --- Group by: one aggregate, or a count per status.
+  // --- Group by: one aggregate ($group or $sortByCount), or a count per status.
   {
     name: 'db-orders-per-status',
     tier: 'mongodb',
@@ -439,10 +498,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
     prompt: 'In the shop database, how many orders are there for each status?',
     steps: [['aggregate', 'count']],
     expect: (calls) =>
-      has(calls, 'aggregate', (args) => {
-        const group = stage(args, '$group');
-        return on(args, 'orders') && isDoc(group) && String(group['_id']).includes('status');
-      }) ||
+      groupsBy(calls, 'orders', 'status') ||
       Object.keys(ORDER_STATUS_COUNTS).every((status) =>
         filteredRead(calls, 'orders', (f) => fieldIs(f, 'status', status)),
       ),
@@ -463,7 +519,7 @@ export const MONGODB_TASKS: readonly EvalTask[] = [
       has(calls, 'explain', (args) => on(args, 'orders')) ||
       has(calls, 'collection-indexes', (args) => on(args, 'orders')),
     verify: (context) =>
-      /collscan|collection scan|scan(s|ning)? the (whole|entire|full) collection|no index|not use an index|does(n't| not) use an index|without an index|full scan/i.test(
+      /collscan|collection scan|scan(s|ning)? the (whole|entire|full) collection|scan(s|ning)? (all|every|each)|no index|not indexed|isn'?t indexed|unindexed|not use an index|does(n't| not) use an index|(can|could|would)( ?not|n'?t) (be able to )?use an index|without an index|full scan|only .{0,20}_id index/i.test(
         context.finalText,
       ),
   },

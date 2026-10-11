@@ -10,15 +10,23 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  mongodbServerEntry,
   mongodbServerInstalled,
   openDirectSession,
+  openProjectionSession,
   openWorld,
   resolveModes,
   resolveTasks,
   runToolChoiceEval,
   withMongodb,
+  FIXTURE_PRODUCTS,
+  MONGODB_EXPECTED_TOOLS,
+  MONGODB_QUERY_CAP,
   MONGODB_TASKS,
   type ModelCaller,
   type ModelPreset,
@@ -69,15 +77,13 @@ const preset: ModelPreset = { name: 'scripted', model: 'scripted-model', params:
 const installed = mongodbServerInstalled();
 
 describe.skipIf(!installed)('mongodb world', () => {
-  it('spawns the real server behind a recording proxy with its 21 local tools', async () => {
+  it('spawns the real server behind a recording proxy with exactly its 21 local tools', async () => {
     const world = await openWorld('mongodb');
     try {
       expect(world.name).toBe('mongodb');
       const names = world.tools.map((t) => t.name);
-      expect(names).toHaveLength(21);
-      expect(names).toEqual(
-        expect.arrayContaining(['find', 'count', 'aggregate', 'update-many', 'drop-collection']),
-      );
+      expect(MONGODB_EXPECTED_TOOLS).toHaveLength(21);
+      expect(names.toSorted()).toEqual(MONGODB_EXPECTED_TOOLS);
       for (const disabled of ['connect', 'export', 'search-knowledge', 'mongodb-logs']) {
         expect(names).not.toContain(disabled);
       }
@@ -89,6 +95,83 @@ describe.skipIf(!installed)('mongodb world', () => {
       expect(
         await withMongodb(world.facts, (c) => c.db('shop').collection('orders').countDocuments({})),
       ).toBe(12);
+      // More products than one query returns, and the decoy database.
+      expect(FIXTURE_PRODUCTS.length).toBeGreaterThan(MONGODB_QUERY_CAP);
+      expect(
+        await withMongodb(world.facts, (c) =>
+          c.db('shop').collection('products').countDocuments({}),
+        ),
+      ).toBe(FIXTURE_PRODUCTS.length);
+      expect(
+        await withMongodb(world.facts, async (c) =>
+          (await c.db('reports').listCollections().toArray()).map((col) => col.name),
+        ),
+      ).toEqual(['daily_summary']);
+    } finally {
+      await world.close();
+    }
+  }, 120_000);
+
+  it('spawns the server with a minimal environment: an inherited MDB_MCP_READ_ONLY does not shrink the tool set', async () => {
+    process.env['MDB_MCP_READ_ONLY'] = 'true';
+    try {
+      const world = await openWorld('mongodb');
+      try {
+        expect(world.tools.map((t) => t.name).toSorted()).toEqual(MONGODB_EXPECTED_TOOLS);
+      } finally {
+        await world.close();
+      }
+    } finally {
+      delete process.env['MDB_MCP_READ_ONLY'];
+    }
+  }, 120_000);
+
+  it('forwards structuredContent: direct mode sees the content blocks, Projection renders the structured result', async () => {
+    const world = await openWorld('mongodb');
+    const find = {
+      tool: 'find',
+      args: {
+        connectionId: 'preconfigured',
+        database: 'shop',
+        collection: 'products',
+        filter: {},
+        sort: { price: -1 },
+        limit: 3,
+      },
+    };
+    try {
+      const direct = await openDirectSession(world);
+      try {
+        const result = await direct.runtime.call(find.tool, find.args);
+        expect(result.isError).toBeUndefined();
+        // The server's own text blocks, joined: the summary line and the
+        // untrusted-data section holding the documents array.
+        expect(result.text).toMatch(/resulted in 120 documents\. Returning 3 documents/);
+        expect(result.text).toContain('<untrusted-user-data-');
+        expect(result.text).toContain('"name":"Gadget Max"');
+        expect(result.text).not.toContain('"documents"');
+      } finally {
+        await direct.close();
+      }
+      const projection = await openProjectionSession(world);
+      try {
+        const result = await projection.runtime.call('call_tool', {
+          name: find.tool,
+          args: find.args,
+        });
+        expect(result.isError).toBeUndefined();
+        expect(result.text).toMatch(/^call_tool "find": ok\n/);
+        // The structured value, pretty-printed — not a JSON-escaped copy of
+        // the content array.
+        expect(result.text).toContain('"documents": [');
+        expect(result.text).toContain('"queryResultsCount": 120');
+        expect(result.text).toContain('"name": "Gadget Max"');
+        expect(result.text).not.toMatch(/"type":\s*"text"/);
+        expect(result.text).not.toContain('untrusted-user-data');
+      } finally {
+        await projection.close();
+      }
+      expect(world.calls.map((c) => c.tool)).toEqual(['find', 'find']);
     } finally {
       await world.close();
     }
@@ -157,9 +240,14 @@ describe.skipIf(!installed)('mongodb world', () => {
             const forbid = task.forbid;
             if (forbid !== undefined) expect(world.calls.some((c) => forbid(c))).toBe(false);
             if (task.verify !== undefined) {
-              expect(await task.verify(context(golden.answer ?? ''))).toBe(true);
-              if (golden.wrongAnswer !== undefined) {
-                expect(await task.verify(context(golden.wrongAnswer))).toBe(false);
+              for (const answer of [golden.answer ?? '', ...(golden.answers ?? [])]) {
+                expect(await task.verify(context(answer)), answer).toBe(true);
+              }
+              for (const wrong of [
+                ...(golden.wrongAnswer !== undefined ? [golden.wrongAnswer] : []),
+                ...(golden.wrongAnswers ?? []),
+              ]) {
+                expect(await task.verify(context(wrong)), wrong).toBe(false);
               }
             }
           } finally {
@@ -172,8 +260,13 @@ describe.skipIf(!installed)('mongodb world', () => {
   });
 });
 
-describe.skipIf(installed)('mongodb world (not installed)', () => {
-  it('skips with a pointer to the setup script', () => {
-    expect(mongodbServerInstalled()).toBe(false);
+describe('mongodb server lookup', () => {
+  it('points at the setup script when no vendor install is found above the start directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'projection-no-vendor-'));
+    try {
+      expect(() => mongodbServerEntry(dir)).toThrow(/pnpm run setup:mongodb/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
