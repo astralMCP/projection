@@ -134,6 +134,59 @@ export function searchTools(
   };
 }
 
+/** How many declared names an unknown-tool hint suggests. */
+export const SUGGESTION_LIMIT = 3;
+
+/**
+ * The declared tools closest to a name the catalog does not have: the
+ * name's tokens (`create_issue` → `create`, `issue`) ranked exactly as a
+ * `search_tools` query is (D10), top `limit`. Empty when nothing matches.
+ */
+export function suggestTools(
+  catalog: ServerCatalog,
+  name: string,
+  limit: number = SUGGESTION_LIMIT,
+): string[] {
+  // An empty query lists the whole catalog for search_tools; an empty name
+  // suggests nothing.
+  if (tokenize(name).length === 0) return [];
+  return rankTools(dedupeTools(catalog.tools), name)
+    .slice(0, Math.max(0, limit))
+    .map((entry) => entry.name);
+}
+
+/** `"a"`, `"a" or "b"`, `"a", "b" or "c"`. */
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1] ?? ''}`;
+}
+
+/**
+ * The `validate` error for a tool name the catalog does not declare, from
+ * `call_tool` or `describe_tool` (R34, R35): names the closest declared
+ * tools when there are any, then points at `search_tools`. A model that
+ * guessed `create_issue` learns `issue_write` in the same turn instead of
+ * three turns later. Every name shown is S5-untrusted: neutralized, capped
+ * and quoted.
+ */
+export function unknownToolError(
+  catalog: ServerCatalog,
+  name: string,
+  via: 'call_tool' | 'describe_tool',
+): ProjectionError {
+  const shown = (text: string): string =>
+    JSON.stringify(capLength(neutralizeControlChars(text), MAX_IDENTITY_CHARS));
+  const suggestions = suggestTools(catalog, name).map(shown);
+  const didYouMean = suggestions.length === 0 ? '' : `Did you mean ${listNames(suggestions)}? `;
+  return new ProjectionError(
+    'validate',
+    `Unknown tool ${shown(name)}: the wrapped server does not declare it`,
+    {
+      hint: `${didYouMean}Call search_tools to list the tools this server declares, then ${via} with one of those names exactly.`,
+    },
+  );
+}
+
 /**
  * Tokens of a query: lowercased, NFC-normalized, split on anything that is
  * not a letter, combining mark, or digit — so a decomposed `é` stays inside

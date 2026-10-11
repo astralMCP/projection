@@ -82,6 +82,17 @@ describe('call_tool: validation (R35.1)', () => {
     expect(d.executor.calls).toEqual([]);
   });
 
+  it('names the closest declared tools when the name is a near miss (did you mean)', async () => {
+    const d = deps();
+    const result = completed(await callTool({ name: 'read_files', args: { path: '/x' } }, d));
+    expect(result.isError).toBe(true);
+    const err = structured(result);
+    expect(err['phase']).toBe('validate');
+    expect(String(err['hint'])).toMatch(/^Did you mean "read_file"\? Call search_tools/);
+    expect(String(err['hint'])).toContain('then call_tool with one of those names exactly');
+    expect(d.executor.calls).toEqual([]);
+  });
+
   it('rejects non-object args and non-JSON values', async () => {
     for (const args of [[1, 2], 'str', 42, null]) {
       const result = completed(await callTool({ name: 'read_file', args }, deps()));

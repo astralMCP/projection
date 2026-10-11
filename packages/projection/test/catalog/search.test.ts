@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { suggestTools, unknownToolError } from '../../src/catalog/search.js';
 import {
   MAX_QUERY_CHARS,
   searchTools,
@@ -431,6 +432,54 @@ describe('search_tools (R33)', () => {
 
     it('emoji separate words rather than joining them', () => {
       expect(tokenize('ship \u{1f680} it')).toEqual(['ship', 'it']);
+    });
+  });
+
+  describe('suggestions for an unknown name (R34, R35)', () => {
+    it("ranks the name's tokens like a query and returns the top names", () => {
+      // Fixture tools: read_file, list_dir, write_file, delete_file.
+      expect(suggestTools(CATALOG, 'read_files')).toEqual(['read_file']);
+      expect(suggestTools(CATALOG, 'create_file')).toEqual([
+        'read_file',
+        'write_file',
+        'delete_file',
+      ]);
+      expect(suggestTools(CATALOG, 'create_file', 1)).toEqual(['read_file']);
+      expect(suggestTools(CATALOG, 'zzz')).toEqual([]);
+      expect(suggestTools(CATALOG, '')).toEqual([]);
+    });
+
+    it('builds the validate error with a did-you-mean prefix only when something matched', () => {
+      // `files` is not a substring of `file`: only the `delete` token matches.
+      const near = unknownToolError(CATALOG, 'delete-files', 'call_tool');
+      expect(near).toBeInstanceOf(ProjectionError);
+      expect(near.phase).toBe('validate');
+      expect(near.message).toBe(
+        'Unknown tool "delete-files": the wrapped server does not declare it',
+      );
+      expect(near.hint).toBe(
+        'Did you mean "delete_file"? Call search_tools to list the tools this server declares, then call_tool with one of those names exactly.',
+      );
+      // Three ties on `file`, in catalog order, listed with "or".
+      expect(unknownToolError(CATALOG, 'create_file', 'call_tool').hint).toMatch(
+        /^Did you mean "read_file", "write_file" or "delete_file"\? /,
+      );
+      const far = unknownToolError(CATALOG, 'zzz', 'describe_tool');
+      expect(far.hint).toBe(
+        'Call search_tools to list the tools this server declares, then describe_tool with one of those names exactly.',
+      );
+    });
+
+    it('neutralizes and caps every name it shows (S5)', () => {
+      const hostile: ServerCatalog = {
+        ...CATALOG,
+        tools: [entry({ name: `evil_file\u001b[31m${'x'.repeat(300)}` }), ...CATALOG.tools],
+      };
+      const error = unknownToolError(hostile, 'evil\u001b', 'call_tool');
+      expect(error.message).not.toContain('\u001b');
+      expect(error.hint).not.toContain('\u001b');
+      expect(error.hint.length).toBeLessThan(600);
+      expect(error.hint).toMatch(/^Did you mean "evil_file/);
     });
   });
 });

@@ -288,3 +288,5 @@ that need synonyms (`mkdir` → `create_directory`); that is a vocabulary
 problem, not a matching one, and not worth a thesaurus. CJK runs are one
 token (no segmentation): a query of several ideographs matches only as that
 exact run.
+
+**Addendum (2026-10-11): the same ranking powers the unknown-name hint.** When `call_tool` or `describe_tool` is given a name the catalog does not declare, the hint names the top three tools that `search_tools` would rank for the name's tokens (`create_issue` → `issue_write`, …) before pointing at `search_tools`. The tool-choice eval (Haiku 4.5 through Projection, 94% vs 100% direct) showed the dominant failure was a guessed name costing a `search_tools` → `describe_tool` → `call_tool` detour; this folds the first hop into the error. No new matching logic: same tokens, same scores, same S5 treatment of every name shown.
