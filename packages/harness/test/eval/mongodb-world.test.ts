@@ -32,6 +32,7 @@ import {
   type ModelPreset,
 } from '../../src/index.js';
 import { GOLDEN, type Golden } from './mongodb-goldens.js';
+import { toolNames } from './tool-names.js';
 
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
   return {
@@ -52,15 +53,6 @@ function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Mess
 }
 
 /** The golden calls in one assistant turn (through call_tool under Projection), then the answer. */
-/**
- * Names of the tools offered to the model. The harness only ever passes
- * named `Anthropic.Tool`s; the SDK's toolset members (no `name`) are
- * narrowed away so the union type-checks.
- */
-function toolNames(tools: Anthropic.ToolUnion[] | undefined): string[] {
-  return (tools ?? []).flatMap((t) => ('name' in t ? [t.name] : []));
-}
-
 function scripted(golden: Golden): ModelCaller {
   return async (params) => {
     const last = params.messages.at(-1);

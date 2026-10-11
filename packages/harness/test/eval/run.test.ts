@@ -27,15 +27,7 @@ import {
   type ModelCaller,
   type ModelPreset,
 } from '../../src/index.js';
-
-/**
- * Names of the tools offered to the model. The harness only ever passes
- * named `Anthropic.Tool`s; the SDK's toolset members (no `name`) are
- * narrowed away so the union type-checks.
- */
-function toolNames(tools: Anthropic.ToolUnion[] | undefined): string[] {
-  return (tools ?? []).flatMap((t) => ('name' in t ? [t.name] : []));
-}
+import { toolNames } from './tool-names.js';
 
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
   return {
