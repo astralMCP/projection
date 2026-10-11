@@ -232,22 +232,68 @@ async function acquireBoundedRuntime(capBytes: number): Promise<BoundedRuntime> 
       ...(wasmModule !== undefined ? { wasmModule } : {}),
     }),
   );
+  guardHostMalloc(runtime.module);
   return { runtime, memory, maximumPages };
 }
 
 /**
- * Return an instance whose session has ended. Only an instance whose heap is
- * still at its initial size is kept: its QuickJS runtime has been freed, so
- * for the next session it is as good as new — and reusing it is what keeps
- * segment start-up at the cost of the old shared singleton (instantiating
- * per session doubled the resume leg under parallel load). An instance that
- * grew — a machine that hoarded, whether or not it hit the cap — is dropped
- * so its memory is reclaimed. Sharing an instance across sessions in
- * sequence is the same trust the shared singleton always placed in QuickJS's
- * memory safety; the pool only ever hands out instances whose runtime was
- * disposed cleanly.
+ * Make the instance's `_malloc` export throw when the heap is full instead
+ * of returning NULL. quickjs-emscripten copies every string and buffer it
+ * hands the VM — `evalCode` sources included, and the machine host delivers
+ * tool results as JSON inside evaluate source — through `_malloc` without
+ * checking the result, so under a bounded heap a NULL would make it write
+ * the copy at address 0 onward, corrupting the instance's static data
+ * (traps, assertion aborts, a poisoned pooled instance). Thrown instead, the
+ * error reaches `@sebastianwessel/quickjs`'s `handleEvalError` with the
+ * message "out of memory", which `classifyEvalError` reports as the memory
+ * `cap_exceeded`, and nothing is written. Only host-side allocations go
+ * through this export; QuickJS's own allocations stay inside the WASM module
+ * and fail the ordinary way.
  */
-function releaseBoundedRuntime(bounded: BoundedRuntime): void {
+function guardHostMalloc(wasmModule: QuickJsRuntime['module']): void {
+  // `getFFI()` is public but marked experimental; its `module` field is the
+  // emscripten module whose `_malloc` the library's `ModuleMemory` reads at
+  // call time. The field is private in the FFI typings, hence the cast
+  // (relies on quickjs-emscripten-core 0.32.0, pinned exactly).
+  const emscripten = (wasmModule.getFFI() as unknown as { module: HostMalloc }).module;
+  const malloc = emscripten._malloc;
+  emscripten._malloc = (size: number): number => {
+    const ptr = malloc(size);
+    if (ptr === 0 && size > 0) {
+      const error = new Error('out of memory');
+      // The stack would become the error's diagnostics; it holds host paths.
+      error.stack = '';
+      throw error;
+    }
+    return ptr;
+  };
+}
+
+interface HostMalloc {
+  _malloc: (size: number) => number;
+}
+
+/**
+ * Return an instance whose session has ended. An instance is kept only when
+ * its session was clean — every `evaluate`, the two boot evaluates included,
+ * returned ok — and its heap is still at its initial size. Such an instance's
+ * QuickJS runtime has been freed, so for the next session it is as good as
+ * new — and reusing it is what keeps segment start-up at the cost of the old
+ * shared singleton (instantiating per session doubled the resume leg under
+ * parallel load). Anything else is dropped: an instance that grew (a machine
+ * that hoarded, whether or not it hit the cap) so its memory is reclaimed,
+ * and an instance whose session saw any failure — cap exceeded, an in-VM
+ * exception, a thrown error — because a failure is the one place it might
+ * have been left inconsistent. The rule is deliberately that blunt rather
+ * than classifying failures: re-instantiation costs ~3-5 ms and failures are
+ * the exceptional path. (The heap-size check alone is not enough: at the
+ * 16 MB floor `maximum` equals `initial`, so a session that exhausted the
+ * heap never changes its size.) Sharing an instance across sessions in
+ * sequence is the same trust the shared singleton always placed in QuickJS's
+ * memory safety.
+ */
+function releaseBoundedRuntime(bounded: BoundedRuntime, clean: boolean): void {
+  if (!clean) return;
   if (bounded.memory.buffer.byteLength !== WASM_INITIAL_PAGES * WASM_PAGE_BYTES) return;
   if (idleRuntimeCount >= IDLE_RUNTIMES_MAX) return;
   let bucket = idleRuntimes.get(bounded.maximumPages);
@@ -504,9 +550,9 @@ export async function createSandboxSession(
     // Hard caps (R12/R13). The wall-clock budget is enforced by a QuickJS
     // interrupt handler installed by the runtime, with an absolute deadline
     // of `now + segmentWallClockMs` at session creation. The memory cap is
-    // enforced by the WebAssembly memory's `maximum` (see
-    // `boundedWasmMemory`); QuickJS's own limit is set too, but it only
-    // refuses a single request larger than the cap and is not the bound.
+    // enforced by the WebAssembly memory's `maximum` (see `maximumPagesFor`
+    // and `acquireBoundedRuntime`); QuickJS's own limit is set too, but it
+    // only refuses a single request larger than the cap and is not the bound.
     executionTimeout: caps.segmentWallClockMs,
     memoryLimit: caps.wasmMemoryBytes,
     // N3/R11 invariant: `allowFetch` and `allowFs` are never set — they
@@ -568,16 +614,19 @@ export async function createSandboxSession(
   const ready = deferred<{ evalCode: SandboxEvalCode }>();
   const hold = deferred<void>();
   let disposed = false;
+  /** False once any evaluate fails; see `releaseBoundedRuntime`. */
+  let clean = true;
 
   const runPromise = runtime.runSandboxed(async ({ evalCode }) => {
     ready.resolve({ evalCode });
     await hold.promise;
   }, sandboxOptions);
   // The run promise is also awaited in dispose(); avoid unhandled rejections.
-  // The instance goes back to the pool only after a clean run: a rejected run
-  // means the sandbox itself failed, and such an instance is never reused.
+  // The instance can go back to the pool only after the run settled cleanly:
+  // a rejected run means the sandbox itself failed, and such an instance is
+  // never reused.
   runPromise.then(
-    () => releaseBoundedRuntime(bounded),
+    () => releaseBoundedRuntime(bounded, clean),
     () => {},
   );
 
@@ -627,7 +676,12 @@ export async function createSandboxSession(
       }
       return result.data;
     };
-    const run = queue.then(task, task);
+    const tracked = (): Promise<unknown> =>
+      task().catch((error: unknown) => {
+        clean = false;
+        throw error;
+      });
+    const run = queue.then(tracked, tracked);
     queue = run.then(
       () => undefined,
       () => undefined,

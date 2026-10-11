@@ -44,13 +44,13 @@ describe('resource caps (R12/R13)', () => {
     expect((error as ProjectionError).message).not.toMatch(/wall-clock/);
   }
 
-  // Two mechanisms enforce the memory cap. QuickJS's own `memoryLimit`
-  // refuses a single request larger than the cap — all it can do under
-  // emscripten, where it accounts ~8 bytes of bookkeeping per live
-  // allocation rather than payload. The session's WebAssembly memory
-  // `maximum` bounds the total (DECISIONS D15). The two tests below pin the
-  // per-request refusal and the cap-determined end of a doubling sequence;
-  // the hoard tests after them pin the total bound.
+  // The session's WebAssembly memory `maximum` is the memory cap (DECISIONS
+  // D15). The two tests below pin the refusal of a single oversize request
+  // and the cap-determined end of a doubling sequence, both now enforced by
+  // that `maximum`; the hoard tests after them pin the total bound.
+  // QuickJS's own `memoryLimit` is still set as a cheap early refusal of an
+  // oversize request, but with the `maximum` binding first these tests
+  // cannot tell whether it is in effect.
   it('refuses a single allocation above the WASM memory cap', async () => {
     // 32 MB is above the 16 MB cap but below the 256 MB hard max, so this
     // returns 33554432 if the cap is clamped high.
@@ -227,6 +227,85 @@ describe('resource caps (R12/R13)', () => {
          export default rows.length;`,
       );
       expect(result).toBe(512);
+    });
+  });
+
+  it('reports a host-side allocation into a full heap as the memory cap, not a trap', async () => {
+    // The host copies every evaluate source (and any string it hands the VM)
+    // into the WASM heap with the emscripten `_malloc` export. When the heap
+    // is at its maximum that returns NULL; unchecked, the copy would land at
+    // address 0 and corrupt the instance. The machine host delivers tool
+    // results as JSON embedded in evaluate source, so this is the path a
+    // machine that filled its heap reaches on its next tool result.
+    const caps = { wasmMemoryBytes: 16 * 1024 * 1024 };
+    await withSession({ caps }, async (session) => {
+      const fill = await session
+        .evaluate(
+          `globalThis.hoard = [];
+           for (let i = 0; i < 1e9; i++) { globalThis.hoard.push(new Uint8Array(1 << 20)); }
+           export default 0;`,
+        )
+        .then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+      expectMemoryCapExceeded(fill);
+      // Top the heap up with ever smaller blocks (each refusal is caught in
+      // the VM) so almost nothing is left free: the next host-side copy of a
+      // tool-result-sized source cannot fit.
+      const topUp = await session
+        .evaluate(
+          `for (const size of [1 << 16, 1 << 12, 1 << 8]) {
+             try { for (;;) { globalThis.hoard.push(new Uint8Array(size)); } } catch {}
+           }
+           export default 0;`,
+        )
+        .then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+      expect(topUp === undefined || topUp instanceof ProjectionError).toBe(true);
+      const payload = JSON.stringify({ rows: 'r'.repeat(48 * 1024) });
+      const delivered = await session
+        .evaluate(`const result = ${payload}; export default result.rows.length;`)
+        .then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+      expectMemoryCapExceeded(delivered);
+      // The session keeps answering with ProjectionErrors (or results), never
+      // a raw engine error.
+      const after = await session.evaluate(`export default 2 + 2;`).then(
+        (value: unknown) => value,
+        (err: unknown) => err,
+      );
+      if (after !== 4) expect(after).toBeInstanceOf(ProjectionError);
+    });
+    // A fresh session with the same cap boots and works normally.
+    await withSession({ caps }, async (next) => {
+      const result = await next.evaluate(
+        `const rows = [];
+         for (let i = 0; i < 512; i++) { rows.push('x'.repeat(4096)); }
+         export default rows.length;`,
+      );
+      expect(result).toBe(512);
+    });
+  });
+
+  it('follows a session whose evaluate threw with a working session at the same cap', async () => {
+    // Any failed evaluate keeps its instance out of the pool; the next
+    // session must still boot and run.
+    const caps = { wasmMemoryBytes: 16 * 1024 * 1024 };
+    await withSession({ caps }, async (session) => {
+      const error = await session.evaluate(`throw new TypeError('x');`).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect((error as ProjectionError).phase).toBe('runtime');
+    });
+    await withSession({ caps }, async (next) => {
+      expect(await next.evaluate(`export default 2 + 2;`)).toBe(4);
     });
   });
 

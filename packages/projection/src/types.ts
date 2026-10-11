@@ -248,7 +248,7 @@ const MIN_CAPS: ResourceCaps = {
   segmentWallClockMs: 100,
   // The QuickJS WASM module starts with a 16 MB linear memory that cannot
   // be lowered, so a smaller cap would promise a bound the engine cannot
-  // keep (see sandbox/session.ts, boundedWasmMemory).
+  // keep (see sandbox/session.ts, maximumPagesFor and acquireBoundedRuntime).
   wasmMemoryBytes: 16 * 1024 * 1024,
   maxCodeBytes: 1024,
   maxInputBytes: 1024,

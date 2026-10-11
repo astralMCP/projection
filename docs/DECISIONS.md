@@ -466,9 +466,12 @@ giving each instance its own bound. The engine enforces `maximum` on every
 `grow`; the emscripten glue catches the failed grow, `malloc` returns NULL,
 QuickJS throws its ordinary "out of memory" InternalError, and the session
 reports the memory `cap_exceeded`. All hoard shapes — small strings, 1 MB
-typed arrays, a doubling array — now fail in under 100 ms at exactly
-`initial + cap`, the VM survives the failure, a neighbouring session is
-untouched, and disposing the session releases the whole heap. QuickJS's own
+typed arrays, a doubling array — now fail in under 100 ms with the heap at
+most the cap, the VM survives the failure, a neighbouring session is
+untouched, and disposing the session releases the whole heap. The
+emscripten glue grows the heap in steps (the larger of the request and
+~5-20% of the current size), so near the cap a request that would fit can
+be refused, leaving up to a few percent of the cap unusable. QuickJS's own
 `memoryLimit` is still set; it is cheap and refuses a single oversize
 request before the heap has to grow, and D14's per-request tests remain
 alongside the hoard tests this change adds. The caveat D14 placed under the
@@ -488,7 +491,15 @@ session doubled the leg under contention and would have turned the known
 p95 flake into a regular CI failure. (Under the full `pnpm run check` load
 on the development machine both main and this change exceed the 100 ms
 p95; that is the flake the contributing skill documents.) An instance is
-reused only after its run promise settled cleanly. `quickjs-emscripten-core` becomes a direct, exactly
+reused only after its run promise settled cleanly and every evaluate of its
+session, the boot evaluates included, returned ok; any failure drops it
+(re-instantiation costs ~3-5 ms, and at the 16 MB floor `maximum` equals
+`initial`, so an exhausted heap does not show in its size). The
+instance's `_malloc` export is wrapped to throw "out of memory" instead of
+returning NULL: quickjs-emscripten copies evaluate sources, and so tool
+results the machine host embeds in them, through `_malloc` unchecked and
+would otherwise write at address 0 when the heap is full, corrupting the
+instance; thrown, it is the ordinary memory `cap_exceeded`. `quickjs-emscripten-core` becomes a direct, exactly
 pinned dependency for `newVariant`, and `src/sandbox/webassembly.d.ts`
 declares the slice of the WebAssembly API the package uses, since TypeScript
 ships those types only in its DOM lib.

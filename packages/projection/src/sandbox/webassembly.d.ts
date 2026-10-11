@@ -1,6 +1,6 @@
 /**
  * The subset of the WebAssembly JS API the sandbox uses (session.ts,
- * `boundedWasmMemory`). TypeScript ships these types only in its DOM lib,
+ * `maximumPagesFor` / `acquireBoundedRuntime`). TypeScript ships these types only in its DOM lib,
  * which this Node library deliberately does not load; Node provides the
  * global at runtime. Ambient and internal: it informs this package's
  * typecheck and is not part of the emitted declarations.
