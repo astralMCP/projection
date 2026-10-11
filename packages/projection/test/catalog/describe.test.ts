@@ -191,6 +191,18 @@ describe('describe_tool (R34)', () => {
     }
   });
 
+  it('suggests the closest declared tools for a near-miss name, pointing at describe_tool', () => {
+    try {
+      describeTool(CATALOG, { name: 'delete-files' });
+      expect.unreachable('expected a throw');
+    } catch (err) {
+      const error = err as ProjectionError;
+      expect(error.phase).toBe('validate');
+      expect(error.hint).toMatch(/^Did you mean "delete_file"/);
+      expect(error.hint).toContain('then describe_tool with one of those names exactly');
+    }
+  });
+
   it('omits types unless asked for them (types: true), even when a typegen map is available', () => {
     const quiet = described(describeTool(RICH, { name: 'read_file' }, { toolTypes }));
     expect(quiet.types).toBeUndefined();
