@@ -1,7 +1,9 @@
 /**
  * Live tool-choice eval: for each model × mode × task × run, a real model
- * tries to complete a GitHub task against the offline 95-tool fake, either
- * with the fake's tools exposed directly or through Projection. Reports
+ * tries to complete a task against its tier's world — the offline 95-tool
+ * GitHub fake (basic, hard) or the real filesystem reference server on a
+ * throwaway tree (filesystem) — either with the server's tools exposed
+ * directly or through Projection. Reports
  * success (tool AND arguments correct), tool-correct, turns, tokens, cost
  * and — for Projection — which route the model took.
  *
@@ -10,7 +12,7 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection
- *   PROJ_EVAL_TIERS        basic,hard (default both)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem (default all)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)

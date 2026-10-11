@@ -66,7 +66,8 @@ export {
 } from './reasoning/metrics.js';
 export { FILE_SERVER_TASKS, FILE_SERVER_FIXTURE } from './reasoning/tasks.js';
 
-// Tool-choice eval: direct tools vs Projection, against the offline GitHub fake.
+// Tool-choice eval: direct tools vs Projection, against the offline GitHub fake
+// or a real server behind a recording proxy.
 export {
   answerFor,
   branchesListed,
@@ -125,23 +126,51 @@ export {
   type ToolUseRecord,
 } from './eval/agent.js';
 export {
+  promptFor,
   resolveTasks,
   resolveTiers,
+  worldOf,
   BASIC_TASKS,
   HARD_TASKS,
   TASK_TIERS,
+  TIER_WORLDS,
   TOOL_CHOICE_TASKS,
   type EvalTask,
   type TaskKind,
   type TaskTier,
+  type VerifyContext,
 } from './eval/tasks.js';
+export { FILESYSTEM_TASKS } from './eval/filesystem-tasks.js';
+export {
+  githubWorld,
+  openWorld,
+  GITHUB_DIRECT_SYSTEM_PROMPT,
+  type EvalWorld,
+  type WorldFacts,
+  type WorldName,
+  type WorldOptions,
+  type WorldTool,
+} from './eval/world.js';
+export {
+  filesystemServerEntry,
+  openFilesystemWorld,
+  writeFilesystemFixture,
+  FILESYSTEM_DIRECT_SYSTEM_PROMPT,
+  FILESYSTEM_FIXTURE,
+  FIXTURE_CHANGELOG,
+  FIXTURE_IDEAS,
+  FIXTURE_PACKAGE_JSON,
+  FIXTURE_README,
+  FIXTURE_TODO,
+  FIXTURE_UTIL_JS,
+} from './eval/filesystem-world.js';
+export { createRecordingProxy, type RecordingProxy } from './eval/recording-proxy.js';
 export {
   openDirectSession,
   openProjectionSession,
   openSession,
   resolveModes,
   toolResultText,
-  DIRECT_SYSTEM_PROMPT,
   EVAL_MODES,
   type EvalMode,
   type ModeSession,
