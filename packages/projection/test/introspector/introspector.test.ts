@@ -1,7 +1,8 @@
-import { Client } from '@modelcontextprotocol/client';
-import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
+import { Client, SdkError } from '@modelcontextprotocol/client';
+import { InMemoryTransport, McpServer, Server } from '@modelcontextprotocol/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { MCP_SDK_VERSION } from '../../src/blob/versions.js';
 import { ProjectionError } from '../../src/errors.js';
 import { createIntrospector, type Introspector } from '../../src/introspector/index.js';
 import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from '../../src/types.js';
@@ -229,6 +230,26 @@ describe('Introspector edge cases', () => {
     }
   });
 
+  it('names a second copy of @modelcontextprotocol/server instead of treating it as a Client', async () => {
+    // What an McpServer from a different SDK copy looks like here: the right
+    // shape, but not an instance of the McpServer class Projection imports.
+    const foreign = {
+      server: {},
+      connect: async () => undefined,
+      registerTool: () => undefined,
+      isConnected: () => false,
+    };
+    const error = await createIntrospector({
+      [DEFAULT_SERVER_ALIAS]: foreign as unknown as McpServer,
+    }).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(ProjectionError);
+    expect(error).toMatchObject({
+      phase: 'protocol',
+      message: expect.stringContaining('second copy of @modelcontextprotocol/server'),
+      hint: expect.stringContaining(`@modelcontextprotocol/server ${MCP_SDK_VERSION} exactly`),
+    });
+  });
+
   it('accepts multiple aliased sources (R30 interface shape)', async () => {
     const introspector: Introspector = await createIntrospector({
       alpha: buildFixtureServer(),
@@ -241,6 +262,254 @@ describe('Introspector edge cases', () => {
       expect(outcome.ok).toBe(true);
     } finally {
       await introspector.close();
+    }
+  });
+});
+
+interface PaginatingOptions {
+  /** Every page answers this same nextCursor (a pagination loop). */
+  repeatCursor?: string;
+  /** Passed to the test's Client: proves the bound does not come from the SDK. */
+  listMaxPages?: number;
+}
+
+/**
+ * A low-level server whose tools/list answers `pages` pages of `perPage`
+ * tools each; `pages: Infinity` never stops returning `nextCursor`.
+ */
+async function connectPaginating(
+  pages: number,
+  perPage: number,
+  options: PaginatingOptions = {},
+): Promise<Client> {
+  const server = new Server(
+    { name: 'paginating', version: '0.0.1' },
+    { capabilities: { tools: {} } },
+  );
+  let served = 0;
+  server.setRequestHandler('tools/list', (request) => {
+    served += 1;
+    const page =
+      options.repeatCursor !== undefined
+        ? served - 1
+        : request.params?.cursor !== undefined
+          ? Number(request.params.cursor)
+          : 0;
+    const tools = Array.from({ length: perPage }, (_, i) => ({
+      name: `tool_${page}_${i}`,
+      inputSchema: { type: 'object' as const },
+    }));
+    if (options.repeatCursor !== undefined) return { tools, nextCursor: options.repeatCursor };
+    return page + 1 < pages ? { tools, nextCursor: String(page + 1) } : { tools };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client(
+    { name: 'paging-test-client', version: '0.0.0' },
+    options.listMaxPages !== undefined ? { listMaxPages: options.listMaxPages } : undefined,
+  );
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return client;
+}
+
+async function introspectionError(client: Client): Promise<unknown> {
+  return createIntrospector({ remote: client }).then(
+    async (introspector) => {
+      await introspector.close();
+      return undefined;
+    },
+    (err: unknown) => err,
+  );
+}
+
+describe('Introspector tools/list limits (D12)', () => {
+  it('introspects a normally paginated catalog across pages', async () => {
+    const client = await connectPaginating(3, 2);
+    try {
+      const introspector = await createIntrospector({ remote: client });
+      expect(introspector.catalog.servers.get('remote')?.tools.map((tool) => tool.name)).toEqual([
+        'tool_0_0',
+        'tool_0_1',
+        'tool_1_0',
+        'tool_1_1',
+        'tool_2_0',
+        'tool_2_1',
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('introspects exactly 2000 tools across pages', async () => {
+    const client = await connectPaginating(4, 500);
+    try {
+      const introspector = await createIntrospector({ remote: client });
+      expect(introspector.catalog.servers.get('remote')?.tools).toHaveLength(2000);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a server declaring more than 2000 tools across pages', async () => {
+    const client = await connectPaginating(3, 700);
+    try {
+      const error = await introspectionError(client);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('declares at least 2100 tools, over the cap of 2000'),
+        hint: expect.stringContaining('2000 tools'),
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a single tools/list page of 2001 tools', async () => {
+    const client = await connectPaginating(1, 2001);
+    try {
+      const error = await introspectionError(client);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('declares at least 2001 tools, over the cap of 2000'),
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('stops at the tool cap without fetching the rest of a long chain', async () => {
+    // The running total crosses 2000 on page 3; the endless chain behind it is never walked.
+    const client = await connectPaginating(Infinity, 1000);
+    try {
+      const error = await introspectionError(client);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('declares at least 3000 tools'),
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("rejects an endless tools/list chain at Projection's 100-page cap", async () => {
+    const client = await connectPaginating(Infinity, 1);
+    try {
+      const error = await introspectionError(client);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('after 100 pages, over the cap of 100'),
+        hint: expect.stringContaining('pagination terminates'),
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('accepts exactly 100 pages', async () => {
+    const client = await connectPaginating(100, 1);
+    try {
+      const introspector = await createIntrospector({ remote: client });
+      expect(introspector.catalog.servers.get('remote')?.tools).toHaveLength(100);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a repeated cursor as a protocol error instead of looping', async () => {
+    const client = await connectPaginating(Infinity, 1, { repeatCursor: 'again' });
+    try {
+      const error = await introspectionError(client);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('pagination loops: page 2 returned cursor "again"'),
+      });
+    } finally {
+      await client.close();
+    }
+  }, 2_000);
+
+  it('enforces its own page cap even when the Client is unbounded (listMaxPages: 0)', async () => {
+    const client = await connectPaginating(Infinity, 1, { listMaxPages: 0 });
+    try {
+      const error = await introspectionError(client);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('over the cap of 100'),
+      });
+      expect((error as ProjectionError).cause).not.toBeInstanceOf(SdkError);
+    } finally {
+      await client.close();
+    }
+  }, 5_000);
+
+  it('is not limited by a smaller Client listMaxPages either', async () => {
+    const client = await connectPaginating(10, 1, { listMaxPages: 2 });
+    try {
+      const introspector = await createIntrospector({ remote: client });
+      expect(introspector.catalog.servers.get('remote')?.tools).toHaveLength(10);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+/** A server whose `report` tool declares an outputSchema and breaks it. */
+async function connectNonConforming(): Promise<{ client: Client; server: Server }> {
+  const server = new Server(
+    { name: 'non-conforming', version: '0.0.1' },
+    { capabilities: { tools: { listChanged: true } } },
+  );
+  server.setRequestHandler('tools/list', () => ({
+    tools: [
+      {
+        name: 'report',
+        inputSchema: { type: 'object' as const },
+        outputSchema: {
+          type: 'object' as const,
+          properties: { count: { type: 'number' } },
+          required: ['count'],
+        },
+      },
+    ],
+  }));
+  server.setRequestHandler('tools/call', () => ({
+    content: [{ type: 'text' as const, text: 'not a count' }],
+    structuredContent: { count: 'many' },
+  }));
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'schema-test-client', version: '0.0.0' });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, server };
+}
+
+describe('Introspector output-schema validation', () => {
+  it('rejects non-conforming structuredContent before and after tools/list_changed', async () => {
+    const { client, server } = await connectNonConforming();
+    try {
+      // Fill the SDK's own tools/list cache, so the list_changed below has
+      // something to clear: validation must not depend on it either way.
+      await client.listTools();
+      const introspector = await createIntrospector({ remote: client });
+      const before = await introspector.callTool('remote', 'report', {});
+      expect(before.ok).toBe(false);
+      if (!before.ok) expect(before.error.message).toContain('output schema');
+
+      const notified = new Promise<void>((resolve) => {
+        client.setNotificationHandler('notifications/tools/list_changed', () => resolve());
+      });
+      await server.notification({ method: 'notifications/tools/list_changed' });
+      await notified;
+
+      const after = await introspector.callTool('remote', 'report', {});
+      expect(after).toEqual(before);
+    } finally {
+      await client.close();
     }
   });
 });

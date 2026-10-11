@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,22 @@ import { describe, expect, it } from 'vitest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECTION_DIR = resolve(HERE, '../../../projection');
+
+/**
+ * The SDK version the consumer installs alongside the tarball: Projection's
+ * own exact pin, read from its manifest. A different version would give the
+ * consumer a second copy of `@modelcontextprotocol/server`, whose `McpServer`
+ * fails Projection's `instanceof` check — a dual-package hazard, not what
+ * this test is for.
+ */
+const SERVER_SDK_VERSION = (
+  JSON.parse(readFileSync(join(PROJECTION_DIR, 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  }
+).dependencies['@modelcontextprotocol/server'];
+if (SERVER_SDK_VERSION === undefined) {
+  throw new Error('@astral-mcp/projection no longer depends on @modelcontextprotocol/server');
+}
 
 const CONSUMER_SCRIPT = `
 import { McpServer } from '@modelcontextprotocol/server';
@@ -91,7 +107,7 @@ describe.skipIf(process.env['PROJ_SKIP_PACK_SMOKE'] === '1')(
               '--no-audit',
               '--no-fund',
               join(dir, tarball),
-              '@modelcontextprotocol/server@2.0.0',
+              `@modelcontextprotocol/server@${SERVER_SDK_VERSION}`,
             ],
             { cwd: dir, encoding: 'utf8', stdio: 'pipe' },
           );

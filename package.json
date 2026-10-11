@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@11.20.0",
   "engines": {
-    "node": ">=22"
+    "node": "^22.12"
   },
   "scripts": {
     "build": "turbo run build",
@@ -15,9 +15,9 @@
     "check": "turbo run build typecheck lint test"
   },
   "devDependencies": {
-    "oxlint": "^1.77.0",
-    "prettier": "^3.6.2",
-    "turbo": "^2.10.9",
+    "oxlint": "^1.87.0",
+    "prettier": "^3.9.9",
+    "turbo": "^2.11.7",
     "typescript": "^5.9.2"
   }
 }
