@@ -37,38 +37,54 @@ describe('resource caps (R12/R13)', () => {
     });
   });
 
-  it('enforces the WASM memory cap inside the VM', async () => {
-    // Allocation pattern matters here. QuickJS's limit check is
-    // `accounted + request > limit`, but in the emscripten build the
-    // accounted size of a live allocation is only its bookkeeping overhead,
-    // not its payload (malloc_usable_size is 0 under emscripten). So a hoard
-    // of many small strings is refused only once WASM linear memory itself
-    // is exhausted (~2 GB, ~6 s on a fast machine, >20 s under CI load),
-    // which is what made this case race the wall-clock budget. A doubling
-    // array instead makes each `concat` a single request twice the size of
-    // the last, so one request exceeds the 8 MB cap within ~10 iterations
-    // and the memory error is deterministic and fast (tens of ms).
+  // What the cap bounds: in the emscripten QuickJS build the limit check is
+  // `accounted + request > limit`, but a live allocation is accounted only
+  // as ~8 bytes of bookkeeping (malloc_usable_size is 0), not its payload.
+  // So the cap bounds the size of a single allocation request, not total
+  // sandbox memory: any number of sub-cap allocations adds up to WASM linear
+  // memory (~2 GB) at any cap setting, ending in the same out-of-memory
+  // error. Each test below therefore fails if the limit is missing or wrong:
+  // one request above the cap, or the iteration count of a doubling sequence.
+  it('refuses a single allocation above the WASM memory cap', async () => {
+    // 16 MB is above the 8 MB cap but below the 256 MB hard max, so this
+    // succeeds (returns 16777216) if the limit is missing or clamped high.
+    await withSession({ caps: { wasmMemoryBytes: 8 * 1024 * 1024 } }, async (session) => {
+      const error = await session
+        .evaluate(`export default 'x'.repeat(16 * 1024 * 1024).length;`)
+        .then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect((error as ProjectionError).phase).toBe('cap_exceeded');
+      expect((error as ProjectionError).message).toMatch(/memory/i);
+    });
+  });
+
+  it('the cap value, not WASM exhaustion, ends a growing allocation sequence', async () => {
+    // Each `concat` is one request twice the size of the last. The last
+    // logged iteration depends only on the cap, not on machine load
+    // (measured: 9 at 8 MB, 10 at 16 MB, 12 at 64 MB, 14 at 256 MB, 16 with
+    // no limit, where WASM exhaustion ends it).
     await withSession(
       { caps: { wasmMemoryBytes: 8 * 1024 * 1024, segmentWallClockMs: 20_000 } },
       async (session) => {
-        const startedAt = Date.now();
         const error = await session
           .evaluate(
             `let hoard = new Array(1024).fill(0);
-             for (let i = 0; i < 64; i++) { hoard = hoard.concat(hoard); }
+             for (let i = 0; i < 64; i++) { console.log(i); hoard = hoard.concat(hoard); }
              export default hoard.length;`,
           )
           .then(
             () => undefined,
             (err: unknown) => err,
           );
-        const elapsed = Date.now() - startedAt;
         expect(error).toBeInstanceOf(ProjectionError);
         expect((error as ProjectionError).phase).toBe('cap_exceeded');
         expect((error as ProjectionError).message).toMatch(/memory/i);
-        expect((error as ProjectionError).message).toContain(String(8 * 1024 * 1024));
-        // Well under the segment budget: the memory cap, not the wall clock, ended it.
-        expect(elapsed).toBeLessThan(10_000);
+        const iterations = (error as ProjectionError).logs.map((entry) => Number(entry.message));
+        expect(iterations.length).toBeGreaterThan(0);
+        expect(Math.max(...iterations)).toBeLessThanOrEqual(11);
       },
     );
   });

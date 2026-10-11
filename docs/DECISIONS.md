@@ -413,3 +413,28 @@ to re-run world verifies — the replay would not reproduce the model's
 reactions to errors, and a mongod/filesystem per record makes a quick
 re-score slow; treating world verifies as passing — silently inflates the
 success rate.
+
+## D14 — The memory-cap tests assert a per-request bound; the byte bound is a follow-up (2026-10-10)
+
+In the emscripten QuickJS build, the `memoryLimit` check is
+`accounted + request > limit`, but a live allocation is accounted only as
+~8 bytes of bookkeeping (`malloc_usable_size` is 0), not its payload. So
+`wasmMemoryBytes` bounds the size of a single allocation request, not total
+sandbox memory: any number of sub-cap allocations adds up to WASM linear
+memory (~2 GB) at any cap setting, and ends in the same out-of-memory
+error. A test that hoards small allocations therefore cannot tell a working
+cap from a missing one. The memory-cap tests in
+`test/sandbox/caps.test.ts` instead assert (1) that one request above the
+cap and below the 256 MB hard max is refused, and (2) that a doubling
+sequence stops at an iteration count only the configured cap explains
+(logged from inside the VM, so it is independent of machine load). Both
+fail if the limit is deleted or hardcoded high.
+
+Enforcing the documented byte bound on total memory is a tracked
+follow-up; meanwhile `docs/server-authors.md` carries a caveat under the
+caps table. `docs/PRD.md` R12 is unchanged and states the intended bound.
+
+Alternatives rejected: keeping a hoard test with a wall-clock bound — it
+passes with no limit at all and races the segment budget under CI load;
+asserting the cap value in the error message — the message is formatted
+from `caps.wasmMemoryBytes` on the host side, not reported by QuickJS.

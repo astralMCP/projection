@@ -240,6 +240,11 @@ misconfiguration cannot disable the flow; non-finite values are ignored.
 | `maxStateNodes`          | 1      | 100     | 1 000  | state nodes in the machine                          |
 | `maxConsoleBytes`        | 1 KB   | 64 KB   | 256 KB | captured console output per segment                 |
 
+Caveat on `wasmMemoryBytes`: with the pinned QuickJS WASM build it bounds the
+largest single allocation a machine can make, not its total memory. Total
+memory per sandbox session is bounded by WASM linear memory (~2 GB) until a
+follow-up enforces the byte bound; size concurrent executions accordingly.
+
 Separately, a sealed suspension blob over `blob.maxBlobBytes` (default 128 KB)
 fails the suspension with a `terminal` error advising the model to slim its
 machine context (R23).
