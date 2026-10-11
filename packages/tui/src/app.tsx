@@ -107,7 +107,7 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
           return;
         }
         if (inputFocused) return; // keystrokes belong to the task input
-        if (input === 'q') exit();
+        if (input === 'q' && !key.meta && !key.ctrl) exit();
         else if (key.return) setInputFocused(true);
         return;
       }

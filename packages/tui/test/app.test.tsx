@@ -187,6 +187,24 @@ describe('App key bindings', () => {
     expect(lastFrame() ?? '').not.toContain('Projection TUI');
   });
 
+  it('esc then a fast "q" (read as Meta-q) does not quit', { timeout: 30_000 }, async () => {
+    const { facade, apiDocs } = await setup();
+    const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
+    const { lastFrame, stdin } = render(
+      <App facade={facade} author={author} apiDocs={apiDocs} serverLabel="demo-files" />,
+    );
+
+    await tick();
+    stdin.write('\u001B');
+    await tick();
+    expect(lastFrame() ?? '').toContain('q to quit');
+
+    // Esc and q in one chunk: ink 8 parses this as Meta-q, not Esc then q.
+    stdin.write('\u001Bq');
+    await tick();
+    expect(lastFrame() ?? '').toContain('Projection TUI');
+  });
+
   it('esc again returns to the task input', { timeout: 30_000 }, async () => {
     const { facade, apiDocs } = await setup();
     const author = createScriptedAuthor('scripted-model', [WRITE_OUT]);
