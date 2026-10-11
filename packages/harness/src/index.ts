@@ -142,6 +142,7 @@ export {
   type VerifyContext,
 } from './eval/tasks.js';
 export { FILESYSTEM_TASKS } from './eval/filesystem-tasks.js';
+export { MONGODB_TASKS } from './eval/mongodb-tasks.js';
 export {
   githubWorld,
   openWorld,
@@ -165,6 +166,29 @@ export {
   FIXTURE_TODO,
   FIXTURE_UTIL_JS,
 } from './eval/filesystem-world.js';
+export {
+  mongodbBinaryDir,
+  mongodbServerEntry,
+  mongodbServerInstalled,
+  openMongodbWorld,
+  seedMongodbFixture,
+  withMongodb,
+  FIXTURE_CUSTOMERS,
+  FIXTURE_ORDERS,
+  FIXTURE_PRODUCTS,
+  MONGODB_DIRECT_SYSTEM_PROMPT,
+  MONGODB_DISABLED_TOOLS,
+  MONGODB_EXPECTED_TOOLS,
+  MONGODB_FIXTURE,
+  MONGODB_QUERY_CAP,
+  MONGODB_VERSION,
+  NAMED_PRODUCTS,
+  ORDER_STATUS_COUNTS,
+  SHOP_COLLECTIONS,
+  SHOP_DB,
+  STALE_CUTOFF,
+  type MongodbFixture,
+} from './eval/mongodb-world.js';
 export { createRecordingProxy, type RecordingProxy } from './eval/recording-proxy.js';
 export {
   openDirectSession,

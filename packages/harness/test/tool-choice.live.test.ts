@@ -1,9 +1,10 @@
 /**
  * Live tool-choice eval: for each model × mode × task × run, a real model
  * tries to complete a task against its tier's world — the offline 95-tool
- * GitHub fake (basic, hard) or the real filesystem reference server on a
- * throwaway tree (filesystem) — either with the server's tools exposed
- * directly or through Projection. Reports
+ * GitHub fake (basic, hard), the real filesystem reference server on a
+ * throwaway tree (filesystem), or the real MongoDB MCP server on a seeded
+ * throwaway mongod (mongodb; needs `pnpm run setup:mongodb` once) — either
+ * with the server's tools exposed directly or through Projection. Reports
  * success (tool AND arguments correct), tool-correct, turns, tokens, cost
  * and — for Projection — which route the model took.
  *
@@ -12,7 +13,7 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection
- *   PROJ_EVAL_TIERS        basic,hard,filesystem (default all)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb (default all)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
@@ -35,6 +36,7 @@ import {
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
+  mongodbServerInstalled,
   resolveModelPresets,
   resolveModes,
   resolveTasks,
@@ -58,6 +60,13 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']);
     const modes = resolveModes(process.env['PROJ_EVAL_MODES']);
     const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
+    // Fail before spending anything: without the vendored server every
+    // mongodb episode would be a harness error, not a measurement.
+    if (tiers.includes('mongodb') && !mongodbServerInstalled()) {
+      throw new Error(
+        'the mongodb tier is selected but the MongoDB MCP server is not installed; run `pnpm run setup:mongodb` in packages/harness, or set PROJ_EVAL_TIERS to exclude mongodb',
+      );
+    }
     const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);

@@ -85,7 +85,7 @@ are real, a `verify` of the end state (the file really moved; the answer
 names the right file). In projection mode a scripted approve-all client
 auto-fulfils every approval round trip, so the model only sees results.
 
-Tasks come in three tiers. The **basic** tier (15 tasks against
+Tasks come in four tiers. The **basic** tier (15 tasks against
 `modelcontextprotocol/servers`) is one or two obvious calls each; current
 models saturate it. The **hard** tier (15 tasks against `acme/widgets` and
 the user's own repositories) discriminates: write tools whose `method` enum
@@ -129,6 +129,31 @@ only by the ceiling. The ceiling bounds calls, not tokens: each extra turn
 resends the growing context (softened by cache reads), so the discovery
 cost stays visible in the turns, tokens and cost columns.
 
+The **mongodb** tier (15 tasks on the real MongoDB MCP server,
+`mongodb-mcp-server` 3.0.5, against a seeded throwaway `mongod` from
+`mongodb-memory-server`) targets JSON-shaped arguments and near-duplicate
+tools: a filtered count, a top-3 by price (`sort` + `limit` or a
+`$sort`/`$limit` pipeline — the fixture has 120 products, so an unsorted
+read capped at the server's 100 cannot see the most expensive one), a
+group-by, a status update whose scope is checked on the deployment (exactly
+the two stale orders flipped), a delete that must carry a filter, dropping
+one collection but not the database, a rename, a conditional insert that
+must _not_ happen, a which-database question with a decoy `reports` database
+to rule out, and a query-plan question — and every tool needs the opaque
+`connectionId: "preconfigured"` the schema describes. The server's
+dependency tree needs a newer MCP SDK than the workspace pins, so it is
+installed in isolation once with `pnpm run setup:mongodb` (in
+`packages/harness`; CI does this); the `mongod` binary (~80 MB) is
+downloaded once into `~/.cache/mongodb-binaries` (`MONGOMS_DOWNLOAD_DIR`).
+The server is spawned with a minimal environment (never the inherited
+`MDB_MCP_*` variables, which could silently make it read-only or enable
+Atlas tools), tools that reach outside the deployment (`connect`, `export`,
+the knowledge-base search, the Atlas categories) are disabled, and the world
+asserts the listed tools are exactly the expected 21. The recording proxy
+forwards each result's `structuredContent` along with its content blocks, so
+Projection sees what it would in production and its `call_tool` renders the
+structured result rather than an escaped content array.
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -137,7 +162,7 @@ PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-cho
 
 Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haiku-low`,
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
-(`basic,hard,filesystem`, the default), `PROJ_EVAL_TASKS` (comma list of task names
+(`basic,hard,filesystem,mongodb`, the default), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
 turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped

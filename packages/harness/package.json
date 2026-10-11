@@ -14,13 +14,16 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "setup:mongodb": "npm ci --prefix vendor/mongodb-mcp-server --no-audit --no-fund --ignore-scripts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
+    "@astral-mcp/projection": "workspace:*",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
-    "@astral-mcp/projection": "workspace:*",
+    "mongodb": "7.5.0",
+    "mongodb-memory-server": "11.3.0",
     "zod": "^4.2.0"
   },
   "devDependencies": {

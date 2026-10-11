@@ -16,16 +16,18 @@ export type TaskKind = 'single' | 'multi';
 
 /**
  * Tiers: `basic` and `hard` run against the offline GitHub fake;
- * `filesystem` against the real filesystem reference server.
+ * `filesystem` against the real filesystem reference server; `mongodb`
+ * against the real MongoDB MCP server on a throwaway deployment.
  */
-export type TaskTier = 'basic' | 'hard' | 'filesystem';
-export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard', 'filesystem'];
+export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb';
+export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard', 'filesystem', 'mongodb'];
 
 /** The world each tier's tasks run in. */
 export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   basic: 'github',
   hard: 'github',
   filesystem: 'filesystem',
+  mongodb: 'mongodb',
 };
 
 export function worldOf(tier: TaskTier): WorldName {
@@ -38,7 +40,7 @@ export interface VerifyContext {
   calls: SideEffect[];
   /** Text blocks of the model's final message, joined. */
   finalText: string;
-  /** Per-episode facts (the filesystem root, …). */
+  /** Per-episode facts (the filesystem root, the MongoDB connection string). */
   facts: WorldFacts;
 }
 
