@@ -15,7 +15,6 @@
  * schema sanitizer or `neutralizeControlChars`.
  */
 
-import { ProjectionError } from '../errors.js';
 import { decidePolicy, postureOf, type ToolPosture } from '../policy/index.js';
 import {
   capLength,
@@ -33,6 +32,7 @@ import {
   type ToolAnnotations,
 } from '../types.js';
 import { sanitizeSchema } from './schema-safety.js';
+import { unknownToolError } from './search.js';
 
 export interface DescribeToolArgs {
   name: string;
@@ -80,16 +80,7 @@ export function describeTool(
   options: DescribeToolOptions = {},
 ): CallToolResult {
   const entry = findTool(catalog, args.name);
-  if (entry === undefined) {
-    const shown = JSON.stringify(capLength(neutralizeControlChars(args.name), MAX_IDENTITY_CHARS));
-    throw new ProjectionError(
-      'validate',
-      `Unknown tool ${shown}: the wrapped server does not declare it`,
-      {
-        hint: 'Call search_tools to list the tools this server declares, then describe_tool with one of those names exactly.',
-      },
-    );
-  }
+  if (entry === undefined) throw unknownToolError(catalog, args.name, 'describe_tool');
 
   const input = sanitizeSchema(entry.inputSchema);
   const output = entry.outputSchema !== undefined ? sanitizeSchema(entry.outputSchema) : undefined;

@@ -9,9 +9,17 @@
  * is the right upstream tool(s) reached with any arguments. Episodes that ended on a
  * harness error (refusal, max_tokens, API error, or an exception thrown by
  * the harness itself) are excluded from both denominators and counted
- * separately — their tokens still count toward spend. Hitting the turn cap
- * is NOT a harness error: the upstream calls made before the cap are fully
- * observable, so such episodes are scored on them and flagged `turnCapped`.
+ * separately — their tokens still count toward spend. Hitting the turn
+ * budget is NOT a harness error: the upstream calls made before the cap are
+ * fully observable, so such episodes are scored on them and flagged
+ * `turnCapped`.
+ *
+ * The turn budget counts action turns, not discovery: a Projection turn
+ * that only called `search_tools` / `describe_tool` / `discover_apis` is
+ * free (direct mode has that information inline, for free), up to an
+ * absolute ceiling of twice the budget so a model looping on discovery
+ * still stops. Both modes get the same budget; `apiTurns` still reports
+ * every call made.
  *
  * One planned episode never takes the matrix down with it: any exception
  * (opening the session, the agent loop, closing, scoring, the progress
@@ -85,6 +93,8 @@ export interface EpisodeRecord {
    */
   harnessError?: string;
   apiTurns: number;
+  /** Turns that consumed the budget (every turn in direct mode; non-discovery turns in projection). */
+  budgetTurns: number;
   toolUseCount: number;
   /** What the model emitted (in projection mode, Projection's tools). */
   toolUses: ToolUseRecord[];
@@ -108,8 +118,10 @@ export interface ToolChoiceEvalOptions {
   runs?: number;
   /** Default: the live Anthropic API. Tests inject a script. */
   caller?: ModelCaller;
-  /** Messages API calls per episode. Default 12. */
+  /** Turn budget per episode (turns that are not pure discovery). Default 12. */
   maxTurns?: number;
+  /** Absolute ceiling on Messages API calls per episode. Default: twice `maxTurns`. */
+  maxTotalTurns?: number;
   /** Episodes in flight at once. Default 1. */
   concurrency?: number;
   /**
@@ -197,6 +209,7 @@ async function scoreEpisode(
     turnCapped: episode.turnCapped,
     ...(episode.harnessError !== undefined ? { harnessError: episode.harnessError } : {}),
     apiTurns: episode.apiTurns,
+    budgetTurns: episode.budgetTurns,
     toolUseCount: episode.toolUses.length,
     toolUses: episode.toolUses,
     upstreamCalls,
@@ -241,6 +254,7 @@ function harnessFailureRecord(
     turnCapped: episode?.turnCapped ?? false,
     harnessError: `harness: ${errorMessage(err)}`,
     apiTurns: episode?.apiTurns ?? 0,
+    budgetTurns: episode?.budgetTurns ?? 0,
     toolUseCount: toolUses.length,
     toolUses,
     upstreamCalls,
@@ -278,7 +292,13 @@ async function runPlanned(
           model,
           session.runtime,
           promptFor(task, world.facts),
-          options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {},
+          {
+            ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+            ...(options.maxTotalTurns !== undefined
+              ? { maxTotalTurns: options.maxTotalTurns }
+              : {}),
+            budgetFreeTools: session.budgetFreeTools,
+          },
         );
       } finally {
         // A close that fails must not discard an episode that ran, nor mask
@@ -373,6 +393,8 @@ export interface CellSummary {
   /** Scored episodes that stopped at the turn cap. */
   turnCapped: number;
   meanTurns: number;
+  /** Mean turns that consumed the budget. */
+  meanBudgetTurns: number;
   meanUpstreamCalls: number;
   meanInputTokens: number;
   meanOutputTokens: number;
@@ -447,6 +469,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     harnessErrors: records.length - scored.length,
     turnCapped: scored.filter((r) => r.turnCapped).length,
     meanTurns: mean(records.map((r) => r.apiTurns)),
+    meanBudgetTurns: mean(records.map((r) => r.budgetTurns)),
     meanUpstreamCalls: mean(records.map((r) => r.upstreamCalls.length)),
     meanInputTokens: mean(
       records.map(
@@ -572,6 +595,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'success',
       'tool-ok',
       'turns',
+      'budget',
       'upstream',
       'in-tok',
       'out-tok',
@@ -588,6 +612,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       `${cell.successes}/${cell.scored} ${pct(cell.successes, cell.scored)}`,
       `${cell.toolCorrect}/${cell.scored} ${pct(cell.toolCorrect, cell.scored)}`,
       cell.meanTurns.toFixed(1),
+      cell.meanBudgetTurns.toFixed(1),
       cell.meanUpstreamCalls.toFixed(1),
       Math.round(cell.meanInputTokens).toString(),
       Math.round(cell.meanOutputTokens).toString(),
@@ -668,7 +693,8 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
 
   lines.push(
     'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
-      'Turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
+      'The turn budget counts action turns (Projection discovery turns are free, up to an absolute ceiling of twice the budget); ' +
+      'turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
   return lines.join('\n');
@@ -688,10 +714,11 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
             : 'miss';
   const route = record.projection !== undefined ? ` via ${record.projection.route}` : '';
   const capped = record.turnCapped ? ' (turn-capped)' : '';
+  const budget = record.budgetTurns !== record.apiTurns ? ` (${record.budgetTurns} counted)` : '';
   const upstream = record.upstreamCalls.map((c) => c.tool).join(',') || '-';
   return (
     `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}${capped}; ` +
-    `turns ${record.apiTurns}, upstream [${upstream}], ${record.wallMs}ms`
+    `turns ${record.apiTurns}${budget}, upstream [${upstream}], ${record.wallMs}ms`
   );
 }
 
@@ -701,6 +728,10 @@ export interface ResultsMeta {
   tiers?: TaskTier[];
   tasks?: string[];
   runs?: number;
+  /** The turn budget the episodes ran under (action turns). */
+  maxTurns?: number;
+  /** The absolute ceiling on Messages API calls per episode. */
+  maxTotalTurns?: number;
 }
 
 export interface ResultsWriter {

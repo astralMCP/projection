@@ -288,3 +288,46 @@ that need synonyms (`mkdir` → `create_directory`); that is a vocabulary
 problem, not a matching one, and not worth a thesaurus. CJK runs are one
 token (no segmentation): a query of several ideographs matches only as that
 exact run.
+
+**Addendum (2026-10-10): the same ranking powers the unknown-name hint.** When `call_tool` or `describe_tool` is given a name the catalog does not declare, the hint names the top three tools that `search_tools` would rank for the name's tokens (`create_issue` → `issue_write`, …) before pointing at `search_tools` — keeping only tools a token hit by _name_: a description-only match (`directory` → `list_dir`) is a search result, not a near miss, and without that filter a stopword or one-letter name would always produce three suggestions. The name is cut at the R33 query cap before ranking, so a long guessed name costs what a `search_tools` query costs. The tool-choice eval (Haiku 4.5 through Projection, 94% vs 100% direct) showed the dominant failure was a guessed name costing a `search_tools` → `describe_tool` → `call_tool` detour; this folds the first hop into the error. No new matching logic: same tokens, same scores, same S5 treatment of every name shown.
+
+## D11 — The eval turn budget counts action turns; Projection discovery is free up to a 2× ceiling (2026-10-10)
+
+The tool-choice eval (`packages/harness/src/eval/`) runs the same task in
+both modes under one cap on Messages API calls. On the filesystem tier that
+cap bit Projection and not direct mode: `search_tools` returns only the
+first sentence of each description, so a parameter such as `head` is visible
+only after `describe_tool`, and a model that reads carefully spent most of a
+12-turn cap on `search_tools` / `describe_tool` before it made its first
+real call. Direct mode never pays that: its tool list, schemas included, is
+in the prompt.
+
+Decision: the cap is a budget of _action_ turns. In the agent loop a turn is
+free only when it stopped for `tool_use`, called at least one tool, and
+every tool it called is on the mode's free list — Projection's discovery
+surface (`search_tools`, `describe_tool`, `discover_apis`); direct mode's
+list is empty. An absolute ceiling of twice the budget bounds every call,
+free or not. Both modes get the same budget and the same ceiling; records
+carry `budgetTurns` beside `apiTurns`, the report has a `budget` column, and
+the results file records `maxTurns` and `maxTotalTurns`.
+
+Rationale. Direct mode's tool list _is_ the discovery result, delivered
+for free; charging Projection a turn for reading the same information would
+measure prompt size, not tool choice, which is what the eval is for. The
+cost of discovery is not hidden: every call still shows in `turns`,
+`in-tok`, `out-tok` and `$`, and each extra turn resends the growing
+context (softened by cache reads). Free is by tool name, not outcome: a
+failed `call_tool` — unknown name, bad arguments — counts exactly like a
+direct-mode call with bad arguments, because that is the tool-choice error
+the eval exists to catch; a failed `describe_tool` or endless `search_tools`
+paging does not count and is bounded only by the ceiling. An empty
+`tool_use` turn, a refusal, `max_tokens` or a null stop reason all count,
+so with no free tools `budgetTurns === apiTurns` on every record. The
+ceiling bounds calls, not tokens, and is never below the budget (a lower
+ceiling would make the budget unreachable).
+
+Alternatives rejected: a larger cap for Projection only — a thumb on the
+scale, and a number to argue about per tier; a cap on upstream calls
+instead of API turns — a model that loops on discovery makes no upstream
+calls and never ends; charging discovery at a fraction of a turn — a
+weight with no principled value, and a column nobody can read at a glance.

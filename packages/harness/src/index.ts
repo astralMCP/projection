@@ -112,6 +112,7 @@ export {
   anthropicCaller,
   resolveModelPresets,
   runAgentEpisode,
+  DEFAULT_MAX_TOTAL_TURNS,
   DEFAULT_MAX_TURNS,
   DEFAULT_MODEL_PRESETS,
   MODEL_PRESETS,
@@ -196,6 +197,7 @@ export {
   resolveModes,
   toolResultText,
   EVAL_MODES,
+  PROJECTION_DISCOVERY_TOOLS,
   type EvalMode,
   type ModeSession,
 } from './eval/modes.js';

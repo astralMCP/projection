@@ -134,6 +134,73 @@ export function searchTools(
   };
 }
 
+/** How many declared names an unknown-tool hint suggests. */
+export const SUGGESTION_LIMIT = 3;
+
+/**
+ * The declared tools closest to a name the catalog does not have: the
+ * name's tokens (`create_issue` → `create`, `issue`) ranked exactly as a
+ * `search_tools` query is (D10), kept only when at least one token hit the
+ * tool's NAME — a description-only hit (`directory` → `list_dir`) is too
+ * loose to put in front of the model as "did you mean" — top `limit`.
+ * Empty when nothing qualifies.
+ *
+ * The name is cut at `MAX_QUERY_CHARS` before ranking, the same R33 cap
+ * `searchTools` applies to its query, so an unknown-name `call_tool` costs
+ * what a `search_tools` call costs however long the guessed name is (the
+ * catalog lookup it failed was an O(1) map miss; this is the first thing
+ * that scans the catalog with the name).
+ */
+export function suggestTools(
+  catalog: ServerCatalog,
+  name: string,
+  limit: number = SUGGESTION_LIMIT,
+): string[] {
+  const query = name.slice(0, MAX_QUERY_CHARS);
+  // An empty query lists the whole catalog for search_tools; an empty name
+  // suggests nothing.
+  if (tokenize(query).length === 0) return [];
+  return scoreTools(dedupeTools(catalog.tools), query)
+    .filter((item) => item.nameHits > 0)
+    .slice(0, Math.max(0, limit))
+    .map((item) => item.entry.name);
+}
+
+/** A tool name — the caller's or the catalog's — quoted for an error (S5). */
+function inertName(text: string): string {
+  return JSON.stringify(capLength(neutralizeControlChars(text), MAX_IDENTITY_CHARS));
+}
+
+/** `"a"`, `"a" or "b"`, `"a", "b" or "c"`. */
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1] ?? ''}`;
+}
+
+/**
+ * The `validate` error for a tool name the catalog does not declare, from
+ * `call_tool` or `describe_tool` (R34, R35): names the closest declared
+ * tools when there are any, then points at `search_tools`. A model that
+ * guessed `create_issue` learns `issue_write` in the same turn instead of
+ * three turns later. Every name shown is S5-untrusted: neutralized, capped
+ * and quoted.
+ */
+export function unknownToolError(
+  catalog: ServerCatalog,
+  name: string,
+  via: 'call_tool' | 'describe_tool',
+): ProjectionError {
+  const suggestions = suggestTools(catalog, name).map(inertName);
+  const didYouMean = suggestions.length === 0 ? '' : `Did you mean ${listNames(suggestions)}? `;
+  return new ProjectionError(
+    'validate',
+    `Unknown tool ${inertName(name)}: the wrapped server does not declare it`,
+    {
+      hint: `${didYouMean}Call search_tools to list the tools this server declares, then ${via} with one of those names exactly.`,
+    },
+  );
+}
+
 /**
  * Tokens of a query: lowercased, NFC-normalized, split on anything that is
  * not a letter, combining mark, or digit — so a decomposed `é` stays inside
@@ -154,27 +221,50 @@ export function tokenize(query: string): string[] {
 /**
  * Filter and rank the catalog for a query (D10). An empty query returns
  * every tool in catalog order; a query with no token at all (whitespace
- * only) matches nothing. The sort is stable, so equal scores keep catalog
- * order and paging stays deterministic for a given query.
+ * only) matches nothing.
  */
 function rankTools(tools: ToolCatalogEntry[], query: string): ToolCatalogEntry[] {
+  if (query.length === 0) return tools;
+  return scoreTools(tools, query).map((item) => item.entry);
+}
+
+/** One matching tool with the D10 score that ranked it. */
+interface ScoredTool {
+  entry: ToolCatalogEntry;
+  /** `2 × nameHits + (tokens in the title or description)`. */
+  score: number;
+  /** Tokens that are substrings of the name (`suggestTools` requires one). */
+  nameHits: number;
+}
+
+/**
+ * The tools a query matches, best first (D10): a token scores +2 in the
+ * name and, independently, +1 in the title or description. The sort is
+ * stable, so equal scores keep catalog order and paging stays deterministic
+ * for a given query. A query with no token matches nothing.
+ */
+function scoreTools(tools: ToolCatalogEntry[], query: string): ScoredTool[] {
   // Deduplicated: a repeated word must not count twice.
   const tokens = new Set(tokenize(query));
-  if (tokens.size === 0) return query.length === 0 ? tools : [];
-  const scored: { entry: ToolCatalogEntry; score: number }[] = [];
+  if (tokens.size === 0) return [];
+  const scored: ScoredTool[] = [];
   for (const entry of tools) {
     const name = entry.name.toLowerCase();
     const title = (entry.annotations?.title ?? '').toLowerCase();
     const description = (entry.description ?? '').toLowerCase();
+    let nameHits = 0;
     let score = 0;
     for (const token of tokens) {
       // Additive: a token in both the name and the description scores 3.
-      if (name.includes(token)) score += 2;
+      if (name.includes(token)) {
+        nameHits += 1;
+        score += 2;
+      }
       if (title.includes(token) || description.includes(token)) score += 1;
     }
-    if (score > 0) scored.push({ entry, score });
+    if (score > 0) scored.push({ entry, score, nameHits });
   }
-  return scored.sort((a, b) => b.score - a.score).map((item) => item.entry);
+  return scored.sort((a, b) => b.score - a.score);
 }
 
 function renderPage(

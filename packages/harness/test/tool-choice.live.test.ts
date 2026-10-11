@@ -31,6 +31,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   createResultsWriter,
+  DEFAULT_MAX_TOTAL_TURNS,
+  DEFAULT_MAX_TURNS,
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
@@ -68,6 +70,10 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
+    // No knob yet: the defaults, recorded in the results file so a run from
+    // before the action-turn budget is distinguishable from one after it.
+    const maxTurns = DEFAULT_MAX_TURNS;
+    const maxTotalTurns = DEFAULT_MAX_TOTAL_TURNS;
 
     const results = createResultsWriter(
       join(dirname(fileURLToPath(import.meta.url)), '../eval-results'),
@@ -77,6 +83,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         tiers,
         tasks: tasks.map((t) => t.name),
         runs,
+        maxTurns,
+        maxTotalTurns,
       },
     );
     // eslint-disable-next-line no-console
@@ -90,6 +98,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       modes,
       tasks,
       runs,
+      maxTurns,
+      maxTotalTurns,
       concurrency,
       onEpisode: (record) => {
         // eslint-disable-next-line no-console -- progress while a long run goes

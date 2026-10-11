@@ -82,6 +82,17 @@ describe('call_tool: validation (R35.1)', () => {
     expect(d.executor.calls).toEqual([]);
   });
 
+  it('names the closest declared tools when the name is a near miss (did you mean)', async () => {
+    const d = deps();
+    const result = completed(await callTool({ name: 'read_files', args: { path: '/x' } }, d));
+    expect(result.isError).toBe(true);
+    const err = structured(result);
+    expect(err['phase']).toBe('validate');
+    expect(String(err['hint'])).toMatch(/^Did you mean "read_file"\? Call search_tools/);
+    expect(String(err['hint'])).toContain('then call_tool with one of those names exactly');
+    expect(d.executor.calls).toEqual([]);
+  });
+
   it('rejects non-object args and non-JSON values', async () => {
     for (const args of [[1, 2], 'str', 42, null]) {
       const result = completed(await callTool({ name: 'read_file', args }, deps()));
@@ -390,6 +401,38 @@ describe('call_tool: suspend and resume (R35.3–4, R36, S2)', () => {
       expect(structured(result)['phase']).toBe('blob_verification');
       expect(String(structured(result)['message'])).toContain('request mismatch');
     }
+    expect(d.executor.calls).toEqual([]);
+  });
+
+  it('a blob for a tool this catalog does not declare is refused once opened, with the unknown-tool hint (R36)', async () => {
+    // Minted under a catalog that has write_file; retried under one with the
+    // same identity string that does not: another deployment's blob.
+    const minted = deps();
+    const state = sealedState(await callTool({ name: 'write_file', args: WRITE }, minted));
+    const narrower: ServerCatalog = {
+      ...CATALOG,
+      tools: CATALOG.tools.filter((t) => t.name !== 'write_file'),
+    };
+    const d = deps({ catalog: narrower });
+    const result = completed(
+      await callTool(
+        {
+          name: 'write_file',
+          args: WRITE,
+          requestState: state,
+          inputResponses: { [CALL_KEY]: ACCEPT },
+        },
+        d,
+      ),
+    );
+    expect(result.isError).toBe(true);
+    const err = structured(result);
+    expect(err['phase']).toBe('validate');
+    expect(String(err['message'])).toContain('Unknown tool "write_file"');
+    // `file` hits read_file and delete_file by name; list_dir is not offered.
+    expect(String(err['hint'])).toMatch(
+      /^Did you mean "read_file" or "delete_file"\? Call search_tools .* then call_tool with/,
+    );
     expect(d.executor.calls).toEqual([]);
   });
 
