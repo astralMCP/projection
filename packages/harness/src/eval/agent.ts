@@ -131,6 +131,8 @@ export interface EpisodeUsage {
 export interface AgentEpisode {
   /** Messages API calls made. */
   apiTurns: number;
+  /** Of those, the turns that consumed the budget (not purely discovery). */
+  budgetTurns: number;
   /** Every `tool_use` block the model emitted, in order. */
   toolUses: ToolUseRecord[];
   usage: EpisodeUsage;
@@ -140,8 +142,9 @@ export interface AgentEpisode {
   /** Text blocks of the final assistant message, joined. */
   finalText: string;
   /**
-   * True when the loop stopped because `maxTurns` Messages API calls had
-   * been made while the model was still calling tools. Not a harness error:
+   * True when the loop stopped because the turn budget (`maxTurns` counting
+   * turns, or `maxTotalTurns` in all) was spent while the model was still
+   * calling tools. Not a harness error:
    * every upstream call up to the cap was recorded, so the episode is scored
    * on them like any other — a model that loops gets its loops counted, not
    * dropped.
@@ -157,12 +160,28 @@ export interface AgentEpisode {
 }
 
 export interface AgentEpisodeOptions {
-  /** Cap on Messages API calls. Default 12. */
+  /**
+   * The turn budget: Messages API calls that count. Default 12. A turn
+   * counts unless every tool it called is in `budgetFreeTools`.
+   */
   maxTurns?: number;
+  /**
+   * Tools whose turns do not consume the budget — Projection's discovery
+   * surface (`search_tools`, `describe_tool`, `discover_apis`), which direct
+   * mode gets for free in its inline schemas. A turn that mixes a free tool
+   * with any other tool counts. Default: none.
+   */
+  budgetFreeTools?: ReadonlySet<string>;
+  /**
+   * Absolute ceiling on Messages API calls, free turns included, so a model
+   * that loops on discovery still stops. Default {@link DEFAULT_MAX_TOTAL_TURNS}.
+   */
+  maxTotalTurns?: number;
   maxTokens?: number;
 }
 
 export const DEFAULT_MAX_TURNS = 12;
+export const DEFAULT_MAX_TOTAL_TURNS = 24;
 export const DEFAULT_MAX_TOKENS = 16000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -182,6 +201,8 @@ export async function runAgentEpisode(
   options: AgentEpisodeOptions = {},
 ): Promise<AgentEpisode> {
   const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS;
+  const maxTotalTurns = Math.max(maxTurns, options.maxTotalTurns ?? DEFAULT_MAX_TOTAL_TURNS);
+  const free = options.budgetFreeTools ?? new Set<string>();
   const tools: Anthropic.Tool[] = runtime.tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -197,11 +218,13 @@ export async function runAgentEpisode(
     cacheCreationInputTokens: 0,
   };
   let apiTurns = 0;
+  let budgetTurns = 0;
   let stopReason: string | undefined;
   let finalText = '';
 
   const finish = (harnessError?: string, turnCapped = false): AgentEpisode => ({
     apiTurns,
+    budgetTurns,
     toolUses,
     usage,
     wallMs: Math.round(performance.now() - started),
@@ -211,7 +234,7 @@ export async function runAgentEpisode(
     ...(harnessError !== undefined ? { harnessError } : {}),
   });
 
-  for (let turn = 0; turn < maxTurns; turn += 1) {
+  while (budgetTurns < maxTurns && apiTurns < maxTotalTurns) {
     let message: Anthropic.Message;
     try {
       message = await caller({
@@ -240,6 +263,10 @@ export async function runAgentEpisode(
       // Echo the whole assistant turn (thinking blocks included), then
       // answer every tool_use block in ONE user message.
       messages.push({ role: 'assistant', content: message.content });
+      const called = message.content.flatMap((block) =>
+        block.type === 'tool_use' ? [block.name] : [],
+      );
+      if (!called.every((name) => free.has(name))) budgetTurns += 1;
       const results: Anthropic.ToolResultBlockParam[] = [];
       for (const block of message.content) {
         if (block.type !== 'tool_use') continue;
@@ -264,10 +291,12 @@ export async function runAgentEpisode(
 
     if (message.stop_reason === 'pause_turn') {
       messages.push({ role: 'assistant', content: message.content });
+      budgetTurns += 1;
       continue;
     }
 
     if (message.stop_reason === 'end_turn' || message.stop_reason === 'stop_sequence') {
+      budgetTurns += 1;
       return finish();
     }
 

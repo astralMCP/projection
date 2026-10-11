@@ -270,6 +270,86 @@ describe('tool-choice eval plumbing (offline)', () => {
         [1, 1],
         [1, 1],
       ]);
+      // Every looping turn called an upstream tool, so all of them counted.
+      expect(records.map((r) => r.budgetTurns)).toEqual([3, 3]);
+    },
+  );
+
+  it(
+    'does not charge Projection discovery turns to the budget, up to the absolute ceiling',
+    { timeout: 60_000 },
+    async () => {
+      // Projection: four search_tools turns, then call_tool, then the answer.
+      // Direct: get_me on the first turn, then the answer.
+      const discoverThenAct: ModelCaller = async (params) => {
+        const names = new Set((params.tools ?? []).map((t) => t.name));
+        const assistantTurns = params.messages.filter((m) => m.role === 'assistant').length;
+        const last = params.messages.at(-1);
+        const sawResult =
+          Array.isArray(last?.content) && last.content.some((b) => b.type === 'tool_result');
+        if (!names.has('call_tool')) {
+          return sawResult
+            ? message([{ type: 'text', text: 'vibdev' }], 'end_turn')
+            : message([toolUse('tu_direct', 'get_me', {})], 'tool_use');
+        }
+        if (assistantTurns < 4) {
+          return message(
+            [toolUse(`tu_s${assistantTurns}`, 'search_tools', { query: 'me' })],
+            'tool_use',
+          );
+        }
+        if (assistantTurns === 4) {
+          return message(
+            [toolUse('tu_call', 'call_tool', { name: 'get_me', args: {} })],
+            'tool_use',
+          );
+        }
+        return message([{ type: 'text', text: 'vibdev' }], 'end_turn');
+      };
+      const records = await runToolChoiceEval({
+        models: [preset],
+        modes: resolveModes(undefined),
+        tasks: resolveTasks('who-am-i'),
+        runs: 1,
+        maxTurns: 3,
+        caller: discoverThenAct,
+      });
+      const direct = records.find((r) => r.mode === 'direct');
+      const projection = records.find((r) => r.mode === 'projection');
+      expect(direct).toMatchObject({
+        success: true,
+        turnCapped: false,
+        apiTurns: 2,
+        budgetTurns: 2,
+      });
+      // Six API calls, but only the call_tool turn and the answer counted.
+      expect(projection).toMatchObject({
+        success: true,
+        turnCapped: false,
+        apiTurns: 6,
+        budgetTurns: 2,
+      });
+      expect(projection?.projection?.searchTools).toBe(4);
+      expect(formatEpisodeLine(projection as EpisodeRecord)).toContain('turns 6 (2 counted)');
+
+      // A model that only ever discovers hits the absolute ceiling, not the budget.
+      const onlyDiscover: ModelCaller = async () =>
+        message([toolUse('tu_s', 'search_tools', { query: 'me' })], 'tool_use');
+      const [capped] = await runToolChoiceEval({
+        models: [preset],
+        modes: ['projection'],
+        tasks: resolveTasks('who-am-i'),
+        runs: 1,
+        maxTurns: 3,
+        maxTotalTurns: 5,
+        caller: onlyDiscover,
+      });
+      expect(capped).toMatchObject({
+        turnCapped: true,
+        apiTurns: 5,
+        budgetTurns: 0,
+        success: false,
+      });
       const report = formatToolChoiceReport(records);
       expect(report).not.toContain('Harness errors');
       expect(report).toContain('1/1 100%');

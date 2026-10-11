@@ -49,6 +49,13 @@ export function resolveModes(spec: string | undefined): EvalMode[] {
     });
 }
 
+/** The facade's discovery tools: reading about tools, never calling one. */
+export const PROJECTION_DISCOVERY_TOOLS: ReadonlySet<string> = new Set([
+  'search_tools',
+  'describe_tool',
+  'discover_apis',
+]);
+
 const PROJECTION_ENDPOINT = new URL('http://tool-choice-eval.projection.test/mcp');
 const CLIENT_INFO = { name: 'tool-choice-eval', version: '0.0.0' };
 
@@ -60,6 +67,11 @@ export interface ModeSession {
   world: EvalWorld;
   /** Approval prompts answered (projection only; always 0 for direct). */
   readonly approvals: number;
+  /**
+   * Tools whose turns are free under the eval's turn budget: Projection's
+   * discovery surface, which direct mode has inline. Empty for direct.
+   */
+  readonly budgetFreeTools: ReadonlySet<string>;
   close(): Promise<void>;
 }
 
@@ -143,6 +155,7 @@ export async function openDirectSession(world: EvalWorld): Promise<ModeSession> 
     mode: 'direct',
     world,
     approvals: 0,
+    budgetFreeTools: new Set(),
     runtime: {
       system,
       tools,
@@ -198,6 +211,7 @@ export async function openProjectionSession(world: EvalWorld): Promise<ModeSessi
     get approvals() {
       return state.approvals;
     },
+    budgetFreeTools: PROJECTION_DISCOVERY_TOOLS,
     runtime: {
       system,
       tools,

@@ -118,7 +118,11 @@ carry the episode's temp directory, so they are functions of the world's
 facts (`promptFor`). Two inherent Projection costs show up on a server this
 small: `search_tools` returns only the first sentence of each description,
 so a parameter like `head` is visible only after `describe_tool`, and those
-discovery turns count against the same turn cap the direct mode has.
+discovery turns are many. The turn budget therefore counts _action_ turns:
+a Projection turn that only called `search_tools`, `describe_tool` or
+`discover_apis` is free (direct mode has that information inline), up to an
+absolute ceiling of twice the budget so a model that loops on discovery
+still stops; both modes get the same budget.
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
@@ -136,8 +140,9 @@ and harness-error counts, a per-tier summary, a per-task table grouped by
 tier, and Projection's route split) is printed, and the records are written
 to `eval-results/<timestamp>.json`
 (gitignored), rewritten after every episode so a timeout or crash keeps the
-partial results. An episode that hits the 12-turn cap is scored on the
-upstream calls it made (and flagged `turnCapped`); refusals, `max_tokens`,
+partial results. An episode that spends its 12-turn budget (or 24 calls in
+all) is scored on the upstream calls it made (and flagged `turnCapped`);
+refusals, `max_tokens`,
 API errors and harness exceptions are harness errors, excluded from the
 success denominators but still counted toward spend.
 
