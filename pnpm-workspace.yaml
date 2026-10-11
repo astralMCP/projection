@@ -6,3 +6,7 @@ allowBuilds:
   # The sqlite3 native binding behind the mcp-sqlite smoke-test server.
   sqlite3: true
   mcp-sqlite: false
+  # Pulled in by the harness's MongoDB eval tier (mongodb driver optional natives, and mongodb-memory-server's postinstall binary download, which the eval does lazily at first use instead); none of their build scripts are needed.
+  kerberos: false
+  mongodb-client-encryption: false
+  mongodb-memory-server: false
