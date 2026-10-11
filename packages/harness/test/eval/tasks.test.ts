@@ -10,6 +10,7 @@ import {
   BASIC_TASKS,
   FILESYSTEM_TASKS,
   HARD_TASKS,
+  MONGODB_TASKS,
   promptFor,
   resolveTasks,
   resolveTiers,
@@ -303,7 +304,7 @@ describe('tool-choice tasks', () => {
   it('covers every GitHub task with a golden sequence, and names are unique', () => {
     const names = TOOL_CHOICE_TASKS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(TOOL_CHOICE_TASKS).toEqual([...GITHUB_TASKS, ...FILESYSTEM_TASKS]);
+    expect(TOOL_CHOICE_TASKS).toEqual([...GITHUB_TASKS, ...FILESYSTEM_TASKS, ...MONGODB_TASKS]);
     expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);
     expect(HARD_TASKS.length).toBeGreaterThanOrEqual(12);
@@ -313,10 +314,17 @@ describe('tool-choice tasks', () => {
   });
 
   it('prompts say what, never how: no tool names', () => {
-    const toolNames = new Set(TOOL_CHOICE_TASKS.flatMap((t) => t.steps.flat()));
     for (const t of TOOL_CHOICE_TASKS) {
+      // The tools of the task's own world: a GitHub prompt may say "find",
+      // which is a MongoDB tool, not one the GitHub server has.
+      const toolNames = new Set(
+        TOOL_CHOICE_TASKS.filter((o) => o.tier === t.tier).flatMap((o) => o.steps.flat()),
+      );
       const prompt = promptFor(t, { root: '/home/me/project' });
-      for (const name of toolNames) expect(prompt).not.toContain(name);
+      // As a word: "account" may contain "count", but no prompt names a tool.
+      for (const name of toolNames) {
+        expect(prompt).not.toMatch(new RegExp(`(^|[^\\w-])${name}([^\\w-]|$)`, 'i'));
+      }
     }
   });
 
@@ -1131,9 +1139,10 @@ describe('tool-choice tasks', () => {
   });
 
   it('resolves PROJ_EVAL_TIERS and PROJ_EVAL_TASKS filters and rejects unknown names', () => {
-    expect(resolveTiers(undefined)).toEqual(['basic', 'hard', 'filesystem']);
+    expect(resolveTiers(undefined)).toEqual(['basic', 'hard', 'filesystem', 'mongodb']);
     expect(resolveTiers('hard')).toEqual(['hard']);
     expect(resolveTasks(undefined, ['filesystem'])).toEqual(FILESYSTEM_TASKS);
+    expect(resolveTasks(undefined, ['mongodb'])).toEqual(MONGODB_TASKS);
     expect(resolveTiers(' basic , hard ')).toEqual(['basic', 'hard']);
     expect(() => resolveTiers('medium')).toThrow(/unknown tier "medium"/);
 

@@ -9,16 +9,21 @@
  *   answers, no I/O (github-fake.ts);
  * - **filesystem**: the official filesystem reference server, spawned over
  *   stdio against a throwaway fixture tree, behind a recording proxy
- *   (filesystem-world.ts). Effects land for real; tasks verify the end
- *   state on disk as well as the recorded calls.
+ *   (filesystem-world.ts);
+ * - **mongodb**: the official MongoDB MCP server on a seeded throwaway
+ *   `mongod`, likewise behind a recording proxy (mongodb-world.ts).
+ *
+ * Real-server effects land for real; tasks verify the end state (on disk,
+ * in the database) as well as the recorded calls.
  */
 
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { SideEffect } from '../types.js';
 import { openFilesystemWorld } from './filesystem-world.js';
 import { createGithubFake, type GithubFakeOptions } from './github-fake.js';
+import { openMongodbWorld } from './mongodb-world.js';
 
-export type WorldName = 'github' | 'filesystem';
+export type WorldName = 'github' | 'filesystem' | 'mongodb';
 
 /** One tool as a world serves it (the model sees name, description, schema). */
 export interface WorldTool {
@@ -39,6 +44,8 @@ export interface WorldTool {
 export interface WorldFacts {
   /** filesystem: the server's one allowed directory (a realpath), fresh per episode. */
   root?: string;
+  /** mongodb: the episode's deployment, for `verify` to query through the driver. */
+  mongoUri?: string;
 }
 
 export interface EvalWorld {
@@ -92,5 +99,7 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
       return Promise.resolve(githubWorld(options));
     case 'filesystem':
       return openFilesystemWorld();
+    case 'mongodb':
+      return openMongodbWorld();
   }
 }

@@ -85,7 +85,7 @@ are real, a `verify` of the end state (the file really moved; the answer
 names the right file). In projection mode a scripted approve-all client
 auto-fulfils every approval round trip, so the model only sees results.
 
-Tasks come in three tiers. The **basic** tier (15 tasks against
+Tasks come in four tiers. The **basic** tier (15 tasks against
 `modelcontextprotocol/servers`) is one or two obvious calls each; current
 models saturate it. The **hard** tier (15 tasks against `acme/widgets` and
 the user's own repositories) discriminates: write tools whose `method` enum
@@ -120,6 +120,22 @@ small: `search_tools` returns only the first sentence of each description,
 so a parameter like `head` is visible only after `describe_tool`, and those
 discovery turns count against the same turn cap the direct mode has.
 
+The **mongodb** tier (15 tasks on the real MongoDB MCP server,
+`mongodb-mcp-server` 3.0.5, against a seeded throwaway `mongod` from
+`mongodb-memory-server`) targets JSON-shaped arguments and near-duplicate
+tools: a filtered count, a top-3 by price (`sort` + `limit` or a
+`$sort`/`$limit` pipeline), a group-by, an update whose filter must carry
+both the status and the date cut-off, a delete that must carry a filter,
+dropping one collection but not the database, a rename, a conditional insert
+that must _not_ happen, and a query-plan question — and every tool needs the
+opaque `connectionId: "preconfigured"` the schema describes. The server's
+dependency tree needs a newer MCP SDK than the workspace pins, so it is
+installed in isolation once with `pnpm run setup:mongodb` (in
+`packages/harness`; CI does this); the `mongod` binary (~80 MB) is
+downloaded once into `~/.cache/mongodb-binaries` (`MONGOMS_DOWNLOAD_DIR`).
+Tools that reach outside the deployment (`connect`, `export`, the
+knowledge-base search) are disabled.
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -128,7 +144,7 @@ PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-cho
 
 Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haiku-low`,
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
-(`basic,hard,filesystem`, the default), `PROJ_EVAL_TASKS` (comma list of task names
+(`basic,hard,filesystem,mongodb`, the default), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
 turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped

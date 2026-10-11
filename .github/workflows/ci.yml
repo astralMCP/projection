@@ -16,5 +16,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The harness's MongoDB eval tier: the MongoDB MCP server lives in an
+      # isolated npm install (its SDK pin differs from the workspace's), and
+      # mongodb-memory-server downloads the mongod binary once per cache key.
+      - run: pnpm --filter @astral-mcp/harness run setup:mongodb
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongod-${{ runner.os }}-${{ runner.arch }}-8.2.6
       - run: pnpm run check
       - run: pnpm run format:check
