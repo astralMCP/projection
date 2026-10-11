@@ -6,14 +6,3 @@ allowBuilds:
   # The sqlite3 native binding behind the mcp-sqlite smoke-test server.
   sqlite3: true
   mcp-sqlite: false
-  # Pulled in by mongodb-mcp-server (eval MongoDB tier); none of their build
-  # scripts are needed. mongodb-memory-server's postinstall would download the
-  # mongod binary — the eval downloads it lazily at first use instead.
-  '@modelcontextprotocol/ext-apps': false
-  cpu-features: false
-  kerberos: false
-  macos-export-certificate-and-key: false
-  mongodb-client-encryption: false
-  mongodb-memory-server: false
-  os-dns-native: false
-  ssh2: false
