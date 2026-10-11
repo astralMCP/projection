@@ -16,7 +16,8 @@
  * Hard tasks may also `forbid` calls (a wrong write is a failure even when
  * the right one also happened) and assert ordering (a write must follow the
  * lookup that justified it). The **filesystem** tier, against the real
- * reference server, lives in filesystem-tasks.ts.
+ * reference server, lives in filesystem-tasks.ts; the **mongodb** tier, against
+ * the real MongoDB MCP server, in mongodb-tasks.ts.
  *
  * Matching is lenient where the API allows synonyms (`issue_number` vs
  * `pullNumber`, numbers as strings, owner/repo case, a defaulted `state`,
@@ -28,6 +29,7 @@
 
 import type { SideEffect } from '../types.js';
 import { FILESYSTEM_TASKS } from './filesystem-tasks.js';
+import { MONGODB_TASKS } from './mongodb-tasks.js';
 import { BASIC_REPO, branchesListed, FAKE_USER, HARD_BRANCHES, HARD_REPO } from './github-fake.js';
 import {
   containsText,
@@ -823,6 +825,7 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
   ...BASIC_TASKS,
   ...HARD_TASKS,
   ...FILESYSTEM_TASKS,
+  ...MONGODB_TASKS,
 ];
 
 /** Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names throw. */
