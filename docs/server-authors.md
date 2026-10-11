@@ -49,8 +49,10 @@ negotiation for free, and a hand-built server defaults to `legacy`
 are plain functions over plain data — call them from your own handler.
 
 `wrapMcpServer` introspects once, at wrap time: it reads `tools/list`
-(following `nextCursor` for at most 100 pages or 2,000 tools, then failing
-with a `protocol` error — wrap a server with a bounded tool surface),
+(the MCP client follows `nextCursor` up to its `listMaxPages` cap, 64 pages
+by default; Projection fails with a `protocol` error when pagination does not
+end within that cap or the listed total exceeds 2,000 tools — wrap a server
+with a bounded tool surface),
 `instructions` and the server identity. Tools you add afterwards are not seen
 until the next wrap, and duplicate names collapse to one tool.
 

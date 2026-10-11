@@ -358,11 +358,15 @@ The pre-0.8.0 dependency pass settled these rules:
   check duck-typed, is open for a later release.
 - **SDK ≥ 2.2 walks `tools/list` itself.** `Client.listTools()` without a
   cursor follows `nextCursor` to the end (cap `listMaxPages`, default 64,
-  failing closed with an `SdkError` that the introspector wraps). The
-  introspector's own 100-page / 2000-tool guard therefore sees one page:
-  endless-chain protection now lives in the SDK, and the tool-count cap no
-  longer throws for a paginated server. Not changed in the update PR;
-  revisit if the cap matters.
+  failing closed with an `SdkError` that the introspector wraps as a
+  `protocol` error). Endless-chain protection therefore lives in the SDK and
+  the introspector no longer pages: it makes one `listTools()` call and
+  enforces the 2000-tool cap on the listed total, so the cap fires for a
+  paginated server too (its old in-loop check saw only one page). The SDK
+  holds the whole aggregate before the check, at most 64 pages of whatever
+  the server sends; the per-page guard it replaced bounded that more
+  tightly, which we accept rather than re-implement paging. A caller-supplied
+  `Client` keeps its own `listMaxPages`, including `0` (unbounded).
 - **Turbo's agent guidance is off.** turbo ≥ 2.11 writes an `AGENTS.md`
   block on agent-driven runs; `CLAUDE.md` and the skills are this repo's
   agent instructions, so `turbo.json` sets `"agentGuidance": false`.

@@ -1,5 +1,5 @@
-import { Client } from '@modelcontextprotocol/client';
-import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
+import { Client, SdkError } from '@modelcontextprotocol/client';
+import { InMemoryTransport, McpServer, Server } from '@modelcontextprotocol/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ProjectionError } from '../../src/errors.js';
@@ -241,6 +241,80 @@ describe('Introspector edge cases', () => {
       expect(outcome.ok).toBe(true);
     } finally {
       await introspector.close();
+    }
+  });
+});
+
+describe('Introspector tools/list limits (D12)', () => {
+  /**
+   * A low-level server whose tools/list answers `pages` pages of `perPage`
+   * tools each; `pages: Infinity` never stops returning `nextCursor`.
+   */
+  async function connectPaginating(pages: number, perPage: number): Promise<Client> {
+    const server = new Server(
+      { name: 'paginating', version: '0.0.1' },
+      { capabilities: { tools: {} } },
+    );
+    server.setRequestHandler('tools/list', (request) => {
+      const page = request.params?.cursor !== undefined ? Number(request.params.cursor) : 0;
+      const tools = Array.from({ length: perPage }, (_, i) => ({
+        name: `tool_${page}_${i}`,
+        inputSchema: { type: 'object' as const },
+      }));
+      return page + 1 < pages ? { tools, nextCursor: String(page + 1) } : { tools };
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'paging-test-client', version: '0.0.0' });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    return client;
+  }
+
+  it('introspects a normally paginated catalog across pages', async () => {
+    const client = await connectPaginating(3, 2);
+    try {
+      const introspector = await createIntrospector({ remote: client });
+      expect(introspector.catalog.servers.get('remote')?.tools.map((tool) => tool.name)).toEqual([
+        'tool_0_0',
+        'tool_0_1',
+        'tool_1_0',
+        'tool_1_1',
+        'tool_2_0',
+        'tool_2_1',
+      ]);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a server declaring more than 2000 tools across pages', async () => {
+    const client = await connectPaginating(3, 700);
+    try {
+      const error = await createIntrospector({ remote: client }).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('declares 2100 tools, over the cap of 2000'),
+        hint: expect.stringContaining('2000 tools'),
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('surfaces an endless tools/list chain (SDK page cap) as a protocol error', async () => {
+    const client = await connectPaginating(Infinity, 1);
+    try {
+      const error = await createIntrospector({ remote: client }).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ProjectionError);
+      expect(error).toMatchObject({
+        phase: 'protocol',
+        message: expect.stringContaining('listMaxPages'),
+        hint: expect.stringContaining('pagination terminates'),
+      });
+      expect((error as ProjectionError).cause).toBeInstanceOf(SdkError);
+    } finally {
+      await client.close();
     }
   });
 });

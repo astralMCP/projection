@@ -16,7 +16,7 @@
  *   its lifecycle; `close()` will not touch it.
  */
 
-import { Client } from '@modelcontextprotocol/client';
+import { Client, SdkError, SdkErrorCode } from '@modelcontextprotocol/client';
 import {
   InMemoryTransport,
   McpServer,
@@ -95,36 +95,19 @@ function toCatalogEntry(tool: Tool): ToolCatalogEntry {
  * and could return an endless chain of `nextCursor` pages, or a tool count
  * large enough to blow up the generated artifacts; either would hang or
  * exhaust the process before any workflow runs.
+ *
+ * The SDK client walks the pages itself (`listMaxPages`, default 64) and
+ * fails closed on an endless chain (D12); the tool-count cap is checked on
+ * the listed total.
  */
-const MAX_TOOL_LIST_PAGES = 100;
 const MAX_TOOLS = 2_000;
 
 async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]> {
-  const tools: Tool[] = [];
-  let cursor: string | undefined;
-  let pages = 0;
+  let tools: Tool[];
   try {
-    do {
-      const page = await client.listTools(cursor !== undefined ? { cursor } : undefined);
-      tools.push(...page.tools);
-      cursor = page.nextCursor;
-      pages += 1;
-      if (pages >= MAX_TOOL_LIST_PAGES || tools.length >= MAX_TOOLS) {
-        if (cursor !== undefined) {
-          throw new ProjectionError(
-            'protocol',
-            `wrapped server "${alias}" exceeded introspection limits (${pages} pages, ${tools.length} tools)`,
-            {
-              hint: `Projection reads at most ${MAX_TOOL_LIST_PAGES} tools/list pages and ${MAX_TOOLS} tools. Wrap a server with a bounded tool surface.`,
-            },
-          );
-        }
-        break;
-      }
-    } while (cursor !== undefined);
+    // No cursor: the SDK follows nextCursor to the end, capped by listMaxPages.
+    ({ tools } = await client.listTools());
   } catch (err) {
-    // Our own limit breach already carries the right phase and hint.
-    if (err instanceof ProjectionError) throw err;
     // A server with zero registered tools never declares the `tools`
     // capability (client-side assertion) and answers tools/list with
     // Method not found; treat both as an empty catalog, not a failure.
@@ -134,12 +117,31 @@ async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]>
     if (err instanceof Error && /does not support tools/i.test(err.message)) {
       return [];
     }
+    if (err instanceof SdkError && err.code === SdkErrorCode.ListPaginationExceeded) {
+      throw new ProjectionError(
+        'protocol',
+        `wrapped server "${alias}" exceeded introspection limits (${err.message})`,
+        {
+          hint: `Projection reads tools/list pages until the server stops returning nextCursor, up to the MCP client's listMaxPages cap. Wrap a server whose tools/list pagination terminates, with at most ${MAX_TOOLS} tools.`,
+          cause: err,
+        },
+      );
+    }
     throw new ProjectionError(
       'protocol',
       `tools/list failed for wrapped server "${alias}": ${err instanceof Error ? err.message : String(err)}`,
       {
         hint: 'Check that the wrapped server is running, connected, and supports the tools capability.',
         cause: err,
+      },
+    );
+  }
+  if (tools.length > MAX_TOOLS) {
+    throw new ProjectionError(
+      'protocol',
+      `wrapped server "${alias}" exceeded introspection limits (declares ${tools.length} tools, over the cap of ${MAX_TOOLS})`,
+      {
+        hint: `Projection reads at most ${MAX_TOOLS} tools. Wrap a server with a bounded tool surface.`,
       },
     );
   }
