@@ -331,3 +331,23 @@ scale, and a number to argue about per tier; a cap on upstream calls
 instead of API turns — a model that loops on discovery makes no upstream
 calls and never ends; charging discovery at a fraction of a turn — a
 weight with no principled value, and a column nobody can read at a glance.
+
+## D12 — Saved eval runs are re-scored offline; world-reading verifies keep their verdict (2026-10-10)
+
+Grader fixes are applied to saved results with `rescoreRecords` (script:
+`pnpm --filter @astral-mcp/harness run rescore <results.json>`) instead of
+a new paid run. A record keeps the upstream calls and the final text, so
+`expect`, `forbid`, the step groups and any verify that reads only the
+answer are re-run exactly. A verify that reads the live world (files on
+disk, documents in the deployment) is marked `needsWorld` on its task and
+cannot be re-run: the recorded verdict stands while `expect` and `forbid`
+still pass, and is downgraded when they do not. Such an episode can never
+be upgraded offline — upgrading would assert an end state nobody checked.
+A test keeps the flag honest: every `needsWorld` verify throws without
+facts, and every other verify answers from the calls and text alone.
+
+Alternatives rejected: replaying the recorded calls against a fresh world
+to re-run world verifies — the replay would not reproduce the model's
+reactions to errors, and a mongod/filesystem per record makes a quick
+re-score slow; treating world verifies as passing — silently inflates the
+success rate.

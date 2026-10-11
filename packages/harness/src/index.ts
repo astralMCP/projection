@@ -221,3 +221,10 @@ export {
   type ToolChoiceEvalOptions,
   type ToolChoiceSummary,
 } from './eval/run.js';
+export {
+  rescoreRecords,
+  type RescoreChange,
+  type RescoreOptions,
+  type RescoreResult,
+  type RescoreVerdict,
+} from './eval/rescore.js';

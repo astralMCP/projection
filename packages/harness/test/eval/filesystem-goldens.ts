@@ -27,8 +27,12 @@ export interface Golden {
   apply?: (root: string) => void;
   /** A correct final answer. */
   answer?: string;
+  /** Further correct phrasings (verify must accept each). */
+  answers?: string[];
   /** A wrong final answer (verify must reject it). */
   wrongAnswer?: string;
+  /** Further wrong answers (verify must reject each). */
+  wrongAnswers?: string[];
   /** A plausible wrong call sequence (must not score). */
   wrong?: SideEffect[];
 }
@@ -248,8 +252,15 @@ export const GOLDEN: Record<string, Golden> = {
   'fs-src-tree': {
     calls: [{ tool: 'directory_tree', args: { path: at('src'), excludePatterns: ['**/*.log'] } }],
     answer: 'src/\n  index.js\n  util.js\n  legacy/\n    old.js',
+    // The tree omits the log; the prose saying so does not count against it.
+    answers: [
+      "```\nsrc/\n├── index.js\n├── legacy/\n│   └── old.js\n└── util.js\n```\n\n(debug.log was excluded as it's a log file)",
+    ],
     // The log file was not left out.
     wrongAnswer: 'src/\n  index.js\n  util.js\n  legacy/\n    old.js\n    debug.log',
+    wrongAnswers: [
+      '```\nsrc/\n├── index.js\n├── legacy/\n│   ├── debug.log\n│   └── old.js\n└── util.js\n```\n\nLog files are left out.',
+    ],
     wrong: [{ tool: 'list_directory', args: { path: at('src') } }],
   },
 };

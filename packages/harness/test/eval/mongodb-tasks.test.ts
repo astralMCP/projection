@@ -57,8 +57,55 @@ describe('mongodb tasks', () => {
         ),
       ).toBe(false);
       if (golden.wrong !== undefined) expect(scores(t, golden.wrong)).toBe(false);
+      for (const variant of golden.variants ?? []) {
+        expect(scores(t, variant)).toBe(true);
+        for (const group of t.steps) {
+          expect(variant.some((call) => group.includes(call.tool))).toBe(true);
+        }
+      }
     });
   }
+
+  it('aggregate-db: a pipeline that reaches a different collection or database does not count', () => {
+    const db = (database: string, pipeline: unknown[]): SideEffect[] => [
+      { tool: 'aggregate-db', args: { connectionId: 'preconfigured', database, pipeline } },
+    ];
+    const lookup = (from: string, pipeline: unknown[]) => [
+      { $documents: [{}] },
+      { $lookup: { from, pipeline, as: 'r' } },
+    ];
+    const shipped = [{ $match: { status: 'shipped' } }, { $count: 'n' }];
+    expect(task('db-count-shipped').expect(db('shop', lookup('orders', shipped)))).toBe(true);
+    expect(task('db-count-shipped').expect(db('shop', lookup('customers', shipped)))).toBe(false);
+    expect(task('db-count-shipped').expect(db('reports', lookup('orders', shipped)))).toBe(false);
+    // `$unionWith` in its object form, with the work in its sub-pipeline.
+    expect(
+      task('db-top3-expensive').expect(
+        db('shop', [
+          { $documents: [] },
+          {
+            $unionWith: {
+              coll: 'products',
+              pipeline: [{ $sort: { price: -1 } }, { $limit: 3 }],
+            },
+          },
+        ]),
+      ),
+    ).toBe(true);
+    // The same unsorted read is still not a top three.
+    expect(task('db-top3-expensive').expect(db('shop', lookup('products', [{ $limit: 3 }])))).toBe(
+      false,
+    );
+    // orders-per-status: the pipeline must mention both orders and status.
+    expect(
+      task('db-orders-per-status').expect(db('shop', lookup('orders', [{ $count: 'n' }]))),
+    ).toBe(false);
+    expect(
+      task('db-orders-per-status').expect(
+        db('shop', lookup('customers', [{ $group: { _id: '$status' } }])),
+      ),
+    ).toBe(false);
+  });
 
   it('accepts the common filter spellings', () => {
     const t = task('db-count-shipped');

@@ -75,6 +75,13 @@ export interface EvalTask {
    * (a missing file is `false`, not a throw).
    */
   verify?(context: VerifyContext): boolean | Promise<boolean>;
+  /**
+   * `verify` reads the live world's end state (files on disk, documents in
+   * the deployment), not just the calls and the answer, so it cannot be
+   * re-run from a saved record. The offline re-scorer (rescore.ts) keeps
+   * the recorded verdict for such tasks instead of re-running `verify`.
+   */
+  needsWorld?: boolean;
 }
 
 /** The prompt text for one episode. */

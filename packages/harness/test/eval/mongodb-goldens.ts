@@ -11,6 +11,12 @@ import type { SideEffect } from '../../src/index.js';
 
 export interface Golden {
   calls: SideEffect[];
+  /**
+   * Further correct call sequences (each must score, satisfy every step,
+   * and run clean against the server). Read-only tasks only: the fidelity
+   * test runs each on a fresh deployment and checks the same answers.
+   */
+  variants?: SideEffect[][];
   /** The golden changes the deployment, so `verify` must be false before it runs. */
   mutates?: boolean;
   /** A correct final answer. */
@@ -32,9 +38,34 @@ const shop = (collection: string): Record<string, unknown> => ({
   collection,
 });
 
+/**
+ * A database-level aggregate (`aggregate-db`, no `collection`) that reaches
+ * `from` the way models write it: a one-document `$documents` seed, a
+ * `$lookup` whose sub-pipeline does the work, then `$unwind` +
+ * `$replaceRoot` to hand back the sub-pipeline's documents.
+ */
+const viaLookup = (
+  database: string,
+  from: string,
+  pipeline: Record<string, unknown>[],
+): SideEffect => ({
+  tool: 'aggregate-db',
+  args: {
+    connectionId: C,
+    database,
+    pipeline: [
+      { $documents: [{}] },
+      { $lookup: { from, pipeline, as: 'r' } },
+      { $unwind: '$r' },
+      { $replaceRoot: { newRoot: '$r' } },
+    ],
+  },
+});
+
 export const GOLDEN: Record<string, Golden> = {
   'db-count-shipped': {
     calls: [{ tool: 'count', args: { ...shop('orders'), query: { status: 'shipped' } } }],
+    variants: [[viaLookup('shop', 'orders', [{ $match: { status: 'shipped' } }, { $count: 'n' }])]],
     answer: '4',
     wrongAnswer: '12',
     wrong: [{ tool: 'count', args: { ...shop('orders') } }],
@@ -47,6 +78,7 @@ export const GOLDEN: Record<string, Golden> = {
   },
   'db-schema-customers': {
     calls: [{ tool: 'collection-schema', args: shop('customers') }],
+    variants: [[viaLookup('shop', 'customers', [{ $limit: 1 }])]],
     answer: 'name, email, city and tier (plus _id)',
     wrongAnswer: 'name and email',
     wrong: [{ tool: 'collection-schema', args: shop('orders') }],
@@ -55,6 +87,8 @@ export const GOLDEN: Record<string, Golden> = {
     calls: [
       { tool: 'find', args: { ...shop('products'), filter: {}, sort: { price: -1 }, limit: 3 } },
     ],
+    // Haiku through Projection, from the first full matrix.
+    variants: [[viaLookup('shop', 'products', [{ $sort: { price: -1 } }, { $limit: 3 }])]],
     answer: 'Gadget Max, Charging Dock, Gadget Mini',
     wrongAnswer: 'Gadget Max, Charging Dock, Carry Case',
     // Read off an unsorted page: with 120 products the top three are not on it.
@@ -146,6 +180,12 @@ export const GOLDEN: Record<string, Golden> = {
       { tool: 'list-collections', args: { connectionId: C, database: 'analytics' } },
       { tool: 'list-collections', args: { connectionId: C, database: 'reports' } },
     ],
+    variants: [
+      [
+        { tool: 'list-databases', args: { connectionId: C } },
+        viaLookup('analytics', 'daily', [{ $limit: 1 }]),
+      ],
+    ],
     answer: 'analytics',
     answers: ['The analytics database has it (shop and reports do not).'],
     wrongAnswer: 'shop',
@@ -184,6 +224,24 @@ export const GOLDEN: Record<string, Golden> = {
     calls: [
       { tool: 'count', args: { ...shop('customers'), query: { tier: 'gold', city: 'Austin' } } },
     ],
+    // A string `$unionWith`: the filter is in the stages after it.
+    variants: [
+      [
+        {
+          tool: 'aggregate-db',
+          args: {
+            connectionId: C,
+            database: 'shop',
+            pipeline: [
+              { $documents: [] },
+              { $unionWith: 'customers' },
+              { $match: { tier: 'gold', city: 'Austin' } },
+              { $count: 'n' },
+            ],
+          },
+        },
+      ],
+    ],
     answer: '2',
     wrongAnswer: '4',
     wrong: [{ tool: 'count', args: { ...shop('customers'), query: { tier: 'gold' } } }],
@@ -195,6 +253,8 @@ export const GOLDEN: Record<string, Golden> = {
         args: { ...shop('orders'), pipeline: [{ $group: { _id: '$status', count: { $sum: 1 } } }] },
       },
     ],
+    // Sonnet through Projection, from the first full matrix.
+    variants: [[viaLookup('shop', 'orders', [{ $group: { _id: '$status', count: { $sum: 1 } } }])]],
     answer: 'shipped: 4, delivered: 3, pending: 3, cancelled: 2',
     answers: [
       'Shipped orders: 4\nDelivered orders: 3\nPending orders: 3\nCancelled orders: 2',
