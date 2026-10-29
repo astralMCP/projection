@@ -6,14 +6,14 @@ Projection wraps an existing MCP server and exposes two projections of it — fi
 
 **Code mode** — for workflows:
 
-- **`execute_machine`** — runs an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox. Read-only tool calls execute immediately; any write suspends the machine into a sealed, encrypted blob and asks the human for approval via MRTR elicitation.
+- **`execute_machine`** — runs an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox. Read-only tool calls (or, under `destructive-only`, a non-destructive write) execute immediately; any other write suspends the machine into a sealed, encrypted blob and asks the human for approval via MRTR elicitation.
 - **`discover_apis`** — returns generated TypeScript type definitions and the authoring contract for the wrapped server's tools.
 
 **Catalog** — for single actions and large tool surfaces:
 
 - **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more.
 - **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
-- **`call_tool`** — runs one tool by name, under exactly the same gate: read-only runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
+- **`call_tool`** — runs one tool by name, under exactly the same gate: read-only (or, under `destructive-only`, a non-destructive write) runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
 
 Alongside the tools it serves `projection://` resources (generated types, the authoring contract, example machines), a `ui://projection/dashboard.html` MCP App that app-capable hosts render for `execute_machine` results, and, with code mode on, the `/save-workflow` and `/visualize-workflow` prompts.
 
@@ -64,7 +64,7 @@ needs. Over stdio you can opt in to approvals for those clients with
 `compat: { legacyElicitation: true }`
 ([Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28)).
 
-The wrapped server's tools are never exposed directly. For a single action a model calls `search_tools`, `describe_tool`, then `call_tool({ name, args })` — a write pauses for approval exactly like a machine step, and a declined call comes back as a normal `{ status: "declined" }` result, not an error. For a workflow it calls `discover_apis`, authors a machine, and runs it:
+The wrapped server's tools are never exposed directly. For a single action a model calls `search_tools`, `describe_tool`, then `call_tool({ name, args })` — a write that asks for approval pauses exactly like a machine step, and a declined call comes back as a normal `{ status: "declined" }` result, not an error. For a workflow it calls `discover_apis`, authors a machine, and runs it:
 
 ```ts
 import { setup, assign } from 'xstate';

@@ -5,11 +5,17 @@
  *
  * Exports:
  *
- * - `decidePolicy(entry, overrides?)` — R14/S5 decision for one catalog
- *   entry: developer override always wins; otherwise `readOnlyHint: true`
- *   → `auto`, absent/false → `ask`. Annotations never grant more than the
- *   override allows.
- * - `resolveCallPolicy(call, catalog, overrides?)` — resolves a machine's
+ * - `decidePolicy(entry, context?)` — R14/R49/S5 decision for one catalog
+ *   entry, the single decision point every surface uses: developer override
+ *   always wins; otherwise `readOnlyHint: true` → `auto`; under
+ *   `approvals: 'destructive-only'` an explicit `destructiveHint: false`
+ *   → `auto`; anything else → `ask`.
+ * - `policyContext(options)` — builds the `PolicyContext` from options
+ *   carrying `policy` (overrides) and `approvals`; absent mode →
+ *   `'every-write'`.
+ * - `assertApprovalsMode(value)` — R49 wrap-time validation of the
+ *   `approvals` option (`validate`-phase error on a malformed value).
+ * - `resolveCallPolicy(call, catalog, context?)` — resolves a machine's
  *   `PendingToolCall` against a `ServerCatalog`; returns the decision plus
  *   the catalog entry, or a `validate`-phase `ProjectionError` for a tool
  *   the server does not declare.
@@ -31,7 +37,9 @@
  */
 
 export {
+  assertApprovalsMode,
   decidePolicy,
+  policyContext,
   policyDeniedReason,
   postureOf,
   POLICY_DENIED_REASON,

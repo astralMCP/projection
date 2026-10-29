@@ -16,9 +16,10 @@ Projection wraps an existing MCP server and exposes two projections of it —
 five tools in all, never the wrapped server's own:
 
 - **Code mode** — `execute_machine` runs an LLM-authored XState v5 state
-  machine in a QuickJS WebAssembly sandbox (read-only calls run inline; any
-  write suspends the machine into a sealed, encrypted blob and asks the human
-  to approve that exact call via MRTR elicitation); `discover_apis` returns
+  machine in a QuickJS WebAssembly sandbox (read-only calls, or, under
+  `destructive-only`, a non-destructive write, run inline; any other write
+  suspends the machine into a sealed, encrypted blob and asks the human to
+  approve that exact call via MRTR elicitation); `discover_apis` returns
   the generated TypeScript definitions and the authoring contract.
 - **Catalog** — `search_tools` lists the wrapped tools with their approval
   posture, `describe_tool` returns one tool's schemas (and its generated
@@ -29,8 +30,16 @@ five tools in all, never the wrapped server's own:
   both).
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
-(read-only, or `auto` by policy), `asks for approval`, or is `blocked by
-policy`.
+(read-only, `auto` by policy, or, under `destructive-only`, a non-destructive
+write), `asks for approval`, or is `blocked by policy`.
+
+`approvals` sets the approvals mode: `'every-write'` (default) asks before
+every tool that is not read-only; `'destructive-only'` also runs, without
+approval, a tool whose annotations declare `destructiveHint: false` exactly
+(a missing or any other hint still asks). A per-tool `policy` override wins
+over the mode. The mode extends the trust Projection places in
+`readOnlyHint` to `destructiveHint: false`, and a hostile server can
+mislabel a damaging tool — enable it only for servers you trust.
 
 All suspension state rides the MRTR `requestState` payload, so Projection is
 fully stateless: any server instance can resume any workflow.
@@ -44,6 +53,7 @@ import { wrapMcpServer } from '@astral-mcp/projection';
 const facade = await wrapMcpServer(myMcpServer, {
   blob: { key: myThirtyTwoByteKey }, // shared across instances
   policy: { query: 'ask' }, // override annotations per tool
+  // approvals: 'destructive-only', // skip approval for destructiveHint: false writes (trusted servers only)
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
 

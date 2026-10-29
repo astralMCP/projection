@@ -14,6 +14,7 @@ import {
   clampCaps,
   findTool,
   type ApprovalVerdict,
+  type ApprovalsMode,
   type AuditEntry,
   type BlobSealerConfig,
   type LogEntry,
@@ -71,6 +72,8 @@ export interface ApprovalGateDeps {
   blob: BlobSealerConfig;
   caps?: Partial<ResourceCaps>;
   policy?: PolicyOverrides;
+  /** Approvals mode (R49), decided with `policy` on every gate. */
+  approvals?: ApprovalsMode;
   redact?: RedactionHook;
   /**
    * Protocol era this request is being served on, for down-negotiation
@@ -136,6 +139,7 @@ export async function executeMachine(
       executor: deps.executor,
       caps,
       ...(deps.policy !== undefined ? { policy: deps.policy } : {}),
+      ...(deps.approvals !== undefined ? { approvals: deps.approvals } : {}),
       segment: resume?.trip ?? 0,
       ...(resume !== undefined ? { resume } : {}),
     });
@@ -284,7 +288,7 @@ function suspendResult(
   // executing an unapproved write or hanging (see legacy-gate.ts).
   const gate = legacySuspendError(deps, {
     subject: 'this machine',
-    readOnlyAdvice: 'Author a machine that only calls read-only tools',
+    readOnlyAdvice: 'Author a machine that only calls tools that run without approval',
   });
   if (gate !== undefined) return fail(gate.phase, gate.message, gate.hint);
 

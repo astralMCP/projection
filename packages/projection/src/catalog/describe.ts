@@ -15,7 +15,7 @@
  * schema sanitizer or `neutralizeControlChars`.
  */
 
-import { decidePolicy, postureOf, type ToolPosture } from '../policy/index.js';
+import { decidePolicy, policyContext, postureOf, type ToolPosture } from '../policy/index.js';
 import {
   capLength,
   indentBlock,
@@ -27,6 +27,7 @@ import type { CallToolResult } from '../mrtr/protocol.js';
 import type { ToolTypeText } from '../typegen/index.js';
 import {
   findTool,
+  type ApprovalsMode,
   type PolicyOverrides,
   type ServerCatalog,
   type ToolAnnotations,
@@ -47,6 +48,8 @@ export interface DescribeToolArgs {
 export interface DescribeToolOptions {
   /** Per-tool policy overrides (R14); decides the rendered posture. */
   policy?: PolicyOverrides;
+  /** Approvals mode (R49); decides the rendered posture with `policy`. */
+  approvals?: ApprovalsMode;
   /** Per-tool generated types from typegen (R34). */
   toolTypes?: ReadonlyMap<string, ToolTypeText>;
 }
@@ -96,7 +99,7 @@ export function describeTool(
   const described: ToolDescription = {
     name: entry.name,
     ...(description !== undefined ? { description } : {}),
-    posture: postureOf(decidePolicy(entry, options.policy)),
+    posture: postureOf(decidePolicy(entry, policyContext(options))),
     destructive: entry.annotations?.destructiveHint === true,
     annotations,
     inputSchema: input.schema,

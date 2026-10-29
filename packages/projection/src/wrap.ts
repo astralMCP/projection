@@ -41,6 +41,7 @@ import { DASHBOARD_RESOURCE_URI } from './apps/dashboard.js';
 import { toStructuredError } from './errors.js';
 import { WORKFLOW_PROMPTS } from './prompts/workflow-prompts.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
+import { assertApprovalsMode } from './policy/index.js';
 import {
   buildInstructions,
   buildResources,
@@ -59,6 +60,7 @@ import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
 import {
   clampCaps,
   DEFAULT_SERVER_ALIAS,
+  type ApprovalsMode,
   type BlobSealerConfig,
   type PolicyOverrides,
   type RedactionHook,
@@ -78,6 +80,17 @@ export interface WrapOptions {
    * keeps its own frozen copy, so later changes to this object are not seen.
    */
   policy?: PolicyOverrides;
+  /**
+   * Approvals mode (R49). `'every-write'` (default) asks before every tool
+   * that is not read-only. `'destructive-only'` also runs, without approval,
+   * a non-read-only tool whose annotations declare `destructiveHint: false`
+   * exactly; a missing or any other `destructiveHint` still asks. A per-tool
+   * `policy` override wins over the mode. This extends the trust placed in
+   * `readOnlyHint` to `destructiveHint: false` — a hostile server can
+   * mislabel a damaging tool, so enable it only for servers you trust.
+   * Read once, at wrap time; any other value fails the wrap (`validate`).
+   */
+  approvals?: ApprovalsMode;
   /** Masks sensitive argument fields before they reach an approval prompt (R16). */
   redact?: RedactionHook;
   /**
@@ -190,7 +203,7 @@ export interface ProjectionFacade {
 
 const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates this server's tools.
 
-Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools'. Read-only tools run immediately; every other tool pauses the machine and asks the user to approve that exact call before it runs, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools'. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
 
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
 
@@ -198,7 +211,7 @@ const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, t
 
 const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more), so a guessed name like create_issue or a phrase like "comment on a pull request" works. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
-const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
+const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
@@ -210,9 +223,11 @@ export async function wrapMcpServer(
   source: McpServer | Client,
   options: WrapOptions,
 ): Promise<ProjectionFacade> {
-  // Validate the selection BEFORE connecting: the throw must not leave an
-  // in-process wrapped server attached to a transport nobody will close.
+  // Validate the selection and the approvals mode BEFORE connecting: the
+  // throw must not leave an in-process wrapped server attached to a
+  // transport nobody will close.
   const projections = resolveProjections(options.projections);
+  const approvals = assertApprovalsMode(options.approvals);
 
   const introspector = await createIntrospector({ [DEFAULT_SERVER_ALIAS]: source });
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
@@ -226,14 +241,17 @@ export async function wrapMcpServer(
     );
   }
 
-  // The policy is snapshotted once, here, and that one frozen copy feeds
-  // typegen AND the gate / catalog tools: the posture baked into the `.d.ts`
-  // resource and the overview must be the posture `describe_tool` and the
-  // approval gate decide with, which a caller mutating their policy object
-  // after wrap could otherwise drift apart.
-  const policy = options.policy !== undefined ? Object.freeze({ ...options.policy }) : undefined;
+  // The policy settings (overrides + approvals mode) are snapshotted once,
+  // here, and that one frozen copy feeds typegen AND the gate / catalog
+  // tools: the posture baked into the `.d.ts` resource and the overview must
+  // be the posture `describe_tool` and the approval gate decide with, which
+  // a caller mutating their options after wrap could otherwise drift apart.
+  const policySettings: PolicySettings = Object.freeze({
+    ...(options.policy !== undefined ? { policy: Object.freeze({ ...options.policy }) } : {}),
+    ...(approvals !== undefined ? { approvals } : {}),
+  });
 
-  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, { policy });
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
@@ -247,7 +265,7 @@ export async function wrapMcpServer(
     resources,
     instructions,
     options,
-    ...(policy !== undefined ? { policy } : {}),
+    policySettings,
     projections,
   });
 }
@@ -271,6 +289,9 @@ function resolveProjections(
   return Object.freeze(selection);
 }
 
+/** The policy options every surface decides with, frozen; absent ones stay absent (`exactOptionalPropertyTypes`). */
+type PolicySettings = Readonly<Pick<ApprovalGateDeps, 'policy' | 'approvals'>>;
+
 interface FacadeDeps {
   introspector: Introspector;
   catalog: ServerCatalog;
@@ -281,8 +302,11 @@ interface FacadeDeps {
   resources: ProjectionResource[];
   instructions: string;
   options: WrapOptions;
-  /** The wrap-time snapshot of `options.policy` (see `WrapOptions.policy`). */
-  policy?: PolicyOverrides;
+  /**
+   * The wrap-time snapshot of `options.policy` and `options.approvals` (see
+   * `WrapOptions`): the one context every surface decides policy with.
+   */
+  policySettings: PolicySettings;
   projections: Readonly<ProjectionSelection>;
 }
 
@@ -335,13 +359,13 @@ class Facade implements ProjectionFacade {
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
   ): ApprovalGateDeps {
-    const { options, policy } = this.deps;
+    const { options, policySettings } = this.deps;
     return {
       catalog: this.deps.catalog,
       executor: this.deps.introspector,
       blob: options.blob,
       ...(options.caps !== undefined ? { caps: options.caps } : {}),
-      ...(policy !== undefined ? { policy } : {}),
+      ...policySettings,
       ...(options.redact !== undefined ? { redact: options.redact } : {}),
       ...(era !== undefined ? { protocolEra: era } : {}),
       ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
@@ -360,7 +384,7 @@ class Facade implements ProjectionFacade {
 
   searchTools(args: { query?: string; cursor?: string }): CallToolResult {
     try {
-      return searchTools(this.deps.catalog, args, this.policyOption());
+      return searchTools(this.deps.catalog, args, this.deps.policySettings);
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
@@ -369,18 +393,12 @@ class Facade implements ProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
     try {
       return describeTool(this.deps.catalog, args, {
-        ...this.policyOption(),
+        ...this.deps.policySettings,
         toolTypes: this.deps.toolTypes,
       });
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
-  }
-
-  /** `exactOptionalPropertyTypes`: an absent policy must stay absent. */
-  private policyOption(): { policy?: PolicyOverrides } {
-    const { policy } = this.deps;
-    return policy !== undefined ? { policy } : {};
   }
 
   /**

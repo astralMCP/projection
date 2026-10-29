@@ -70,9 +70,12 @@ export default setup({}).createMachine({
   content array for anything else. Tools without an Output type are typed
   `unknown` — usually a string. A tool returning `isError` arrives as
   `TOOL_ERROR`.
-- Read-only tools (annotation `readOnlyHint: true`) run inline; everything
-  else suspends for approval. Handle all three events: a waiting state with
-  no handler for the incoming event fails with a `runtime` error ("the
+- Contract item 5: tools marked "asks for approval" suspend the machine for
+  approval; tools marked "runs immediately" (read-only, `auto` by policy, or,
+  under `approvals: 'destructive-only'`, a declared non-destructive write)
+  run inline. Read the posture from the `.d.ts` doc comment or
+  `search_tools`, not the annotations. Handle all three events: a waiting
+  state with no handler for the incoming event fails with a `runtime` error ("the
   machine is stuck in state … with no pending tool call and no final
   state"). A `deny` policy arrives as `TOOL_DENIED` with the policy reason
   (`policyDeniedReason` in `packages/projection/src/policy/decision.ts`:
