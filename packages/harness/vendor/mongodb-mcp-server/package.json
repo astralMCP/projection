@@ -1,7 +1,7 @@
 {
   "name": "@astral-mcp/harness-vendor-mongodb-mcp-server",
   "private": true,
-  "description": "Isolated install of the MongoDB MCP server for the harness's MongoDB eval tier. Its dependency tree needs a newer @modelcontextprotocol/server than the workspace pins, so it lives outside the pnpm workspace: `npm ci` here (pnpm run setup:mongodb in packages/harness).",
+  "description": "Isolated install of the MongoDB MCP server for the harness's MongoDB eval tier (`pnpm run setup:mongodb` in packages/harness). Its tree now resolves the same MCP SDK as the workspace, so this directory can move into the workspace in a follow-up.",
   "dependencies": {
     "mongodb-mcp-server": "3.2.1"
   }

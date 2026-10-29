@@ -130,7 +130,7 @@ resends the growing context (softened by cache reads), so the discovery
 cost stays visible in the turns, tokens and cost columns.
 
 The **mongodb** tier (15 tasks on the real MongoDB MCP server,
-`mongodb-mcp-server` 3.0.5, against a seeded throwaway `mongod` from
+`mongodb-mcp-server` 3.2.1, against a seeded throwaway `mongod` from
 `mongodb-memory-server`) targets JSON-shaped arguments and near-duplicate
 tools: a filtered count, a top-3 by price (`sort` + `limit` or a
 `$sort`/`$limit` pipeline — the fixture has 120 products, so an unsorted

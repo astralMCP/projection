@@ -430,11 +430,18 @@ The pre-0.8.0 dependency pass settled these rules:
   `OAuthClientProvider.scopeForRefresh(tokens)` and a `scope` option on
   `refreshAuthorization()` (Entra ID rejects a refresh without `scope`);
   there is still no device-authorization grant. Behaviour changes that
-  could reach a wrapped upstream: a tool with `x-mcp-header` on a `number`
-  parameter is no longer listed on 2026-07-28 connections; an
-  `outputSchema` whose root `$ref`s an object in its own `$defs` is no
-  longer wrapped in `{ result }` on 2025-era connections; the bundled Ajv
-  rejects a `$id`/`$ref` with an invalid URI scheme (`my_tool:output`).
+  could reach a wrapped upstream: an `outputSchema` whose root `$ref`s an
+  object in its own `$defs` is no longer wrapped in `{ result }` on
+  2025-era connections; the bundled Ajv rejects a `$id`/`$ref` with an
+  invalid URI scheme (`my_tool:output`). SDK 2.4.0 removed `number` from
+  the allowed `x-mcp-header` parameter types; the 2.4.0 client then drops
+  such a tool from `listTools` with only a `console.warn` on modern-era
+  connections over any transport except stdio (in-process
+  `InMemoryTransport` included), and `createMcpHandler` rejects a
+  `tools/call` whose headers mismatch (-32020) for `number` declarations
+  too. Consequence: a wrapped in-process or HTTP upstream with a header on
+  a `number` parameter silently disappears from Projection's catalog; stdio
+  upstreams are unaffected. No fixture or eval world uses `x-mcp-header`.
 - **`@anthropic-ai/sdk` 1.x sends `anthropic-version: 2026-10-21`.** That
   API version rejects `temperature`/`top_p`/`top_k`, `document` blocks in
   assistant turns and `citations` on user text, and renames Admin API
@@ -443,6 +450,9 @@ The pre-0.8.0 dependency pass settled these rules:
   behind a proxy that reads the old header. The SDK creates OpenTelemetry
   spans if a global tracer provider is registered (the harness registers
   none).
+- With both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` set, a 1.x client
+  uses the API key (and warns once); an `ANTHROPIC_PROFILE` naming a missing
+  profile throws on the first request. The live eval relies on the API key.
 
 ## D13 — Saved eval runs are re-scored offline; world-reading verifies keep their verdict (2026-10-10)
 
