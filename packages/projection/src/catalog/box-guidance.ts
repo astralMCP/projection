@@ -22,11 +22,13 @@
 
 import type { ProjectionResource } from '../mrtr/discover.js';
 import {
+  capLength,
   indentBlock,
   neutralizeControlChars,
   purposeSentence,
   stripInvisible,
 } from '../text-safety.js';
+import { dedupeTools } from '../types.js';
 import type { BoxedCatalog, ToolBox } from './boxes.js';
 
 /** Longest box overview served (R43): 8 KB of the server's instructions. */
@@ -88,6 +90,46 @@ export function boxAbout(box: ToolBox): string | undefined {
     .trim();
   if (sentence === undefined || isBlank(sentence)) return undefined;
   return `${JSON.stringify(sentence)} (server's words)`;
+}
+
+/** How many tool names {@link boxToolSample} shows. */
+export const TOOL_SAMPLE_SIZE = 5;
+
+/** Longest sampled tool name, so one hostile name cannot flood the shelf. */
+const MAX_SAMPLE_NAME_CHARS = 64;
+
+/**
+ * A sample of a box's tool names for the shelf and the `search_<alias>`
+ * description (R43, R44), for a box that says nothing else about itself
+ * ({@link boxAbout} is `undefined`): `e.g. a, b, c, d, e, …` — the first
+ * {@link TOOL_SAMPLE_SIZE} bare names in the box's catalog order after the
+ * per-box dedupe, the trailing `, …` only when the box has more. Names are
+ * S5 server text: invisible characters stripped, neutralized, capped, and a
+ * literal `(server's words)` or `(<n> tools)` removed, so a name can forge
+ * neither a line nor a second count. `undefined` when the box has an about
+ * or no nameable tool.
+ */
+export function boxToolSample(box: ToolBox): string | undefined {
+  if (boxAbout(box) !== undefined) return undefined;
+  const tools = dedupeTools(box.catalog.tools);
+  const names = tools
+    .slice(0, TOOL_SAMPLE_SIZE)
+    .map((tool) =>
+      capLength(
+        neutralizeControlChars(stripInvisible(tool.name)).replace(FORGED_SUFFIX, '').trim(),
+        MAX_SAMPLE_NAME_CHARS,
+      ),
+    )
+    .filter((name) => !isBlank(name));
+  if (names.length === 0) return undefined;
+  const more = tools.length > TOOL_SAMPLE_SIZE ? ', …' : '';
+  return `e.g. ${names.join(', ')}${more}`;
+}
+
+/** A box's tool count with its {@link boxToolSample}, when it has one: `14 tools, e.g. a, b, …`. */
+export function boxToolsLabel(box: ToolBox, count: number): string {
+  const sample = boxToolSample(box);
+  return sample === undefined ? toolCount(count) : `${toolCount(count)}, ${sample}`;
 }
 
 /**

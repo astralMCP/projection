@@ -34,7 +34,7 @@
 import type { Client } from '@modelcontextprotocol/client';
 import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
 import { tokenStoreOption, UpstreamConnector, type UpstreamSpec } from '../auth/index.js';
-import { boxAbout, boxOverviewResources, toolCount } from '../catalog/box-guidance.js';
+import { boxAbout, boxOverviewResources, boxToolsLabel } from '../catalog/box-guidance.js';
 import {
   boxSearchTool,
   buildBoxedCatalog,
@@ -279,7 +279,9 @@ export interface MultiPreambleOptions {
  * The multi-server preamble (R29, R44, R45), one variant per projection
  * selection as the single-server `defaultPreamble`: the routing rule when
  * both projections are on, naming the search tools the facade serves (R43)
- * and that a box's own guidance is its overview.
+ * and that a box's own guidance is its overview. The catalog variants add
+ * the look-before-asking rule: search the boxes before asking the user which
+ * one holds what they need.
  */
 export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const { projections, globalSearch } = options;
@@ -290,7 +292,10 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const find = globalSearch
     ? "search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
     : "a box's search_<box> tool to look inside that box";
-  const steps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it.`;
+  const look = globalSearch
+    ? "When the user doesn't say which box holds what they need, look before asking: search_tools searches every box at once, and a box's own search lists what it holds."
+    : "When the user doesn't say which box holds what they need, look before asking: a box's own search lists what it holds, so check every box that could hold it.";
+  const steps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it. ${look}`;
   if (!projections.codeMode) {
     return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
   }
@@ -321,7 +326,9 @@ export function shelfHeader(projections: Readonly<ProjectionSelection>): string 
  * The facade's `instructions` (R44): Projection's preamble, then the shelf —
  * one line per box in sorted alias order, `<alias> — <about> (<n> tools)`,
  * where the about is the host's description, else the server's first
- * sentence quoted and attributed, else nothing (see `boxAbout`). The wrapped
+ * sentence quoted and attributed, else nothing (see `boxAbout`) and the
+ * count then names a sample of the box's tools, `(<n> tools, e.g. a, b, …)`
+ * (see `boxToolSample`). The wrapped
  * servers' full instructions are not in the system prompt: each is its
  * box's overview. `preamble` (`codeModePreamble`) replaces Projection's
  * copy; the shelf, header included, is always kept.
@@ -334,7 +341,7 @@ export function buildMultiInstructions(
   const lines = [shelfHeader(projections)];
   for (const [alias, box] of view.boxes) {
     const about = boxAbout(box);
-    const tools = toolCount(view.counts.get(alias) ?? 0);
+    const tools = boxToolsLabel(box, view.counts.get(alias) ?? 0);
     lines.push(about !== undefined ? `- ${alias} — ${about} (${tools})` : `- ${alias} (${tools})`);
   }
   const copy = preamble ?? defaultMultiPreamble({ projections, globalSearch: view.globalSearch });
@@ -368,14 +375,15 @@ const CODE_MODE_COPY = {
 /**
  * The `search_<alias>` copy (R43): `Search the <alias> toolbox.`, the box's
  * about (host description, else the server's attributed first sentence),
- * its tool count, then how the search works.
+ * its tool count — with a sample of its tool names when it has no about —
+ * then how the search works.
  */
 function boxSearchCopy(view: BoxedCatalog, alias: string, box: ToolBox): SearchToolCopy {
   const about = boxAbout(box);
   const head = [
     `Search the ${alias} toolbox.`,
     ...(about !== undefined ? [about] : []),
-    `(${toolCount(view.counts.get(alias) ?? 0)})`,
+    `(${boxToolsLabel(box, view.counts.get(alias) ?? 0)})`,
   ].join(' ');
   return {
     alias,
