@@ -113,6 +113,8 @@ export const GOLDEN: Record<string, Golden> = {
     ],
     wrong: [
       [countShipped, comment(23, '12 orders')],
+      // A wrong number posted first, then corrected (observed live).
+      [countShipped, comment(23, 'There are 0 shipped orders.'), comment(23, 'There are 4.')],
       [countShipped, comment(17, '4 orders have shipped.')],
       [comment(23, '4'), countShipped],
       [mongo('count', { ...shop('orders') }), comment(23, '4')],

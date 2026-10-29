@@ -49,6 +49,7 @@ import {
   inRepo,
   listsOpenPrs,
   repoPath,
+  targets,
   targetsOther,
 } from './github-predicates.js';
 import {
@@ -252,11 +253,20 @@ export const MULTI_TASKS: readonly EvalTask[] = [
       const comment = commented(github.calls, 23, (body) => number(SHIPPED).test(body), HARD);
       return counted >= 0 && comment >= 0 && (github.at[comment] as number) > counted;
     },
+    // A comment elsewhere, or one on #23 that states a wrong number (a
+    // first attempt that posted "0" before the corrected "4" is still a
+    // wrong number in public), fails the episode.
     forbid: (call) =>
       inBoxCall(
         call,
         'github',
-        (c) => COMMENT_TOOLS.includes(c.tool) && targetsOther(c.args, 23, HARD),
+        (c) =>
+          COMMENT_TOOLS.includes(c.tool) &&
+          (targetsOther(c.args, 23, HARD) ||
+            (targets(c.args, 23, HARD) &&
+              typeof c.args['body'] === 'string' &&
+              c.args['body'].trim() !== '' &&
+              !number(SHIPPED).test(c.args['body']))),
       ),
   },
   // --- Cross-box: fs -> mongo. app.log is the largest; its name goes into
