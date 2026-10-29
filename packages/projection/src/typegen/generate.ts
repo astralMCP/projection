@@ -9,7 +9,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { decidePolicy, postureOf, type ToolPosture } from '../policy/decision.js';
+import { decidePolicy, policyContext, postureOf, type ToolPosture } from '../policy/decision.js';
 import {
   capLength,
   inertIdentity,
@@ -18,6 +18,8 @@ import {
   purposeSentence,
 } from '../text-safety.js';
 import {
+  type ApprovalsMode,
+  type PolicyContext,
   type PolicyOverrides,
   dedupeTools,
   type ServerCatalog,
@@ -154,25 +156,25 @@ function postureNote(posture: ToolPosture): string {
  * less so, and `search_tools` / `describe_tool` show the flag on every
  * posture too.
  */
-function approvalNote(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
-  const note = postureNote(postureOf(decidePolicy(tool, policy)));
+function approvalNote(tool: ToolCatalogEntry, context: PolicyContext): string {
+  const note = postureNote(postureOf(decidePolicy(tool, context)));
   return tool.annotations?.destructiveHint === true
     ? `${note} The server marks this tool destructive.`
     : note;
 }
 
-function toolDoc(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
+function toolDoc(tool: ToolCatalogEntry, context: PolicyContext): string {
   const lines: string[] = [];
   if (tool.description !== undefined && tool.description.length > 0) {
     lines.push(tool.description.trim(), '');
   }
-  lines.push(approvalNote(tool, policy));
+  lines.push(approvalNote(tool, context));
   return lines.join('\n');
 }
 
 function generateDts(
   server: ServerCatalog,
-  policy: PolicyOverrides | undefined,
+  context: PolicyContext,
 ): { dts: string; toolTypes: Map<string, ToolTypeText> } {
   const taken = new Set<string>();
   const sections: string[] = [];
@@ -218,14 +220,14 @@ function generateDts(
     const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
     const returnType = typeNames.output ?? 'unknown';
     const signature = `${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`;
-    memberLines.push(docComment(toolDoc(tool, policy), '  '), `  ${signature}`);
+    memberLines.push(docComment(toolDoc(tool, context), '  '), `  ${signature}`);
 
     toolTypes.set(tool.name, {
       inputAlias: typeNames.input,
       ...(typeNames.output !== undefined ? { outputAlias: typeNames.output } : {}),
       dts: [
         ...aliasSections,
-        `// Member of the \`tools\` surface:\n${docComment(toolDoc(tool, policy), '')}\n${signature}`,
+        `// Member of the \`tools\` surface:\n${docComment(toolDoc(tool, context), '')}\n${signature}`,
       ].join('\n\n'),
     });
   }
@@ -288,8 +290,8 @@ function generateBridgeSource(server: ServerCatalog): string {
   ].join('\n');
 }
 
-function overviewFlags(tool: ToolCatalogEntry, policy: PolicyOverrides | undefined): string {
-  const posture = postureOf(decidePolicy(tool, policy));
+function overviewFlags(tool: ToolCatalogEntry, context: PolicyContext): string {
+  const posture = postureOf(decidePolicy(tool, context));
   return tool.annotations?.destructiveHint === true ? `[${posture}, destructive]` : `[${posture}]`;
 }
 
@@ -302,7 +304,7 @@ function purposeLine(text: string | undefined): string {
   return purposeSentence(text) ?? '(no description)';
 }
 
-function generateOverview(server: ServerCatalog, policy: PolicyOverrides | undefined): string {
+function generateOverview(server: ServerCatalog, context: PolicyContext): string {
   // The overview is inlined into the discover_apis text the model reads as
   // guidance, so the S5-controlled identity renders inert and quoted.
   const lines = [`Tools (server: ${inertIdentity(server.identity)}):`];
@@ -322,7 +324,7 @@ function generateOverview(server: ServerCatalog, policy: PolicyOverrides | undef
     // most 200 chars — see `purposeSentence`); names get the identity cap.
     const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
     const description = purposeLine(tool.description);
-    lines.push(`- ${name} ${overviewFlags(tool, policy)} — ${description}`);
+    lines.push(`- ${name} ${overviewFlags(tool, context)} — ${description}`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -361,11 +363,12 @@ export function generateToolTypes(
   options: GenerateToolTypesOptions = {},
 ): GeneratedToolTypes {
   const server = dedupeToolNames(resolveSingleServer(catalog));
-  const { dts, toolTypes } = generateDts(server, options.policy);
+  const context = policyContext(options);
+  const { dts, toolTypes } = generateDts(server, context);
   return {
     dts,
     bridgeSource: generateBridgeSource(server),
-    overview: generateOverview(server, options.policy),
+    overview: generateOverview(server, context),
     toolTypes,
   };
 }
@@ -373,6 +376,8 @@ export function generateToolTypes(
 export interface GenerateToolTypesOptions {
   /** Per-tool policy overrides (R14): decide the posture wording in docs and overview. */
   policy?: PolicyOverrides | undefined;
+  /** Approvals mode (R49): decides the posture wording with `policy`. */
+  approvals?: ApprovalsMode | undefined;
 }
 
 /**

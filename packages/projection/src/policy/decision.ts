@@ -1,18 +1,21 @@
 /**
- * Policy decisions for tool calls (PRD R14, S5).
+ * Policy decisions for tool calls (PRD R14, R49, S5).
  *
- * Pure functions: annotation-derived defaults plus developer overrides.
- * Annotations come from a possibly third-party wrapped server and are
- * untrusted hints — they can only ever make the default *stricter* than an
- * explicit developer override, never looser. A developer override always
- * wins, in every combination.
+ * Pure functions: annotation-derived defaults, the approvals mode and
+ * developer overrides. Annotations come from a possibly third-party wrapped
+ * server and are untrusted hints — only an explicit `readOnlyHint: true`,
+ * or under the `'destructive-only'` mode an explicit `destructiveHint:
+ * false`, ever relaxes the default. A developer override always wins, in
+ * every combination.
  */
 
 import { ProjectionError } from '../errors.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { findTool } from '../types.js';
 import type {
+  ApprovalsMode,
   PendingToolCall,
+  PolicyContext,
   PolicyDecision,
   PolicyOverrides,
   ServerCatalog,
@@ -20,22 +23,50 @@ import type {
 } from '../types.js';
 
 const VALID_DECISIONS: ReadonlySet<string> = new Set(['auto', 'ask', 'deny']);
+const APPROVALS_MODES: ReadonlySet<string> = new Set<ApprovalsMode>([
+  'every-write',
+  'destructive-only',
+]);
 const MAX_TOOL_NAME_CHARS = 200;
+/** The context of a facade configured with neither overrides nor a mode. */
+const DEFAULT_POLICY_CONTEXT: PolicyContext = Object.freeze({ approvals: 'every-write' });
 
 /**
- * Decide the policy for a catalog tool (R14).
+ * Decide the policy for a catalog tool (R14, R49). Precedence, strongest
+ * first:
  *
- * - A developer override (`auto` | `ask` | `deny`) always wins.
- * - With no override, `annotations.readOnlyHint === true` yields `auto`;
- *   an absent or `false` hint yields `ask` (S5: unannotated defaults to ask).
- * - An override entry with an unrecognized value (possible when the config
- *   arrives untyped) fails safe to `ask` — it never grants `auto`.
+ * 1. A developer override (`auto` | `ask` | `deny`) always wins. An override
+ *    entry with an unrecognized value (possible when the config arrives
+ *    untyped) fails safe to `ask` — it never grants `auto`.
+ * 2. `annotations.readOnlyHint === true` yields `auto` in every mode.
+ * 3. Under `approvals: 'destructive-only'`, a tool whose annotations declare
+ *    `destructiveHint === false` exactly yields `auto`; a missing hint or any
+ *    other value still asks (the MCP default reads a non-read-only tool as
+ *    destructive).
+ * 4. Otherwise `ask` (S5: unannotated defaults to ask).
  *
- * Only own properties of `overrides` are consulted, so tools named like
- * `Object.prototype` members (`toString`, `constructor`, ...) cannot pick up
- * inherited junk as a decision.
+ * A context whose `approvals` is not one of the two modes throws a
+ * `TypeError` — fail closed, never decide on a malformed context (the wrap
+ * rejects malformed modes up front with a `validate` error — see
+ * {@link assertApprovalsMode}).
+ *
+ * Only own properties of `context.overrides` and of `entry.annotations` are
+ * consulted, so tools named like `Object.prototype` members (`toString`,
+ * `constructor`, ...) cannot pick up inherited junk as a decision, and an
+ * annotations object cannot inherit a relaxing hint from its prototype.
  */
-export function decidePolicy(entry: ToolCatalogEntry, overrides?: PolicyOverrides): PolicyDecision {
+export function decidePolicy(
+  entry: ToolCatalogEntry,
+  context: PolicyContext = DEFAULT_POLICY_CONTEXT,
+): PolicyDecision {
+  // A pre-R49 caller passing a bare overrides object (untyped, or cast)
+  // would otherwise have its overrides — a `deny` included — silently
+  // ignored; one whose map names a tool `approvals` would otherwise pass a
+  // string check. Refuse anything that is not a known mode: fail closed.
+  if (typeof context.approvals !== 'string' || !APPROVALS_MODES.has(context.approvals)) {
+    throw new TypeError('decidePolicy expects a PolicyContext; build one with policyContext()');
+  }
+  const { overrides } = context;
   if (overrides !== undefined && Object.hasOwn(overrides, entry.name)) {
     const override: unknown = overrides[entry.name];
     if (typeof override === 'string' && VALID_DECISIONS.has(override)) {
@@ -44,7 +75,51 @@ export function decidePolicy(entry: ToolCatalogEntry, overrides?: PolicyOverride
     // Malformed override value: fail safe. Never auto-execute on garbage.
     return 'ask';
   }
-  return entry.annotations?.readOnlyHint === true ? 'auto' : 'ask';
+  if (ownHint(entry, 'readOnlyHint') === true) return 'auto';
+  if (context.approvals === 'destructive-only' && ownHint(entry, 'destructiveHint') === false) {
+    return 'auto';
+  }
+  return 'ask';
+}
+
+/** An annotation hint, read with own-property semantics like overrides. */
+function ownHint(entry: ToolCatalogEntry, key: 'readOnlyHint' | 'destructiveHint'): unknown {
+  const annotations: unknown = entry.annotations;
+  if (typeof annotations !== 'object' || annotations === null) return undefined;
+  return Object.hasOwn(annotations, key)
+    ? (annotations as Record<string, unknown>)[key]
+    : undefined;
+}
+
+/**
+ * Build the {@link PolicyContext} for a set of options carrying the per-tool
+ * `policy` overrides (R14) and the `approvals` mode (R49) — the shape of
+ * `WrapOptions`, the gate deps and the catalog / typegen options. An absent
+ * mode resolves to `'every-write'`.
+ */
+export function policyContext(
+  options: { policy?: PolicyOverrides | undefined; approvals?: ApprovalsMode | undefined } = {},
+): PolicyContext {
+  return {
+    ...(options.policy !== undefined ? { overrides: options.policy } : {}),
+    approvals: options.approvals ?? 'every-write',
+  };
+}
+
+/**
+ * Validate an `approvals` option (R49): absent, or one of the two modes. A
+ * malformed value is a `validate`-phase {@link ProjectionError} — the mode
+ * is one deploy-time switch, so a typo fails the wrap instead of silently
+ * changing who gets asked (DECISIONS D17). `wrapMcpServer` calls it; call
+ * it yourself when passing `approvals` to `executeMachine` or
+ * `generateToolTypes` directly.
+ */
+export function assertApprovalsMode(value: unknown): ApprovalsMode | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string' && APPROVALS_MODES.has(value)) return value as ApprovalsMode;
+  throw new ProjectionError('validate', 'approvals must be "every-write" or "destructive-only"', {
+    hint: 'Omit approvals for the default ("every-write"), or set it to "destructive-only" to skip approval for tools that declare destructiveHint: false.',
+  });
 }
 
 /** The three normative posture strings (R33) — models match on these. */
@@ -79,7 +154,7 @@ export type ResolvedCallPolicy =
 export function resolveCallPolicy(
   call: PendingToolCall,
   catalog: ServerCatalog,
-  overrides?: PolicyOverrides,
+  context: PolicyContext = DEFAULT_POLICY_CONTEXT,
 ): ResolvedCallPolicy {
   const entry = findTool(catalog, call.name);
   if (entry === undefined) {
@@ -97,7 +172,7 @@ export function resolveCallPolicy(
       ),
     };
   }
-  return { ok: true, decision: decidePolicy(entry, overrides), entry };
+  return { ok: true, decision: decidePolicy(entry, context), entry };
 }
 
 /**

@@ -690,6 +690,35 @@ default; **per-tool `auto` lists only** — the integrator would have to
 enumerate every non-destructive write and keep the list current as servers
 change.
 
+Implementation (single-server, 2026-10-29): one decision function,
+`decidePolicy(entry, context: PolicyContext)`, where `PolicyContext =
+{ overrides?, approvals }` is built with `policyContext(options)` from the
+`policy` / `approvals` options every surface already carries. `approvals` is
+required in the context, so passing a bare overrides object (the pre-R49
+second argument) is a type error — and, for untyped callers, a runtime
+`TypeError` rather than a silently dropped `deny`: `decidePolicy` throws on
+any context whose `approvals` is not one of the two modes, so even an old
+overrides map naming a tool `approvals` fails closed. Annotation hints are
+read with own-property semantics, like overrides. Direct library users of
+`executeMachine` / `generateToolTypes` validate the option with the exported
+`assertApprovalsMode`. The per-source mode of a multi-server facade will be
+an optional field of the same context.
+
+The mode is deliberately not bound into blobs: it only ever relaxes `ask` to
+`auto`, a pending entry always needs an accepted verdict to run, and `deny`
+is re-checked on resume — so a blob carried to a facade with another mode
+can never skip an approval.
+
+Model-facing copy (2026-10-29): the preambles, the `execute_machine` and
+`call_tool` descriptions and authoring-contract item 5 no longer say
+"read-only tools run immediately; every other tool asks" — that is false
+under `'destructive-only'` and under any per-tool `auto`. They now point at
+the per-tool postures (R33: "runs immediately" / "asks for approval"), which
+every surface already renders from the resolved decision, so the copy is
+accurate under every mode and every per-tool override. This supersedes the
+earlier mode-specific wording; models that matched on it see a minor-version
+copy change.
+
 ## D18 — Upstream sign-in is just-in-time and bring-your-own (2026-10-29)
 
 Context. Remote MCP servers that need authorization are usually wired up

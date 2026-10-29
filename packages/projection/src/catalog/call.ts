@@ -36,7 +36,12 @@ import {
   type RetryEnvelope,
   type ToolCallResult,
 } from '../mrtr/protocol.js';
-import { buildElicitationCopy, decidePolicy, policyDeniedReason } from '../policy/index.js';
+import {
+  buildElicitationCopy,
+  decidePolicy,
+  policyContext,
+  policyDeniedReason,
+} from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import {
   clampCaps,
@@ -114,7 +119,7 @@ export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<
     // (`undefined`, functions) are refused on every path, not only `ask`.
     const request = canonicalRequest(entry.name, toolArgs);
 
-    switch (decidePolicy(entry, deps.policy)) {
+    switch (decidePolicy(entry, policyContext(deps))) {
       case 'auto':
         return await execute(entry.name, toolArgs, deps, caps);
       case 'deny':
@@ -168,7 +173,7 @@ function suspend(
   // R28: refuse before minting anything a legacy client could not answer.
   const gate = legacySuspendError(deps, {
     subject: 'this call',
-    readOnlyAdvice: 'Call only read-only tools',
+    readOnlyAdvice: 'Call only tools that run without approval',
   });
   if (gate !== undefined) return errorResult(gate.toStructured());
 
@@ -226,8 +231,9 @@ async function resume(
   // the retry is trusted, and no replay nonce is spent, on a call that is
   // blocked anyway. A retry naming a tool the catalog does not declare is
   // left to the binding hash below.
+  const policy = policyContext(deps);
   const named = findTool(deps.catalog, args.name);
-  if (named !== undefined && decidePolicy(named, deps.policy) === 'deny') return denied(named);
+  if (named !== undefined && decidePolicy(named, policy) === 'deny') return denied(named);
 
   // R21 + R36: authenticate, version, expiry, kind, binding hash, identity.
   const payload = openBlob(args.requestState as string, {
@@ -246,7 +252,7 @@ async function resume(
   // another deployment sharing the identity string: refuse it.
   const entry = findTool(deps.catalog, recorded.name);
   if (entry === undefined) throw unknownToolError(deps.catalog, recorded.name, 'call_tool');
-  if (decidePolicy(entry, deps.policy) === 'deny') return denied(entry);
+  if (decidePolicy(entry, policy) === 'deny') return denied(entry);
 
   // R17: anything but an accepted elicitation is a decline.
   const view = inputResponse(args.inputResponses, CALL_KEY);

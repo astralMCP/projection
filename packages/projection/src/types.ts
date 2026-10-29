@@ -121,6 +121,35 @@ export interface PolicyOverrides {
   [toolName: string]: PolicyDecision;
 }
 
+/**
+ * Approvals mode (R49). `'every-write'` (the default) asks before every tool
+ * that is not read-only; `'destructive-only'` also lets a non-read-only tool
+ * run without approval when its annotations declare `destructiveHint: false`
+ * exactly. That extends the trust placed in `readOnlyHint` to
+ * `destructiveHint: false` (S5): enable it only for servers you trust.
+ */
+export type ApprovalsMode = 'every-write' | 'destructive-only';
+
+/**
+ * Everything a policy decision reads besides the tool itself (R14, R49):
+ * the per-tool overrides and the resolved approvals mode, both frozen at
+ * wrap time. Every surface decides through `decidePolicy` with one of these
+ * (build it with `policyContext`), so the posture a model is shown is the
+ * decision the gate makes.
+ *
+ * `approvals` is required — the context is *resolved* — so a bare
+ * {@link PolicyOverrides} object cannot be passed where a context is
+ * expected and silently lose its overrides. A multi-server facade will add
+ * an optional per-source mode here (it takes precedence over `approvals`,
+ * R49) without changing `decidePolicy`'s signature.
+ */
+export interface PolicyContext {
+  /** Per-tool overrides (R14); an override always wins. */
+  overrides?: PolicyOverrides | undefined;
+  /** The approvals mode (R49) that applies when no override does. */
+  approvals: ApprovalsMode;
+}
+
 // ---------------------------------------------------------------------------
 // Machine <-> host event protocol (PRD R7)
 // ---------------------------------------------------------------------------
