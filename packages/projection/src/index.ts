@@ -101,6 +101,7 @@ export { capLength, neutralizeControlChars } from './text-safety.js';
 export {
   buildElicitationCopy,
   decidePolicy,
+  policyContext,
   policyDeniedReason,
   postureOf,
   purposeSentence,

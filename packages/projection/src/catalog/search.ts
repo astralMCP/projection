@@ -27,7 +27,7 @@
  */
 
 import { ProjectionError } from '../errors.js';
-import { decidePolicy, postureOf, type ToolPosture } from '../policy/index.js';
+import { decidePolicy, policyContext, postureOf, type ToolPosture } from '../policy/index.js';
 import {
   capLength,
   inertIdentity,
@@ -38,6 +38,8 @@ import {
 import type { CallToolResult } from '../mrtr/protocol.js';
 import {
   dedupeTools,
+  type ApprovalsMode,
+  type PolicyContext,
   type PolicyOverrides,
   type ServerCatalog,
   type ToolCatalogEntry,
@@ -56,6 +58,8 @@ export interface SearchToolsArgs {
 export interface SearchToolsOptions {
   /** Per-tool policy overrides (R14); decides the rendered posture. */
   policy?: PolicyOverrides;
+  /** Approvals mode (R49); decides the rendered posture with `policy`. */
+  approvals?: ApprovalsMode;
   /** Tools per page. Default {@link DEFAULT_SEARCH_PAGE_SIZE}, clamped to [1, 200]. */
   pageSize?: number;
 }
@@ -81,12 +85,12 @@ export interface SearchToolsPage {
   nextCursor?: string;
 }
 
-/** Summarize one catalog entry (R33). */
-export function summarizeTool(entry: ToolCatalogEntry, policy?: PolicyOverrides): ToolSummary {
+/** Summarize one catalog entry (R33); `context` decides its posture (R14, R49). */
+export function summarizeTool(entry: ToolCatalogEntry, context?: PolicyContext): ToolSummary {
   return {
     name: entry.name,
     purpose: purposeSentence(entry.description) ?? '(no description)',
-    posture: postureOf(decidePolicy(entry, policy)),
+    posture: postureOf(decidePolicy(entry, context)),
     destructive: entry.annotations?.destructiveHint === true,
   };
 }
@@ -120,7 +124,8 @@ export function searchTools(
     throw cursorError('cursor is past the end of the results');
   }
   const slice = matches.slice(offset, offset + pageSize);
-  const tools = slice.map((entry) => summarizeTool(entry, options.policy));
+  const context = policyContext(options);
+  const tools = slice.map((entry) => summarizeTool(entry, context));
   const end = offset + slice.length;
   const page: SearchToolsPage = {
     tools,

@@ -190,6 +190,49 @@ describe('generateToolTypes — policy overrides (R14, R33)', () => {
   });
 });
 
+describe('generateToolTypes — approvals mode (R49)', () => {
+  it("'every-write' is byte-identical to the default, so every golden stands", () => {
+    expect(generateToolTypes(fixtureCatalog, { approvals: 'every-write' })).toEqual(generated);
+  });
+
+  it("'destructive-only' changes nothing for a catalog with no destructiveHint: false tool", () => {
+    // The fixture's writes are unannotated or destructiveHint: true: both still ask.
+    expect(generateToolTypes(fixtureCatalog, { approvals: 'destructive-only' })).toEqual(generated);
+  });
+
+  it("'destructive-only' flips only an explicit destructiveHint: false write, in the .d.ts and the overview", () => {
+    const catalog: ServerCatalog = {
+      ...fixtureCatalog,
+      tools: [
+        ...fixtureCatalog.tools,
+        {
+          name: 'touch',
+          description: 'Update a timestamp.',
+          inputSchema: { type: 'object' },
+          annotations: { destructiveHint: false },
+        },
+      ],
+    };
+    const every = generateToolTypes(catalog);
+    const relaxed = generateToolTypes(catalog, { approvals: 'destructive-only' });
+    expect(every.overview).toContain('- touch [asks for approval] — Update a timestamp.');
+    expect(relaxed.overview).toContain('- touch [runs immediately] — Update a timestamp.');
+    expect(every.toolTypes.get('touch')?.dts).toContain('Asks for approval:');
+    expect(relaxed.toolTypes.get('touch')?.dts).toContain('Runs immediately:');
+    expect(relaxed.dts).toContain('Runs immediately: no user approval required.');
+    // Every other tool reads the same in both modes.
+    for (const tool of fixtureCatalog.tools) {
+      expect(relaxed.toolTypes.get(tool.name)?.dts).toBe(every.toolTypes.get(tool.name)?.dts);
+    }
+    // A per-tool override still wins over the mode.
+    const pinned = generateToolTypes(catalog, {
+      approvals: 'destructive-only',
+      policy: { touch: 'ask' },
+    });
+    expect(pinned.overview).toContain('- touch [asks for approval] —');
+  });
+});
+
 describe('schemaToTsType — converter edge cases', () => {
   it('degrades unsupported constructs to unknown', () => {
     expect(schemaToTsType({ not: { type: 'string' } })).toBe('unknown');

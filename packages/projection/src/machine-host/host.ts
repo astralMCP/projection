@@ -6,15 +6,17 @@
 
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
-import { policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
+import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
   type ApprovalVerdict,
+  type ApprovalsMode,
   type AuditEntry,
   type ErrorPhase,
   type HostEvent,
   type LogEntry,
   type PendingToolCall,
+  type PolicyContext,
   type PolicyOverrides,
   type ResourceCaps,
   type SegmentOutcome,
@@ -61,6 +63,8 @@ export interface RunSegmentOptions {
   caps?: Partial<ResourceCaps>;
   /** Per-tool policy overrides (R14). */
   policy?: PolicyOverrides;
+  /** Approvals mode (R49), decided with `policy` at the gate and on resume. */
+  approvals?: ApprovalsMode;
   /** Zero-based MRTR segment index — stamps logs (R31). */
   segment?: number;
   /**
@@ -143,7 +147,7 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
       segment,
       catalog: options.catalog,
       executor: options.executor,
-      ...(options.policy !== undefined ? { policy: options.policy } : {}),
+      policy: policyContext(options),
       audit,
       hookRequests,
       trip: options.resume?.trip ?? 0,
@@ -256,7 +260,8 @@ interface RunnerDeps {
   segment: number;
   catalog: ServerCatalog;
   executor: ToolExecutor;
-  policy?: PolicyOverrides;
+  /** Resolved once per segment from the options' `policy` and `approvals`. */
+  policy: PolicyContext;
   audit: AuditEntry[];
   hookRequests: RawRequest[];
   trip: number;
