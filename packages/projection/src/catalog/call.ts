@@ -173,7 +173,7 @@ function suspend(
   // R28: refuse before minting anything a legacy client could not answer.
   const gate = legacySuspendError(deps, {
     subject: 'this call',
-    readOnlyAdvice: 'Call only read-only tools',
+    readOnlyAdvice: 'Call only tools that run without approval',
   });
   if (gate !== undefined) return errorResult(gate.toStructured());
 

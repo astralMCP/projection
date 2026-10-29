@@ -30,7 +30,7 @@ export interface LegacyGateInput {
 export interface LegacyGateCopy {
   /** Who needs the approval, e.g. `this machine` / `this call`. */
   subject: string;
-  /** The read-only alternative the hint leads with, e.g. `Author a machine that only calls read-only tools`. */
+  /** The read-only alternative the hint leads with, e.g. `Author a machine that only calls tools that run without approval`. */
   readOnlyAdvice: string;
 }
 

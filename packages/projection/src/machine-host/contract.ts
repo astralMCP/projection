@@ -135,9 +135,9 @@ Rules:
      import { toolCall, whenCall } from '@astral-mcp/tools';
      entry: toolCall('write_file', () => ({ path: '/a' }), { id: 'a' }),
      on: { TOOL_RESULT: { guard: whenCall('a'), target: 'done' } },
-5. Read-only tools run immediately. Every other tool pauses the machine for
-   user approval; the arguments captured at that moment are the arguments
-   that execute.
+5. Tools marked "asks for approval" pause the machine for user approval;
+   tools marked "runs immediately" do not. The arguments captured at that
+   moment are the arguments that execute.
 6. Only 'xstate' and '@astral-mcp/tools' resolve as imports. There is no
    filesystem, no network, no fetch. All working state lives in context.
 7. Finish by reaching a final state. Use the machine's output for the result.

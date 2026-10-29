@@ -88,9 +88,10 @@ describe('decidePolicy', () => {
 });
 
 describe('decidePolicy truth table (R14, R49)', () => {
-  type Hint = boolean | undefined | 'garbage';
-  const readOnlyHints: Hint[] = [true, false, undefined];
-  const destructiveHints: Hint[] = [true, false, undefined, 'garbage'];
+  /** `undefined` means the hint is absent; anything but a boolean is garbage. */
+  type Hint = unknown;
+  const readOnlyHints: Hint[] = [true, false, undefined, 'true', 1, null];
+  const destructiveHints: Hint[] = [true, false, undefined, 'false', 0, null];
   const modes: (ApprovalsMode | undefined)[] = [undefined, 'every-write', 'destructive-only'];
   const overrides: (PolicyDecision | 'garbage' | undefined)[] = [
     undefined,
@@ -103,9 +104,12 @@ describe('decidePolicy truth table (R14, R49)', () => {
   function annotated(readOnlyHint: Hint, destructiveHint: Hint): ToolCatalogEntry {
     const annotations: Record<string, unknown> = {};
     if (readOnlyHint !== undefined) annotations['readOnlyHint'] = readOnlyHint;
-    if (destructiveHint === 'garbage') annotations['destructiveHint'] = 'false';
-    else if (destructiveHint !== undefined) annotations['destructiveHint'] = destructiveHint;
+    if (destructiveHint !== undefined) annotations['destructiveHint'] = destructiveHint;
     return entry({ annotations: annotations as NonNullable<ToolCatalogEntry['annotations']> });
+  }
+
+  function hintLabel(hint: Hint): string {
+    return hint === undefined ? 'absent' : JSON.stringify(hint);
   }
 
   /** The spec, restated independently of the implementation. */
@@ -127,7 +131,7 @@ describe('decidePolicy truth table (R14, R49)', () => {
       for (const mode of modes) {
         for (const override of overrides) {
           const want = expected(readOnlyHint, destructiveHint, mode, override);
-          const label = `readOnly=${String(readOnlyHint)} destructive=${String(destructiveHint)} mode=${String(mode)} override=${String(override)} -> ${want}`;
+          const label = `readOnly=${hintLabel(readOnlyHint)} destructive=${hintLabel(destructiveHint)} mode=${String(mode)} override=${String(override)} -> ${want}`;
           it(label, () => {
             const policy =
               override === undefined
@@ -148,9 +152,23 @@ describe('decidePolicy truth table (R14, R49)', () => {
     expect(decidePolicy(entry({ annotations: { destructiveHint: false } }))).toBe('ask');
   });
 
-  it('an unrecognized mode string reaching decidePolicy relaxes nothing', () => {
+  it('refuses a context whose approvals is not a known mode (fail closed)', () => {
     const context = { approvals: 'destructive_only' } as unknown as PolicyContext;
-    expect(decidePolicy(entry({ annotations: { destructiveHint: false } }), context)).toBe('ask');
+    expect(() => decidePolicy(entry({ annotations: { destructiveHint: false } }), context)).toThrow(
+      TypeError,
+    );
+  });
+
+  it('refuses an old overrides map with a tool named approvals instead of dropping its other overrides', () => {
+    const legacy = { approvals: 'auto', demo_tool: 'deny' } as unknown as PolicyContext;
+    expect(() => decidePolicy(entry(), legacy)).toThrow(TypeError);
+  });
+
+  it('ignores inherited annotation hints (own-property semantics)', () => {
+    const inherited = Object.create({ readOnlyHint: true, destructiveHint: false }) as object;
+    const tool = entry({ annotations: inherited as NonNullable<ToolCatalogEntry['annotations']> });
+    expect(decidePolicy(tool, policyContext({ approvals: 'every-write' }))).toBe('ask');
+    expect(decidePolicy(tool, policyContext({ approvals: 'destructive-only' }))).toBe('ask');
   });
 
   it('a destructiveHint: false read-only tool stays auto, and readOnlyHint: false + destructiveHint: false is auto only under destructive-only', () => {

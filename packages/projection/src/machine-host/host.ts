@@ -397,9 +397,9 @@ class SegmentRunner {
       if (this.readCalls > this.deps.caps.maxReadCallsPerSegment) {
         throw new ProjectionError(
           'cap_exceeded',
-          `the machine made more than ${this.deps.caps.maxReadCallsPerSegment} read-only tool calls in one segment`,
+          `the machine made more than ${this.deps.caps.maxReadCallsPerSegment} tool calls that run without approval in one segment`,
           {
-            hint: `Batch the work or reduce the number of read-only calls to at most ${this.deps.caps.maxReadCallsPerSegment} per segment.`,
+            hint: `Batch the work or reduce the number of calls that run without approval to at most ${this.deps.caps.maxReadCallsPerSegment} per segment.`,
           },
         );
       }

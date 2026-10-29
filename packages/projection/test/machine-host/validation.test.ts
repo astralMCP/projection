@@ -224,7 +224,7 @@ export default 42;
 });
 
 describe('runtime caps enforced by the host (R12)', () => {
-  it('enforces the read-only call cap per segment', async () => {
+  it('enforces the auto-run (no-approval) call cap per segment', async () => {
     const error = await failWith(
       `
 import { setup, assign } from 'xstate';
@@ -247,7 +247,7 @@ export default setup({}).createMachine({
       { maxReadCallsPerSegment: 5 },
     );
     expect(error.phase).toBe('cap_exceeded');
-    expect(error.message).toContain('read-only tool calls');
+    expect(error.message).toContain('tool calls that run without approval');
   });
 
   it('enforces the final result size cap', async () => {

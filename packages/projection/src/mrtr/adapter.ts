@@ -288,7 +288,7 @@ function suspendResult(
   // executing an unapproved write or hanging (see legacy-gate.ts).
   const gate = legacySuspendError(deps, {
     subject: 'this machine',
-    readOnlyAdvice: 'Author a machine that only calls read-only tools',
+    readOnlyAdvice: 'Author a machine that only calls tools that run without approval',
   });
   if (gate !== undefined) return fail(gate.phase, gate.message, gate.hint);
 
