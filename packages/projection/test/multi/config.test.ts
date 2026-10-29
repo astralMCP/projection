@@ -48,7 +48,9 @@ describe('source discrimination and settings (R39)', () => {
 
   it('rejects a source that is neither a server, a client nor a configuration', async () => {
     const error = await validateError({ fs: { path: '/tmp' } });
-    expect(error.message).toContain('not an McpServer, a Client or a { source } configuration');
+    expect(error.message).toContain(
+      'not an McpServer, a Client, a { url } or a { source } configuration',
+    );
     await validateError({ fs: null });
     await validateError({ fs: 'files' });
   });

@@ -9,6 +9,8 @@
 
 import type { Implementation } from '@modelcontextprotocol/server';
 import { ProjectionError } from '../errors.js';
+import type { TokenStore } from '../auth/token-store.js';
+import { DEFAULT_INTROSPECT_TIMEOUT_MS } from '../introspector/constants.js';
 import type { BlobKeyDomain } from '../blob/index.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
 import type {
@@ -89,6 +91,21 @@ export interface WrapOptions {
    * disabling both is an error at wrap time.
    */
   projections?: ProjectionsOptions;
+  /**
+   * Where upstream tokens for sources given by URL live (R59). Default: the
+   * OS credential store through the optional `@napi-rs/keyring` dependency,
+   * falling back to memory (with one stderr warning) when it is absent or
+   * the store is unavailable. A horizontally scaled deployment supplies a
+   * shared store (R27). Unused by pre-built `McpServer` / `Client` sources.
+   */
+  tokenStore?: TokenStore;
+  /**
+   * Bound, in milliseconds, on each wrapped source's connect and `tools/list`
+   * introspection at wrap time (R47). A source that has not finished in time
+   * fails the wrap with a `protocol` error, and every connection Projection
+   * opened is closed (a `Client` you passed in stays open). Default 30 000.
+   */
+  introspectTimeoutMs?: number;
 }
 
 /** Per-projection on/off switches (R1, R32). */
@@ -140,6 +157,33 @@ export type PolicySettings = Readonly<PolicyOptions>;
  * posture every surface shows is the posture the gate decides with, which a
  * caller mutating their options after wrap could otherwise drift apart.
  */
+/** Longest `introspectTimeoutMs` accepted: the largest delay a timer can hold. */
+const MAX_INTROSPECT_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * `WrapOptions.introspectTimeoutMs`, validated (R47): a positive integer
+ * number of milliseconds, default {@link DEFAULT_INTROSPECT_TIMEOUT_MS};
+ * anything else is a `validate` error at wrap time.
+ */
+export function resolveIntrospectTimeout(value: unknown): number {
+  if (value === undefined) return DEFAULT_INTROSPECT_TIMEOUT_MS;
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_INTROSPECT_TIMEOUT_MS
+  ) {
+    throw new ProjectionError(
+      'validate',
+      'introspectTimeoutMs must be a positive whole number of milliseconds',
+      {
+        hint: `Pass e.g. introspectTimeoutMs: 30000, or omit it for the default (${DEFAULT_INTROSPECT_TIMEOUT_MS} ms).`,
+      },
+    );
+  }
+  return value;
+}
+
 export function freezePolicySettings(settings: PolicyOptions): PolicySettings {
   return Object.freeze({
     ...(settings.policy !== undefined ? { policy: Object.freeze({ ...settings.policy }) } : {}),

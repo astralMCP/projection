@@ -10,18 +10,28 @@
 
 import { Client } from '@modelcontextprotocol/client';
 import { McpServer } from '@modelcontextprotocol/server';
-import { ProjectionError } from '../errors.js';
+import {
+  isUpstreamSpecShape,
+  resolveUpstreamSpec,
+  UpstreamConnector,
+  type TokenStore,
+  type UpstreamSpec,
+} from '../auth/index.js';
+import { invalidConfig as invalid, ProjectionError } from '../errors.js';
 import type { WrapOptions } from '../facade/options.js';
 import type { ServerSource } from '../introspector/index.js';
 import { assertApprovalsMode } from '../policy/index.js';
-import { capLength, neutralizeControlChars } from '../text-safety.js';
-import { DEFAULT_SERVER_ALIAS, isRecord, type ApprovalsMode } from '../types.js';
+import { capLength, neutralizeControlChars, quoted } from '../text-safety.js';
+import { DEFAULT_SERVER_ALIAS, isPlainObject, isRecord, type ApprovalsMode } from '../types.js';
 import { ALIAS_PATTERN, splitQualified } from '../catalog/boxes.js';
 
 /** One source with its per-box settings (R39). */
 export interface ServerSourceConfig {
-  /** The server to wrap: an in-process `McpServer` or a connected `Client`. */
-  source: McpServer | Client;
+  /**
+   * The server to wrap: an in-process `McpServer`, a connected `Client`, or
+   * a remote server given by URL (`{ url, oauth? }`, R51).
+   */
+  source: McpServer | Client | UpstreamSpec;
   /**
    * Host-trusted text naming the box's purpose, shown to the model on the
    * shelf (R44). Neutralized (control and bidi characters) and capped at 200
@@ -56,7 +66,8 @@ export interface WrapServersOptions extends WrapOptions {
 /** A validated source, ready to introspect. */
 export interface ResolvedSource {
   alias: string;
-  source: ServerSource;
+  /** The source; an {@link UpstreamConnector} for one given by URL (R51). */
+  source: ServerSource | UpstreamConnector;
   /**
    * False for a duck-typed source — anything with a `connect` or `callTool`
    * function that is not an `McpServer` or `Client` from Projection's SDK
@@ -87,21 +98,6 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'approvals',
   'optional',
 ]);
-
-function invalid(message: string, hint: string): ProjectionError {
-  return new ProjectionError('validate', message, { hint });
-}
-
-/** An integrator-supplied key or alias, quoted and bounded for an error message. */
-function quoted(text: string): string {
-  return JSON.stringify(capLength(neutralizeControlChars(text), 64));
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null) return false;
-  const proto: unknown = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
 
 /**
  * A wrapped-server source as the introspector takes it: an `McpServer` or
@@ -170,13 +166,22 @@ function assertAlias(alias: string): void {
   }
 }
 
-function resolveSource(alias: string, value: unknown): ResolvedSource {
+/** A source given by URL (R51), validated and bound to the token store. */
+function upstreamSource(alias: string, value: unknown, store: () => TokenStore): UpstreamConnector {
+  const label = `source ${quoted(alias)}`;
+  return new UpstreamConnector(resolveUpstreamSpec(value, label), store(), label);
+}
+
+function resolveSource(alias: string, value: unknown, store: () => TokenStore): ResolvedSource {
+  if (isUpstreamSpecShape(value)) {
+    return { alias, source: upstreamSource(alias, value, store), sdk: true };
+  }
   if (!isSourceConfig(value)) {
     const source = asSource(value);
     if (source === undefined) {
       throw invalid(
-        `source ${quoted(alias)} is not an McpServer, a Client or a { source } configuration`,
-        'Pass an McpServer instance, a connected Client, or { source, description?, approvals? }.',
+        `source ${quoted(alias)} is not an McpServer, a Client, a { url } or a { source } configuration`,
+        'Pass an McpServer instance, a connected Client, { url, oauth? }, or { source, description?, approvals? }.',
       );
     }
     return { alias, source: assertNotConnected(alias, source), sdk: isSdkSource(source) };
@@ -190,19 +195,20 @@ function resolveSource(alias: string, value: unknown): ResolvedSource {
       );
     }
   }
-  const source = isSourceConfig(value['source']) ? undefined : asSource(value['source']);
-  if (source === undefined) {
-    throw invalid(
-      `source ${quoted(alias)}: "source" is not an McpServer or a Client`,
-      'Set source to an McpServer instance or a connected Client.',
-    );
+  const inner = value['source'];
+  let resolved: ResolvedSource;
+  if (isUpstreamSpecShape(inner)) {
+    resolved = { alias, source: upstreamSource(alias, inner, store), sdk: true };
+  } else {
+    const source = isSourceConfig(inner) ? undefined : asSource(inner);
+    if (source === undefined) {
+      throw invalid(
+        `source ${quoted(alias)}: "source" is not an McpServer, a Client or a { url }`,
+        'Set source to an McpServer instance, a connected Client, or { url, oauth? }.',
+      );
+    }
+    resolved = { alias, source: assertNotConnected(alias, source), sdk: isSdkSource(source) };
   }
-
-  const resolved: ResolvedSource = {
-    alias,
-    source: assertNotConnected(alias, source),
-    sdk: isSdkSource(source),
-  };
   const description = value['description'];
   if (description !== undefined) {
     if (typeof description !== 'string') {
@@ -242,11 +248,13 @@ function resolveSource(alias: string, value: unknown): ResolvedSource {
 }
 
 /**
- * Validate the `sources` record (R39, R48): 1–16 entries, each alias valid
- * and unreserved, each value a source or a source configuration, and no
- * source object under two aliases. Returns the sources in alias order.
+ * Validate the `sources` record (R39, R48, R51): 1–16 entries, each alias
+ * valid and unreserved, each value a source, a `{ url }` or a source
+ * configuration, no source object under two aliases and no canonical URL
+ * under two aliases. Returns the sources in alias order. `store` supplies
+ * the token store for sources given by URL.
  */
-export function resolveSources(sources: unknown): ResolvedSource[] {
+export function resolveSources(sources: unknown, store: () => TokenStore): ResolvedSource[] {
   if (!isPlainObject(sources)) {
     throw invalid(
       'wrapMcpServers takes a record of sources keyed by alias',
@@ -264,10 +272,22 @@ export function resolveSources(sources: unknown): ResolvedSource[] {
     );
   }
 
-  const seen = new Map<ServerSource, string>();
+  const seen = new Map<ServerSource | UpstreamConnector, string>();
+  const urls = new Map<string, string>();
   return aliases.map((alias) => {
     assertAlias(alias);
-    const resolved = resolveSource(alias, sources[alias]);
+    const resolved = resolveSource(alias, sources[alias], store);
+    if (resolved.source instanceof UpstreamConnector) {
+      const canonical = resolved.source.upstream.canonicalUrl;
+      const sameUrl = urls.get(canonical);
+      if (sameUrl !== undefined) {
+        throw invalid(
+          `sources ${quoted(sameUrl)} and ${quoted(alias)} are the same server URL`,
+          'Wrap each server once: two sources whose URLs are equal once canonicalized (R51) would be one resource under two aliases.',
+        );
+      }
+      urls.set(canonical, alias);
+    }
     const earlier = seen.get(resolved.source);
     if (earlier !== undefined) {
       throw invalid(

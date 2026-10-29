@@ -1096,3 +1096,190 @@ Known gaps carried forward:
   call may reach another instance, which starts its own flow.
 - The OS store does not protect tokens from other code running as the
   same user.
+
+### D19 addendum — phase 1, part A implementation notes (2026-10-29)
+
+PRD phase 1 ships in two parts. Part A is the foundation of §6.10:
+`UpstreamSpec` sources (R51), the `url:` identity (R60), the token store
+(R59), stored-token use and refresh (R58), `signOut` without revocation,
+the `auth` error phase (R25), and `introspectTimeoutMs` (R47). Part B adds
+locked boxes, the device flow and every sign-in suspension. (Phase 1b —
+the authorization-code flow, DCR, CIMD, revocation — is unchanged and
+comes after both.) Decisions made while building part A:
+
+- **Interim behaviour for a source that needs sign-in.** Until locked boxes
+  land, a 401 at wrap time with no usable token fails the wrap with an
+  `auth` error saying sign-in is required and that just-in-time sign-in is
+  not supported in this version. It contacts no authorization server: with
+  nothing stored, `onUnauthorized` refuses before any discovery. A 401 at
+  call time is an `auth`-phase outcome (`call_tool`'s R25 `auth` error,
+  a machine's `TOOL_ERROR`), not an `upstream` one. Both carry a typed
+  `UpstreamAuthProjectionError` (a `ProjectionError` with a `reason`):
+  `UpstreamConnector.toError` / `callFailure` is the seam part B's lock and
+  re-lock switch on.
+- **The transport gets an `AuthProvider`, not the `OAuthClientProvider`.**
+  Handed an `OAuthClientProvider`, the transport adapts it internally and
+  runs `auth()` where Projection cannot bracket it, so the SDK's
+  `console.warn` output (which quotes authorization-server bodies, refresh
+  tokens included, as the tests showed) could not be confined to the auth
+  run. Projection's `AuthProvider` reproduces `adaptOAuthProvider` — `token()`
+  re-reads the store per request; `onUnauthorized` runs the SDK's `auth()` —
+  over a fresh `ProjectionOAuthProvider` delegate per run. The per-run
+  delegate is also what makes compare-and-delete exact: it remembers the
+  stored value it presented, and `invalidateCredentials('tokens')` deletes
+  only that one. Consequence: the transport's own step-up path never runs
+  (it needs the `OAuthClientProvider`), which is what
+  `onInsufficientScope: 'throw'` asks for anyway.
+- **Console capture is a permanent filter, not a swap.** A first version
+  swapped `console.warn` for the duration of each run and restored it after;
+  that dropped other clients' `[mcp-sdk]` warnings process-wide while any
+  run was in flight, and the restore clobbered a logger installed meanwhile.
+  A second version wrapped the current function at every point of use,
+  which still let a logger assigned mid-run, between two requests of the
+  run, see SDK text. Now, on first auth use, `console.warn` becomes an
+  accessor property: the setter stores whatever function is assigned, and
+  the getter returns that very function — except inside an auth run (an
+  `AsyncLocalStorage` flag only the run's own async context carries), where
+  it returns a wrapper of it that drops `[mcp-sdk]` warnings. A replacement
+  at any time is filtered inside runs and untouched (identity included)
+  outside them; importing the library still changes nothing. The accessor
+  is re-checked at every point of use and re-installed if something
+  redefined the property.
+- **Refresh is single-flight, and keyed to the failed token.** Concurrent
+  401s on one record share one refresh (a module-level map per store and
+  key), and the guarded fetch notes which bearer token each response
+  answered, so `onUnauthorized` knows exactly which token failed: if the
+  store now holds another one, the request is retried with it instead of
+  refreshing (R58 "re-read before refresh / re-lock"). A record with no
+  refresh token is also retried once — a token another process stored
+  between the read and the retry is picked up — and a second 401 with the
+  same token means sign-in. A failed refresh re-reads the store too before
+  reporting. A refresh run is bounded by `AUTH_RUN_TIMEOUT_MS` (30 s, one
+  deadline for the whole run, discovery included, joined to each request's
+  own signal) and by its connection's life — `close()` aborts it — so a
+  token endpoint that never answers cannot hold the single flight, which
+  every facade over the same store would join, forever: the run ends as
+  `refresh_failed`, the flight clears, and the next call starts afresh. Records whose `expires_at` has passed are refreshed before
+  they are sent (`expires_at` was already stored, so this was cheap).
+- **What counts as an auth failure.** Projection's marker, `UnauthorizedError`
+  and `InsufficientScopeError` (R58's three), plus the transport's
+  `SdkHttpError` with `ClientHttpAuthentication` — the 401 a request still
+  gets after `onUnauthorized` succeeded. It is the same condition one step
+  later, so it is classified with the three (R58 amended). Errors from
+  `auth()` are reduced to a fixed-copy `UpstreamAuthError` with no `cause`;
+  an OAuth `error` code survives only if it matches `^[a-z_]+$`. Part A
+  does not carry `error_description` at all (R57 allows a neutralized,
+  capped one; part B can add it with the sign-in copy). Distinct reasons
+  keep the copy accurate: a transient refresh failure (5xx, malformed
+  response, network) is `refresh_failed`, record kept — the SDK falls back
+  to a new authorization there, which `state()` recognizes because a
+  refresh grant was sent in the run; `invalid_client` / `unauthorized_client`
+  is `client_rejected`, a configuration problem with the record kept (the
+  delegate stops the run when the SDK invalidates `client`, before it would
+  delete the tokens); a non-`https:` authorization-server endpoint for a
+  source that is not loopback is `insecure_endpoint` (R61; the SDK's own
+  token-endpoint check admits loopback `http:` for any source).
+- **Credentials are redacted from everything a URL source returns.** A
+  server sees the access token on every request and can echo it: in a 5xx
+  body that becomes an SDK error message, in a tool error or result, in a
+  tool description. Each connection remembers every secret it presented or
+  was given (access and refresh tokens, the client secret, and their URL-,
+  form-, JSON-, base64- and base64url-encoded spellings) and scrubs them, as
+  `[redacted]`, from wrap errors, call errors and their details, tool
+  results, the catalog and the server instructions. Wrap errors from a URL
+  source are rebuilt as `ProjectionError`s without a cause (the raw SDK
+  error's `data` keeps the body), and upstream error text is capped.
+  Redaction is exact matching against accidental echoes, not a defence
+  against a hostile server (which can re-encode a token any way it likes).
+  The rules that keep it from doing harm: only string leaves are scrubbed,
+  never property names or JSON syntax (scrubbing the serialized JSON let a
+  one-character token rewrite `"name"` keys and break the catalog); a
+  secret shorter than 8 characters is never substring-redacted (it would
+  corrupt text without hiding anything); a value that cannot be checked or
+  rebuilt — not serializable, too deep, a credential in a property name —
+  fails closed with a `ProjectionError`, never `undefined` or `[]`; text in
+  which a secret appears once invisible characters are stripped (box
+  surfaces strip them) is returned stripped and redacted; and redaction
+  runs before any truncation (the repeated `tools/list` cursor quoted in an
+  error is redacted, then cut to 64 characters).
+- **The token goes only to the canonical resource.** The SDK's default
+  `redirectPolicy` follows same-origin redirects, carrying the
+  `Authorization` header to another path. Projection's fetch refuses any
+  redirect from the resource whose target differs in origin or path (a
+  fixed-copy `protocol` error), refuses to send a bearer token anywhere but
+  the resource, and sends nothing over `http:` for a source that is not
+  loopback.
+- **`TokenStore` is opaque strings.** An earlier draft of this part typed
+  the interface (`TokenRecord` values, record equality for
+  compare-and-delete). The maintainer chose strings: a store stays a dumb
+  key-value map that never parses a credential, compare-and-delete compares
+  the exact stored string, and phase 1b's registrations need no widened
+  type. Keys are `<kind>:<JSON array>` — `tokens:[url, client, principal]`
+  now, `registration:` reserved — so a store can route by kind. The record
+  format is Projection's internal codec (`token-record.ts`, ASCII JSON).
+- **Keyring specifics.** `@napi-rs/keyring` 2.1.2 is an optional
+  dependency with prebuilt per-platform binaries and no install script, so
+  `pnpm install --frozen-lockfile` needs no `allowBuilds` entry. It has no
+  label setting, so entries carry none. On Linux its default silently falls
+  back to the kernel keyring, which does not survive a reboot or logout;
+  entries are pinned to the Secret Service so a machine without one takes
+  Projection's in-memory fallback, with its warning, instead. The fallback
+  is per store and process-wide for the default store, so the warning
+  prints once. Operations on one entry are serialized within the process
+  (a write and its read-back are one operation), so a slow write cannot
+  land after a later one; a write that timed out but lands later is
+  reconciled once it settles — rewritten with the newer value memory holds,
+  or compare-and-deleted, since the caller was told it went to memory. A
+  write that lands late can still overwrite another process's newer value
+  before it is reconciled; then the entry is removed and that user signs in
+  again. After the fallback, `delete` still deletes the OS entry when the
+  module had loaded (a compare-and-delete only for an entry this process has
+  seen) and throws when it cannot and the entry may be there — the key was
+  seen in the OS store, or some OS-store operation has succeeded in this
+  process; a sign-out that silently left the token in the OS store would be
+  worse than an error. On a machine with no working OS store (headless
+  Linux without a Secret Service) nothing ever reached it, so `delete`
+  returns the in-memory result rather than failing every sign-out. A module
+  that is not installed (`ERR_MODULE_NOT_FOUND`) is that normal case too;
+  one that failed to load (timed out, threw) makes `delete` throw, since a
+  store it could not reach may hold an earlier process's entry. A rotated
+  value is written behind to an entry this process has seen, best effort,
+  so the OS entry never keeps a refresh token that rotation killed; a
+  write-behind that lands after its timeout is reconciled like any late
+  write, so one that lands after a sign-out is deleted again.
+- **The guarded fetches never let the runtime follow a redirect.** Both
+  the connection's fetch and an auth run's force `redirect: 'manual'`
+  whatever the caller passed: the SDK's own same-origin following goes
+  through them again hop by hop (and is checked), while a caller that
+  passed no `redirect` can no longer have the runtime carry the token, or a
+  refresh token in a re-POSTed body, to wherever a 3xx points.
+- **Compare-and-delete is not atomic across processes.** The keyring has
+  no conditional delete: it is read, compare, delete. Two processes can
+  interleave between the read and the delete; R58 accepts this — the worst
+  case is one extra sign-in.
+- **Endpoint overrides are validated but not yet used.** `tokenEndpoint`
+  and `deviceAuthorizationEndpoint` are checked (R51's `https:` rule) and
+  stored; the device-code redemption of part B uses them. A refresh in part
+  A ignores `tokenEndpoint` and uses the discovered token endpoint; part B
+  should apply the override to refreshes too, through the delegate's
+  `discoveryState()`. `signInHosts` is likewise validated now and enforced
+  with the sign-in host rule (R61) in part B; it takes hostnames only — an
+  IP literal names no identity provider and is refused.
+- **`clientId` is required inside `oauth`** for now (R52's CIMD and DCR
+  alternatives are phase 1b); `oauth` itself is optional, so a public server
+  can be wrapped by URL. `clientMetadataUrl` and `authorizationEndpoint`
+  are refused by name rather than as unknown keys, and are not in the type.
+- **URLs are bounded.** A source URL or endpoint override longer than 2048
+  characters is a `validate` error, and hints quote at most 200 characters
+  of a URL.
+- **`introspectTimeoutMs` lands here** (R47), on single- and multi-server
+  facades: default 30 s per source, a `protocol` error naming the alias (or
+  the host on a single-server facade) when a source has not connected and
+  listed its tools in time. The timed-out task is aborted — a URL source's
+  half-open connection is closed, a pending `tools/list` cancelled — and a
+  connection that completes after the sweep closes itself. `optional: true`
+  is still unsupported.
+- **Not yet enforced:** R54's "an `UpstreamSpec` with the catalog
+  projection off is a `validate` error". It exists because nothing would
+  reach a locked box; with no locked boxes yet, a code-mode-only facade
+  over a URL with a stored token works, so the rule lands with locked boxes.

@@ -41,9 +41,36 @@ export function neutralizeControlChars(
   return text.replace(options.allowNewline === true ? HOSTILE_BLOCK : HOSTILE_INLINE, '\ufffd');
 }
 
+// Characters a reader cannot see: Unicode format characters (`\p{Cf}`:
+// zero-width space, joiners, word joiner and invisible operators, BOM, soft
+// hyphen, Mongolian vowel separator, interlinear annotation marks, …) and
+// the whole tag block U+E0000–E007F, whose tag characters spell hidden
+// ASCII ("ASCII smuggling"). The bidi controls among them are left to
+// `neutralizeControlChars`, which shows them as `�` like every other S5
+// surface does.
+const INVISIBLE = /[\p{Cf}\u{E0000}-\u{E007F}]/gu;
+const BIDI_CONTROL = /^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]$/;
+
+/**
+ * Strip invisible characters from server text (S5); bidi controls stay for
+ * the neutralizer. Box surfaces show server text through this, so credential
+ * redaction checks the stripped text too (`auth/secrets.ts`).
+ */
+export function stripInvisible(text: string): string {
+  return text.replace(INVISIBLE, (ch) => (BIDI_CONTROL.test(ch) ? ch : ''));
+}
+
 /** Truncate to `maxChars`, appending an ellipsis when shortened. */
 export function capLength(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
+}
+
+/**
+ * An integrator-supplied key, alias or value, inert and bounded (64
+ * characters) and JSON-quoted, for a configuration error message.
+ */
+export function quoted(text: string): string {
+  return JSON.stringify(capLength(neutralizeControlChars(text), 64));
 }
 
 /** Indent used for untrusted blocks embedded in prompt copy. */

@@ -24,8 +24,10 @@ import {
   ProtocolErrorCode,
   type Tool,
 } from '@modelcontextprotocol/server';
+import { UpstreamConnector } from '../auth/connect.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { ProjectionError } from '../errors.js';
+import { DEFAULT_INTROSPECT_TIMEOUT_MS, INTROSPECTOR_CLIENT_INFO } from './constants.js';
 import type {
   ServerAlias,
   ServerCatalog,
@@ -40,19 +42,36 @@ import type {
 export type ServerSource = McpServer | Client;
 
 /**
- * Aliased server sources (R30). v1 instantiates exactly one entry, but the
- * interface accepts a set so the multi-server stretch goal (PRD §12.2) needs
- * no signature break.
+ * Aliased server sources (R30): one per alias. An {@link UpstreamConnector}
+ * is a source given by URL (R51), validated by the facade: the introspector
+ * opens it, owns the resulting client, and records its `url:` identity
+ * (R60).
  */
-export type IntrospectorSources = Record<ServerAlias, ServerSource>;
+export type IntrospectorSources = Record<ServerAlias, ServerSource | UpstreamConnector>;
 
 interface Connection {
   client: Client;
-  /** True when the introspector created the client (in-process source). */
+  /** True when the introspector created the client (in-process source, or a source given by URL). */
   owned: boolean;
+  /**
+   * The source given by URL behind this connection (R51): its `url:`
+   * identity (R60), and the redaction and error mapping of everything it
+   * returns (S1).
+   */
+  connector?: UpstreamConnector;
 }
 
-const CLIENT_INFO = { name: 'projection-introspector', version: '0.1.0' };
+/** How {@link Introspector.create} connects. */
+export interface IntrospectOptions {
+  /**
+   * Bound on each source's connect and introspection (R47). A source that
+   * has not finished in time fails the whole introspection with a
+   * `protocol` error. Default {@link DEFAULT_INTROSPECT_TIMEOUT_MS}.
+   */
+  timeoutMs?: number;
+  /** How the timeout error names a source. Default: `wrapped server "<alias>"`. */
+  describe?: (alias: ServerAlias) => string;
+}
 
 function isTextBlock(block: unknown): block is { type: 'text'; text: string } {
   return (
@@ -115,20 +134,36 @@ function limitError(alias: ServerAlias, detail: string): ProjectionError {
   );
 }
 
+/**
+ * A server-sent cursor quoted in an error, at most 64 characters: redacted
+ * first for a source given by URL (S1), so a cut cannot leave the prefix of
+ * a credential that straddles it.
+ */
+function redactThenCut(cursor: string, connector: UpstreamConnector | undefined): string {
+  return (connector !== undefined ? connector.redact(cursor) : cursor).slice(0, 64);
+}
+
 async function fetchToolsPage(
   client: Client,
   cursor: string | undefined,
+  signal: AbortSignal | undefined,
 ): Promise<{ tools: Tool[]; nextCursor?: string | undefined }> {
   // Page 1 goes through request(): listTools() without a cursor would walk
   // every page itself before we could count anything. For the spec method
   // `tools/list`, request() validates the result against the SDK's
   // ListToolsResult schema, exactly as listTools() does internally. Later
   // pages use listTools({ cursor }), which fetches exactly one page.
-  if (cursor === undefined) return client.request({ method: 'tools/list', params: {} });
-  return client.listTools({ cursor });
+  const options = signal !== undefined ? { signal } : undefined;
+  if (cursor === undefined) return client.request({ method: 'tools/list', params: {} }, options);
+  return client.listTools({ cursor }, options);
 }
 
-async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]> {
+async function listAllTools(
+  client: Client,
+  alias: ServerAlias,
+  signal: AbortSignal | undefined,
+  connector: UpstreamConnector | undefined,
+): Promise<Tool[]> {
   // A server with zero registered tools never declares the `tools`
   // capability; that is an empty catalog, not a failure.
   if (client.getServerCapabilities()?.tools === undefined) return [];
@@ -140,7 +175,7 @@ async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]>
     let page: { tools: Tool[]; nextCursor?: string | undefined };
     try {
       // eslint-disable-next-line no-await-in-loop -- each page needs the previous page's cursor
-      page = await fetchToolsPage(client, cursor);
+      page = await fetchToolsPage(client, cursor, signal);
     } catch (err) {
       // A server that declares the capability yet answers Method not found
       // on the first page still has no tools to offer.
@@ -173,7 +208,7 @@ async function listAllTools(client: Client, alias: ServerAlias): Promise<Tool[]>
     if (cursors.has(cursor)) {
       throw limitError(
         alias,
-        `tools/list pagination loops: page ${pages} returned cursor ${JSON.stringify(cursor.slice(0, 64))} a second time`,
+        `tools/list pagination loops: page ${pages} returned cursor ${JSON.stringify(redactThenCut(cursor, connector))} a second time`,
       );
     }
     if (pages >= MAX_TOOL_LIST_PAGES) {
@@ -216,18 +251,59 @@ interface IntrospectedServer {
   definitions: Map<string, Tool>;
 }
 
-async function introspectServer(alias: ServerAlias, client: Client): Promise<IntrospectedServer> {
-  const tools = await listAllTools(client, alias);
+async function introspectServer(
+  alias: ServerAlias,
+  client: Client,
+  connector: UpstreamConnector | undefined,
+  signal?: AbortSignal,
+): Promise<IntrospectedServer> {
+  let tools = await listAllTools(client, alias, signal, connector);
+  let instructions = client.getInstructions();
+  if (connector !== undefined) {
+    // S1: a server given by URL saw the token on every request; nothing it
+    // declares may carry it on to the model.
+    tools = connector.redact(tools);
+    if (instructions !== undefined) instructions = connector.redact(instructions);
+  }
   const info = client.getServerVersion();
   const catalog: ServerCatalog = {
     alias,
-    // Stable identity recorded into blobs (R30): server name + version.
-    identity: info !== undefined ? `${info.name}@${info.version}` : alias,
+    // Stable identity recorded into blobs (R30): server name + version; for
+    // a source given by URL, its host-chosen `url:<canonical url>` (R60).
+    identity: connector?.identity ?? (info !== undefined ? `${info.name}@${info.version}` : alias),
     tools: tools.map(toCatalogEntry),
   };
-  const instructions = client.getInstructions();
   if (instructions !== undefined) catalog.instructions = instructions;
   return { catalog, definitions: new Map(tools.map((tool) => [tool.name, tool])) };
+}
+
+/**
+ * `run`, rejected with `onTimeout()` when it has not settled within
+ * `timeoutMs`; the signal it gets is aborted then, so it can let go of
+ * what it opened.
+ */
+function withDeadline<T>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+  onTimeout: () => Error,
+): Promise<T> {
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(onTimeout());
+    }, timeoutMs);
+    run(controller.signal).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 /** Extract a one-line error message from an `isError` tool result's content. */
@@ -286,13 +362,18 @@ export class Introspector implements ToolExecutor {
     return new Map([...introspected].map(([alias, server]) => [alias, server.definitions]));
   }
 
-  static async create(sources: IntrospectorSources): Promise<Introspector> {
+  static async create(
+    sources: IntrospectorSources,
+    options: IntrospectOptions = {},
+  ): Promise<Introspector> {
     const aliases = Object.keys(sources);
     if (aliases.length === 0) {
       throw new ProjectionError('protocol', 'No wrapped server was provided.', {
         hint: 'Pass at least one server source, e.g. { default: myMcpServer }.',
       });
     }
+    const timeoutMs = options.timeoutMs ?? DEFAULT_INTROSPECT_TIMEOUT_MS;
+    const describe = options.describe ?? ((alias: ServerAlias) => `wrapped server "${alias}"`);
     const connections = new Map<ServerAlias, Connection>();
     const servers = new Map<ServerAlias, IntrospectedServer>();
     // Each server is an independent host-side connection, so introspect
@@ -302,14 +383,46 @@ export class Introspector implements ToolExecutor {
     // while a sibling's #connect is still in flight — that sibling would
     // register its connection after the sweep and leak it. Waiting for every
     // task to settle guarantees the sweep sees all opened connections.
+    //
+    // R47: each source's connect and introspection is bounded by the
+    // timeout. A task that times out is aborted: a source given by URL
+    // closes its half-open connection, a pending tools/list is cancelled,
+    // and a connection that still completes after the sweep is closed by
+    // its own task instead of being registered.
     const settled = await Promise.allSettled(
-      aliases.map(async (alias) => {
-        const source = sources[alias];
-        if (source === undefined) return;
-        const connection = await Introspector.#connect(alias, source);
-        connections.set(alias, connection);
-        servers.set(alias, await introspectServer(alias, connection.client));
-      }),
+      aliases.map((alias) =>
+        withDeadline(
+          timeoutMs,
+          async (signal) => {
+            const source = sources[alias];
+            if (source === undefined) return;
+            const connection = await Introspector.#connect(alias, source, signal);
+            if (signal.aborted) {
+              if (connection.owned) await connection.client.close().catch(() => undefined);
+              return;
+            }
+            connections.set(alias, connection);
+            try {
+              servers.set(
+                alias,
+                await introspectServer(alias, connection.client, connection.connector, signal),
+              );
+            } catch (err) {
+              // A 401 during introspection is an auth failure, not a protocol
+              // one; and nothing a URL source says reaches the error unredacted.
+              throw connection.connector !== undefined ? connection.connector.toError(err) : err;
+            }
+          },
+          () =>
+            new ProjectionError(
+              'protocol',
+              `${describe(alias)} did not finish connecting and listing its tools within ${timeoutMs} ms`,
+              {
+                hint: 'Check that the server is reachable and answering MCP, or raise introspectTimeoutMs.',
+              },
+            ),
+        ),
+      ),
     );
     const failed = settled.find(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
@@ -321,7 +434,14 @@ export class Introspector implements ToolExecutor {
     return new Introspector(connections, servers);
   }
 
-  static async #connect(alias: ServerAlias, source: ServerSource): Promise<Connection> {
+  static async #connect(
+    alias: ServerAlias,
+    source: ServerSource | UpstreamConnector,
+    signal: AbortSignal,
+  ): Promise<Connection> {
+    if (source instanceof UpstreamConnector) {
+      return { client: await source.open(signal), owned: true, connector: source };
+    }
     if (source instanceof McpServer) {
       if (source.isConnected()) {
         throw new ProjectionError(
@@ -333,7 +453,7 @@ export class Introspector implements ToolExecutor {
         );
       }
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      const client = new Client(CLIENT_INFO, { capabilities: {} });
+      const client = new Client(INTROSPECTOR_CLIENT_INFO, { capabilities: {} });
       await source.connect(serverTransport);
       try {
         await client.connect(clientTransport);
@@ -361,7 +481,11 @@ export class Introspector implements ToolExecutor {
     await Promise.all(
       [...connections.values()]
         .filter((connection) => connection.owned)
-        .map((connection) => connection.client.close().catch(() => undefined)),
+        .map((connection) => {
+          // Auth requests in flight (a refresh) end with the facade (R58).
+          connection.connector?.close();
+          return connection.client.close().catch(() => undefined);
+        }),
     );
   }
 
@@ -376,7 +500,10 @@ export class Introspector implements ToolExecutor {
       await Promise.all(
         [...this.#connections].map(
           async ([alias, connection]) =>
-            [alias, await introspectServer(alias, connection.client)] as const,
+            [
+              alias,
+              await introspectServer(alias, connection.client, connection.connector),
+            ] as const,
         ),
       ),
     );
@@ -411,6 +538,7 @@ export class Introspector implements ToolExecutor {
     // SDK's tools/list cache (see IntrospectedServer). A name the catalog
     // does not know has no definition; the server rejects it anyway.
     const toolDefinition = this.#definitions.get(alias)?.get(name);
+    const connector = connection.connector;
     try {
       // The SDK's return type is a union that includes a legacy
       // `{ toolResult }` compatibility shape; narrow to the modern fields.
@@ -423,17 +551,24 @@ export class Introspector implements ToolExecutor {
         isError?: unknown;
       };
       if (result.isError === true) {
+        const message =
+          errorTextFromContent(result.content) ?? `Tool "${name}" returned an error result.`;
+        const detail = result.structuredContent ?? result.content;
         return {
           ok: false,
-          error: {
-            message:
-              errorTextFromContent(result.content) ?? `Tool "${name}" returned an error result.`,
-            detail: result.structuredContent ?? result.content,
-          },
+          error:
+            connector !== undefined
+              ? { message: connector.redact(message), detail: connector.redact(detail) }
+              : { message, detail },
         };
       }
-      return { ok: true, result: pickResultValue(result) };
+      const value = pickResultValue(result);
+      // S1: a server given by URL must not hand the model the token it saw.
+      return { ok: true, result: connector !== undefined ? connector.redact(value) : value };
     } catch (err) {
+      // A source given by URL: an auth failure is its own outcome (R25
+      // `auth`), and no error text reaches the model unredacted.
+      if (connector !== undefined) return connector.callFailure(name, err);
       return {
         ok: false,
         error: {
@@ -459,6 +594,9 @@ export class Introspector implements ToolExecutor {
  *
  * v1 usage: `createIntrospector({ [DEFAULT_SERVER_ALIAS]: serverOrClient })`.
  */
-export async function createIntrospector(sources: IntrospectorSources): Promise<Introspector> {
-  return Introspector.create(sources);
+export async function createIntrospector(
+  sources: IntrospectorSources,
+  options?: IntrospectOptions,
+): Promise<Introspector> {
+  return Introspector.create(sources, options);
 }

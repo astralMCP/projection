@@ -10,9 +10,15 @@
  * transpiler is a hard runtime requirement) — every workspace test passed
  * while every consumer install was broken. Needs registry network, same as
  * `pnpm install` itself; skipped only when PROJ_SKIP_PACK_SMOKE=1.
+ *
+ * It also checks the optional keyring dependency (PRD R59): that the
+ * installed package resolves `@napi-rs/keyring`, and that wrapping a public
+ * server by URL still works when the module cannot load — with the import
+ * blocked by a resolve hook, so the real OS credential store is never
+ * touched — printing the in-memory fallback warning exactly once.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -66,11 +72,84 @@ console.log(JSON.stringify(result.structuredContent ?? {}));
 await facade.close();
 `;
 
+/** Resolves the optional keyring module from the consumer and from the installed package. */
+const RESOLVE_KEYRING_SCRIPT = `
+import { createRequire } from 'node:module';
+const fromConsumer = import.meta.resolve('@napi-rs/keyring');
+const fromPackage = createRequire(import.meta.resolve('@astral-mcp/projection/package.json')).resolve('@napi-rs/keyring');
+console.log(JSON.stringify({ fromConsumer, fromPackage }));
+`;
+
+/** A resolve hook that makes `@napi-rs/keyring` unloadable, as on a platform without a prebuilt binary. */
+const BLOCK_KEYRING_HOOKS = `
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === '@napi-rs/keyring' || specifier.startsWith('@napi-rs/keyring/')) {
+    const error = new Error('Cannot find package ' + specifier + ' (blocked by the pack smoke test)');
+    error.code = 'ERR_MODULE_NOT_FOUND';
+    throw error;
+  }
+  return nextResolve(specifier, context);
+}
+`;
+
+const REGISTER_BLOCK_SCRIPT = `
+import { register } from 'node:module';
+register('./block-keyring-hooks.mjs', import.meta.url);
+`;
+
+/** Wraps a public MCP server by URL with the default token store, calls a tool, and closes. */
+const URL_WRAP_SCRIPT = `
+import { createServer } from 'node:http';
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { wrapMcpServer } from '@astral-mcp/projection';
+import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
+
+const handler = createMcpHandler(() => {
+  const server = new McpServer({ name: 'public-smoke', version: '1.0.0' });
+  server.registerTool(
+    'greet',
+    { description: 'hi', inputSchema: z.object({ name: z.string() }), annotations: { readOnlyHint: true } },
+    ({ name }) => ({ content: [{ type: 'text', text: 'hello ' + name }] }),
+  );
+  return server;
+});
+const http = createServer(async (req, res) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const method = req.method ?? 'GET';
+  const response = await handler.fetch(
+    new Request('http://127.0.0.1:' + http.address().port + req.url, {
+      method,
+      headers: req.headers,
+      ...(method === 'GET' || method === 'HEAD' ? {} : { body: Buffer.concat(chunks) }),
+    }),
+  );
+  res.writeHead(response.status, Object.fromEntries(response.headers));
+  if (response.body !== null) for await (const chunk of response.body) res.write(chunk);
+  res.end();
+});
+await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
+
+// An oauth.clientId makes the provider consult the (default) token store.
+const facade = await wrapMcpServer(
+  { url: 'http://127.0.0.1:' + http.address().port + '/mcp', oauth: { clientId: 'pack-smoke' } },
+  { blob: { key: randomBytes(32) } },
+);
+const result = await facade.callTool({ name: 'greet', args: { name: 'url' } }, 'modern');
+console.log(JSON.stringify(result.structuredContent ?? result.content ?? {}));
+await facade.close();
+http.closeAllConnections();
+http.close();
+`;
+
+const FALLBACK_WARNING_START = '[@astral-mcp/projection] The OS credential store is unavailable';
+
 describe.skipIf(process.env['PROJ_SKIP_PACK_SMOKE'] === '1')(
   'packed-tarball consumer install',
   () => {
     it(
-      'a fresh npm install of the packed @astral-mcp/projection runs a machine end-to-end',
+      'a fresh npm install of the packed @astral-mcp/projection runs a machine end-to-end and wraps a server by URL without the keyring',
       { timeout: 300_000 },
       () => {
         // `npm pack` ships whatever dist/ is on disk — no build runs here.
@@ -131,6 +210,34 @@ describe.skipIf(process.env['PROJ_SKIP_PACK_SMOKE'] === '1')(
           ).toEqual({ text: 'hello npm' });
           // The audit trail records the auto-executed read too.
           expect(structured.approvals).toHaveLength(1);
+
+          // R59: the optional keyring dependency installs with the package
+          // and resolves from it.
+          writeFileSync(join(dir, 'resolve-keyring.mjs'), RESOLVE_KEYRING_SCRIPT);
+          const resolved = JSON.parse(
+            execFileSync(process.execPath, ['resolve-keyring.mjs'], {
+              cwd: dir,
+              encoding: 'utf8',
+              stdio: 'pipe',
+            }).trim(),
+          ) as { fromConsumer: string; fromPackage: string };
+          expect(resolved.fromConsumer).toContain('@napi-rs/keyring');
+          expect(resolved.fromPackage).toContain('@napi-rs/keyring');
+
+          // R59 fallback: with the keyring import blocked (never touching
+          // the OS store), wrapping a public server by URL works and warns
+          // exactly once.
+          writeFileSync(join(dir, 'block-keyring-hooks.mjs'), BLOCK_KEYRING_HOOKS);
+          writeFileSync(join(dir, 'register-block-keyring.mjs'), REGISTER_BLOCK_SCRIPT);
+          writeFileSync(join(dir, 'url-wrap.mjs'), URL_WRAP_SCRIPT);
+          const run = spawnSync(
+            process.execPath,
+            ['--import', './register-block-keyring.mjs', 'url-wrap.mjs'],
+            { cwd: dir, encoding: 'utf8', timeout: 60_000 },
+          );
+          expect(run.status, `url-wrap.mjs failed: ${run.stderr}`).toBe(0);
+          expect(run.stdout).toContain('hello url');
+          expect(run.stderr.split(FALLBACK_WARNING_START)).toHaveLength(2);
         } finally {
           rmSync(dir, { recursive: true, force: true });
         }

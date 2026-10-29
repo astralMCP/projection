@@ -287,6 +287,17 @@ async function execute(
   // A multi-server facade routes the qualified name to its box (R40).
   const target = routeCall(deps.catalog, name);
   const result = await deps.executor.callTool(target.alias, target.name, toolArgs);
+  if (!result.ok && result.auth !== undefined) {
+    // R25 `auth`: upstream authorization failed (a source given by URL).
+    // Library copy throughout; the model cannot fix this by rewriting the call.
+    return errorResult({
+      phase: 'auth',
+      message: result.error.message,
+      diagnostics: [],
+      hint: result.auth.hint,
+      logs: [],
+    });
+  }
   if (!result.ok) {
     // R25 `upstream`: the wrapped tool failed. Its message is S5 text headed
     // straight for the model — inert and bounded; the hint is library copy.

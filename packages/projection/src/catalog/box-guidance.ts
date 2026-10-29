@@ -21,7 +21,12 @@
  */
 
 import type { ProjectionResource } from '../mrtr/discover.js';
-import { indentBlock, neutralizeControlChars, purposeSentence } from '../text-safety.js';
+import {
+  indentBlock,
+  neutralizeControlChars,
+  purposeSentence,
+  stripInvisible,
+} from '../text-safety.js';
 import type { BoxedCatalog, ToolBox } from './boxes.js';
 
 /** Longest box overview served (R43): 8 KB of the server's instructions. */
@@ -34,21 +39,6 @@ export const OVERVIEW_TRUNCATION_MARKER =
 /** `1 tool`, `3 tools`. */
 export function toolCount(count: number): string {
   return `${count} ${count === 1 ? 'tool' : 'tools'}`;
-}
-
-// Characters a reader cannot see: Unicode format characters (`\p{Cf}`:
-// zero-width space, joiners, word joiner and invisible operators, BOM, soft
-// hyphen, Mongolian vowel separator, interlinear annotation marks, …) and
-// the whole tag block U+E0000–E007F, whose tag characters spell hidden
-// ASCII ("ASCII smuggling"). The bidi controls among them are left to
-// `neutralizeControlChars`, which shows them as `�` like every other S5
-// surface does.
-const INVISIBLE = /[\p{Cf}\u{E0000}-\u{E007F}]/gu;
-const BIDI_CONTROL = /^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]$/;
-
-/** Strip invisible characters from box server text (S5); bidi controls stay for the neutralizer. */
-function stripInvisible(text: string): string {
-  return text.replace(INVISIBLE, (ch) => (BIDI_CONTROL.test(ch) ? ch : ''));
 }
 
 /** Nothing a reader could use: only whitespace and replacement characters. */

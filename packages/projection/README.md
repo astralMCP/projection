@@ -78,6 +78,19 @@ one `tools.<alias>` property per box, and machines call
 `toolCall('fs.read_file', args)`. Optional sources are not available yet.
 See `docs/server-authors.md`.
 
+### Remote servers by URL (preview)
+
+Any source can be `{ url, oauth?: { clientId, scopes } }`: Projection builds
+the Streamable HTTP connection itself, uses and refreshes tokens from a
+token store (the OS credential store through the optional
+`@napi-rs/keyring` dependency by default, or `WrapOptions.tokenStore`, a
+plain string key-value store), and `facade.signOut()` clears them. Never put
+a token in an MCP configuration file. Just-in-time sign-in (asking the user
+on first use) is not supported in this version: a public server works, and
+so does one whose token is already in your `tokenStore`; otherwise the wrap
+fails with an `auth` error. See "Upstream authentication" in
+`docs/server-authors.md`.
+
 ## Security model
 
 | Invariant                                               | How it holds                                                                                                                                      |

@@ -27,12 +27,13 @@
  *   `search_tools` (switchable, `catalog.globalSearch`), `describe_tool` and
  *   `call_tool` (R43). The instructions are the multi-server preamble plus
  *   the shelf (R44); each box overview is also a resource (R45).
- * - Fail-closed wrapping only; `optional` sources and `introspectTimeoutMs`
- *   (R47) come later.
+ * - Fail-closed wrapping, each source bounded by `introspectTimeoutMs`
+ *   (R47); `optional` sources come later.
  */
 
 import type { Client } from '@modelcontextprotocol/client';
 import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
+import { tokenStoreOption, UpstreamConnector, type UpstreamSpec } from '../auth/index.js';
 import { boxAbout, boxOverviewResources, toolCount } from '../catalog/box-guidance.js';
 import {
   boxSearchTool,
@@ -47,6 +48,7 @@ import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
   freezePolicySettings,
+  resolveIntrospectTimeout,
   resolveProjections,
   type PolicySettings,
   type RegisterOptions,
@@ -125,19 +127,20 @@ export interface MultiProjectionFacade extends Omit<ProjectionFacade, 'catalog' 
  * fails the wrap and closes every connection Projection opened (R47).
  */
 export async function wrapMcpServers(
-  sources: Record<string, McpServer | Client | ServerSourceConfig>,
+  sources: Record<string, McpServer | Client | UpstreamSpec | ServerSourceConfig>,
   options: WrapServersOptions,
 ): Promise<MultiProjectionFacade> {
   // R39: every configuration mistake fails here, before any connection.
   assertOptionsGiven(options);
-  const resolved = resolveSources(sources);
+  const resolved = resolveSources(sources, tokenStoreOption(options.tokenStore));
   const aliases = new Set(resolved.map((source) => source.alias));
   assertPolicyKeys(options.policy, aliases);
   const approvals = assertApprovalsMode(options.approvals);
   const { globalSearch } = resolveCatalogOptions(options.catalog);
   const projections = resolveProjections(options.projections);
+  const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
 
-  const introspector = await introspect(resolved);
+  const introspector = await introspect(resolved, introspectTimeoutMs);
   // R47 fail-closed: anything that throws once the sources are connected
   // closes every connection Projection opened (caller-owned Clients stay open).
   try {
@@ -169,12 +172,17 @@ export async function wrapMcpServers(
       toolApprovals: toolApprovalsFor(view, sourceModes),
     });
 
+    const upstreams = new Map<string, UpstreamConnector>();
+    for (const source of resolved) {
+      if (source.source instanceof UpstreamConnector) upstreams.set(source.alias, source.source);
+    }
     // R45: one frozen policy snapshot feeds typegen and the gate, so the
     // postures in the .d.ts and the overview are the ones the gate decides.
     const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(view, policySettings);
 
     return new MultiFacade({
       introspector,
+      upstreams,
       view,
       dts,
       bridgeSource,
@@ -213,10 +221,20 @@ function assertOptionsGiven(options: unknown): asserts options is WrapServersOpt
  * with anything but a {@link ProjectionError} is reported as a pointed
  * `protocol` error naming it, not as the SDK's raw `TypeError`.
  */
-async function introspect(resolved: readonly ResolvedSource[]): Promise<Introspector> {
+async function introspect(
+  resolved: readonly ResolvedSource[],
+  timeoutMs: number,
+): Promise<Introspector> {
+  const where = new Map(
+    resolved.map((source) => [
+      source.alias,
+      source.source instanceof UpstreamConnector ? source.source.where : `source "${source.alias}"`,
+    ]),
+  );
   try {
     return await createIntrospector(
       Object.fromEntries(resolved.map((source) => [source.alias, source.source])),
+      { timeoutMs, describe: (alias) => where.get(alias) ?? `source "${alias}"` },
     );
   } catch (err) {
     const foreign = resolved.filter((source) => !source.sdk).map((source) => source.alias);
@@ -405,6 +423,8 @@ function catalogToolCopy(
 
 interface MultiFacadeDeps {
   introspector: Introspector;
+  /** The boxes given by URL (R51), by alias. */
+  upstreams: ReadonlyMap<string, UpstreamConnector>;
   view: BoxedCatalog;
   /** Generated artifacts over the view (R45): `tools.<alias>` per box, qualified names. */
   dts: string;
@@ -548,6 +568,41 @@ class MultiFacade implements MultiProjectionFacade {
       registerCatalogTools(server, era, this, this.copy);
     }
     registerResources(server, this.resources);
+  }
+
+  async signOut(alias?: string): Promise<void> {
+    const upstreams = this.deps.upstreams;
+    if (alias === undefined) {
+      if (upstreams.size === 0) {
+        throw new ProjectionError('validate', 'signOut: no box on this facade is given by URL', {
+          hint: 'signOut applies to sources given as { url }; pre-built McpServer and Client sources manage their own authorization.',
+        });
+      }
+      // Every box, even when one fails; the first failure is reported.
+      const settled = await Promise.allSettled([...upstreams.values()].map((box) => box.signOut()));
+      const failed = settled.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failed !== undefined) throw failed.reason;
+      return;
+    }
+    const connector = typeof alias === 'string' ? upstreams.get(alias) : undefined;
+    if (connector === undefined) {
+      const name = JSON.stringify(capLength(neutralizeControlChars(String(alias)), 64));
+      throw new ProjectionError(
+        'validate',
+        this.deps.view.boxes.has(String(alias))
+          ? `signOut: box ${name} is not given by URL`
+          : `signOut: no box ${name} on this facade`,
+        {
+          hint:
+            upstreams.size > 0
+              ? `Boxes given by URL: ${[...upstreams.keys()].join(', ')}.`
+              : 'No box on this facade is given by URL.',
+        },
+      );
+    }
+    await connector.signOut();
   }
 
   close(): Promise<void> {

@@ -62,5 +62,8 @@
   "bugs": "https://github.com/astralMCP/projection/issues",
   "engines": {
     "node": ">=22"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "2.1.2"
   }
 }
