@@ -108,7 +108,7 @@ prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
 
 ## Where truth lives
 
-- `docs/PRD.md` — requirements (R1–R48), security invariants (S1–S6), §10
+- `docs/PRD.md` — requirements (R1–R49), security invariants (S1–S6), §10
   budgets/metrics, §13 harness+TUI.
 - `docs/DECISIONS.md` — why things are the way they are (SDK v2 MRTR
   adoption, AEAD sealer rationale, D4 replay obligation, D9 two

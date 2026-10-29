@@ -538,39 +538,52 @@ search, without the whole of every box in the system prompt.
 Decision (PRD §6.9, R39–R48):
 
 - `wrapMcpServers(sources, options)`; aliases are integrator-chosen
-  (`^[a-z][a-z0-9_]{0,23}$`, `tools` reserved, 1–16 sources) and are the only
-  server names any model or approver sees. `wrapMcpServer` is untouched,
-  byte for byte, and is not a one-source special case of the new entry.
+  (`^[a-z][a-z0-9]{0,23}$`; `default` and every `search_*` suffix
+  Projection registers, `tools` today, reserved; 1–16 sources) and are the
+  only server names any model or approver sees. `wrapMcpServer` is not a
+  one-source special case of the new entry, and its outputs (goldens, blobs,
+  copy) stay byte-identical.
 - Every tool on a multi-server facade is `<alias>.<name>`, split at the
   first dot, on every surface: search, describe, call, types, `toolCall`,
-  approval copy, audit, `pending`, binding hash.
-- `serverIdentity` is the sorted set of `alias=identity` lines, so blobs bind
-  the server set, the alias mapping and the server versions.
-- Policy: per-source overrides by bare name, facade overrides by qualified
-  name; naming a tool in both is a wrap-time error.
+  approval copy, audit, `pending`, binding hash. A bare name that itself
+  contains a dot renders in the approval footer as `Tool: <alias> › "<name>"`,
+  so `fs`'s `github.delete_repo` never reads as the `github` box's tool.
+- `serverIdentity` is `multi:` plus the JSON of the alias-sorted
+  `[alias, identity]` pairs, so blobs bind the server set, the alias mapping
+  and the server versions. Multi-server facades also derive their blob keys
+  under their own HKDF info string (`@astral-mcp/projection/blob/v1/multi`).
+- Policy: per-tool overrides only on the facade, keyed by qualified names;
+  an unqualified key or one naming an unconfigured alias fails the wrap.
 - Catalog: one `search_<alias>` per box plus a global `search_tools`
   (switchable, `catalog.globalSearch`), one `describe_tool`, one
-  `call_tool`. An empty-query first page of `search_<alias>` leads with the
-  server's full instructions (the box overview).
+  `call_tool`. In `search_tools`, a query token equal to a box's alias is an
+  alias token: it boosts every tool in that box and matches no tool's text.
+  An empty-query first page of `search_<alias>` leads with the server's full
+  instructions (the box overview).
 - System-prompt `instructions`: Projection's preamble plus a one-line-per-box
   shelf; the servers' own instructions are not concatenated.
-- Code mode: `tools.<alias>` namespaces, `toolCall('<alias>.<name>')`,
+- Code mode: `tools.<alias>` object-type properties, `toolCall('<alias>.<name>')`,
   overview grouped per box; one gated call, one approval, as today.
-- Approval copy names the box: `What <alias> says it does`,
-  `Tool: <alias>.<name>`.
+- Approval copy names the box: `Approve (<alias>): …`,
+  `What <alias> says it does`, `Tool: <alias>.<name>`.
 - Wrap is fail-closed; `optional: true` sources are skipped and reported on
-  `facade.skipped`.
+  `facade.skipped`; `introspectTimeoutMs` bounds each source.
 
 Why qualified names over host-style `alias__name` tool names. The obvious
 alternative — what multi-server hosts do today — exposes every wrapped tool
 as its own MCP tool named `<alias>__<name>`. R1 already rules out exposing
-wrapped tools, and the naming has its own costs: host tool-name limits (64
-characters at common model providers, no dots) truncate or reject long
-tool names once a prefix is added, and the facade's tool list grows by one
-per wrapped tool again, which is what the catalog projection exists to
-avoid. A qualified name is an argument to `call_tool`, not a tool name, so
-it has no length budget to share, and the dot cannot appear in an alias, so
-the split is unambiguous even for tool names that contain dots.
+wrapped tools, and the naming has its own costs: model-API tool-name limits
+(commonly around 64 characters from a restricted set without dots) truncate
+or reject long tool names once a prefix is added, and the facade's tool list
+grows by one per wrapped tool again, which is what the catalog projection
+exists to avoid. A qualified name is an argument to `call_tool`, not a tool
+name, so it has no length budget to share, and the dot cannot appear in an
+alias, so the split is unambiguous even for tool names that contain dots.
+
+The cost of this choice: the facade's tool list still grows by one per box.
+With the global search on, the catalog projection is N + 3 tools — 19 at the
+16-box limit, 21 with code mode. That is bounded and independent of how many
+tools the boxes hold, but it is not the flat five of a single-server facade.
 
 Why the alias rides in the name. `pending`, the audit trail and the R36
 binding hash already record a tool name. Putting the alias inside that
@@ -579,6 +592,23 @@ string makes every one of them box-aware for free — an approval for
 blob schema at version 1. A separate `alias` field would have been a
 format change, a second field to keep consistent with the name, and a new
 tamper case to test.
+
+Why a key domain, not just an identity format. A single-server identity is
+`name@version` as the server reports it, and it must stay byte-identical so
+existing blobs keep resuming. A server can therefore report a name that
+spells any multi-server identity string, and no choice of format can rule
+that out. Deriving multi-server blob keys under a separate HKDF info string
+makes the two facade kinds cryptographically disjoint under one key: a blob
+from one fails authentication on the other, whatever the identity strings
+say. The identity itself is JSON so that, within multi-server facades, no
+reported name can make two different server sets produce the same string.
+
+Why alias tokens. `search_tools` ranks by text the servers control. Without
+the rule, a hostile `fs` server could write `github` into every description
+and push its own tools above the `github` box's for any query naming
+`github`. Treating the alias as a box selector rather than as text removes
+that lever; the did-you-mean hint follows the same rule, suggesting only
+from the box a qualified name names.
 
 Why progressive instructions. Prompt size grows per server: GitHub's
 instructions alone are ~2 KB, and a facade over a handful of real servers
@@ -592,7 +622,9 @@ server changes what the model can do, what the shelf says and which blobs
 resume, with nothing in the integrator's logs at the moment of the change.
 Failing the wrap makes a missing dependency a deployment error; `optional`
 lets an integrator say a box is a nice-to-have, and `facade.skipped` makes
-the skip observable.
+the skip observable. Behind a load balancer, instances can disagree on which
+boxes they skipped; that limitation is stated in R47 rather than designed
+around.
 
 Why per-box and global search, with the default left to the eval. Per-box
 search is what makes a box a box: scoped results, a description the host
@@ -605,17 +637,55 @@ Alternatives rejected:
 
 - **One `search_tools({ server })` with the shelf in the instructions.**
   Fewer tools, but the box has no tool description of its own to carry the
-  host's `description`, and models routinely omit optional filter
-  arguments, which makes it a global search with an unused parameter.
+  host's `description`. A hypothesis for the eval to test: models often omit
+  optional filter arguments, which would make it a global search with an
+  unused parameter.
 - **Per-box search only.** Cross-box tasks and "which box has this?" would
   cost one search per box before the first call.
 - **Merged system-prompt instructions.** The prompt-size argument above, and
   third-party text from N servers would share one undifferentiated block.
 - **Skip-and-warn as the default.** See fail-closed above; the warning goes
   to a log nobody reads at wrap time.
+- **Per-source policy keyed by bare names** (in an earlier draft). It gave
+  two places to say the same thing and needed a conflict rule; qualified keys
+  on the facade say everything once.
 
 Follow-up: the multi-server eval (PRD §13) — offline GitHub fake, filesystem
 reference server and MongoDB MCP server; direct mode with `<alias>__<name>`
 tools and concatenated instructions against Projection with the global
 search on and off. Its results set the `globalSearch` default and get their
 own entry here.
+
+## D17 — Approvals mode: `every-write` or `destructive-only` (2026-10-29)
+
+History: a flag to skip the approval on non-destructive writes was floated
+on 2026-10-10 and parked — approval friction against safety, with no
+behaviour change wanted then. It was decided on 2026-10-29, alongside
+multi-server facades, where trust is naturally per server.
+
+Decision (PRD R49): `approvals: 'every-write' | 'destructive-only'`,
+default `'every-write'` (unchanged behaviour), on `WrapOptions` for the
+whole facade and on each `ServerSourceConfig`, the per-source value taking
+precedence. Under `'destructive-only'` a non-read-only tool runs without
+approval only when it explicitly declares `destructiveHint: false`; a
+missing hint, or anything but an explicit `false`, still asks — the MCP
+default reads a non-read-only tool as destructive, and a server that says
+nothing has not claimed safety. Precedence: per-tool `policy` override, then
+per-source mode, then global mode, then the annotation default. Malformed
+values fail the wrap.
+
+Why the per-tool override stays on top: it is the integrator's most
+specific statement, so a per-tool `ask` or `deny` must hold under a relaxed
+mode, and a per-tool `auto` already meant "never ask". Why per source: the
+mode trusts a server's `destructiveHint: false` the way R14 already trusts
+`readOnlyHint: true`, and a hostile server can mislabel a damaging tool —
+so the knob belongs on the servers an integrator vouches for. Why failing
+the wrap on a malformed value, where a malformed per-tool override fails
+safe to `ask`: the mode is one deploy-time switch, and a typo should
+surface at deploy, not as approvals nobody can explain.
+
+Alternatives rejected: **`destructive-only` as the default** — a behaviour
+change for every existing facade, and it trusts third-party annotations by
+default; **per-tool `auto` lists only** — the integrator would have to
+enumerate every non-destructive write and keep the list current as servers
+change.

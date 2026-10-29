@@ -294,9 +294,10 @@ only be restructured and resubmitted.
   every approval blob is single-use. No default implementation ships: an
   in-memory one would silently break horizontal scaling.
 
-- Blobs are bound to the wrapped server's identity (`name@version`). Two
-  facades that share a blob key over same-identity servers can resume each
-  other's blobs — use one key per wrapped server.
+- Blobs are bound to the wrapped server's identity (`name@version`), or on a
+  `wrapMcpServers` facade to its alias-to-identity set. Two facades that
+  share a blob key over the same identities can resume each other's blobs —
+  use one key per facade (per distinct server set).
 
 ## Try it against your server
 
