@@ -392,6 +392,68 @@ The pre-0.8.0 dependency pass settled these rules:
   block on agent-driven runs; `CLAUDE.md` and the skills are this repo's
   agent instructions, so `turbo.json` sets `"agentGuidance": false`.
 
+**Addendum (2026-10-29), the post-0.8.0 pass.** Moved: the MCP SDK
+(`client`/`server`) 2.3.1 → 2.4.0, `server-filesystem` 2026.7.10 → 1.0.0,
+`mongodb` 7.5.0 → 7.7.0, the vendored `mongodb-mcp-server` 3.0.5 → 3.2.1,
+`@anthropic-ai/sdk` 0.133.0 → 1.3.0 (harness), and patch/minor tooling
+(vitest, zod, prettier, turbo, oxlint, tsdown, react). Held, as before:
+`xstate` (blob stamp), `typescript` (7 drops `ts.transpile`), `@types/node`
+(22.x, the lowest supported Node), `server-github` (live smoke).
+
+- **The release-age rule covers the npm-installed vendor tree too.** pnpm's
+  gate does not reach `vendor/mongodb-mcp-server`, which npm installs.
+  `mongodb-mcp-server` 3.2.2 was nine hours old, so the pin is 3.2.1, and
+  the lockfile was generated with `npm install --before` set 24 hours back,
+  which applies the same cutoff to every transitive package. 3.2.2 passes
+  the MongoDB suites and can follow once it is a day old. 3.0.5 → 3.2.1
+  leaves the 21-tool surface unchanged (names, schemas, annotations and
+  descriptions). Since 3.1.0 the server rejects unrecognised tool arguments
+  and asks for confirmation before aggregation write stages; Projection's
+  upstream client advertises no elicitation, so that prompt never fires.
+- **The vendor directory is no longer needed for the SDK.** Its packages
+  require `@modelcontextprotocol/server` `^2.3.1` and
+  `@modelcontextprotocol/node` 2.1.2 requires `^2.4.0`. The workspace pin
+  satisfies both now, so the server could move into the pnpm workspace. The
+  vendor directory stays for now; removing it is a separate change.
+- **`server-filesystem` 1.0.0 reports its package version.** The tool
+  surface (14 tools, annotations) is unchanged; `serverInfo.version` is now
+  the package version (`0.2.0` throughout the date line), so the recorded
+  identity is `secure-filesystem-server@1.0.0`, and blobs bound to the old
+  identity no longer open against it. 2.x exists and is not evaluated here.
+- **MCP SDK 2.4.0 does not change what Projection uses.** A diff of the
+  shipped `dist` shows no change to `listTools`/`callTool`/`request`, the
+  `listMaxPages` page walk (refactored into `_walkPages` for the new
+  `SkillsClient`, same body), elicitation (form and URL mode),
+  `UrlElicitationRequiredError`, the transports' request-size handling, or
+  `InMemoryTransport`. New: the Skills extension (SEP-2640, `ext/skills`
+  subpaths, root exports unchanged). OAuth client: only an opt-in
+  `OAuthClientProvider.scopeForRefresh(tokens)` and a `scope` option on
+  `refreshAuthorization()` (Entra ID rejects a refresh without `scope`);
+  there is still no device-authorization grant. Behaviour changes that
+  could reach a wrapped upstream: an `outputSchema` whose root `$ref`s an
+  object in its own `$defs` is no longer wrapped in `{ result }` on
+  2025-era connections; the bundled Ajv rejects a `$id`/`$ref` with an
+  invalid URI scheme (`my_tool:output`). SDK 2.4.0 removed `number` from
+  the allowed `x-mcp-header` parameter types; the 2.4.0 client then drops
+  such a tool from `listTools` with only a `console.warn` on modern-era
+  connections over any transport except stdio (in-process
+  `InMemoryTransport` included), and `createMcpHandler` rejects a
+  `tools/call` whose headers mismatch (-32020) for `number` declarations
+  too. Consequence: a wrapped in-process or HTTP upstream with a header on
+  a `number` parameter silently disappears from Projection's catalog; stdio
+  upstreams are unaffected. No fixture or eval world uses `x-mcp-header`.
+- **`@anthropic-ai/sdk` 1.x sends `anthropic-version: 2026-10-21`.** That
+  API version rejects `temperature`/`top_p`/`top_k`, `document` blocks in
+  assistant turns and `citations` on user text, and renames Admin API
+  fields; the harness sends none of them. The client now sends the API key
+  as `Authorization: Bearer` rather than `X-Api-Key`, which matters only
+  behind a proxy that reads the old header. The SDK creates OpenTelemetry
+  spans if a global tracer provider is registered (the harness registers
+  none).
+- With both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` set, a 1.x client
+  uses the API key (and warns once); an `ANTHROPIC_PROFILE` naming a missing
+  profile throws on the first request. The live eval relies on the API key.
+
 ## D13 — Saved eval runs are re-scored offline; world-reading verifies keep their verdict (2026-10-10)
 
 Grader fixes are applied to saved results with `rescoreRecords` (script:
