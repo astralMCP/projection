@@ -64,9 +64,10 @@ function bearerOf(headers: RequestInit['headers']): string | undefined {
  * own requests and the auth runs' (R61):
  *
  * - a bearer token goes only to the canonical resource (origin and path);
- * - a redirect from the resource to any other URL is refused, never
- *   followed, so the SDK's same-origin redirect following cannot carry the
- *   token to another path either;
+ * - redirects are never followed by the underlying fetch (`redirect:
+ *   'manual'` whatever the caller passed), and a redirect from the resource
+ *   to any other URL is refused, so the SDK's same-origin redirect
+ *   following cannot carry the token to another path either;
  * - for a source that is not loopback, nothing is sent over plain `http:`;
  * - each resource response is noted with the bearer token it answered, so
  *   a 401 is matched to the token that failed (R58).
@@ -85,7 +86,7 @@ export function createUpstreamFetch(
     if (target.protocol !== 'https:' && !sourceIsLoopback) {
       throw new UpstreamRequestRefused('insecure');
     }
-    const response = await base(url, init);
+    const response = await base(url, { ...init, redirect: 'manual' });
     if (!toResource) return response;
     const location = REDIRECT_STATUSES.has(response.status)
       ? response.headers.get('location')
@@ -288,9 +289,22 @@ export class UpstreamConnector {
     );
   }
 
-  /** `value` from this source with every credential it presented redacted (`undefined` if it cannot be checked). */
-  redact<T>(value: T): T | undefined {
+  /**
+   * `value` from this source with every credential it presented redacted.
+   * Throws a {@link ProjectionError} when the value cannot be checked (fail
+   * closed, `SecretSet.scrubValue`).
+   */
+  redact<T>(value: T): T {
     return this.#context.secrets.scrubValue(value);
+  }
+
+  /**
+   * Abort every auth request this connection's runs have in flight (a
+   * refresh, its discovery), so a facade that closes leaves no refresh
+   * behind for another facade over the same store to wait on.
+   */
+  close(): void {
+    this.#context.lifetime.abort();
   }
 
   /** The typed `auth` error for `err`, when it is an upstream auth failure. */
@@ -346,9 +360,18 @@ export class UpstreamConnector {
       ok: false,
       error: {
         message: `Tool call "${name}" failed: ${this.redactText(errorText(err))}`,
-        detail: err instanceof Error ? { name: err.name } : this.redact(err),
+        detail: err instanceof Error ? { name: err.name } : this.#redactOrOmit(err),
       },
     };
+  }
+
+  /** `value` redacted, or `undefined` when it cannot be checked. */
+  #redactOrOmit(value: unknown): unknown {
+    try {
+      return this.redact(value);
+    } catch {
+      return undefined;
+    }
   }
 
   /**

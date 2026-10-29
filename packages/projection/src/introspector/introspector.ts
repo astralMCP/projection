@@ -134,6 +134,15 @@ function limitError(alias: ServerAlias, detail: string): ProjectionError {
   );
 }
 
+/**
+ * A server-sent cursor quoted in an error, at most 64 characters: redacted
+ * first for a source given by URL (S1), so a cut cannot leave the prefix of
+ * a credential that straddles it.
+ */
+function redactThenCut(cursor: string, connector: UpstreamConnector | undefined): string {
+  return (connector !== undefined ? connector.redact(cursor) : cursor).slice(0, 64);
+}
+
 async function fetchToolsPage(
   client: Client,
   cursor: string | undefined,
@@ -153,6 +162,7 @@ async function listAllTools(
   client: Client,
   alias: ServerAlias,
   signal: AbortSignal | undefined,
+  connector: UpstreamConnector | undefined,
 ): Promise<Tool[]> {
   // A server with zero registered tools never declares the `tools`
   // capability; that is an empty catalog, not a failure.
@@ -198,7 +208,7 @@ async function listAllTools(
     if (cursors.has(cursor)) {
       throw limitError(
         alias,
-        `tools/list pagination loops: page ${pages} returned cursor ${JSON.stringify(cursor.slice(0, 64))} a second time`,
+        `tools/list pagination loops: page ${pages} returned cursor ${JSON.stringify(redactThenCut(cursor, connector))} a second time`,
       );
     }
     if (pages >= MAX_TOOL_LIST_PAGES) {
@@ -247,12 +257,12 @@ async function introspectServer(
   connector: UpstreamConnector | undefined,
   signal?: AbortSignal,
 ): Promise<IntrospectedServer> {
-  let tools = await listAllTools(client, alias, signal);
+  let tools = await listAllTools(client, alias, signal, connector);
   let instructions = client.getInstructions();
   if (connector !== undefined) {
     // S1: a server given by URL saw the token on every request; nothing it
     // declares may carry it on to the model.
-    tools = connector.redact(tools) ?? [];
+    tools = connector.redact(tools);
     if (instructions !== undefined) instructions = connector.redact(instructions);
   }
   const info = client.getServerVersion();
@@ -471,7 +481,11 @@ export class Introspector implements ToolExecutor {
     await Promise.all(
       [...connections.values()]
         .filter((connection) => connection.owned)
-        .map((connection) => connection.client.close().catch(() => undefined)),
+        .map((connection) => {
+          // Auth requests in flight (a refresh) end with the facade (R58).
+          connection.connector?.close();
+          return connection.client.close().catch(() => undefined);
+        }),
     );
   }
 
@@ -544,7 +558,7 @@ export class Introspector implements ToolExecutor {
           ok: false,
           error:
             connector !== undefined
-              ? { message: connector.redact(message) ?? '', detail: connector.redact(detail) }
+              ? { message: connector.redact(message), detail: connector.redact(detail) }
               : { message, detail },
         };
       }

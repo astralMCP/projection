@@ -38,9 +38,10 @@ export {
   type TokenStore,
 } from './token-store.js';
 export { decodeTokenRecord, encodeTokenRecord, type TokenRecord } from './token-record.js';
-export { REDACTED, SecretSet } from './secrets.js';
+export { MIN_REDACTED_SECRET_CHARS, REDACTED, SecretSet } from './secrets.js';
 export {
   assertAuthEndpointAllowed,
+  AUTH_RUN_TIMEOUT_MS,
   createProviderContext,
   createUpstreamAuthProvider,
   findUpstreamAuthFailure,

@@ -8,8 +8,9 @@
  */
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
+import { createMcpHandler, InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   MemoryTokenStore,
   openBlob,
@@ -20,7 +21,12 @@ import {
   type ProjectionFacade,
   type TokenStore,
 } from '../../src/index.js';
-import { tokenStoreKey, type TokenRecord } from '../../src/auth/index.js';
+import {
+  AUTH_RUN_TIMEOUT_MS,
+  encodeTokenRecord,
+  tokenStoreKey,
+  type TokenRecord,
+} from '../../src/auth/index.js';
 import { canonicalRequest } from '../../src/catalog/index.js';
 import { ACCEPT, completed, sealedState } from '../mrtr/helpers.js';
 import { fsServer } from '../multi/helpers.js';
@@ -686,6 +692,200 @@ describe('refresh through the SDK (R58, R59)', () => {
     produced.push(logged);
     expect(logged.some((args) => String(args[0]).startsWith('[mcp-sdk]'))).toBe(false);
     expect(logged).toContainEqual(['integrator warning']);
+  });
+});
+
+describe('a refresh that never answers is bounded (R58)', () => {
+  /** Shorten the auth-run deadline to `ms` for this test. */
+  function shortenAuthRuns(ms: number): void {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((delay) =>
+      timeout(delay === AUTH_RUN_TIMEOUT_MS ? ms : delay),
+    );
+  }
+
+  /** A token endpoint that hangs while `hang.on` is true, and answers normally after. */
+  function hangTokenEndpoint(fake: FakeUpstream): { on: boolean; seen: number } {
+    const hang = { on: true, seen: 0 };
+    fake.as.options.routes = {
+      '/token': () => {
+        hang.seen += 1;
+        if (hang.on) return new Promise<Response>(() => undefined);
+        fake.as.options.routes = {};
+        return new Response('not ready', { status: 503 });
+      },
+    };
+    return hang;
+  }
+
+  it('the run deadline is 30 seconds', () => {
+    expect(AUTH_RUN_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it('a never-answering token endpoint fails the call with refresh_failed within the deadline; after recovery the next call refreshes', async () => {
+    shortenAuthRuns(300);
+    const fake = await start({ refresh: 'rotate' });
+    refreshedSecrets();
+    const { store, record } = await storeWith(fake);
+    const facade = await wrapUrl(fake, store);
+    fake.as.expire(record.access_token);
+    const hang = hangTokenEndpoint(fake);
+    const started = Date.now();
+    const result = await call(facade);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(hang.seen).toBe(1);
+    expect(errorBody(result)).toMatchObject({ phase: 'auth' });
+    expect(JSON.stringify(result)).toContain('refresh');
+    expect(await getRecord(store, keyFor(fake))).toEqual(record); // kept
+    hang.on = false;
+    fake.as.options.routes = {}; // the authorization server recovers
+    expect(JSON.stringify(await call(facade))).toContain('octocat');
+    expect(fake.as.tokenRequests).toHaveLength(2);
+  }, 15_000);
+
+  it('a concurrent call joins the bounded refresh, and a new facade over the same store is not stuck behind it', async () => {
+    shortenAuthRuns(300);
+    const fake = await start({ refresh: 'rotate' });
+    refreshedSecrets();
+    const { store, record } = await storeWith(fake);
+    const facade = await wrapUrl(fake, store);
+    fake.as.expire(record.access_token);
+    const hang = hangTokenEndpoint(fake);
+    const pending = Promise.all([call(facade), call(facade)]);
+    while (hang.seen === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    hang.on = false;
+    fake.as.options.routes = {};
+    // A new facade over the same store meets the same expired record and
+    // joins the hung flight — only until its deadline, sharing its failure.
+    const started = Date.now();
+    const joined = await wrapFailure(() => wrapUrl(fake, store));
+    expect(joined).toMatchObject({ phase: 'auth', reason: 'refresh_failed' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    for (const result of await pending) expect(errorBody(result).phase).toBe('auth');
+    // The failed flight has cleared: the next wrap refreshes afresh.
+    const second = await wrapUrl(fake, store);
+    expect(JSON.stringify(await call(second))).toContain('octocat');
+    expect(hang.seen).toBe(1);
+    expect(fake.as.tokenRequests).toHaveLength(2);
+  }, 15_000);
+
+  it('close() aborts the refresh its facade has in flight, so another facade refreshes at once', async () => {
+    const fake = await start({ refresh: 'rotate' });
+    refreshedSecrets();
+    const { store, record } = await storeWith(fake);
+    const first = await wrapUrl(fake, store);
+    fake.as.expire(record.access_token);
+    const hang = hangTokenEndpoint(fake);
+    const pending = call(first);
+    while (hang.seen === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    const started = Date.now();
+    await first.close();
+    // The closed facade's call fails at once rather than after the deadline.
+    expect(errorBody(await pending).phase).toMatch(/^(auth|upstream)$/);
+    hang.on = false;
+    fake.as.options.routes = {};
+    const second = await wrapUrl(fake, store);
+    expect(JSON.stringify(await call(second))).toContain('octocat');
+    // Far below the 30-second default deadline.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 15_000);
+});
+
+describe('redaction never corrupts what a URL source declares (S1)', () => {
+  /** A plain MCP server over HTTP that accepts any bearer token. */
+  async function plainServer(instructions?: string, description = 'A plain tool.') {
+    return server(async (request) => {
+      const mcp = new McpServer(
+        { name: 'plain-remote', version: '1.0.0' },
+        instructions !== undefined ? { instructions } : {},
+      );
+      mcp.registerTool(
+        'plain',
+        { description, inputSchema: z.object({}), annotations: { readOnlyHint: true } },
+        () => ({
+          content: [
+            { type: 'text' as const, text: 'a normal result with 1 and 2 and the word tool' },
+          ],
+        }),
+      );
+      return createMcpHandler(() => mcp).fetch(request);
+    });
+  }
+
+  it('short tokens and a short client secret are never substring-redacted', async () => {
+    const remote = await plainServer();
+    const url = `${remote.origin}/mcp`;
+    for (const token of ['a', 'e', '"', ':', 'true', '1', 'tool']) {
+      const store = new MemoryTokenStore();
+      await store.set(
+        keyFor(url),
+        encodeTokenRecord({ access_token: token, issuer: 'https://as.example' }),
+      );
+      const facade = await wrapUrl(url, store, { clientSecret: 'dev' });
+      expect(facade.catalog.tools.map((tool) => tool.name)).toEqual(['plain']);
+      expect(facade.dts).toContain('plain');
+      const result = JSON.stringify(await call(facade, 'plain'));
+      expect(result).toContain('a normal result with 1 and 2 and the word tool');
+      expect(result).not.toContain('[redacted]');
+    }
+  });
+
+  it('a token interleaved with zero-width characters is redacted on multi-server box surfaces', async () => {
+    const token = 'AT-ZW-SECRET-TOKEN-0123456789';
+    secrets.push(token);
+    const hidden = token.split('').join('\u200b');
+    const remote = await plainServer(
+      `Overview: your key is ${hidden} today.\nMore.`,
+      `Plain ${hidden} tool.`,
+    );
+    const url = `${remote.origin}/mcp`;
+    const store = new MemoryTokenStore();
+    await store.set(
+      keyFor(url),
+      encodeTokenRecord({ access_token: token, issuer: 'https://as.example' }),
+    );
+    const facade = await wrapMcpServers(
+      { fs: fsServer([]), gh: { source: { url, oauth: { clientId: CLIENT_ID } } } },
+      { blob: { key: KEY }, tokenStore: store },
+    );
+    facades.push(facade);
+    const surfaces = {
+      instructions: facade.instructions,
+      resources: facade.resources,
+      discover: facade.discoverApis(),
+      dts: facade.dts,
+      search: facade.searchTools({ query: 'plain' }),
+      describe: facade.describeTool({ name: 'gh.plain' }),
+      call: await facade.callTool({ name: 'gh.plain', args: {} }, 'modern'),
+    };
+    produced.push(surfaces);
+    expect(JSON.stringify(surfaces)).toContain('[redacted]');
+  });
+
+  it('a repeated tools/list cursor is redacted before it is cut to 64 characters', async () => {
+    const token = 'AT-CURSOR-SECRET-TOKEN-0123456789';
+    secrets.push(token, token.slice(0, 10));
+    const cursor = `${'c'.repeat(56)}${token}`; // the token straddles the cut
+    const remote = await server(async (request) => {
+      const mcp = new McpServer({ name: 'looping', version: '1.0.0' });
+      mcp.registerTool('t', { description: 'd', inputSchema: z.object({}) }, () => ({
+        content: [],
+      }));
+      mcp.server.setRequestHandler('tools/list', () => ({
+        tools: [{ name: 't', inputSchema: { type: 'object' as const } }],
+        nextCursor: cursor,
+      }));
+      return createMcpHandler(() => mcp).fetch(request);
+    });
+    const url = `${remote.origin}/mcp`;
+    const store = new MemoryTokenStore();
+    await store.set(
+      keyFor(url),
+      encodeTokenRecord({ access_token: token, issuer: 'https://as.example' }),
+    );
+    const err = await wrapFailure(() => wrapUrl(url, store));
+    expect(err.message).toContain('pagination loops');
+    expect(err.message).not.toContain(token.slice(0, 8));
   });
 });
 

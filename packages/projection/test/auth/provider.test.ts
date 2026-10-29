@@ -14,7 +14,11 @@ import {
   UnauthorizedError,
   type FetchLike,
 } from '@modelcontextprotocol/client';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ProjectionError } from '../../src/errors.js';
 import {
   assertAuthEndpointAllowed,
   createProviderContext,
@@ -24,6 +28,7 @@ import {
   installSdkWarningFilter,
   LOOPBACK_REDIRECT_URL,
   MemoryTokenStore,
+  REDACTED,
   ProjectionOAuthProvider,
   resolveUpstreamSpec,
   SecretSet,
@@ -299,6 +304,22 @@ describe("the connection's guarded fetch (R58, R61)", () => {
     void context;
   });
 
+  it('never lets the underlying fetch follow a redirect, whatever the caller passed', async () => {
+    const base = vi.fn<FetchLike>(() =>
+      Promise.resolve(new Response(null, { status: 302, headers: { location: '/other' } })),
+    );
+    const { fetch } = guarded(base);
+    // A caller passing no `redirect` (not wrapped by the SDK's fetchWithinOrigin).
+    await expect(fetch('https://api.example.com/mcp', bearer)).rejects.toBeInstanceOf(
+      UpstreamRequestRefused,
+    );
+    await fetch('https://as.example/.well-known/oauth-authorization-server', {
+      redirect: 'follow',
+    });
+    expect(base).toHaveBeenCalledTimes(2);
+    for (const [, init] of base.mock.calls) expect(init?.redirect).toBe('manual');
+  });
+
   it('sends nothing over plain http: for a source that is not loopback', async () => {
     const base = vi.fn<FetchLike>(() => Promise.resolve(new Response('ok')));
     const { fetch } = guarded(base);
@@ -320,6 +341,73 @@ describe('redaction (S1)', () => {
     const value = { a: 'no secret here' };
     expect(secrets.scrubValue(value)).toBe(value);
     expect(secrets.scrubValue({ a: 'x AT-SECRET y' })).toEqual({ a: 'x [redacted] y' });
+  });
+
+  it('never substring-redacts a secret shorter than 8 characters (it would corrupt server text)', () => {
+    const tool = {
+      name: 'plain',
+      description: 'a normal tool: returns 1 and "true" and e',
+      inputSchema: { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+      annotations: { readOnlyHint: true },
+    };
+    const text = 'a normal result with 1 and 2 and the word tool: "true"';
+    for (const short of ['a', 'e', '"', ':', 'true', '1', 'tool', 'dev']) {
+      const secrets = new SecretSet();
+      secrets.add(short);
+      secrets.pin(short);
+      expect(secrets.scrubValue(tool)).toBe(tool);
+      expect(secrets.scrub(text)).toBe(text);
+    }
+  });
+
+  it('scrubs string leaves only, never property names or JSON syntax', () => {
+    const secrets = new SecretSet();
+    secrets.add('type-SECRET-x');
+    const value = { type: 'object', 'type-SECRET': 1, list: ['x type-SECRET-x', 2, null] };
+    // A name that merely contains part of a secret is kept; leaves are scrubbed.
+    expect(secrets.scrubValue(value)).toEqual({
+      type: 'object',
+      'type-SECRET': 1,
+      list: [`x ${REDACTED}`, 2, null],
+    });
+  });
+
+  it('fails closed with a ProjectionError when a value cannot be checked or rebuilt', () => {
+    const secrets = new SecretSet();
+    secrets.add('AT-SECRET-123');
+    const circular: Record<string, unknown> = { a: 'AT-SECRET-123' };
+    circular['self'] = circular;
+    expect(() => secrets.scrubValue(circular)).toThrow(ProjectionError);
+    expect(() => secrets.scrubValue({ n: 1n })).toThrow(ProjectionError);
+    // A credential in a property name cannot be scrubbed without rewriting the name.
+    expect(() => secrets.scrubValue({ 'AT-SECRET-123': true })).toThrow(ProjectionError);
+    let deep: unknown = 'AT-SECRET-123';
+    for (let i = 0; i < 20_000; i += 1) deep = [deep];
+    expect(() => secrets.scrubValue(deep)).toThrow(ProjectionError);
+  });
+
+  it('redacts the base64 and base64url spellings, padded or not', () => {
+    const token = 'AT1+new/ROTATED?token>>~SECRET';
+    const secrets = new SecretSet();
+    secrets.add(token);
+    const b64 = Buffer.from(token).toString('base64');
+    const b64url = Buffer.from(token).toString('base64url');
+    expect(b64).not.toBe(b64url);
+    const scrubbed = secrets.scrub(`${b64} | ${b64url} | ${b64.replace(/=+$/, '')}`);
+    expect(scrubbed).not.toContain(b64.replace(/=+$/, ''));
+    expect(scrubbed).not.toContain(b64url);
+    expect(scrubbed.split(REDACTED)).toHaveLength(4);
+  });
+
+  it('redacts a token interleaved with invisible characters, which box surfaces strip', () => {
+    const token = 'AT-ZW-SECRET-TOKEN-0123456789';
+    const secrets = new SecretSet();
+    secrets.add(token);
+    const hidden = `key: ${token.split('').join('\u200b')}\u2060 today`;
+    const scrubbed = secrets.scrub(hidden);
+    expect(scrubbed).toBe(`key: ${REDACTED} today`);
+    // Text without a hidden secret keeps its invisible characters.
+    expect(secrets.scrub('a\u200bb')).toBe('a\u200bb');
   });
 });
 
@@ -367,6 +455,55 @@ describe('SDK console.warn filter (R58)', () => {
       console.warn = original;
     }
   });
+
+  it('filters a logger assigned mid-run inside the run only, and leaves it untouched outside (accessor)', async () => {
+    const original = console.warn;
+    const seen: string[] = [];
+    const logger1 = (...args: unknown[]): void => {
+      seen.push(`L1:${String(args[0])}`);
+    };
+    const logger2 = (...args: unknown[]): void => {
+      seen.push(`L2:${String(args[0])}`);
+    };
+    try {
+      console.warn = logger1;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const run = withSdkWarningsSuppressed(async () => {
+        console.warn('[mcp-sdk] inside-1 RT-SECRET');
+        await gate;
+        console.warn('[mcp-sdk] inside-2 RT-SECRET');
+        console.warn('inside plain');
+      });
+      console.warn('[mcp-sdk] outside');
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      console.warn = logger2; // replaced mid-run; nothing re-installs the filter
+      expect(console.warn).toBe(logger2);
+      console.warn('[mcp-sdk] outside-after-replace');
+      release();
+      await run;
+      expect(console.warn).toBe(logger2);
+      expect(seen).toEqual([
+        'L1:[mcp-sdk] outside',
+        'L2:[mcp-sdk] outside-after-replace',
+        'L2:inside plain',
+      ]);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  const dist = fileURLToPath(new URL('../../dist/index.mjs', import.meta.url));
+  it.skipIf(!existsSync(dist))(
+    'importing the library leaves console.warn untouched until first auth use',
+    () => {
+      const source = `const w = console.warn; await import(${JSON.stringify(dist)}); process.stdout.write(String(w === console.warn && Object.getOwnPropertyDescriptor(console, 'warn').get === undefined));`;
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+        encoding: 'utf8',
+      });
+      expect(child.stdout.trim()).toBe('true');
+    },
+  );
 
   it('drops SDK warnings even after a logger replaced console.warn, wrapping it at the point of use', async () => {
     const original = console.warn;

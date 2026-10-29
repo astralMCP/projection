@@ -152,6 +152,12 @@ export interface KeyringTokenStoreOptions {
 
 const KEYRING_SPECIFIER = '@napi-rs/keyring';
 
+/** True for the error of importing a module that is not installed. */
+function isModuleNotFound(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND';
+}
+
 async function importKeyring(): Promise<KeyringModule> {
   // A variable specifier keeps bundlers from resolving the optional
   // dependency at build time; it is loaded on first use only.
@@ -221,11 +227,19 @@ function bounded<T>(
  *   abandoned value does not stay in the OS store.
  * - **After the fallback.** A `set` of a key this store has seen in the
  *   keyring is also written there, best effort and in the background, so
- *   the OS entry never keeps a refresh token that rotation has killed. A
- *   `delete` still deletes from the keyring when the module had loaded
- *   (a compare-and-delete only for a key seen there), and throws
- *   {@link TokenStoreError} when it cannot: a sign-out that silently left
- *   the token in the OS store would be worse than an error.
+ *   the OS entry never keeps a refresh token that rotation has killed (a
+ *   write-behind that lands after its timeout is reconciled like any late
+ *   write, so it cannot bring back a value a `delete` removed meanwhile). A
+ *   `delete` still deletes from the keyring when the module had loaded (a
+ *   compare-and-delete only for a key seen there), and throws
+ *   {@link TokenStoreError} when it cannot and the token may be there: the
+ *   key was seen in the keyring, or some keyring operation has succeeded in
+ *   this process. A sign-out that silently left the token in the OS store
+ *   would be worse than an error. When no keyring operation ever worked (a
+ *   machine with no OS store), the memory result stands. A module that is
+ *   not installed is the normal fallback too; one that failed to load
+ *   (timed out, threw) makes `delete` throw, since a store it could not
+ *   reach may hold an entry from an earlier process.
  *
  * Compare-and-delete is read, compare, delete: serialized within the
  * process, but not atomic across processes (R58 accepts this).
@@ -237,6 +251,10 @@ export class KeyringTokenStore implements TokenStore {
   readonly #memory = new MemoryTokenStore();
   #module: Promise<KeyringModule | undefined> | undefined;
   #fallenBack = false;
+  /** The module was found but failed to load (timed out or threw) — not merely absent. */
+  #loadFailed = false;
+  /** Some keyring operation has succeeded in this process: the OS store works, or did. */
+  #keyringWorked = false;
   /** Keys this store has written to, or read a value from, the keyring. */
   readonly #inKeyring = new Set<string>();
   /** Per key, the tail of its queue of keyring operations (it never rejects). */
@@ -306,8 +324,9 @@ export class KeyringTokenStore implements TokenStore {
           return await this.#keyringDelete(key, entry, expected);
         } catch {
           this.#fallBack();
-          await this.#memory.delete(key, expected);
-          throw new TokenStoreError();
+          const fromMemory = await this.#memory.delete(key, expected);
+          if (this.#mayHold(key)) throw new TokenStoreError();
+          return fromMemory;
         }
       }
     }
@@ -315,14 +334,26 @@ export class KeyringTokenStore implements TokenStore {
     // entry this process may have left behind.
     const fromMemory = await this.#memory.delete(key, expected);
     const module = await this.#module;
-    if (module === undefined) return fromMemory;
+    if (module === undefined) {
+      if (this.#loadFailed) throw new TokenStoreError();
+      return fromMemory;
+    }
     if (expected !== undefined && !this.#inKeyring.has(key)) return fromMemory;
     try {
       const fromKeyring = await this.#keyringDelete(key, this.#newEntry(module, key), expected);
       return fromMemory || fromKeyring;
     } catch {
-      throw new TokenStoreError();
+      if (this.#mayHold(key)) throw new TokenStoreError();
+      return fromMemory;
     }
+  }
+
+  /**
+   * Whether the OS store may hold `key` although deleting it failed: the
+   * key was seen there, or the store has worked in this process.
+   */
+  #mayHold(key: string): boolean {
+    return this.#inKeyring.has(key) || this.#keyringWorked;
   }
 
   /** Read, compare, delete — one queued operation (R58). */
@@ -352,6 +383,7 @@ export class KeyringTokenStore implements TokenStore {
       return run(controller.signal);
     });
     const tail = operation.then(() => {
+      this.#keyringWorked = true;
       if (controller.signal.aborted) onLate?.();
     }, noop);
     this.#queues.set(key, tail);
@@ -366,10 +398,18 @@ export class KeyringTokenStore implements TokenStore {
    * already fallen back to memory. Rewrite the entry with the newer value
    * memory holds, or compare-and-delete the abandoned one, so a stale value
    * never stays in the OS store (best effort; queued like any operation).
+   * `keepIfCurrent` (a write-behind) leaves the entry alone when memory
+   * still holds exactly `written`.
    */
-  #reconcileLateWrite(key: string, entry: KeyringEntry, written: string): void {
+  #reconcileLateWrite(
+    key: string,
+    entry: KeyringEntry,
+    written: string,
+    keepIfCurrent = false,
+  ): void {
     void (async () => {
       const latest = await this.#memory.get(key);
+      if (keepIfCurrent && latest === written) return;
       if (latest !== undefined && latest !== written) {
         await this.#op(key, (signal) => entry.setPassword(latest, signal));
         this.#inKeyring.add(key);
@@ -389,7 +429,13 @@ export class KeyringTokenStore implements TokenStore {
       const module = await this.#module;
       if (module === undefined) return;
       const entry = this.#newEntry(module, key);
-      await this.#op(key, (signal) => entry.setPassword(value, signal));
+      await this.#op(
+        key,
+        (signal) => entry.setPassword(value, signal),
+        // Landed after its timeout, perhaps after a delete: reconcile, so a
+        // value signed out meanwhile does not come back to the OS store.
+        () => this.#reconcileLateWrite(key, entry, value, true),
+      );
     })().catch(noop);
   }
 
@@ -401,7 +447,10 @@ export class KeyringTokenStore implements TokenStore {
 
   async #entry(key: string): Promise<KeyringEntry | undefined> {
     this.#module ??= bounded(this.#timeoutMs, new AbortController(), this.#load()).catch(
-      () => undefined,
+      (err: unknown) => {
+        this.#loadFailed = !isModuleNotFound(err);
+        return undefined;
+      },
     );
     const module = await this.#module;
     if (module === undefined) {

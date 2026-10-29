@@ -15,7 +15,10 @@
  *   stored record has a refresh token, it refreshes: one refresh per store
  *   key at a time in the process, which every concurrent 401 joins
  *   ({@link refreshOnce}). The refresh runs the SDK's `auth()` over a fresh
- *   {@link ProjectionOAuthProvider} delegate created for that one run. On a
+ *   {@link ProjectionOAuthProvider} delegate created for that one run,
+ *   bounded by {@link AUTH_RUN_TIMEOUT_MS} and by the connection's life (a
+ *   run that times out or whose facade closes is `refresh_failed`, and the
+ *   flight clears so the next call refreshes afresh). On a
  *   definitive refresh failure the SDK calls
  *   `invalidateCredentials('tokens')`, which compare-and-deletes exactly the
  *   stored value that delegate presented (R58), so a record another process
@@ -129,6 +132,13 @@ export class UpstreamAuthError extends Error {
   }
 }
 
+/**
+ * How long one auth run (a refresh, its discovery included) may take before
+ * it is abandoned as `refresh_failed` (R58): its requests are aborted, and
+ * the single-flight refresh it held clears, so the next call starts afresh.
+ */
+export const AUTH_RUN_TIMEOUT_MS = 30_000;
+
 /** The loopback redirect URL the provider always reports (R58); no listener runs behind it yet. */
 export const LOOPBACK_REDIRECT_URL = 'http://127.0.0.1/callback';
 
@@ -189,41 +199,89 @@ const SDK_WARNING_PREFIX = '[mcp-sdk]';
 /** Set for exactly the async context of an auth run. */
 const authRun = new AsyncLocalStorage<true>();
 
-/** Marks the `console.warn` wrappers this module installed (module-local: another copy of Projection has its own). */
-const FILTER = Symbol('projection-sdk-warning-filter');
+/** The `console.warn` accessor this module installed, if any (module-local: another copy of Projection has its own). */
+let installedGetter: (() => unknown) | undefined;
+
+/** Per assigned `console.warn` function, its filtering wrapper. */
+const filtered = new WeakMap<object, (...args: unknown[]) => void>();
+/** Every filtering wrapper made. */
+const wrappers = new WeakSet<object>();
+
+function filterOf(inner: (...args: unknown[]) => void): (...args: unknown[]) => void {
+  let wrapper = filtered.get(inner);
+  if (wrapper === undefined) {
+    wrapper = (...args: unknown[]): void => {
+      if (
+        authRun.getStore() === true &&
+        typeof args[0] === 'string' &&
+        args[0].startsWith(SDK_WARNING_PREFIX)
+      ) {
+        return;
+      }
+      Reflect.apply(inner, console, args);
+    };
+    filtered.set(inner, wrapper);
+    wrappers.add(wrapper);
+  }
+  return wrapper;
+}
 
 /**
  * Make sure `console.warn` drops `[mcp-sdk]` warnings raised inside an auth
- * run, and passes everything else to whatever `console.warn` was.
+ * run, and passes everything else to whatever `console.warn` is.
  *
  * The SDK warns from inside `auth()` with text that can quote
- * authorization-server responses, refresh tokens included. The wrapper is
- * permanent — never swapped back — so a logger that replaces
- * `console.warn` while a run is in flight is never overwritten, and an
- * `[mcp-sdk]` warning outside an auth run (another client's) is never
- * dropped: the filter consults an `AsyncLocalStorage` flag that only the
- * auth run's own async context carries. Because a logger may replace
- * `console.warn` at any time, this is called at every point of use — at
- * the start of each auth run and around every request the run makes, which
- * is where the SDK's warnings follow — and wraps the current function again
- * if it is not one of ours. Wrapping preserves the replacement: it still
- * receives every message the filter does not drop.
+ * authorization-server responses, refresh tokens included. On first use
+ * (importing the library changes nothing), `console.warn` becomes an
+ * accessor property: assigning it stores the function as usual, and
+ * reading it returns that very function — except inside an auth run, where
+ * it returns a wrapper of it that drops `[mcp-sdk]` warnings. A logger that
+ * replaces `console.warn` at any time, mid-run included, is therefore still
+ * filtered inside auth runs and untouched outside them; the run is told
+ * apart by an `AsyncLocalStorage` flag only its own async context carries,
+ * so another client's `[mcp-sdk]` warning is never dropped. Called at every
+ * point of use (the start of a run, around each of its requests), it
+ * re-installs the accessor if something redefined the property; where the
+ * property cannot be redefined it falls back to wrapping the current
+ * function.
  */
 export function installSdkWarningFilter(): void {
-  const current = console.warn as typeof console.warn & { [FILTER]?: true };
-  if (current[FILTER] === true) return;
-  const filtered = (...args: unknown[]): void => {
-    if (
-      authRun.getStore() === true &&
-      typeof args[0] === 'string' &&
-      args[0].startsWith(SDK_WARNING_PREFIX)
-    ) {
-      return;
-    }
-    Reflect.apply(current, console, args);
+  const descriptor = Object.getOwnPropertyDescriptor(console, 'warn');
+  if (installedGetter !== undefined && descriptor?.get === installedGetter) return;
+  let read: () => unknown;
+  let write: (value: unknown) => void;
+  if (descriptor !== undefined && descriptor.get !== undefined) {
+    const { get, set } = descriptor;
+    read = () => Reflect.apply(get, console, []) as unknown;
+    write = set !== undefined ? (value) => Reflect.apply(set, console, [value]) : () => undefined;
+  } else {
+    let current: unknown = descriptor?.value;
+    read = () => current;
+    write = (value) => {
+      current = value;
+    };
+  }
+  const get = (): unknown => {
+    const inner = read();
+    return authRun.getStore() === true && typeof inner === 'function'
+      ? filterOf(inner as (...args: unknown[]) => void)
+      : inner;
   };
-  Object.defineProperty(filtered, FILTER, { value: true });
-  console.warn = filtered;
+  if (descriptor !== undefined && descriptor.configurable !== true) {
+    // Not redefinable: wrap the current function instead (best effort).
+    const inner = read();
+    if (typeof inner === 'function' && !wrappers.has(inner) && descriptor.writable === true) {
+      console.warn = filterOf(inner as (...args: unknown[]) => void);
+    }
+    return;
+  }
+  Object.defineProperty(console, 'warn', {
+    get,
+    set: write,
+    enumerable: descriptor?.enumerable ?? true,
+    configurable: true,
+  });
+  installedGetter = get;
 }
 
 /** Run `body` as an auth run: the SDK's `[mcp-sdk]` warnings inside it are dropped (R58). */
@@ -248,6 +306,8 @@ export interface ProviderContext {
   readonly presented: WeakMap<Response, string | undefined>;
   /** The connection's fetch: a proactive refresh discovers and requests through it. */
   fetch: FetchLike;
+  /** Aborted when the connection closes: every auth run's requests end with it. */
+  readonly lifetime: AbortController;
 }
 
 /** A provider context for `upstream` over `store` (the client secret is remembered for redaction). */
@@ -267,6 +327,7 @@ export function createProviderContext(
     secrets,
     presented: new WeakMap(),
     fetch: (url, init) => fetch(url, init),
+    lifetime: new AbortController(),
   };
 }
 
@@ -444,9 +505,13 @@ export class ProjectionOAuthProvider implements OAuthClientProvider {
 
   /**
    * The fetch this run's requests go through: R61's `https:` rule, the
-   * console filter at the point of use, and a note of a refresh grant sent.
+   * console filter at the point of use, a note of a refresh grant sent,
+   * redirects never followed by the underlying fetch (`redirect: 'manual'`
+   * whatever the caller passed; the SDK follows same-origin ones itself,
+   * through this fetch again), and the run's deadline and the connection's
+   * lifetime joined to the caller's signal.
    */
-  #guard(base: FetchLike): FetchLike {
+  #guard(base: FetchLike, runSignal: AbortSignal): FetchLike {
     const sourceIsLoopback = isLoopbackHost(this.#context.upstream.url.hostname);
     return async (url, init) => {
       installSdkWarningFilter();
@@ -460,33 +525,68 @@ export class ProjectionOAuthProvider implements OAuthClientProvider {
       if (body instanceof URLSearchParams && body.get('grant_type') === 'refresh_token') {
         this.#refreshAttempted = true;
       }
+      const signal =
+        init?.signal !== undefined && init.signal !== null
+          ? AbortSignal.any([init.signal, runSignal])
+          : runSignal;
       try {
-        return await base(url, init);
+        return await base(url, { ...init, redirect: 'manual', signal });
       } finally {
         installSdkWarningFilter();
       }
     };
   }
 
-  /** Run the SDK's `auth()` with this delegate; anything but `AUTHORIZED` is a fixed-copy error. */
+  /**
+   * Run the SDK's `auth()` with this delegate; anything but `AUTHORIZED` is
+   * a fixed-copy error. The run is bounded by {@link AUTH_RUN_TIMEOUT_MS}
+   * and ends when the connection closes: either is `refresh_failed`, at
+   * once, whatever `auth()` is still waiting on.
+   */
   async authorize(options: AuthRunOptions): Promise<void> {
+    const runSignal = AbortSignal.any([
+      AbortSignal.timeout(AUTH_RUN_TIMEOUT_MS),
+      this.#context.lifetime.signal,
+    ]);
     let result: string;
     try {
-      result = await withSdkWarningsSuppressed(() =>
+      const run = withSdkWarningsSuppressed(() =>
         auth(this, {
           serverUrl: options.serverUrl,
           ...(options.resourceMetadataUrl !== undefined
             ? { resourceMetadataUrl: options.resourceMetadataUrl }
             : {}),
           ...(options.scope !== undefined ? { scope: options.scope } : {}),
-          fetchFn: this.#guard(options.fetchFn),
+          fetchFn: this.#guard(options.fetchFn, runSignal),
         }),
       );
+      result = await untilAborted(run, runSignal);
     } catch (err) {
+      if (runSignal.aborted) throw new UpstreamAuthError('refresh_failed');
       throw this.#refused ?? toUpstreamAuthError(err);
     }
     if (result !== 'AUTHORIZED') throw this.#refused ?? new UpstreamAuthError('sign_in_required');
   }
+}
+
+/** `promise`, or a rejection as soon as `signal` aborts (`promise` is then left to settle unobserved). */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  promise.catch(() => undefined);
+  if (signal.aborted) return Promise.reject(new UpstreamAuthError('refresh_failed'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new UpstreamAuthError('refresh_failed'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err instanceof Error ? err : new UpstreamAuthError('failed'));
+      },
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -1134,12 +1134,17 @@ comes after both.) Decisions made while building part A:
   swapped `console.warn` for the duration of each run and restored it after;
   that dropped other clients' `[mcp-sdk]` warnings process-wide while any
   run was in flight, and the restore clobbered a logger installed meanwhile.
-  Now one wrapper drops `[mcp-sdk]` warnings only when an
-  `AsyncLocalStorage` flag set by the auth run is active, and it is never
-  removed. A logger may replace `console.warn` at any time, so the wrapper
-  is re-applied at every point of use — the start of a run and around every
-  request the run makes, which is where the SDK's warnings follow — wrapping
-  whatever function is current, which keeps receiving everything else.
+  A second version wrapped the current function at every point of use,
+  which still let a logger assigned mid-run, between two requests of the
+  run, see SDK text. Now, on first auth use, `console.warn` becomes an
+  accessor property: the setter stores whatever function is assigned, and
+  the getter returns that very function — except inside an auth run (an
+  `AsyncLocalStorage` flag only the run's own async context carries), where
+  it returns a wrapper of it that drops `[mcp-sdk]` warnings. A replacement
+  at any time is filtered inside runs and untouched (identity included)
+  outside them; importing the library still changes nothing. The accessor
+  is re-checked at every point of use and re-installed if something
+  redefined the property.
 - **Refresh is single-flight, and keyed to the failed token.** Concurrent
   401s on one record share one refresh (a module-level map per store and
   key), and the guarded fetch notes which bearer token each response
@@ -1149,7 +1154,12 @@ comes after both.) Decisions made while building part A:
   refresh token is also retried once — a token another process stored
   between the read and the retry is picked up — and a second 401 with the
   same token means sign-in. A failed refresh re-reads the store too before
-  reporting. Records whose `expires_at` has passed are refreshed before
+  reporting. A refresh run is bounded by `AUTH_RUN_TIMEOUT_MS` (30 s, one
+  deadline for the whole run, discovery included, joined to each request's
+  own signal) and by its connection's life — `close()` aborts it — so a
+  token endpoint that never answers cannot hold the single flight, which
+  every facade over the same store would join, forever: the run ends as
+  `refresh_failed`, the flight clears, and the next call starts afresh. Records whose `expires_at` has passed are refreshed before
   they are sent (`expires_at` was already stored, so this was cheap).
 - **What counts as an auth failure.** Projection's marker, `UnauthorizedError`
   and `InsufficientScopeError` (R58's three), plus the transport's
@@ -1174,11 +1184,24 @@ comes after both.) Decisions made while building part A:
   body that becomes an SDK error message, in a tool error or result, in a
   tool description. Each connection remembers every secret it presented or
   was given (access and refresh tokens, the client secret, and their URL-,
-  form- and JSON-encoded spellings) and scrubs them, as `[redacted]`, from
-  wrap errors, call errors and their details, tool results, the catalog and
-  the server instructions. Wrap errors from a URL source are rebuilt as
-  `ProjectionError`s without a cause (the raw SDK error's `data` keeps the
-  body), and upstream error text is capped.
+  form-, JSON-, base64- and base64url-encoded spellings) and scrubs them, as
+  `[redacted]`, from wrap errors, call errors and their details, tool
+  results, the catalog and the server instructions. Wrap errors from a URL
+  source are rebuilt as `ProjectionError`s without a cause (the raw SDK
+  error's `data` keeps the body), and upstream error text is capped.
+  Redaction is exact matching against accidental echoes, not a defence
+  against a hostile server (which can re-encode a token any way it likes).
+  The rules that keep it from doing harm: only string leaves are scrubbed,
+  never property names or JSON syntax (scrubbing the serialized JSON let a
+  one-character token rewrite `"name"` keys and break the catalog); a
+  secret shorter than 8 characters is never substring-redacted (it would
+  corrupt text without hiding anything); a value that cannot be checked or
+  rebuilt — not serializable, too deep, a credential in a property name —
+  fails closed with a `ProjectionError`, never `undefined` or `[]`; text in
+  which a secret appears once invisible characters are stripped (box
+  surfaces strip them) is returned stripped and redacted; and redaction
+  runs before any truncation (the repeated `tools/list` cursor quoted in an
+  error is redacted, then cut to 64 characters).
 - **The token goes only to the canonical resource.** The SDK's default
   `redirectPolicy` follows same-origin redirects, carrying the
   `Authorization` header to another path. Projection's fetch refuses any
@@ -1211,10 +1234,25 @@ comes after both.) Decisions made while building part A:
   before it is reconciled; then the entry is removed and that user signs in
   again. After the fallback, `delete` still deletes the OS entry when the
   module had loaded (a compare-and-delete only for an entry this process has
-  seen) and throws when it cannot — a sign-out that silently left the token
-  in the OS store would be worse than an error — and a rotated value is
-  written behind to an entry this process has seen, best effort, so the OS
-  entry never keeps a refresh token that rotation killed.
+  seen) and throws when it cannot and the entry may be there — the key was
+  seen in the OS store, or some OS-store operation has succeeded in this
+  process; a sign-out that silently left the token in the OS store would be
+  worse than an error. On a machine with no working OS store (headless
+  Linux without a Secret Service) nothing ever reached it, so `delete`
+  returns the in-memory result rather than failing every sign-out. A module
+  that is not installed (`ERR_MODULE_NOT_FOUND`) is that normal case too;
+  one that failed to load (timed out, threw) makes `delete` throw, since a
+  store it could not reach may hold an earlier process's entry. A rotated
+  value is written behind to an entry this process has seen, best effort,
+  so the OS entry never keeps a refresh token that rotation killed; a
+  write-behind that lands after its timeout is reconciled like any late
+  write, so one that lands after a sign-out is deleted again.
+- **The guarded fetches never let the runtime follow a redirect.** Both
+  the connection's fetch and an auth run's force `redirect: 'manual'`
+  whatever the caller passed: the SDK's own same-origin following goes
+  through them again hop by hop (and is checked), while a caller that
+  passed no `redirect` can no longer have the runtime carry the token, or a
+  refresh token in a re-POSTed body, to wherever a 3xx points.
 - **Compare-and-delete is not atomic across processes.** The keyring has
   no conditional delete: it is read, compare, delete. Two processes can
   interleave between the read and the delete; R58 accepts this — the worst

@@ -52,6 +52,13 @@ function osEntry(fake: ReturnType<typeof createFakeKeyring>): string | undefined
   return [...fake.items.values()][0];
 }
 
+/** The error of importing a package that is not installed. */
+function moduleNotFound(): Error {
+  return Object.assign(new Error(`Cannot find package '@napi-rs/keyring' ${LIBRARY_ERROR_TEXT}`), {
+    code: 'ERR_MODULE_NOT_FOUND',
+  });
+}
+
 async function until(check: () => boolean, ms = 1_000): Promise<void> {
   const deadline = Date.now() + ms;
   while (!check()) {
@@ -142,8 +149,7 @@ describe('KeyringTokenStore (R59)', () => {
   it('falls back to memory with exactly one warning when the module is absent', async () => {
     const warnings: string[] = [];
     const store = new KeyringTokenStore({
-      load: () =>
-        Promise.reject(new Error(`Cannot find module '@napi-rs/keyring' ${LIBRARY_ERROR_TEXT}`)),
+      load: () => Promise.reject(moduleNotFound()),
       warn: (message) => warnings.push(message),
     });
     await store.set(URL_KEY, VALUE);
@@ -250,6 +256,64 @@ describe('KeyringTokenStore after the fallback (R59)', () => {
   });
 });
 
+describe('KeyringTokenStore delete without a working OS store (R59)', () => {
+  it('no OS store at all (headless Linux without a Secret Service): signOut returns the memory result', async () => {
+    const { fake, store } = keyringStore('throw');
+    await store.set(URL_KEY, VALUE);
+    expect(store.fallenBack).toBe(true);
+    expect(await store.delete(URL_KEY)).toBe(true);
+    expect(await store.get(URL_KEY)).toBeUndefined();
+    expect(await store.delete(URL_KEY)).toBe(false);
+    expect(fake.ops.some((op) => op.op === 'delete')).toBe(true);
+  });
+
+  it('the module is not installed: signOut returns the memory result', async () => {
+    const store = new KeyringTokenStore({
+      load: () => Promise.reject(moduleNotFound()),
+      warn: () => undefined,
+    });
+    await store.set(URL_KEY, VALUE);
+    expect(await store.delete(URL_KEY)).toBe(true);
+    expect(await store.delete(URL_KEY)).toBe(false);
+  });
+
+  it('the module failed to load (an error other than not installed): delete throws fixed copy', async () => {
+    const store = new KeyringTokenStore({
+      load: () => Promise.reject(new Error(`native binding failed ${LIBRARY_ERROR_TEXT}`)),
+      warn: () => undefined,
+    });
+    await store.set(URL_KEY, VALUE);
+    const err = await store.delete(URL_KEY).catch((caught: unknown) => caught);
+    expect(err).toBeInstanceOf(TokenStoreError);
+    expect(dump(err)).not.toContain(LIBRARY_ERROR_TEXT);
+    // Memory is cleared all the same.
+    expect(await store.get(URL_KEY)).toBeUndefined();
+  });
+
+  it('the module load timed out: delete throws (an entry from an earlier process may remain)', async () => {
+    const fake = createFakeKeyring('ok');
+    const earlier = new KeyringTokenStore({ load: () => Promise.resolve(fake.module) });
+    await earlier.set(URL_KEY, VALUE);
+    const store = new KeyringTokenStore({
+      load: () => new Promise(() => undefined),
+      timeoutMs: 20,
+      warn: () => undefined,
+    });
+    expect(await store.get(URL_KEY)).toBeUndefined();
+    await expect(store.delete(URL_KEY)).rejects.toBeInstanceOf(TokenStoreError);
+    expect(osEntry(fake)).toBe(VALUE);
+  });
+
+  it('once the OS store has worked in this process, a failing delete of an unseen key still throws', async () => {
+    const { fake, store } = keyringStore();
+    await store.set(tokenStoreKey('https://b.example/mcp', 'c'), VALUE); // the store works
+    fake.mode = 'throw';
+    await expect(store.delete(URL_KEY)).rejects.toBeInstanceOf(TokenStoreError);
+    // After the fallback too.
+    await expect(store.delete(URL_KEY)).rejects.toBeInstanceOf(TokenStoreError);
+  });
+});
+
 describe('KeyringTokenStore ordering and late writes (R58, R59)', () => {
   it('runs operations on one key one at a time, in order', async () => {
     const { fake, store } = keyringStore('ok', 1_000);
@@ -296,6 +360,60 @@ describe('KeyringTokenStore ordering and late writes (R58, R59)', () => {
     await store.set(URL_KEY, stale); // times out
     fake.holdWrites = false;
     await store.set(URL_KEY, NEWER); // after the fallback: memory, and written behind
+    fake.releaseWrites();
+    await until(() => osEntry(fake) === NEWER);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(osEntry(fake)).toBe(NEWER);
+  });
+
+  it('a write-behind that lands after a timed-out signOut is deleted again', async () => {
+    const { fake, store } = keyringStore('ok', 50);
+    await store.set(URL_KEY, VALUE); // seen in the keyring
+    fake.mode = 'throw';
+    await store.get(URL_KEY); // a transient failure: fallback
+    fake.mode = 'ok';
+    fake.holdWrites = true;
+    await store.set(URL_KEY, NEWER); // memory, and written behind (held)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // The delete waits behind the held write and times out.
+    await expect(store.delete(URL_KEY)).rejects.toBeInstanceOf(TokenStoreError);
+    expect(await store.get(URL_KEY)).toBeUndefined();
+    fake.holdWrites = false;
+    fake.releaseWrites(); // the write-behind lands after the sign-out
+    await until(() => fake.items.size === 0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fake.items.size).toBe(0);
+    // A retried signOut now succeeds.
+    expect(await store.delete(URL_KEY)).toBe(false);
+  });
+
+  it('write-behinds that land after a signOut leave nothing in the OS store', async () => {
+    const { fake, store } = keyringStore('ok', 50);
+    await store.set(URL_KEY, VALUE);
+    fake.holdWrites = true;
+    const stale = encodeTokenRecord({ ...RECORD, access_token: 'AT-SLOW-SECRET' });
+    await store.set(URL_KEY, stale); // times out: fallback, written behind
+    await store.set(URL_KEY, NEWER); // fallen back: memory, written behind
+    await store.delete(URL_KEY).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    fake.holdWrites = false;
+    fake.releaseWrites();
+    await until(() => fake.items.size === 0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fake.items.size).toBe(0);
+    expect(await store.get(URL_KEY)).toBeUndefined();
+  });
+
+  it('a late write-behind of the value memory still holds stays in the OS store', async () => {
+    const { fake, store } = keyringStore('ok', 30);
+    await store.set(URL_KEY, VALUE);
+    fake.mode = 'throw';
+    await store.get(URL_KEY); // fallback
+    fake.mode = 'ok';
+    fake.holdWrites = true;
+    await store.set(URL_KEY, NEWER); // written behind, held past its timeout
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    fake.holdWrites = false;
     fake.releaseWrites();
     await until(() => osEntry(fake) === NEWER);
     await new Promise((resolve) => setTimeout(resolve, 20));
