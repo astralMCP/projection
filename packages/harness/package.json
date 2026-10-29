@@ -23,7 +23,7 @@
     "@astral-mcp/projection": "workspace:*",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/server": "2.4.0",
-    "mongodb": "7.5.0",
+    "mongodb": "7.7.0",
     "mongodb-memory-server": "11.3.0",
     "zod": "^4.6.7"
   },

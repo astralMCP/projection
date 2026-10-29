@@ -3,6 +3,6 @@
   "private": true,
   "description": "Isolated install of the MongoDB MCP server for the harness's MongoDB eval tier. Its dependency tree needs a newer @modelcontextprotocol/server than the workspace pins, so it lives outside the pnpm workspace: `npm ci` here (pnpm run setup:mongodb in packages/harness).",
   "dependencies": {
-    "mongodb-mcp-server": "3.0.5"
+    "mongodb-mcp-server": "3.2.1"
   }
 }
