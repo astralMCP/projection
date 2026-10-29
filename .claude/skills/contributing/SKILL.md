@@ -42,8 +42,9 @@ CI = `pnpm run check` + `pnpm run format:check`. Formatting drift in ANY
 committed file (including `.claude/*.json`) fails CI — always run
 `pnpm run format` before committing.
 
-Node ≥ 22 is enforced (`engine-strict`). In a shell that has not loaded nvm,
-prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
+Node ≥22.12 is required (`engine-strict`; vitest 5 needs 22.12). The
+maintainer's machine provides Node via mise (24 LTS, on PATH by default), so
+commands need no PATH prefix. CI runs `check` on Node 22 and 24.
 
 ## Commit / PR conventions
 
@@ -108,7 +109,7 @@ prefix commands with `export PATH=<nvm node 22 bin>:$PATH &&`.
 
 ## Where truth lives
 
-- `docs/PRD.md` — requirements (R1–R49), security invariants (S1–S6), §10
+- `docs/PRD.md` — requirements (R1–R62), security invariants (S1–S6), §10
   budgets/metrics, §13 harness+TUI.
 - `docs/DECISIONS.md` — why things are the way they are (SDK v2 MRTR
   adoption, AEAD sealer rationale, D4 replay obligation, D9 two
