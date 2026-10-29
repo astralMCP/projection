@@ -763,17 +763,8 @@ a server past it.
 
 Interim gaps, until the follow-up PRs:
 
-- code mode is off: it defaults off, `projections.codeMode: true` fails the
-  wrap, `projections.catalog: false` fails it too (the catalog is the only
-  projection served), and `describe_tool` returns no types (its `types`
-  argument says so) — R45 typegen, `discover_apis` and the workflow prompts
-  still print the single-server identity (listed under `TODO(R45)` in
-  `multi/facade.ts`);
 - `optional: true` is unsupported (fails the wrap; `optional: false` is
-  accepted), and `introspectTimeoutMs` is not built (R47);
-- the R37 pointer in `discover_apis` still names only `search_tools`; it
-  is code-mode copy and lands with R45 (`searchToolsPhrase` in
-  `catalog/search.ts` names the served search tools for it).
+  accepted), and `introspectTimeoutMs` is not built (R47).
 
 Tool boxes (2026-10-29, R43–R45): the `search_<alias>` tools, the box
 overviews (in the first page of an empty-query box search and as
@@ -802,6 +793,41 @@ header, a shelf line or markup. It is cut at a line break, else a space,
 in the last tenth of the 8 KB window, never inside a grapheme cluster, and
 its truncation marker is part of the overview text, so the structured
 `overview`, the text rendering and the resource agree.
+
+Implementation (code mode, R45, 2026-10-29): code mode is on by default on
+multi-server facades, as on single-server ones, and either projection can be
+turned off. Typegen takes the branded view and emits one `tools.<alias>`
+object-type property per box — object types, not `namespace`s, so a
+reserved-word alias is a valid property — with `<alias>_<Pascal>` type names
+(unique because aliases have no `_`, and stable whichever other boxes are
+wrapped), one `.d.ts` section per box in sorted alias order, and postures
+decided on each tool's qualified entry with the shared `PolicyOptions`. The
+bridge's `tools.<alias>.<name>` binds the qualified name, so a bridge call
+and `toolCall('<alias>.<name>')` reach the host identically, and the machine
+host routes both with `routeCall`. Nothing in the gate changed: the view
+already made `pending`, the audit trail and the key domain box-aware, and
+machine blobs use the `multi` domain because the facade declares it for both
+gated tools. The single-server artifacts are built by the untouched path, so
+their goldens are byte-identical; the multi-server text variants (contract
+rule 10, qualified samples, grouped overview, box-named headers) are
+selected by the brand. The samples call real tools of the first box in
+sorted alias order — the first that runs immediately and the first that
+asks for approval under the facade's policy, if its name is a plain
+identifier (S5) — and fall back to generic names in that box, marked as
+sample names, so a model is never shown a tool that does not exist without
+being told. `buildBoxedCatalog` re-checks the alias grammar and the bridge
+header is rendered inert like the single-server identity: aliases print raw
+everywhere else, so the view refuses any alias the wrap would have refused.
+Two wording choices: the machine's unknown-tool hint on a multi-server facade
+now leads with the R40 did-you-mean (the single-server machine hint is
+unchanged), and the shelf header names the tools that take a qualified name
+for the projections served (`describe_tool`, `call_tool`, `toolCall`). The
+multi-server preamble has a variant per projection selection, each naming
+only the search tools served (`globalSearch`), and the R37 pointer in
+`discover_apis` uses `searchToolsPhrase`. The box overview resources are the
+tool-boxes slice's (`catalog/box-guidance.ts`), served after the code-mode
+resources; `discover_apis` links every resource the facade serves except
+the dashboard.
 
 Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
 dispatching on the alias in front of N single-server facades — N blob

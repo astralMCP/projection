@@ -8,6 +8,7 @@
  * 3. a compact human-readable overview block for `discover_apis`.
  */
 
+import { boxesLabel, isBoxedCatalog, membersByBox, type BoxedCatalog } from '../catalog/boxes.js';
 import { ProjectionError } from '../errors.js';
 import { decidePolicy, policyContext, postureOf, type ToolPosture } from '../policy/decision.js';
 import {
@@ -64,24 +65,29 @@ export interface GeneratedToolTypes {
   /** Compact per-tool overview block for inline embedding by discover_apis (R3). */
   overview: string;
   /**
-   * Per-tool slice of `dts`, keyed by tool name (R34): the alias
-   * declarations and the `tools.<name>` member signature exactly as they
-   * appear in the full file, so `describe_tool` output type-checks against
-   * the `projection://types/tools.d.ts` resource.
+   * Per-tool slice of `dts`, keyed by tool name (R34) — the qualified
+   * `<alias>.<name>` on a multi-server view (R45): the alias declarations
+   * and the `tools.<name>` (`tools.<alias>.<name>`) member signature exactly
+   * as they appear in the full file, so `describe_tool` output type-checks
+   * against the `projection://types/tools.d.ts` resource.
    */
   toolTypes: Map<string, ToolTypeText>;
 }
 
 /** The generated types for one tool, as served by `describe_tool` (R34). */
 export interface ToolTypeText {
-  /** `<Pascal>Input` alias name, unique within the `.d.ts`. */
+  /**
+   * `<Pascal>Input` alias name, unique within the `.d.ts` —
+   * `<alias>_<Pascal>Input` on a multi-server view (R45).
+   */
   inputAlias: string;
   /** `<Pascal>Output` alias name, when the tool declares an `outputSchema`. */
   outputAlias?: string;
   /**
    * The alias declarations verbatim from the `.d.ts`, then the member
    * signature verbatim modulo indentation: the `tools` member is re-indented
-   * to column 0 under a `// Member of the \`tools\` surface:` line.
+   * to column 0 under a `// Member of the \`tools\` surface:` line
+   * (`// Member of tools.<alias>:` on a multi-server view, R45).
    */
   dts: string;
 }
@@ -171,6 +177,80 @@ function toolDoc(tool: ToolCatalogEntry, context: PolicyContext): string {
   return lines.join('\n');
 }
 
+/** The `.d.ts` header lines after its origin line: how to import the surface. */
+const DTS_IMPORT_LINES = [
+  '//',
+  '// Import inside an authored machine module as:',
+  `//   import { tools } from '${TOOLS_MODULE_SPECIFIER}';`,
+];
+
+/** The closing `.d.ts` header lines: the tool functions are transport only (R7). */
+const DTS_TRANSPORT_LINES = [
+  '//',
+  '// Tool functions are the transport used by the library-supplied',
+  '// `toolCall` action. Do NOT wrap them in fromPromise / invoked actors',
+  '// (banned pattern R7) — emit toolCall(name, args) and handle the',
+  '// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead.',
+];
+
+/** What {@link toolSection} renders one tool from. */
+interface ToolSectionInput {
+  /** The tool's own entry: its schemas and the member's property key. */
+  tool: ToolCatalogEntry;
+  /** The name the alias doc comments quote: the qualified name on a multi-server view. */
+  docName: string;
+  /** The unique type-name base: `<Pascal>`, or `<alias>_<Pascal>` (R45). */
+  base: string;
+  /** The member's doc comment text ({@link toolDoc}). */
+  doc: string;
+  /** Indentation of the member inside the `tools` object type. */
+  indent: string;
+  /** The `describe_tool` slice's line naming the member's place (R34). */
+  memberOf: string;
+}
+
+/**
+ * One tool's part of a `.d.ts`: its alias declarations (emitted into the
+ * file in catalog order, and kept per tool for describe_tool, R34), its
+ * member lines inside the `tools` object type, and its `describe_tool` slice.
+ */
+function toolSection(input: ToolSectionInput): {
+  aliasSections: string[];
+  memberLines: string[];
+  types: ToolTypeText;
+} {
+  const { tool, docName, base, doc, indent } = input;
+  const typeNames: ToolTypeNames = {
+    input: `${base}Input`,
+    output: tool.outputSchema !== undefined ? `${base}Output` : undefined,
+  };
+  const aliasSections = [
+    `${docComment(`Input for tool "${docName}".`, '')}\n` +
+      `export type ${typeNames.input} = ${schemaToTsType(tool.inputSchema)};`,
+  ];
+  if (typeNames.output !== undefined) {
+    aliasSections.push(
+      `${docComment(`Output of tool "${docName}".`, '')}\n` +
+        `export type ${typeNames.output} = ${schemaToTsType(tool.outputSchema)};`,
+    );
+  }
+
+  const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
+  const returnType = typeNames.output ?? 'unknown';
+  const signature = `${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`;
+  return {
+    aliasSections,
+    memberLines: [docComment(doc, indent), `${indent}${signature}`],
+    types: {
+      inputAlias: typeNames.input,
+      ...(typeNames.output !== undefined ? { outputAlias: typeNames.output } : {}),
+      dts: [...aliasSections, `// ${input.memberOf}\n${docComment(doc, '')}\n${signature}`].join(
+        '\n\n',
+      ),
+    },
+  };
+}
+
 function generateDts(
   server: ServerCatalog,
   context: PolicyContext,
@@ -183,52 +263,23 @@ function generateDts(
   sections.push(
     [
       `// Generated by Projection from wrapped server ${commentSafe(server.identity)}. Do not edit.`,
-      '//',
-      '// Import inside an authored machine module as:',
-      `//   import { tools } from '${TOOLS_MODULE_SPECIFIER}';`,
-      '//',
-      '// Tool functions are the transport used by the library-supplied',
-      '// `toolCall` action. Do NOT wrap them in fromPromise / invoked actors',
-      '// (banned pattern R7) — emit toolCall(name, args) and handle the',
-      '// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead.',
+      ...DTS_IMPORT_LINES,
+      ...DTS_TRANSPORT_LINES,
     ].join('\n'),
   );
 
   for (const tool of server.tools) {
-    const base = pascalBase(tool.name, taken);
-    const typeNames: ToolTypeNames = {
-      input: `${base}Input`,
-      output: tool.outputSchema !== undefined ? `${base}Output` : undefined,
-    };
-
-    // Alias declarations: emitted into the file in catalog order, and kept
-    // per tool for describe_tool (R34).
-    const aliasSections = [
-      `${docComment(`Input for tool "${tool.name}".`, '')}\n` +
-        `export type ${typeNames.input} = ${schemaToTsType(tool.inputSchema)};`,
-    ];
-    if (typeNames.output !== undefined) {
-      aliasSections.push(
-        `${docComment(`Output of tool "${tool.name}".`, '')}\n` +
-          `export type ${typeNames.output} = ${schemaToTsType(tool.outputSchema)};`,
-      );
-    }
-    sections.push(...aliasSections);
-
-    // Member signature inside the `tools` surface.
-    const optional = schemaRequiresArgs(tool.inputSchema) ? '' : '?';
-    const returnType = typeNames.output ?? 'unknown';
-    const signature = `${propertyKey(tool.name)}: (args${optional}: ${typeNames.input}) => Promise<${returnType}>;`;
-    memberLines.push(docComment(toolDoc(tool, context), '  '), `  ${signature}`);
-
-    toolTypes.set(tool.name, {
-      inputAlias: typeNames.input,
-      ...(typeNames.output !== undefined ? { outputAlias: typeNames.output } : {}),
-      dts: [
-        ...aliasSections,
-        `// Member of the \`tools\` surface:\n${docComment(toolDoc(tool, context), '')}\n${signature}`,
-      ].join('\n\n'),
+    const section = toolSection({
+      tool,
+      docName: tool.name,
+      base: pascalBase(tool.name, taken),
+      doc: toolDoc(tool, context),
+      indent: '  ',
+      memberOf: 'Member of the `tools` surface:',
     });
+    sections.push(...section.aliasSections);
+    memberLines.push(...section.memberLines);
+    toolTypes.set(tool.name, section.types);
   }
 
   const surfaceDoc = docComment(
@@ -253,9 +304,17 @@ function generateBridgeSource(server: ServerCatalog): string {
   const memberLines = server.tools.map(
     (tool) => `tools[${JSON.stringify(tool.name)}] = bindTool(${JSON.stringify(tool.name)});`,
   );
+  return bridgeModule(
+    `// from wrapped server ${commentSafe(server.identity)}. Do not edit.`,
+    memberLines,
+  );
+}
+
+/** The bridge module around its `tools` assignments; `origin` is the second header line. */
+function bridgeModule(origin: string, memberLines: string[]): string {
   return [
     `// ${TOOLS_MODULE_SPECIFIER} — runtime bridge generated by Projection`,
-    `// from wrapped server ${commentSafe(server.identity)}. Do not edit.`,
+    origin,
     '//',
     '// Sandbox-host contract:',
     '//   Before authored code runs, the sandbox host MUST inject:',
@@ -310,20 +369,147 @@ function generateOverview(server: ServerCatalog, context: PolicyContext): string
   if (server.tools.length === 0) {
     lines.push('  (none)');
   }
-  for (const tool of server.tools) {
-    // Tool names and descriptions are S5-controlled too: neutralize both so
-    // a hostile name cannot forge extra overview lines (e.g. relabel a
-    // destructive tool "[runs immediately]" on a line of its own) and no
-    // ESC/ANSI/bidi characters reach the model's guidance. Plain
-    // neutralization — not JSON quoting like the identity — keeps the
-    // `- name [flags] — description` shape the model matches against
-    // readable; the flags stay trustworthy because any injected copy is
-    // flattened into the (capped) name field of its single line.
-    // `purposeLine` neutralizes and caps the description (first sentence, at
-    // most 200 chars — see `purposeSentence`); names get the identity cap.
-    const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
-    const description = purposeLine(tool.description);
-    lines.push(`- ${name} ${overviewFlags(tool, context)} — ${description}`);
+  for (const tool of server.tools) lines.push(overviewLine(tool, context));
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * One overview line, `- name [flags] — purpose`, for the entry policy is
+ * decided on (the qualified entry on a multi-server view).
+ *
+ * Tool names and descriptions are S5-controlled: neutralize both so a
+ * hostile name cannot forge extra overview lines (e.g. relabel a destructive
+ * tool "[runs immediately]" on a line of its own) and no ESC/ANSI/bidi
+ * characters reach the model's guidance. Plain neutralization — not JSON
+ * quoting like the identity — keeps the `- name [flags] — description` shape
+ * the model matches against readable; the flags stay trustworthy because any
+ * injected copy is flattened into the (capped) name field of its single
+ * line. `purposeLine` neutralizes and caps the description (first sentence,
+ * at most 200 chars — see `purposeSentence`); names get the identity cap.
+ */
+function overviewLine(tool: ToolCatalogEntry, context: PolicyContext): string {
+  const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
+  return `- ${name} ${overviewFlags(tool, context)} — ${purposeLine(tool.description)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-server views (R45): one `tools.<alias>` object type per box
+// ---------------------------------------------------------------------------
+
+/**
+ * The `.d.ts` of a multi-server view (R45). Each box is a property of the
+ * `tools` object type — an object type, never a TypeScript `namespace`, so a
+ * reserved word (`delete`, `class`) is a valid alias — and its tools are
+ * properties of that, quoted when they are not identifiers. Type aliases are
+ * `<alias>_<Pascal>Input` / `<alias>_<Pascal>Output`: an alias contains no
+ * `_` (R39), so a name maps back to exactly one box and no two boxes'
+ * aliases can collide, whichever other boxes are wrapped. One section per
+ * box, in sorted alias order. Postures are decided on the qualified entry,
+ * so facade policy keyed by qualified names and per-box approvals modes
+ * apply (R42, R49).
+ */
+function generateBoxedDts(
+  view: BoxedCatalog,
+  context: PolicyContext,
+): { dts: string; toolTypes: Map<string, ToolTypeText> } {
+  const label = boxesLabel(view);
+  const sections: string[] = [
+    [
+      `// Generated by Projection from ${label}. Do not edit.`,
+      ...DTS_IMPORT_LINES,
+      '//',
+      '// Tool names are qualified: each box is a property of `tools`, and its',
+      '// tools are properties of that (tools.<box>.<tool>). Call a tool with',
+      "// toolCall('<box>.<tool>', args).",
+      ...DTS_TRANSPORT_LINES,
+    ].join('\n'),
+  ];
+  const boxLines: string[] = [];
+  const toolTypes = new Map<string, ToolTypeText>();
+
+  for (const [alias, members] of membersByBox(view)) {
+    // Pascal bases are unique per box; the alias prefix keeps boxes apart.
+    const taken = new Set<string>();
+    const memberLines: string[] = [];
+    sections.push(
+      `// Box ${alias}: tools.${alias}.<tool>, called as toolCall('${alias}.<tool>', args).`,
+    );
+    for (const member of members) {
+      // The member's key and schemas are the box's own (bare) entry; its
+      // doc and posture are the qualified entry's, never the bare one's,
+      // whose name can spell another box's tool (boxes.ts).
+      const section = toolSection({
+        tool: member.entry,
+        docName: member.qualified.name,
+        base: `${alias}_${pascalBase(member.entry.name, taken)}`,
+        doc: toolDoc(member.qualified, context),
+        indent: '    ',
+        memberOf: `Member of tools.${alias}:`,
+      });
+      sections.push(...section.aliasSections);
+      memberLines.push(...section.memberLines);
+      toolTypes.set(member.qualified.name, section.types);
+    }
+    const box = view.boxes.get(alias);
+    // The description is host-trusted (R39), neutralized and capped at wrap
+    // time; docComment neutralizes and escapes it again regardless.
+    const boxDoc =
+      box?.description !== undefined ? `The ${alias} box: ${box.description}` : `The ${alias} box.`;
+    boxLines.push(
+      docComment(boxDoc, '  '),
+      memberLines.length > 0
+        ? `  ${alias}: {\n${memberLines.join('\n')}\n  };`
+        : `  ${alias}: Record<string, never>;`,
+    );
+  }
+
+  const surfaceDoc = docComment(`Tool surface of ${label}, one property per box.`, '');
+  sections.push(
+    `${surfaceDoc}\nexport declare const tools: {\n${boxLines.join('\n')}\n};\n\nexport default tools;`,
+  );
+  return { dts: `${sections.join('\n\n')}\n`, toolTypes };
+}
+
+/**
+ * The runtime bridge of a multi-server view: `tools.<alias>.<name>` binds
+ * the qualified name, so a bridge call reaches the host exactly as
+ * `toolCall('<alias>.<name>', …)` does and is routed by alias (R45). Same
+ * imperative, null-prototype construction as the single-server bridge (S5).
+ */
+function generateBoxedBridgeSource(view: BoxedCatalog): string {
+  const memberLines: string[] = [];
+  for (const [alias, members] of membersByBox(view)) {
+    const box = `tools[${JSON.stringify(alias)}]`;
+    memberLines.push(`${box} = Object.create(null);`);
+    for (const member of members) {
+      memberLines.push(
+        `${box}[${JSON.stringify(member.entry.name)}] = bindTool(${JSON.stringify(member.qualified.name)});`,
+      );
+    }
+    memberLines.push(`Object.freeze(${box});`);
+  }
+  // Aliases are grammar-checked (buildBoxedCatalog), but this header is
+  // evaluated source: render it inert like the single-server identity.
+  return bridgeModule(`// from ${commentSafe(boxesLabel(view))}. Do not edit.`, memberLines);
+}
+
+/**
+ * The `discover_apis` overview of a multi-server view (R45): the tool list
+ * grouped per box under alias headings, each tool by its qualified name.
+ * Box headings carry the host's description, never a server's identity.
+ */
+function generateBoxedOverview(view: BoxedCatalog, context: PolicyContext): string {
+  const lines = ['Tools by box — call each by its qualified name, <box>.<tool>:'];
+  for (const [alias, members] of membersByBox(view)) {
+    const count = `${members.length} ${members.length === 1 ? 'tool' : 'tools'}`;
+    const description = view.boxes.get(alias)?.description;
+    lines.push(
+      description !== undefined ? `${alias} — ${description} (${count}):` : `${alias} (${count}):`,
+    );
+    if (members.length === 0) lines.push('  (none)');
+    // The qualified name carries the S5 bare name: neutralized and capped
+    // exactly like a single-server overview line.
+    for (const member of members) lines.push(overviewLine(member.qualified, context));
   }
   return `${lines.join('\n')}\n`;
 }
@@ -335,7 +521,7 @@ function resolveSingleServer(catalog: ToolCatalog | ServerCatalog): ServerCatalo
         'protocol',
         `Typegen requires exactly one wrapped server; catalog has ${catalog.servers.size}.`,
         {
-          hint: 'v1 wraps a single server (multi-server namespacing is a stretch goal, PRD 12.2). Pass a single-entry catalog or a ServerCatalog directly.',
+          hint: 'Pass a single-entry catalog or a ServerCatalog, or, for several servers, use `wrapMcpServers` (its `facade.dts`).',
         },
       );
     }
@@ -353,14 +539,25 @@ function resolveSingleServer(catalog: ToolCatalog | ServerCatalog): ServerCatalo
 /**
  * Generate the `@astral-mcp/tools` artifacts for a wrapped server.
  *
- * Accepts either the full aliased {@link ToolCatalog} (which must contain
- * exactly one server in v1, per R30's single-instance instantiation) or a
- * {@link ServerCatalog} directly.
+ * Accepts the full aliased {@link ToolCatalog} (exactly one server: R30's
+ * single-instance instantiation), a {@link ServerCatalog} directly, or the
+ * multi-server view of a `wrapMcpServers` facade, which gets one
+ * `tools.<alias>` object type per box and qualified names throughout (R45).
  */
 export function generateToolTypes(
   catalog: ToolCatalog | ServerCatalog,
   options: GenerateToolTypesOptions = {},
 ): GeneratedToolTypes {
+  if (!('servers' in catalog) && isBoxedCatalog(catalog)) {
+    const context = policyContext(options);
+    const { dts, toolTypes } = generateBoxedDts(catalog, context);
+    return {
+      dts,
+      bridgeSource: generateBoxedBridgeSource(catalog),
+      overview: generateBoxedOverview(catalog, context),
+      toolTypes,
+    };
+  }
   const server = dedupeToolNames(resolveSingleServer(catalog));
   const context = policyContext(options);
   const { dts, toolTypes } = generateDts(server, context);

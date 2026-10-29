@@ -153,7 +153,9 @@ describe('server text with nothing readable (S5)', () => {
     const f = await wrapWithFsInstructions('​\u0000');
     expect(f.instructions.split('\n')).toContain('- fs (2 tools)');
     expect(f.instructions).not.toContain('""');
-    expect(f.resources.map((r) => r.uri)).toEqual(['projection://boxes/github/overview.md']);
+    expect(
+      f.resources.map((r) => r.uri).filter((uri) => uri.startsWith('projection://boxes/')),
+    ).toEqual(['projection://boxes/github/overview.md']);
     const page = f.searchTools({}, 'fs');
     expect(structured(page)['overview']).toBeUndefined();
     expect(text(page)).not.toContain('Guidance from');

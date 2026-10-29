@@ -44,4 +44,10 @@
  */
 
 export { runSegment, type RunSegmentOptions } from './host.js';
-export { AUTHORING_CONTRACT, TOOL_CALL_MODULE_SOURCE } from './contract.js';
+export {
+  AUTHORING_CONTRACT,
+  authoringContract,
+  sampleNote,
+  TOOL_CALL_MODULE_SOURCE,
+  type ToolSamples,
+} from './contract.js';

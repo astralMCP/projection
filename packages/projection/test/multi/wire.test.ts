@@ -95,10 +95,12 @@ async function retryWrite(
 }
 
 describe('a multi-server facade over the 2026-07-28 wire', () => {
-  it('serves the catalog projection only: one search per box, then search_tools, describe_tool, call_tool', async () => {
+  it('serves both projections: code mode, then one search per box, search_tools, describe_tool, call_tool (R1, R43, R45)', async () => {
     const c = await connectModern(await wrap());
     const { tools } = await c.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
+      'execute_machine',
+      'discover_apis',
       'search_fs',
       'search_github',
       'search_tools',
@@ -106,11 +108,17 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
       'call_tool',
     ]);
     expect(c.getInstructions()).toContain(`- fs — "FS-SERVER-INSTRUCTIONS: read me first."`);
-    // R45 is not served yet: describe_tool says types are unavailable here.
     const properties = tools.find((tool) => tool.name === 'describe_tool')?.inputSchema
       .properties as Record<string, { description?: string }> | undefined;
-    const types = properties?.['types'];
-    expect(types?.description).toContain('Not available on this server yet');
+    expect(properties?.['types']?.description).toContain('its member of tools.<box>');
+    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).toContain(
+      "toolCall('<box>.<tool>', args)",
+    );
+    const prompts = await c.listPrompts();
+    expect(prompts.prompts.map((prompt) => prompt.name).toSorted()).toEqual([
+      'save-workflow',
+      'visualize-workflow',
+    ]);
   });
 
   it('searches every box and describes a tool by its qualified name', async () => {

@@ -295,11 +295,13 @@ describe('box overview (R43, progressive disclosure)', () => {
     const c = await connect(f);
     const { resources } = await c.listResources();
     // Only boxes whose server sends instructions; the description names the alias only.
-    expect(resources.map((r) => r.uri)).toEqual([
+    // (The code-mode resources come first, R45.)
+    const boxResources = resources.filter((r) => r.uri.startsWith('projection://boxes/'));
+    expect(boxResources.map((r) => r.uri)).toEqual([
       'projection://boxes/fs/overview.md',
       'projection://boxes/github/overview.md',
     ]);
-    const fsResource = resources[0];
+    const fsResource = boxResources[0];
     expect(fsResource?.description).toBe("Guidance for the fs box, in its server's own words.");
     expect(fsResource?.mimeType).toBe('text/markdown');
     expect(JSON.stringify(resources)).not.toMatch(/files|gh-server/);
@@ -364,7 +366,7 @@ describe('the shelf (R44)', () => {
     const [preamble, shelf] = f.instructions.split('\n\n');
     expect(preamble).toContain("or a box's own search_<box> tool to look inside that box");
     expect(shelf?.split('\n')).toEqual([
-      'Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool and call_tool:',
+      'Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:',
       `- fs — "FS-SERVER-INSTRUCTIONS: read me first." (server's words) (3 tools)`,
       '- github — Issues and pull requests. (4 tools)',
       '- notes (1 tool)',
@@ -397,6 +399,8 @@ describe('tool list (R43)', () => {
     const c = await connect(await wrapThree());
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name)).toEqual([
+      'execute_machine',
+      'discover_apis',
       'search_fs',
       'search_github',
       'search_notes',
@@ -416,6 +420,8 @@ describe('catalog.globalSearch: false (R43)', () => {
     const c = await connect(f);
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name)).toEqual([
+      'execute_machine',
+      'discover_apis',
       'search_fs',
       'search_github',
       'search_notes',
@@ -424,7 +430,7 @@ describe('catalog.globalSearch: false (R43)', () => {
     ]);
     expect(JSON.stringify(tools)).not.toContain('search_tools');
     expect(c.getInstructions()).not.toContain('search_tools');
-    expect(c.getInstructions()).toContain("Call a box's search_<box> tool to look inside that box");
+    expect(c.getInstructions()).toContain("call a box's search_<box> tool to look inside that box");
     for (const name of ['describe_tool', 'call_tool']) {
       expect(argDescription(tool(tools, name), 'name')).toBe(
         'Qualified tool name (<box>.<tool>) as listed by the search_<box> tool of its box.',
@@ -452,7 +458,7 @@ describe('catalog.globalSearch: false (R43)', () => {
     );
     const unknownBox = structured(await f.callTool({ name: 'gh.get_issue' }, 'modern'));
     expect(unknownBox['hint']).not.toContain('search_tools');
-    expect(structured(f.discoverApis())['hint']).not.toContain('search_tools');
+    expect(JSON.stringify(f.discoverApis())).not.toContain('search_tools');
   });
 
   it('names both kinds of search tool in the hints when the global search is on', async () => {
@@ -470,6 +476,8 @@ describe('tool boxes over the 2026-07-28 wire', () => {
     const c = await connectModern(await wrapThree({}, many));
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name)).toEqual([
+      'execute_machine',
+      'discover_apis',
       'search_fs',
       'search_github',
       'search_notes',

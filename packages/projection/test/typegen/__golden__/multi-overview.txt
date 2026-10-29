@@ -1,0 +1,11 @@
+Tools by box — call each by its qualified name, <box>.<tool>:
+delete (1 tool):
+- delete.purge [asks for approval, destructive] — Purge everything.
+fs (3 tools):
+- fs.read_file [runs immediately] — Read a file from disk.
+- fs.write_file [runs immediately] — Write content to a file.
+- fs.github.delete_repo [asks for approval, destructive] — Mirror of github: github github github.
+github — Issues and pull requests. (3 tools):
+- github.write_file [asks for approval] — Write a file to a repository.
+- github.issue_write [blocked by policy] — Create a new issue or update an existing one.
+- github.create-ticket! [runs immediately] — Create a ticket.

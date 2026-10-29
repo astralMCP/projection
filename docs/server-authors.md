@@ -313,9 +313,9 @@ the **shelf**, one line per box in sorted alias order. The servers' own
 instructions are not forwarded; each is its box's overview:
 
 ```text
-This server fronts several toolboxes, each wrapping another server. Call search_tools to find a tool in any box, … each tool's listing says whether it runs immediately or asks for approval.
+This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call search_tools to find a tool in any box, … author an XState v5 state machine and run it with execute_machine … each tool's listing says whether it runs immediately or asks for approval.
 
-Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool and call_tool:
+Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:
 - fs — "Read and write files under /srv." (server's words) (3 tools)
 - github — Issues and pull requests. (4 tools)
 - notes (1 tool)
@@ -327,10 +327,41 @@ bind the whole alias → server mapping and are keyed separately from
 single-server blobs: a blob never resumes on a facade with a different
 server set, alias mapping or server version, nor across facade kinds.
 
-This preview serves the catalog projection only, which therefore cannot be
-turned off (`projections.catalog: false` fails the wrap). Not yet available:
-code mode (`projections.codeMode: true` fails the wrap, and `describe_tool`
-returns no TypeScript types), `optional: true` sources, and
+Both projections are served, as on a single-server facade, and either can be
+turned off (`projections`; both off fails the wrap). In code mode the
+generated `tools.d.ts` has one property per box — `tools.fs.read_file`,
+`tools.github["create-ticket!"]` — as object types rather than TypeScript
+namespaces, so an alias that is a reserved word (`delete`, `class`) still
+type-checks. Type names carry the alias (`fs_ReadFileInput`,
+`github_WriteFileOutput`), so two boxes' same-named tools never collide.
+Machines call tools by qualified name, `toolCall('fs.read_file', args)`, and
+Projection routes each call to its box; an unqualified or unknown name fails
+validation with a did-you-mean hint listing qualified names (from the named
+box only, when the alias is one you configured). One machine may use several
+boxes: each gated call is approved on its own, and parallel gated calls to
+different boxes share one round trip with one approval prompt each. Audit
+entries, sealed `pending` calls and machine blobs carry the qualified names
+and use the multi-server key domain, like `call_tool` blobs.
+
+`discover_apis` names the boxes (`Projection code mode over the toolboxes
+fs, github.`), lists the tools grouped per box under alias headings, and
+links the box overview resources, so a box's guidance is reachable with the
+catalog projection off. Above `catalogInlineThreshold`, counted across all
+boxes, it prints the per-box counts and points at the search tools the
+facade serves instead. The authoring contract adds one rule — tool names are
+qualified — and its samples, like the `happy-path` and `denial-fallback`
+examples, call tools of the first box in sorted alias order: its first tool
+that runs immediately and its first that asks for approval under the
+facade's policy (`fs.read_file`, `fs.write_file`), or a generic name marked
+"(sample names; use the names in tools.d.ts)" when the box has none.
+`describe_tool({ name: 'fs.read_file', types: true })`
+returns that tool's slice of the `.d.ts` under `// Member of tools.fs:`, and
+the workflow prompts name the boxes, never what the servers call themselves.
+The instructions' preamble has a variant per projection selection (routing,
+catalog only, code mode only), and the shelf header always states the
+qualified-name rule.
+
+Not yet available: `optional: true` sources, and
 `introspectTimeoutMs`.
 
 ## Legacy clients (pre-2026-07-28)
