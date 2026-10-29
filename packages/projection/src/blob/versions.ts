@@ -21,4 +21,4 @@ export const XSTATE_VERSION = '5.32.5';
  * (must match package.json). Not a blob stamp: the introspector names it when
  * a wrapped `McpServer` comes from a second, different copy of the SDK.
  */
-export const MCP_SDK_VERSION = '2.3.1';
+export const MCP_SDK_VERSION = '2.4.0';
