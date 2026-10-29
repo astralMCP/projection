@@ -15,6 +15,11 @@ import {
   createResultsWriter,
   formatEpisodeLine,
   formatToolChoiceReport,
+  hostToolName,
+  modeApplies,
+  GITHUB_CATALOG,
+  HOST_TOOL_NAME_MAX,
+  HOST_TOOL_NAME_PATTERN,
   MODEL_PRESETS,
   resolveModelPresets,
   resolveModes,
@@ -734,5 +739,90 @@ describe('tool-choice eval plumbing (offline)', () => {
     expect(MODEL_PRESETS['haiku-low']?.params).not.toHaveProperty('thinking');
     expect(MODEL_PRESETS['sonnet-low']?.params.output_config).toEqual({ effort: 'low' });
     expect(() => resolveModes('stdio')).toThrow(/unknown mode/);
+  });
+
+  it('resolves the multi-tier modes; projection-boxes applies to the multi world only', () => {
+    expect(resolveModes(undefined)).toEqual(['direct', 'projection', 'projection-boxes']);
+    expect(resolveModes('projection-boxes, direct')).toEqual(['projection-boxes', 'direct']);
+    for (const world of ['github', 'filesystem', 'mongodb'] as const) {
+      expect(modeApplies('direct', world)).toBe(true);
+      expect(modeApplies('projection', world)).toBe(true);
+      expect(modeApplies('projection-boxes', world)).toBe(false);
+    }
+    expect(modeApplies('projection-boxes', 'multi')).toBe(true);
+    // The single-server episodes above ran in two modes, never projection-boxes.
+    expect(records.map((r) => r.mode)).not.toContain('projection-boxes');
+  });
+
+  it('names host-style tools within the Messages API rule, truncating long names deterministically', () => {
+    expect(hostToolName('github', 'get_me')).toBe('github__get_me');
+    expect(hostToolName('mongo', 'insert-many')).toBe('mongo__insert-many');
+    expect(hostToolName('fs', 'odd.name with space')).toBe('fs__odd_name_with_space');
+    const long = 'x'.repeat(70);
+    const a = hostToolName('github', `${long}_a`);
+    const b = hostToolName('github', `${long}_b`);
+    for (const name of [a, b]) {
+      expect(name).toHaveLength(HOST_TOOL_NAME_MAX);
+      expect(name).toMatch(HOST_TOOL_NAME_PATTERN);
+      expect(name.startsWith('github__xxx')).toBe(true);
+    }
+    expect(a).not.toBe(b);
+    expect(hostToolName('github', `${long}_a`)).toBe(a);
+    // The longest real name across the boxes fits untruncated.
+    const longest = GITHUB_CATALOG.tools
+      .map((t) => t.name)
+      .toSorted((x, y) => y.length - x.length)[0];
+    expect(hostToolName('github', longest ?? '')).toBe(`github__${longest ?? ''}`);
+  });
+
+  it('breaks Projection discovery out by search tool on the multi world', () => {
+    const base = records.find((r) => r.mode === 'projection') as EpisodeRecord;
+    const multi = (
+      mode: 'projection' | 'projection-boxes',
+      searchTools: number,
+      searchBoxes: Record<string, number>,
+    ): EpisodeRecord => ({
+      ...base,
+      mode,
+      task: 'box-src-github',
+      tier: 'multi',
+      world: 'multi',
+      projection: {
+        route: 'call_tool',
+        searchTools,
+        describeTool: 1,
+        discoverApis: 0,
+        searchBoxes,
+        approvals: 0,
+      },
+    });
+    const withSearch = [
+      multi('projection', 2, { fs: 0, github: 1, mongo: 0 }),
+      multi('projection', 0, { fs: 0, github: 3, mongo: 0 }),
+      multi('projection-boxes', 0, { fs: 1, github: 2, mongo: 0 }),
+    ];
+    const summary = summarizeToolChoice([base, ...withSearch]);
+    const projection = summary.cells.find((c) => c.mode === 'projection');
+    // Box searches average over the multi episodes only; search_tools over all.
+    expect(projection?.meanSearchBoxes).toEqual({ fs: 0, github: 2, mongo: 0 });
+    expect(projection?.meanSearchTools).toBeCloseTo(
+      (2 + 0 + (base.projection?.searchTools ?? 0)) / 3,
+    );
+    const boxes = summary.cells.find((c) => c.mode === 'projection-boxes');
+    expect(boxes?.meanSearchBoxes).toEqual({ fs: 1, github: 2, mongo: 0 });
+    expect(boxes?.routes).toEqual({ call_tool: 1, execute_machine: 0, both: 0, neither: 0 });
+
+    const report = formatToolChoiceReport([base, ...withSearch]);
+    expect(report).toMatch(
+      /scripted\/projection: call_tool 3, .*search_fs 0\.0, search_github 2\.0, search_mongo 0\.0, describe_tool/,
+    );
+    expect(report).toMatch(
+      /scripted\/projection-boxes: call_tool 1, .*search_tools 0\.0, search_fs 1\.0/,
+    );
+    // One Projection mode only: labelled by model, as before.
+    expect(formatToolChoiceReport(records)).toMatch(/^  scripted: call_tool 2, /m);
+    expect(formatToolChoiceReport(records)).not.toContain('search_github');
+    // Single-server records carry no box breakdown.
+    expect(records.every((r) => r.projection?.searchBoxes === undefined)).toBe(true);
   });
 });

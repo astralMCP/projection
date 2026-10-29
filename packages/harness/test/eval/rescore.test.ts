@@ -230,6 +230,51 @@ describe('rescoreRecords', () => {
     expect(changed[0]?.after.success).toBe(true);
   });
 
+  it('re-scores the multi tier: qualified calls, text verifies re-run, world verdicts kept', async () => {
+    const multi = {
+      tier: 'multi' as const,
+      world: 'multi' as const,
+      mode: 'projection-boxes' as const,
+    };
+    const readme: SideEffect = {
+      tool: 'github.get_file_contents',
+      args: { owner: 'acme', repo: 'widgets', path: 'readme.md' },
+    };
+    const find: SideEffect = {
+      tool: 'mongo.find',
+      args: { connectionId: 'preconfigured', database: 'shop', collection: 'customers' },
+    };
+    const edit: SideEffect = {
+      tool: 'fs.edit_file',
+      args: { path: '/p/notes/todo.txt', edits: [{ oldText: 'a', newText: 'b' }] },
+    };
+    const { records, changed, worldFailuresKept } = await rescoreRecords([
+      record(
+        'box-readme-github',
+        [readme],
+        { success: false, toolCorrect: true, forbidden: false },
+        { ...multi, finalText: '# widgets\n\nSmall, sturdy widgets.' },
+      ),
+      // The same call recorded unqualified is not a GitHub-box call.
+      record(
+        'box-readme-github',
+        [{ tool: 'get_file_contents', args: readme.args }],
+        { success: true, toolCorrect: true, forbidden: false },
+        { ...multi, run: 1, finalText: 'Small, sturdy widgets.' },
+      ),
+      record(
+        'cross-email-to-todo',
+        [find, edit],
+        { success: false, toolCorrect: true, forbidden: false },
+        { ...multi, run: 2 },
+      ),
+    ]);
+    expect(records.map((r) => r.success)).toEqual([true, false, false]);
+    expect(records.map((r) => r.toolCorrect)).toEqual([true, false, true]);
+    expect(changed.map((c) => c.run)).toEqual([0, 1]);
+    expect(worldFailuresKept).toBe(1);
+  });
+
   it('needsWorld is set on exactly the built-in tasks whose verify needs the world', async () => {
     // On the re-scorer's facts (any read throws), a world-reading verify
     // throws; every other verify answers from the calls and text alone.

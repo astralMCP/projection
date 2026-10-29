@@ -15,11 +15,15 @@
  * `turnCapped`.
  *
  * The turn budget counts action turns, not discovery: a Projection turn
- * that only called `search_tools` / `describe_tool` / `discover_apis` is
+ * that only called `search_tools` / `describe_tool` / `discover_apis` (and,
+ * on the multi world, the per-box `search_<alias>` tools) is
  * free (direct mode has that information inline, for free), up to an
  * absolute ceiling of twice the budget so a model looping on discovery
  * still stops. Both modes get the same budget; `apiTurns` still reports
  * every call made.
+ *
+ * `projection-boxes` is planned for the multi tier only (`modeApplies`):
+ * single-server tiers run the same episodes whatever modes are selected.
  *
  * One planned episode never takes the matrix down with it: any exception
  * (opening the session, the agent loop, closing, scoring, the progress
@@ -39,7 +43,14 @@ import {
   type ModelPreset,
   type ToolUseRecord,
 } from './agent.js';
-import { EVAL_MODES, openSession, type EvalMode, type ModeSession } from './modes.js';
+import {
+  EVAL_MODES,
+  isProjectionMode,
+  modeApplies,
+  openSession,
+  type EvalMode,
+  type ModeSession,
+} from './modes.js';
 import {
   promptFor,
   TASK_TIERS,
@@ -59,6 +70,11 @@ export interface ProjectionUse {
   searchTools: number;
   describeTool: number;
   discoverApis: number;
+  /**
+   * Multi world only: calls to each box's own search tool, by alias
+   * (`search_github` → `github`). `searchTools` counts the global search.
+   */
+  searchBoxes?: Record<string, number>;
   /** Approval prompts auto-accepted (MRTR round trips). */
   approvals: number;
 }
@@ -110,7 +126,7 @@ export interface EpisodeRecord {
 export interface ToolChoiceEvalOptions {
   /** Default: both built-in presets. */
   models?: ModelPreset[];
-  /** Default: both modes. */
+  /** Default: every mode (`projection-boxes` runs on the multi tier only). */
   modes?: EvalMode[];
   /** Default: every task. */
   tasks?: EvalTask[];
@@ -134,7 +150,15 @@ export interface ToolChoiceEvalOptions {
 
 export const DEFAULT_RUNS = 3;
 
-function summarizeProjectionUse(toolUses: ToolUseRecord[], approvals: number): ProjectionUse {
+/**
+ * How an episode used Projection. `world` names the boxes whose
+ * `search_<alias>` calls are counted (multi world only).
+ */
+function summarizeProjectionUse(
+  toolUses: ToolUseRecord[],
+  approvals: number,
+  world: EvalWorld,
+): ProjectionUse {
   const count = (name: string): number => toolUses.filter((t) => t.name === name).length;
   const callTool = count('call_tool') > 0;
   const machine = count('execute_machine') > 0;
@@ -145,6 +169,13 @@ function summarizeProjectionUse(toolUses: ToolUseRecord[], approvals: number): P
     searchTools: count('search_tools'),
     describeTool: count('describe_tool'),
     discoverApis: count('discover_apis'),
+    ...(world.name === 'multi'
+      ? {
+          searchBoxes: Object.fromEntries(
+            world.boxes.map((box) => [box.alias, count(`search_${box.alias}`)]),
+          ),
+        }
+      : {}),
     approvals,
   };
 }
@@ -213,8 +244,8 @@ async function scoreEpisode(
     toolUseCount: episode.toolUses.length,
     toolUses: episode.toolUses,
     upstreamCalls,
-    ...(mode === 'projection'
-      ? { projection: summarizeProjectionUse(episode.toolUses, approvals) }
+    ...(isProjectionMode(mode)
+      ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world) }
       : {}),
     usage: episode.usage,
     wallMs: episode.wallMs,
@@ -258,8 +289,8 @@ function harnessFailureRecord(
     toolUseCount: toolUses.length,
     toolUses,
     upstreamCalls,
-    ...(mode === 'projection' && session !== undefined
-      ? { projection: summarizeProjectionUse(toolUses, session.approvals) }
+    ...(isProjectionMode(mode) && session !== undefined
+      ? { projection: summarizeProjectionUse(toolUses, session.approvals, session.world) }
       : {}),
     usage: episode?.usage ?? { ...EMPTY_USAGE },
     wallMs: episode?.wallMs ?? Math.round(performance.now() - startedAt),
@@ -335,6 +366,7 @@ export async function runToolChoiceEval(
   for (const model of models) {
     for (const mode of modes) {
       for (const task of tasks) {
+        if (!modeApplies(mode, worldOf(task.tier))) continue;
         for (let run = 0; run < runs; run += 1) plan.push({ model, mode, task, run });
       }
     }
@@ -406,6 +438,8 @@ export interface CellSummary {
   meanSearchTools?: number;
   meanDescribeTool?: number;
   meanDiscoverApis?: number;
+  /** Mean `search_<alias>` calls per multi-world episode, by alias (absent without one). */
+  meanSearchBoxes?: Record<string, number>;
   meanApprovals?: number;
 }
 
@@ -437,7 +471,7 @@ export interface TierCellSummary {
 export interface ToolChoiceSummary {
   episodes: number;
   cells: CellSummary[];
-  /** Per tier × cell, in tier order (basic, then hard). */
+  /** Per tier × cell, in tier order (TASK_TIERS). */
   tiers: TierCellSummary[];
   tasks: TaskCellSummary[];
 }
@@ -481,7 +515,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     cacheReadShare: totalInput === 0 ? 0 : cacheRead / totalInput,
     estimatedUsd: records.reduce((a, r) => a + estimateUsd(r.modelId, r.usage), 0),
   };
-  if (first.mode === 'projection') {
+  if (isProjectionMode(first.mode)) {
     const uses = records.flatMap((r) => (r.projection !== undefined ? [r.projection] : []));
     const routes: Record<ProjectionRoute, number> = {
       call_tool: 0,
@@ -494,6 +528,14 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     summary.meanSearchTools = mean(uses.map((u) => u.searchTools));
     summary.meanDescribeTool = mean(uses.map((u) => u.describeTool));
     summary.meanDiscoverApis = mean(uses.map((u) => u.discoverApis));
+    // Over the multi-world episodes only: a single-server episode has no boxes.
+    const boxed = uses.flatMap((u) => (u.searchBoxes !== undefined ? [u.searchBoxes] : []));
+    const aliases = [...new Set(boxed.flatMap((b) => Object.keys(b)))].toSorted();
+    if (aliases.length > 0) {
+      summary.meanSearchBoxes = Object.fromEntries(
+        aliases.map((alias) => [alias, mean(boxed.map((b) => b[alias] ?? 0))]),
+      );
+    }
     summary.meanApprovals = mean(uses.map((u) => u.approvals));
   }
   return summary;
@@ -668,12 +710,20 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
   const projectionCells = summary.cells.filter((c) => c.routes !== undefined);
   if (projectionCells.length > 0) {
     lines.push('Projection routes (episodes using call_tool / execute_machine / both / neither):');
+    // One Projection mode: label by model, as before the multi tier; more
+    // than one (projection and projection-boxes): label by model/mode.
+    const byMode = new Set(projectionCells.map((c) => c.mode)).size > 1;
     for (const cell of projectionCells) {
       const routes = cell.routes as Record<ProjectionRoute, number>;
+      const boxSearches = Object.entries(cell.meanSearchBoxes ?? {})
+        .map(([alias, n]) => `search_${alias} ${n.toFixed(1)}, `)
+        .join('');
       lines.push(
-        `  ${cell.model}: call_tool ${routes.call_tool}, execute_machine ${routes.execute_machine}, ` +
+        `  ${byMode ? `${cell.model}/${cell.mode}` : cell.model}: ` +
+          `call_tool ${routes.call_tool}, execute_machine ${routes.execute_machine}, ` +
           `both ${routes.both}, neither ${routes.neither}; per episode: ` +
           `search_tools ${(cell.meanSearchTools ?? 0).toFixed(1)}, ` +
+          boxSearches +
           `describe_tool ${(cell.meanDescribeTool ?? 0).toFixed(1)}, ` +
           `discover_apis ${(cell.meanDiscoverApis ?? 0).toFixed(1)}, ` +
           `approvals ${(cell.meanApprovals ?? 0).toFixed(1)}`,

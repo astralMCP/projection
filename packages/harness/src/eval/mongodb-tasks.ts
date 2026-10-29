@@ -52,7 +52,7 @@ function isDoc(value: unknown): value is Doc {
 }
 
 /** The call targets `collection` in the shop database. */
-function on(args: Args, collection: string, database: string = SHOP_DB): boolean {
+export function on(args: Args, collection: string, database: string = SHOP_DB): boolean {
   return sameText(args['database'], database) && sameText(args['collection'], collection);
 }
 
@@ -182,7 +182,7 @@ function aggregates(
 }
 
 /** `filter[field]` equals `value`: plain, `$eq`, or a one-element `$in`. */
-function fieldIs(filter: Doc, field: string, value: string): boolean {
+export function fieldIs(filter: Doc, field: string, value: string): boolean {
   const spec = filter[field];
   if (typeof spec === 'string') return spec.toLowerCase() === value.toLowerCase();
   if (isDoc(spec)) {
@@ -203,7 +203,7 @@ function isEmpty(doc: Doc): boolean {
 }
 
 /** A read of `collection` that filters by `where` (count/find, or an aggregate's $match). */
-function filteredRead(
+export function filteredRead(
   calls: SideEffect[],
   collection: string,
   where: (f: Doc) => boolean,
@@ -217,7 +217,7 @@ function filteredRead(
 /** Any read of `collection`'s contents, filtered or not. */
 const READ_TOOLS = ['find', 'count', 'aggregate', 'aggregate-db', 'collection-schema'];
 
-function reads(calls: SideEffect[], collection: string): boolean {
+export function reads(calls: SideEffect[], collection: string): boolean {
   return (
     has(calls, READ_TOOLS, (args) => on(args, collection)) ||
     aggregates(calls, collection, () => true)
@@ -230,7 +230,7 @@ function reads(calls: SideEffect[], collection: string): boolean {
  * `$sortByCount` of it. The model then reads the per-group counts off the
  * result.
  */
-function groupsBy(calls: SideEffect[], collection: string, field: string): boolean {
+export function groupsBy(calls: SideEffect[], collection: string, field: string): boolean {
   return aggregates(calls, collection, (args) => {
     const group = stage(args, '$group');
     const sortByCount = stage(args, '$sortByCount');
@@ -272,7 +272,7 @@ function sets(args: Args, field: string, value: string): boolean {
   return isDoc(update) && isDoc(update['$set']) && sameText(update['$set'][field], value);
 }
 
-const number = (n: number): RegExp => new RegExp(`(^|\\D)${n}(\\D|$)`);
+export const number = (n: number): RegExp => new RegExp(`(^|\\D)${n}(\\D|$)`);
 
 /**
  * `status: n` (prose or table, optionally "status orders: n") or

@@ -3,8 +3,10 @@
  * tries to complete a task against its tier's world — the offline 95-tool
  * GitHub fake (basic, hard), the real filesystem reference server on a
  * throwaway tree (filesystem), or the real MongoDB MCP server on a seeded
- * throwaway mongod (mongodb; needs `pnpm run setup:mongodb` once) — either
- * with the server's tools exposed directly or through Projection. Reports
+ * throwaway mongod (mongodb; needs `pnpm run setup:mongodb` once), or all
+ * three at once as boxes (multi) — either with the tools exposed directly or
+ * through Projection (on the multi tier, with the global search on and, as
+ * `projection-boxes`, off). Reports
  * success (tool AND arguments correct), tool-correct, turns, tokens, cost
  * and — for Projection — which route the model took.
  *
@@ -12,8 +14,8 @@
  * (which may live in the repo-root env file). Knobs:
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
- *   PROJ_EVAL_MODES        direct,projection
- *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb (default all)
+ *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi (default all)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
@@ -36,12 +38,14 @@ import {
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
+  modeApplies,
   mongodbServerInstalled,
   resolveModelPresets,
   resolveModes,
   resolveTasks,
   resolveTiers,
   runToolChoiceEval,
+  worldOf,
   type EpisodeRecord,
 } from '../src/index.js';
 
@@ -61,10 +65,10 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const modes = resolveModes(process.env['PROJ_EVAL_MODES']);
     const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
     // Fail before spending anything: without the vendored server every
-    // mongodb episode would be a harness error, not a measurement.
-    if (tiers.includes('mongodb') && !mongodbServerInstalled()) {
+    // mongodb (and multi) episode would be a harness error, not a measurement.
+    if ((tiers.includes('mongodb') || tiers.includes('multi')) && !mongodbServerInstalled()) {
       throw new Error(
-        'the mongodb tier is selected but the MongoDB MCP server is not installed; run `pnpm run setup:mongodb` in packages/harness, or set PROJ_EVAL_TIERS to exclude mongodb',
+        'the mongodb or multi tier is selected but the MongoDB MCP server is not installed; run `pnpm run setup:mongodb` in packages/harness, or set PROJ_EVAL_TIERS to exclude mongodb and multi',
       );
     }
     const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
@@ -115,6 +119,10 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     // eslint-disable-next-line no-console
     console.info(`results written to ${results.path}`);
 
-    expect(records).toHaveLength(models.length * modes.length * tasks.length * runs);
+    const planned = modes.reduce(
+      (n, mode) => n + tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length,
+      0,
+    );
+    expect(records).toHaveLength(models.length * planned * runs);
   });
 });

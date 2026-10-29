@@ -711,6 +711,8 @@ export interface GithubFakeOptions {
    * `false` to advertise none.
    */
   instructions?: string | false;
+  /** Called with every call as it is recorded (see `WorldOptions.onCall`). */
+  onCall?: (call: SideEffect) => void;
 }
 
 /** Resolve a canned answer for a call. */
@@ -757,6 +759,7 @@ export function createGithubFake(options: GithubFakeOptions = {}): GithubFake {
       (args) => {
         const recorded = args ?? {};
         calls.push({ tool: tool.name, args: recorded });
+        options.onCall?.({ tool: tool.name, args: recorded });
         const answer = answerFor(answers, tool.name, recorded);
         if (answer instanceof FakeError) {
           return { isError: true, content: [{ type: 'text' as const, text: answer.message }] };

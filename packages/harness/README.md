@@ -66,8 +66,9 @@ replay-cache fix has a regression to flip.
 ## Tool-choice eval: direct tools vs Projection
 
 `src/eval/` measures how often a model picks the **correct wrapped tool with
-correct arguments** for a task when the wrapped server is exposed (A)
-directly as native tools or (B) through Projection's five tools
+correct arguments** for a task when the wrapped server (or, on the multi
+tier, servers) is exposed (A) directly as native tools or (B) through
+Projection's five tools
 (`search_tools`, `describe_tool`, `call_tool`, `discover_apis`,
 `execute_machine`). Each episode gets a fresh **world** (`openWorld`): an
 MCP server whose tool executions are recorded, so the same task scores
@@ -85,7 +86,7 @@ are real, a `verify` of the end state (the file really moved; the answer
 names the right file). In projection mode a scripted approve-all client
 auto-fulfils every approval round trip, so the model only sees results.
 
-Tasks come in four tiers. The **basic** tier (15 tasks against
+Tasks come in five tiers. The **basic** tier (15 tasks against
 `modelcontextprotocol/servers`) is one or two obvious calls each; current
 models saturate it. The **hard** tier (15 tasks against `acme/widgets` and
 the user's own repositories) discriminates: write tools whose `method` enum
@@ -156,6 +157,52 @@ forwards each result's `structuredContent` along with its content blocks, so
 Projection sees what it would in production and its `call_tool` renders the
 structured result rather than an escaped content array.
 
+The **multi** tier (13 tasks) runs against all three at once: the **multi
+world** (`openMultiWorld`) opens the GitHub fake, the filesystem world and
+the MongoDB world together as boxes under the aliases `github`, `fs` and
+`mongo`, records every call once in the order it ran as
+`{ tool: '<alias>.<name>', args }` (so a grader can tell `github.get_file_contents`
+from `fs.read_text_file`, and order a write in one box after the read in
+another), merges the facts (`root`, `mongoUri`) and closes all three on
+teardown. It has three modes:
+
+- **direct** — every tool of every box as a native tool named
+  `<alias>__<name>`, the way multi-server hosts present MCP tools today, with
+  the framing and then every box's own `instructions` under a heading naming
+  its alias in the system prompt (`hostToolName` keeps names within the
+  Messages API's `^[a-zA-Z0-9_-]{1,64}$`, replacing other characters and
+  truncating with a hash suffix; no current name needs either — the longest,
+  `github__manage_repository_notification_subscription`, is 51 characters);
+- **projection** — `wrapMcpServers({ github, fs, mongo })` with default
+  options: both projections and the global `search_tools` next to
+  `search_github`, `search_fs` and `search_mongo`;
+- **projection-boxes** — the same with `catalog: { globalSearch: false }`, so
+  only the per-box search tools remain.
+
+`projection-boxes` runs on the multi tier only: a single-server facade has no
+boxes, so the runner never plans it for the other tiers (`modeApplies`), and
+their episodes are the same whichever modes are selected. Discovery turns are
+free on the multi facade as on a single-server one, the `search_<alias>`
+tools included. The tasks are six **cross-box** chains where one box's
+output feeds another (the changelog's Unreleased entry becomes an issue body
+in `acme/widgets`; the shipped-order count becomes a comment on #23; the
+largest log file's name becomes an `audit_log` document; the package
+version becomes a `release/1.2.0` branch; the four open PR titles — paged
+three at a time — become `notes/prs.txt`; Grace Lin's email becomes a todo
+line), each scored on the write following the read that justified it and
+carrying the value read; four **box-choice** tasks where two boxes have a
+similarly named tool (the project's README vs `acme/widgets`' readme; the
+project's `src` folder vs the repository's), with the wrong box's tool
+forbidden; and three **single-box controls** copied verbatim from the
+GitHub, filesystem and MongoDB tiers (`ctl-*`), so a drop on the multi tier
+can be split between routing across boxes and the task itself. The report
+breaks Projection's discovery out by search tool: `search_tools` per episode
+and, for multi-world episodes, each `search_<alias>`. What it decides: how
+much a multi-server host's flat tool list costs against Projection's boxes,
+and — `projection` against `projection-boxes` — whether the global search
+earns its place, which settles the `catalog.globalSearch` default (PRD R43,
+§13). The approvals-mode comparison §13 also asks for is not run yet.
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -163,13 +210,15 @@ PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-cho
 ```
 
 Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haiku-low`,
-`sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection`), `PROJ_EVAL_TIERS`
-(`basic,hard,filesystem,mongodb`, the default), `PROJ_EVAL_TASKS` (comma list of task names
+`sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection,projection-boxes`,
+the default), `PROJ_EVAL_TIERS`
+(`basic,hard,filesystem,mongodb,multi`, the default; `mongodb` and `multi` need
+`pnpm run setup:mongodb`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
 turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped
 and harness-error counts, a per-tier summary, a per-task table grouped by
-tier, and Projection's route split) is printed, and the records are written
+tier, and Projection's route split with its discovery calls per search tool) is printed, and the records are written
 to `eval-results/<timestamp>.json`
 (gitignored), rewritten after every episode so a timeout or crash keeps the
 partial results. An episode that spends its turn budget (12 by default) or
@@ -192,9 +241,10 @@ now fail (DECISIONS D13). It also prints any episode a grader threw on
 (left as recorded) and how many recorded `needsWorld` failures it could not
 re-check offline — re-run those tasks to confirm.
 
-The plumbing is proven offline in `test/eval/`: a scripted model drives both
-modes end to end without an API key — against the fake and against the real
+The plumbing is proven offline in `test/eval/`: a scripted model drives the
+modes end to end without an API key — against the fake, against the real
 filesystem server, whose effects land on disk and whose `verify` is checked
-both ways — every task's predicate is checked against a golden call
+both ways, and against the multi world in all three modes, where every
+multi-tier golden also runs clean through each mode's tool surface — every task's predicate is checked against a golden call
 sequence and a plausible wrong one, and each scripted fake behaviour is
 checked call by call.

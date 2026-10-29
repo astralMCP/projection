@@ -17,10 +17,11 @@ export type TaskKind = 'single' | 'multi';
 /**
  * Tiers: `basic` and `hard` run against the offline GitHub fake;
  * `filesystem` against the real filesystem reference server; `mongodb`
- * against the real MongoDB MCP server on a throwaway deployment.
+ * against the real MongoDB MCP server on a throwaway deployment; `multi`
+ * against all three at once, each a box under an alias (multi-world.ts).
  */
-export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb';
-export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard', 'filesystem', 'mongodb'];
+export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi';
+export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard', 'filesystem', 'mongodb', 'multi'];
 
 /** The world each tier's tasks run in. */
 export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
@@ -28,6 +29,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   hard: 'github',
   filesystem: 'filesystem',
   mongodb: 'mongodb',
+  multi: 'multi',
 };
 
 export function worldOf(tier: TaskTier): WorldName {

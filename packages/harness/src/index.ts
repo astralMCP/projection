@@ -143,16 +143,28 @@ export {
 } from './eval/tasks.js';
 export { FILESYSTEM_TASKS } from './eval/filesystem-tasks.js';
 export { MONGODB_TASKS } from './eval/mongodb-tasks.js';
+export { MULTI_TASKS, unbox, unboxCall } from './eval/multi-tasks.js';
 export {
   githubWorld,
   openWorld,
   GITHUB_DIRECT_SYSTEM_PROMPT,
+  type BoxAlias,
   type EvalWorld,
+  type MultiWorld,
+  type ServerWorld,
+  type ServerWorldName,
+  type WorldBox,
   type WorldFacts,
   type WorldName,
   type WorldOptions,
   type WorldTool,
 } from './eval/world.js';
+export {
+  openMultiWorld,
+  qualifiedName,
+  MULTI_BOXES,
+  MULTI_DIRECT_SYSTEM_PROMPT,
+} from './eval/multi-world.js';
 export {
   filesystemServerEntry,
   openFilesystemWorld,
@@ -191,12 +203,21 @@ export {
 } from './eval/mongodb-world.js';
 export { createRecordingProxy, type RecordingProxy } from './eval/recording-proxy.js';
 export {
+  hostToolName,
+  isProjectionMode,
+  modeApplies,
+  multiDirectSystemPrompt,
   openDirectSession,
+  openMultiDirectSession,
+  openMultiProjectionSession,
   openProjectionSession,
   openSession,
   resolveModes,
   toolResultText,
   EVAL_MODES,
+  HOST_TOOL_NAME_MAX,
+  HOST_TOOL_NAME_PATTERN,
+  MULTI_INSTRUCTIONS_HEADER,
   PROJECTION_DISCOVERY_TOOLS,
   type EvalMode,
   type ModeSession,
