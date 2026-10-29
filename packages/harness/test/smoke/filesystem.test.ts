@@ -127,7 +127,9 @@ describe('official filesystem server through Projection (PRD §13 matrix #1)', (
     expect(names.length).toBeGreaterThanOrEqual(10);
 
     // Identity recorded for blob binding (R30) comes from the real server.
-    expect(facade.catalog.identity).toBe('secure-filesystem-server@0.2.0');
+    // Since 1.0.0 the server reports its package version (it said 0.2.0
+    // throughout the date-versioned line), so this moves with the pin.
+    expect(facade.catalog.identity).toBe('secure-filesystem-server@1.0.0');
 
     // Annotations survived introspection: reads read-only, writes destructive.
     const read = facade.catalog.tools.find((t) => t.name === 'read_text_file');
