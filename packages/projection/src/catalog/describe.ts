@@ -31,6 +31,7 @@ import {
   type ServerCatalog,
   type ToolAnnotations,
 } from '../types.js';
+import { boxedTool, isBoxedCatalog } from './boxes.js';
 import { sanitizeSchema } from './schema-safety.js';
 import { unknownToolError } from './search.js';
 
@@ -126,11 +127,22 @@ function sanitizeAnnotations(annotations: ToolAnnotations | undefined): ToolAnno
   return out;
 }
 
+/**
+ * Where the header says the tool lives: the server identity on a
+ * single-server facade; on a multi-server facade the box, by its host alias
+ * — never the server-reported identity (R39).
+ */
+function location(catalog: ServerCatalog, name: string): string {
+  if (isBoxedCatalog(catalog)) {
+    const alias = boxedTool(catalog, name)?.alias;
+    if (alias !== undefined) return `in the ${alias} box`;
+  }
+  return `on server ${inertIdentity(catalog.identity)}`;
+}
+
 function render(catalog: ServerCatalog, tool: ToolDescription): string {
   const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
-  const lines: string[] = [
-    `Tool ${JSON.stringify(name)} on server ${inertIdentity(catalog.identity)}`,
-  ];
+  const lines: string[] = [`Tool ${JSON.stringify(name)} ${location(catalog, tool.name)}`];
   lines.push(
     `Posture: ${tool.posture}${tool.destructive ? ' (the server marks this tool destructive)' : ''}`,
   );

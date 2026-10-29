@@ -36,6 +36,7 @@ import {
   purposeSentence,
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
+import { isBoxedCatalog, splitQualified, type BoxedCatalog, type BoxedTool } from './boxes.js';
 import {
   dedupeTools,
   type PolicyOverrides,
@@ -134,6 +135,101 @@ export function searchTools(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Multi-server facades: one search across every box (R43)
+// ---------------------------------------------------------------------------
+
+/** One entry of a multi-server search page (R43): the R33 entry plus its box. */
+export interface BoxedToolSummary extends ToolSummary {
+  /** The box (alias) the tool lives in; `name` is qualified with it. */
+  box: string;
+}
+
+export interface BoxedSearchPage {
+  tools: BoxedToolSummary[];
+  /** Matching tools across all pages. */
+  total: number;
+  nextCursor?: string;
+}
+
+export interface SearchBoxesOptions extends SearchToolsOptions {
+  /**
+   * The search tool being served, which its cursors are bound to (R43).
+   * Default `search_tools`.
+   */
+  tool?: string;
+}
+
+/**
+ * Run `search_tools` on a multi-server facade (R43): R33 semantics over
+ * every box, scored per tool against its bare name, title and description,
+ * plus alias tokens (see {@link scoreBoxedTools}); ties in sorted alias
+ * order, then catalog order. Entries are `{ name, box, purpose, posture,
+ * destructive }` with `name` qualified; `posture` is decided on the
+ * qualified entry, so it is the posture the gate applies (R42). Cursors
+ * carry the issuing tool (`{ t, q, o }`) and are refused anywhere else. The
+ * first page of an empty query leads with the per-box tool counts, so one
+ * large box cannot hide the others.
+ */
+export function searchBoxes(
+  catalog: BoxedCatalog,
+  args: SearchToolsArgs,
+  options: SearchBoxesOptions = {},
+): CallToolResult {
+  const tool = options.tool ?? 'search_tools';
+  const pageSize = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, options.pageSize ?? DEFAULT_SEARCH_PAGE_SIZE),
+  );
+  const rawQuery = args.query ?? '';
+  const query = rawQuery.slice(0, MAX_QUERY_CHARS);
+  const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
+  const offset = decodeCursor(args.cursor, query, tool);
+
+  const members = [...catalog.members.values()];
+  const matches =
+    query.length === 0
+      ? members
+      : scoreBoxedTools(members, query, new Set(catalog.boxes.keys())).map((item) => item.member);
+  if (offset > 0 && offset >= matches.length) {
+    throw cursorError('cursor is past the end of the results', tool);
+  }
+  const slice = matches.slice(offset, offset + pageSize);
+  const tools = slice.map((member): BoxedToolSummary => ({
+    ...summarizeTool(member.qualified, options.policy),
+    box: member.alias,
+  }));
+  const end = offset + slice.length;
+  const page: BoxedSearchPage = {
+    tools,
+    total: matches.length,
+    ...(end < matches.length ? { nextCursor: encodeCursor(query, end, tool) } : {}),
+  };
+
+  const lines: string[] = [];
+  if (queryTruncated) {
+    lines.push(`(query truncated to its first ${MAX_QUERY_CHARS} characters)`, '');
+  }
+  if (query.length === 0 && offset === 0) {
+    // Aliases are host-chosen and grammar-checked (R39): safe to print raw.
+    const counts = [...catalog.boxes.keys()].map((alias) => {
+      let count = 0;
+      for (const member of members) if (member.alias === alias) count += 1;
+      return `${alias} (${count} ${count === 1 ? 'tool' : 'tools'})`;
+    });
+    lines.push(`Boxes: ${counts.join(', ')}.`);
+  }
+  lines.push(...renderEntries(page, query, offset, tool, 'in any box'));
+  lines.push(
+    '',
+    'Tool names are qualified as <box>.<tool>. Call describe_tool with a name before calling a tool whose arguments you have not seen.',
+  );
+  return {
+    content: [{ type: 'text', text: lines.join('\n') }],
+    structuredContent: { ...page },
+  };
+}
+
 /** How many declared names an unknown-tool hint suggests. */
 export const SUGGESTION_LIMIT = 3;
 
@@ -150,12 +246,20 @@ export const SUGGESTION_LIMIT = 3;
  * what a `search_tools` call costs however long the guessed name is (the
  * catalog lookup it failed was an O(1) map miss; this is the first thing
  * that scans the catalog with the name).
+ *
+ * On a multi-server view (R40) the suggestions are qualified names: when the
+ * name's alias part is a wrapped box they come from that box only, ranked
+ * on the rest of the name; an unqualified name or an unknown alias ranks
+ * across every box, with R43's alias tokens. Either way each tool is scored
+ * against its bare name, title and description, so a hostile server cannot
+ * be suggested for a name qualified with another box's alias (S5).
  */
 export function suggestTools(
   catalog: ServerCatalog,
   name: string,
   limit: number = SUGGESTION_LIMIT,
 ): string[] {
+  if (isBoxedCatalog(catalog)) return suggestBoxedTools(catalog, name, limit);
   const query = name.slice(0, MAX_QUERY_CHARS);
   // An empty query lists the whole catalog for search_tools; an empty name
   // suggests nothing.
@@ -164,6 +268,22 @@ export function suggestTools(
     .filter((item) => item.nameHits > 0)
     .slice(0, Math.max(0, limit))
     .map((item) => item.entry.name);
+}
+
+function suggestBoxedTools(catalog: BoxedCatalog, name: string, limit: number): string[] {
+  const split = splitQualified(name);
+  const scoped = split !== undefined && catalog.boxes.has(split.alias) ? split : undefined;
+  const query = (scoped !== undefined ? scoped.rest : name).slice(0, MAX_QUERY_CHARS);
+  if (tokenize(query).length === 0) return [];
+  const members = [...catalog.members.values()].filter(
+    (member) => scoped === undefined || member.alias === scoped.alias,
+  );
+  // Inside one box there is nothing for an alias token to select.
+  const aliases = scoped !== undefined ? new Set<string>() : new Set(catalog.boxes.keys());
+  return scoreBoxedTools(members, query, aliases)
+    .filter((item) => item.nameHits > 0)
+    .slice(0, Math.max(0, limit))
+    .map((item) => item.member.qualified.name);
 }
 
 /** A tool name — the caller's or the catalog's — quoted for an error (S5). */
@@ -183,7 +303,8 @@ function listNames(names: string[]): string {
  * tools when there are any, then points at `search_tools`. A model that
  * guessed `create_issue` learns `issue_write` in the same turn instead of
  * three turns later. Every name shown is S5-untrusted: neutralized, capped
- * and quoted.
+ * and quoted. On a multi-server view the message says which part of the
+ * qualified name failed and the suggestions are qualified (R40).
  */
 export function unknownToolError(
   catalog: ServerCatalog,
@@ -192,6 +313,7 @@ export function unknownToolError(
 ): ProjectionError {
   const suggestions = suggestTools(catalog, name).map(inertName);
   const didYouMean = suggestions.length === 0 ? '' : `Did you mean ${listNames(suggestions)}? `;
+  if (isBoxedCatalog(catalog)) return unknownBoxedToolError(catalog, name, via, didYouMean);
   return new ProjectionError(
     'validate',
     `Unknown tool ${inertName(name)}: the wrapped server does not declare it`,
@@ -199,6 +321,29 @@ export function unknownToolError(
       hint: `${didYouMean}Call search_tools to list the tools this server declares, then ${via} with one of those names exactly.`,
     },
   );
+}
+
+function unknownBoxedToolError(
+  catalog: BoxedCatalog,
+  name: string,
+  via: 'call_tool' | 'describe_tool',
+  didYouMean: string,
+): ProjectionError {
+  const split = splitQualified(name);
+  // Aliases are host-chosen and grammar-checked (R39): safe to print raw.
+  const boxes = [...catalog.boxes.keys()].join(', ');
+  let why: string;
+  if (split === undefined) {
+    why = `tool names here are qualified as <box>.<tool> (boxes: ${boxes})`;
+  } else if (catalog.boxes.has(split.alias)) {
+    why = `the ${split.alias} box does not declare it`;
+  } else {
+    why = `there is no box ${inertName(split.alias)} (boxes: ${boxes})`;
+  }
+  return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
+    // TODO(PR3): name the per-box search_<alias> tools once they are served (R43).
+    hint: `${didYouMean}Call search_tools to list the tools every box declares, then ${via} with one of those qualified names exactly.`,
+  });
 }
 
 /**
@@ -249,20 +394,66 @@ function scoreTools(tools: ToolCatalogEntry[], query: string): ScoredTool[] {
   if (tokens.size === 0) return [];
   const scored: ScoredTool[] = [];
   for (const entry of tools) {
-    const name = entry.name.toLowerCase();
-    const title = (entry.annotations?.title ?? '').toLowerCase();
-    const description = (entry.description ?? '').toLowerCase();
-    let nameHits = 0;
-    let score = 0;
-    for (const token of tokens) {
-      // Additive: a token in both the name and the description scores 3.
-      if (name.includes(token)) {
-        nameHits += 1;
-        score += 2;
-      }
-      if (title.includes(token) || description.includes(token)) score += 1;
-    }
+    const { score, nameHits } = scoreEntry(entry, tokens);
     if (score > 0) scored.push({ entry, score, nameHits });
+  }
+  return scored.sort((a, b) => b.score - a.score);
+}
+
+/** One tool's D10 score for a set of tokens (shared by every ranking). */
+function scoreEntry(
+  entry: ToolCatalogEntry,
+  tokens: ReadonlySet<string>,
+): { score: number; nameHits: number } {
+  const name = entry.name.toLowerCase();
+  const title = (entry.annotations?.title ?? '').toLowerCase();
+  const description = (entry.description ?? '').toLowerCase();
+  let nameHits = 0;
+  let score = 0;
+  for (const token of tokens) {
+    // Additive: a token in both the name and the description scores 3.
+    if (name.includes(token)) {
+      nameHits += 1;
+      score += 2;
+    }
+    if (title.includes(token) || description.includes(token)) score += 1;
+  }
+  return { score, nameHits };
+}
+
+/** A boxed tool with its R43 score. */
+interface ScoredBoxedTool {
+  member: BoxedTool;
+  score: number;
+  nameHits: number;
+}
+
+/** Score an alias token adds to every tool of its box (R43). */
+const ALIAS_TOKEN_SCORE = 2;
+
+/**
+ * R43 ranking across boxes: D10 against each tool's BARE name, title and
+ * description, except that a token equal to a wrapped alias (in `aliases`)
+ * is an alias token — it adds 2 to every tool in that box and is matched
+ * against no tool's text, so a server cannot outrank another box's tools for
+ * that box's alias by writing the alias into its own text (S5). The sort is
+ * stable over `members`, which arrive in sorted-alias-then-catalog order:
+ * that is the tie-break.
+ */
+function scoreBoxedTools(
+  members: readonly BoxedTool[],
+  query: string,
+  aliases: ReadonlySet<string>,
+): ScoredBoxedTool[] {
+  const tokens = new Set(tokenize(query));
+  if (tokens.size === 0) return [];
+  const aliasTokens = new Set([...tokens].filter((token) => aliases.has(token)));
+  const textTokens = new Set([...tokens].filter((token) => !aliasTokens.has(token)));
+  const scored: ScoredBoxedTool[] = [];
+  for (const member of members) {
+    const { score, nameHits } = scoreEntry(member.entry, textTokens);
+    const boost = aliasTokens.has(member.alias) ? ALIAS_TOKEN_SCORE : 0;
+    if (score + boost > 0) scored.push({ member, score: score + boost, nameHits });
   }
   return scored.sort((a, b) => b.score - a.score);
 }
@@ -278,30 +469,16 @@ function renderPage(
   if (queryTruncated) {
     lines.push(`(query truncated to its first ${MAX_QUERY_CHARS} characters)`, '');
   }
-  const scope =
-    query.length > 0 ? ` matching ${JSON.stringify(neutralizeControlChars(query))}` : '';
-  if (page.tools.length === 0) {
-    lines.push(`No tools${scope} on server ${inertIdentity(catalog.identity)}.`);
-  } else {
-    lines.push(
-      `Tools ${offset + 1}–${offset + page.tools.length} of ${page.total}${scope} (server ${inertIdentity(catalog.identity)}):`,
-    );
-    for (const tool of page.tools) {
-      // Names and purposes are S5-controlled: neutralize so a hostile value
-      // cannot forge a line of its own (e.g. relabel a write as "runs
-      // immediately"). The purpose is already inline-neutralized and capped
-      // by `purposeSentence`; the posture is rendered by us, after the data.
-      const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
-      const flags = tool.destructive ? `${tool.posture}, destructive` : tool.posture;
-      lines.push(`- ${name} — ${tool.purpose} [${flags}]`);
-    }
-  }
-  if (page.nextCursor !== undefined) {
-    lines.push(
-      '',
-      `More tools follow: call search_tools again with cursor ${JSON.stringify(page.nextCursor)}.`,
-    );
-  }
+  lines.push(
+    ...renderEntries(
+      page,
+      query,
+      offset,
+      'search_tools',
+      `on server ${inertIdentity(catalog.identity)}`,
+      `server ${inertIdentity(catalog.identity)}`,
+    ),
+  );
   lines.push(
     '',
     'Call describe_tool with a name before calling a tool whose arguments you have not seen.',
@@ -309,40 +486,92 @@ function renderPage(
   return lines.join('\n');
 }
 
+/**
+ * The page body every search tool shares: the header, one line per tool,
+ * and the next-cursor pointer. `where` ends the empty-page line; `scopeLabel`
+ * is the parenthesized scope of the header, when there is one.
+ */
+function renderEntries(
+  page: { tools: ToolSummary[]; total: number; nextCursor?: string },
+  query: string,
+  offset: number,
+  tool: string,
+  where: string,
+  scopeLabel?: string,
+): string[] {
+  const lines: string[] = [];
+  const scope =
+    query.length > 0 ? ` matching ${JSON.stringify(neutralizeControlChars(query))}` : '';
+  if (page.tools.length === 0) {
+    lines.push(`No tools${scope} ${where}.`);
+  } else {
+    const label = scopeLabel !== undefined ? ` (${scopeLabel})` : '';
+    lines.push(
+      `Tools ${offset + 1}–${offset + page.tools.length} of ${page.total}${scope}${label}:`,
+    );
+    for (const entry of page.tools) {
+      // Names and purposes are S5-controlled: neutralize so a hostile value
+      // cannot forge a line of its own (e.g. relabel a write as "runs
+      // immediately"). The purpose is already inline-neutralized and capped
+      // by `purposeSentence`; the posture is rendered by us, after the data.
+      const name = capLength(neutralizeControlChars(entry.name), MAX_IDENTITY_CHARS);
+      const flags = entry.destructive ? `${entry.posture}, destructive` : entry.posture;
+      lines.push(`- ${name} — ${entry.purpose} [${flags}]`);
+    }
+  }
+  if (page.nextCursor !== undefined) {
+    lines.push(
+      '',
+      `More tools follow: call ${tool} again with cursor ${JSON.stringify(page.nextCursor)}.`,
+    );
+  }
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // Cursor: opaque, bound to the query that produced it (R33)
 // ---------------------------------------------------------------------------
 
 interface CursorPayload {
+  /** The search tool that issued the cursor; multi-server facades only (R43). */
+  t?: string;
   q: string;
   o: number;
 }
 
-function encodeCursor(query: string, offset: number): string {
-  const payload: CursorPayload = { q: query, o: offset };
+/**
+ * Encode a page cursor. A multi-server search binds it to its issuing tool
+ * (`t`, R43); a single-server `search_tools` cursor stays `{ q, o }`.
+ */
+function encodeCursor(query: string, offset: number, tool?: string): string {
+  const payload: CursorPayload =
+    tool !== undefined ? { t: tool, q: query, o: offset } : { q: query, o: offset };
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
-function cursorError(why: string): ProjectionError {
-  return new ProjectionError('validate', `search_tools cursor is not usable: ${why}`, {
-    hint: 'Pass a cursor exactly as a previous search_tools result returned it, with the same query; or omit it to start from the first page.',
+function cursorError(why: string, tool = 'search_tools'): ProjectionError {
+  return new ProjectionError('validate', `${tool} cursor is not usable: ${why}`, {
+    hint: `Pass a cursor exactly as a previous ${tool} result returned it, with the same query; or omit it to start from the first page.`,
   });
 }
 
 /**
- * Decode a cursor to its offset. Only the fields read (`q`, `o`) are
- * validated: a payload carrying extra keys is accepted, since the cursor is
- * opaque data and nothing else in it is consumed. The offset's upper bound
- * is checked by the caller once the match count is known.
+ * Decode a cursor to its offset. Only the fields read (`q`, `o`, and `t`
+ * when `tool` is given) are validated: a payload carrying extra keys is
+ * accepted, since the cursor is opaque data and nothing else in it is
+ * consumed. The offset's upper bound is checked by the caller once the
+ * match count is known. With `tool`, the cursor must have been issued by
+ * that tool (R43): a cursor without `t`, or from another search tool, is
+ * refused.
  */
-function decodeCursor(cursor: string | undefined, query: string): number {
+function decodeCursor(cursor: string | undefined, query: string, tool?: string): number {
   if (cursor === undefined || cursor.length === 0) return 0;
-  if (cursor.length > 1_024) throw cursorError('too long');
+  if (cursor.length > 1_024) throw cursorError('too long', tool);
   let payload: unknown;
   try {
     payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
   } catch {
-    throw cursorError('malformed');
+    throw cursorError('malformed', tool);
   }
   if (
     typeof payload !== 'object' ||
@@ -350,10 +579,16 @@ function decodeCursor(cursor: string | undefined, query: string): number {
     typeof (payload as CursorPayload).q !== 'string' ||
     typeof (payload as CursorPayload).o !== 'number'
   ) {
-    throw cursorError('malformed');
+    throw cursorError('malformed', tool);
   }
-  const { q, o } = payload as CursorPayload;
-  if (!Number.isInteger(o) || o < 0) throw cursorError('malformed');
-  if (q !== query) throw cursorError('it was issued for a different query');
+  const { t, q, o } = payload as CursorPayload;
+  if (!Number.isInteger(o) || o < 0) throw cursorError('malformed', tool);
+  if (tool !== undefined && t !== tool) {
+    throw cursorError(
+      typeof t === 'string' ? 'it was issued by another search tool' : 'malformed',
+      tool,
+    );
+  }
+  if (q !== query) throw cursorError('it was issued for a different query', tool);
   return o;
 }

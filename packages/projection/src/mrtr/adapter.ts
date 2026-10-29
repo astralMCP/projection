@@ -5,6 +5,7 @@
  */
 
 import { hashCode, openBlob, sealBlob, buildBlobPayload } from '../blob/index.js';
+import { approvalSubject, blobKeyDomain } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
@@ -175,6 +176,7 @@ async function openResume(
     code: args.code,
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
+    domain: blobKeyDomain(deps.catalog),
   });
   await assertNotReplayed(payload, deps.replayCache);
 
@@ -310,11 +312,13 @@ function suspendResult(
     }
     // S6: copy is built from catalog data and redacted args only — never
     // from model-authored free text.
-    const copy = buildElicitationCopy(
-      call,
-      entry,
-      deps.redact !== undefined ? { redact: deps.redact } : {},
-    );
+    // On a multi-server facade the copy is built from the box's own entry
+    // and names the box (R46).
+    const subject = approvalSubject(deps.catalog, entry);
+    const copy = buildElicitationCopy(call, subject.entry, {
+      ...(subject.box !== undefined ? { box: subject.box } : {}),
+      ...(deps.redact !== undefined ? { redact: deps.redact } : {}),
+    });
     // The 2026-07-28 elicitation params dropped `title` (the revision carries
     // `message` and `requestedSchema` only), so the summary line becomes the
     // first line of the message rather than being silently lost.
@@ -336,7 +340,7 @@ function suspendResult(
 
   let requestState: string;
   try {
-    requestState = sealBlob(payload, deps.blob);
+    requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog));
   } catch (err) {
     // R23 (blob over the size ceiling) is a failure the model can act on, so
     // it must keep this segment's console output (R31) rather than losing it
