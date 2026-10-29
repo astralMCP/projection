@@ -200,22 +200,37 @@ describe('facade options', () => {
     await facade.close();
   });
 
-  it('defaults code mode off (R45, not served yet) and refuses an explicit request for it', async () => {
-    const error = await validateError({ fs: fsServer([]) }, { projections: { codeMode: true } });
-    expect(error.message).toContain('code mode is not supported on multi-server facades yet');
-
+  it('serves both projections by default, as a single-server facade does (R1, R45)', async () => {
     const facade = await wrapMcpServers({ fs: fsServer([]) }, options);
-    expect(facade.projections).toEqual({ codeMode: false, catalog: true });
-    expect(structuredPhase(facade.discoverApis())).toBe('validate');
-    expect(structuredPhase(await facade.executeMachine({ code: '' }))).toBe('validate');
+    expect(facade.projections).toEqual({ codeMode: true, catalog: true });
+    expect(structuredPhase(facade.discoverApis())).toBeUndefined();
     await facade.close();
   });
 
-  it('refuses turning the catalog projection off, the only one served yet (R1, R45)', async () => {
+  it('serves either projection alone, and refuses both off with a terminal error (R1)', async () => {
+    const codeOnly = await wrapMcpServers(
+      { fs: fsServer([]) },
+      { ...options, projections: { catalog: false } },
+    );
+    expect(codeOnly.projections).toEqual({ codeMode: true, catalog: false });
+    expect(codeOnly.instructions).toContain('pass that full name to toolCall in a machine');
+    await codeOnly.close();
+    const catalogOnly = await wrapMcpServers(
+      { fs: fsServer([]) },
+      { ...options, projections: { codeMode: false } },
+    );
+    expect(catalogOnly.instructions).toContain(
+      'pass that full name to describe_tool and call_tool',
+    );
+    await catalogOnly.close();
+
     const server = fsServer([]);
-    const error = await validateError({ fs: server }, { projections: { catalog: false } });
-    expect(error.message).toContain('the catalog projection is required on multi-server facades');
-    expect(error.hint).toContain('Omit projections.catalog');
+    await expect(
+      wrapMcpServers(
+        { fs: server },
+        { ...options, projections: { codeMode: false, catalog: false } },
+      ),
+    ).rejects.toMatchObject({ phase: 'terminal' });
     expect(server.isConnected()).toBe(false);
   });
 

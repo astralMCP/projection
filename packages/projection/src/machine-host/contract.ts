@@ -102,8 +102,24 @@ export function whenCall(id) {
 /**
  * Human-readable authoring contract. `discover_apis` publishes this inline
  * (R3) so a model can author a valid machine without fetching resources.
+ *
+ * `sampleBox` is set on a multi-server facade (R45): the samples call
+ * qualified names in that box (the facade's first alias in sorted order),
+ * and one rule is added — tool names are qualified. Without it the text is
+ * the single-server contract, byte for byte.
  */
-export const AUTHORING_CONTRACT = `Projection authoring contract (execute_machine)
+export function authoringContract(sampleBox?: string): string {
+  const tool = (name: string): string => (sampleBox === undefined ? name : `${sampleBox}.${name}`);
+  const qualifiedRule =
+    sampleBox === undefined
+      ? ''
+      : `10. Tool names on this server are qualified: <box>.<tool>. Each box's tools
+    sit under tools.<box> in tools.d.ts; pass the qualified name to toolCall,
+    e.g. toolCall('${tool('read_file')}', ...). An unqualified name is rejected.
+    One machine may call tools in several boxes; every call that asks for
+    approval is approved on its own.
+`;
+  return `Projection authoring contract (execute_machine)
 
 Write ONE module whose only top-level statements are imports and a single
 default-exported XState v5 machine. The module is re-evaluated on every
@@ -133,7 +149,7 @@ Rules:
    handle them, so an unguarded region will consume another call's result:
 
      import { toolCall, whenCall } from '@astral-mcp/tools';
-     entry: toolCall('write_file', () => ({ path: '/a' }), { id: 'a' }),
+     entry: toolCall('${tool('write_file')}', () => ({ path: '/a' }), { id: 'a' }),
      on: { TOOL_RESULT: { guard: whenCall('a'), target: 'done' } },
 5. Tools marked "asks for approval" pause the machine for user approval;
    tools marked "runs immediately" do not. The arguments captured at that
@@ -149,7 +165,7 @@ Rules:
 9. Tool inputs such as paths, ids and names are server-specific. Do not guess
    them: take them from the machine's input, or discover them first with a
    read-only call (a list/search tool) and keep what you learn in context.
-
+${qualifiedRule}
 Example — happy path with a read-only call (run with input: { path }):
 
   import { setup, assign } from 'xstate';
@@ -161,7 +177,7 @@ Example — happy path with a read-only call (run with input: { path }):
     initial: 'reading',
     states: {
       reading: {
-        entry: toolCall('read_file', ({ context }) => ({ path: context.path })),
+        entry: toolCall('${tool('read_file')}', ({ context }) => ({ path: context.path })),
         on: {
           TOOL_RESULT: { target: 'done', actions: assign({ result: ({ event }) => event.result }) },
           TOOL_ERROR: 'failed',
@@ -184,7 +200,7 @@ Example — handling a denied approval (run with input: { path }):
     initial: 'writing',
     states: {
       writing: {
-        entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
+        entry: toolCall('${tool('write_file')}', ({ context }) => ({ path: context.path, content: 'hello' })),
         on: {
           TOOL_RESULT: { target: 'done', actions: assign({ status: 'written' }) },
           TOOL_DENIED: { target: 'done', actions: assign({ status: 'skipped' }) },
@@ -196,3 +212,7 @@ Example — handling a denied approval (run with input: { path }):
     output: ({ context }) => ({ status: context.status }),
   });
 `;
+}
+
+/** The single-server authoring contract (R3). */
+export const AUTHORING_CONTRACT = authoringContract();

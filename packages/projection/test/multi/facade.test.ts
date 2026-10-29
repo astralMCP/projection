@@ -365,7 +365,11 @@ describe('instructions (R44, minimal shelf)', () => {
       { fs: fsServer(log), github: { source: githubServer(log), description: 'Issues and PRs.' } },
       { blob: { key: KEY } },
     );
-    expect(facade.instructions).toContain('Call search_tools to find a tool in any box');
+    expect(facade.instructions).toContain('search_tools to find a tool in any box');
+    expect(facade.instructions).toContain('run it with execute_machine');
+    expect(facade.instructions).toContain(
+      'tools are named <box>.<tool>; pass that full name to describe_tool, call_tool and toolCall:',
+    );
     expect(facade.instructions).toContain('- fs (3 tools)');
     expect(facade.instructions).toContain('- github — Issues and PRs. (4 tools)');
     expect(facade.instructions).not.toContain('SERVER-INSTRUCTIONS');

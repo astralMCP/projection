@@ -7,9 +7,16 @@
  * it wants them. Clients with weak resource support still function.
  */
 
-import { AUTHORING_CONTRACT } from '../machine-host/index.js';
+import { authoringContract } from '../machine-host/index.js';
 import { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from '../apps/dashboard.js';
-import { inertIdentity } from '../text-safety.js';
+import {
+  boxesLabel,
+  boxOverview,
+  firstAlias,
+  isBoxedCatalog,
+  type BoxedCatalog,
+} from '../catalog/boxes.js';
+import { indentBlock, inertIdentity } from '../text-safety.js';
 import { XSTATE_VERSION } from '../blob/index.js';
 import { dedupeTools, type ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
@@ -22,6 +29,11 @@ export const RESOURCE_URIS = {
   denialFallback: 'projection://examples/denial-fallback.ts',
 } as const;
 
+/** URI of a box's overview resource on a multi-server facade (R3, R45). */
+export function boxOverviewUri(alias: string): string {
+  return `projection://boxes/${alias}/overview.md`;
+}
+
 /** One resource Projection serves, ready to register on the MCP server. */
 export interface ProjectionResource {
   uri: string;
@@ -33,7 +45,13 @@ export interface ProjectionResource {
   _meta?: Record<string, unknown>;
 }
 
-export const EXAMPLE_HAPPY_PATH = `import { setup, assign } from 'xstate';
+/**
+ * The happy-path example machine. `sampleBox` qualifies its tool names on a
+ * multi-server facade (R45: the facade's first alias in sorted order);
+ * without it the text is {@link EXAMPLE_HAPPY_PATH}.
+ */
+export function exampleHappyPath(sampleBox?: string): string {
+  return `import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
 
 // Read a file and return the tool's result. Read-only calls run immediately,
@@ -47,7 +65,7 @@ export default setup({}).createMachine({
   initial: 'reading',
   states: {
     reading: {
-      entry: toolCall('read_file', ({ context }) => ({ path: context.path })),
+      entry: toolCall('${qualify('read_file', sampleBox)}', ({ context }) => ({ path: context.path })),
       on: {
         TOOL_RESULT: {
           target: 'done',
@@ -69,8 +87,18 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ result: context.result, error: context.error }),
 });
 `;
+}
 
-export const EXAMPLE_DENIAL_FALLBACK = `import { setup, assign } from 'xstate';
+export const EXAMPLE_HAPPY_PATH = exampleHappyPath();
+
+/** A sample tool name, qualified with `sampleBox` when there is one (R45). */
+function qualify(name: string, sampleBox: string | undefined): string {
+  return sampleBox === undefined ? name : `${sampleBox}.${name}`;
+}
+
+/** The denial-fallback example machine; `sampleBox` as for {@link exampleHappyPath}. */
+export function exampleDenialFallback(sampleBox?: string): string {
+  return `import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
 
 // Write a file, but keep going if the user declines. TOOL_DENIED is an
@@ -83,7 +111,7 @@ export default setup({}).createMachine({
   initial: 'writing',
   states: {
     writing: {
-      entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
+      entry: toolCall('${qualify('write_file', sampleBox)}', ({ context }) => ({ path: context.path, content: 'hello' })),
       on: {
         TOOL_RESULT: {
           target: 'summarizing',
@@ -105,7 +133,7 @@ export default setup({}).createMachine({
       },
     },
     summarizing: {
-      entry: toolCall('list_dir', ({ context }) => ({ path: context.dir })),
+      entry: toolCall('${qualify('list_dir', sampleBox)}', ({ context }) => ({ path: context.dir })),
       on: {
         TOOL_RESULT: { target: 'done' },
         TOOL_ERROR: { target: 'done' },
@@ -116,15 +144,38 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ status: context.status, note: context.note }),
 });
 `;
+}
 
-/** Build the resources Projection serves for a wrapped server (R3). */
+export const EXAMPLE_DENIAL_FALLBACK = exampleDenialFallback();
+
+/**
+ * What the code-mode copy says about the facade it serves (R39, R45): on a
+ * multi-server view, the aliases — never a server-reported identity — and
+ * the box the samples use; otherwise the S5-untrusted identity, rendered
+ * inert (`inertIdentity` supplies its own quotes).
+ */
+function codeModeSubject(catalog: ServerCatalog): {
+  label: string;
+  view?: BoxedCatalog;
+  sampleBox?: string;
+} {
+  if (!isBoxedCatalog(catalog)) return { label: inertIdentity(catalog.identity) };
+  return { label: boxesLabel(catalog), view: catalog, sampleBox: firstAlias(catalog) };
+}
+
+/**
+ * Build the resources Projection serves for a wrapped server (R3). On a
+ * multi-server view the descriptions name the boxes, the contract and the
+ * examples use qualified names, and each box whose server sends
+ * `instructions` gets its overview resource (R45).
+ */
 export function buildResources(catalog: ServerCatalog, dts: string): ProjectionResource[] {
+  const subject = codeModeSubject(catalog);
   return [
     {
       uri: RESOURCE_URIS.toolTypes,
       name: 'tools.d.ts',
-      // The identity is S5-untrusted; inertIdentity supplies its own quotes.
-      description: `TypeScript definitions for the tools of ${inertIdentity(catalog.identity)}.`,
+      description: `TypeScript definitions for the tools of ${subject.label}.`,
       mimeType: 'text/plain',
       text: dts,
     },
@@ -133,22 +184,23 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
       name: 'authoring-contract.md',
       description: 'Rules an authored machine must follow.',
       mimeType: 'text/markdown',
-      text: AUTHORING_CONTRACT,
+      text: authoringContract(subject.sampleBox),
     },
     {
       uri: RESOURCE_URIS.happyPath,
       name: 'happy-path.ts',
       description: 'Example machine: read-only work, completes in one call.',
       mimeType: 'text/plain',
-      text: EXAMPLE_HAPPY_PATH,
+      text: exampleHappyPath(subject.sampleBox),
     },
     {
       uri: RESOURCE_URIS.denialFallback,
       name: 'denial-fallback.ts',
       description: 'Example machine: continues gracefully when approval is declined.',
       mimeType: 'text/plain',
-      text: EXAMPLE_DENIAL_FALLBACK,
+      text: exampleDenialFallback(subject.sampleBox),
     },
+    ...(subject.view !== undefined ? boxOverviewResources(subject.view) : []),
     {
       // MCP Apps dashboard (PRD 12.1): rendered by app-capable hosts when
       // execute_machine completes. Served for hosts, not for models -- the
@@ -164,6 +216,27 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
   ];
 }
 
+/**
+ * One overview resource per box whose server sends `instructions` (R3,
+ * R45): the server's own words, attributed to the box and indented as a
+ * block so they read as data, reachable with the catalog projection off.
+ */
+function boxOverviewResources(view: BoxedCatalog): ProjectionResource[] {
+  const resources: ProjectionResource[] = [];
+  for (const [alias, box] of view.boxes) {
+    const overview = boxOverview(box);
+    if (overview === undefined) continue;
+    resources.push({
+      uri: boxOverviewUri(alias),
+      name: `${alias}-overview.md`,
+      description: `Guidance for the ${alias} box, in its server's own words.`,
+      mimeType: 'text/markdown',
+      text: `# The ${alias} box\n\nGuidance from the ${alias} box (the server's own words; it applies to ${alias} tools only):\n\n${indentBlock(overview)}\n`,
+    });
+  }
+  return resources;
+}
+
 /** R37: above this many tools, `discover_apis` defers the per-tool list to the catalog tools. */
 export const DEFAULT_INLINE_TOOL_THRESHOLD = 40;
 
@@ -176,6 +249,11 @@ export interface DiscoverApisOptions {
    * clamped at 0, anything else falls back to the default.
    */
   inlineThreshold?: number;
+  /**
+   * The search tools the facade serves, for the R37 pointer on a
+   * multi-server facade (R43, R45). Default `['search_tools']`.
+   */
+  searchTools?: readonly string[];
 }
 
 /** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
@@ -199,22 +277,28 @@ export function discoverApis(
   options: DiscoverApisOptions = {},
 ): CallToolResult {
   const threshold = clampInlineThreshold(options.inlineThreshold);
+  const subject = codeModeSubject(catalog);
   // Count what the model can reach: typegen and the catalog projection both
-  // dedupe by name (S5), so a repeated name is one tool, not two.
+  // dedupe by name (S5), so a repeated name is one tool, not two. A
+  // multi-server view is deduplicated per box already and counts across
+  // every box (R45).
   const toolCount = dedupeTools(catalog.tools).length;
   const deferred = options.catalog === true && toolCount > threshold;
-  const toolsSection = deferred
-    ? `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`
-    : overview;
+  let toolsSection = overview;
+  if (deferred) {
+    toolsSection =
+      subject.view !== undefined
+        ? deferredBoxesSection(subject.view, toolCount, options.searchTools ?? ['search_tools'])
+        : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
+  }
   const inline = [
-    // The identity is S5-untrusted; inertIdentity supplies its own quotes.
-    `Projection code mode over ${inertIdentity(catalog.identity)}.`,
+    `Projection code mode over ${subject.label}.`,
     '',
     `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',
     toolsSection,
     '',
-    AUTHORING_CONTRACT,
+    authoringContract(subject.sampleBox),
   ].join('\n');
 
   const links: ContentBlock[] = buildResources(catalog, '')
@@ -230,6 +314,23 @@ export function discoverApis(
   return {
     content: [{ type: 'text', text: inline }, ...links],
   };
+}
+
+/**
+ * R37 on a multi-server facade (R45): the count across every box, the
+ * per-box counts, and a pointer at the search tools the facade serves.
+ */
+function deferredBoxesSection(
+  view: BoxedCatalog,
+  toolCount: number,
+  searchTools: readonly string[],
+): string {
+  const counts = [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
+  const search =
+    searchTools.length <= 1
+      ? (searchTools[0] ?? 'search_tools')
+      : `${searchTools.slice(0, -1).join(', ')} or ${searchTools[searchTools.length - 1] ?? ''}`;
+  return `Tools: ${toolCount} across ${boxesLabel(view)} — too many to list here (${counts}). Call ${search} to find tools by name or purpose and describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`;
 }
 
 /** Which projections a facade serves (R1, R32). */

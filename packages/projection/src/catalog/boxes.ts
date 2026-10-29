@@ -25,6 +25,7 @@
 
 import type { BlobKeyDomain } from '../blob/index.js';
 import { ProjectionError } from '../errors.js';
+import { neutralizeControlChars } from '../text-safety.js';
 import {
   dedupeTools,
   type ApprovalsMode,
@@ -126,6 +127,51 @@ export function buildBoxedCatalog(boxes: Iterable<ToolBox>): BoxedCatalog {
   };
   boxedViews.add(view);
   return view;
+}
+
+/**
+ * How a surface spanning the whole facade names it (R39): the sorted alias
+ * list — `the toolbox fs`, `the toolboxes fs, github` — never the
+ * server-reported identity. Aliases are host-chosen and grammar-checked, so
+ * they print raw.
+ */
+export function boxesLabel(catalog: BoxedCatalog): string {
+  const aliases = [...catalog.boxes.keys()];
+  return `the ${aliases.length === 1 ? 'toolbox' : 'toolboxes'} ${aliases.join(', ')}`;
+}
+
+/** The facade's first alias in sorted order: the box the R45 samples are written against. */
+export function firstAlias(catalog: BoxedCatalog): string {
+  return catalog.boxes.keys().next().value ?? '';
+}
+
+/** Longest box overview served (R43, R45), in characters; longer text is cut with a marker. */
+export const MAX_BOX_OVERVIEW_CHARS = 8_192;
+
+/**
+ * A box's overview (R43, R45): its server's full `instructions`, the
+ * server's own words (S5) — neutralized with newlines kept, capped at
+ * {@link MAX_BOX_OVERVIEW_CHARS} with an explicit truncation marker.
+ * `undefined` when the server sends no instructions.
+ */
+export function boxOverview(box: ToolBox): string | undefined {
+  const raw = box.catalog.instructions?.trim();
+  if (raw === undefined || raw.length === 0) return undefined;
+  const text = neutralizeControlChars(raw, { allowNewline: true });
+  return text.length <= MAX_BOX_OVERVIEW_CHARS
+    ? text
+    : `${text.slice(0, MAX_BOX_OVERVIEW_CHARS)}\n[truncated: the ${box.alias} server's instructions continue past ${MAX_BOX_OVERVIEW_CHARS} characters]`;
+}
+
+/**
+ * The view's tools grouped by box, in sorted alias order and each box's
+ * catalog order; a box without tools maps to an empty list.
+ */
+export function membersByBox(catalog: BoxedCatalog): Map<string, BoxedTool[]> {
+  const grouped = new Map<string, BoxedTool[]>();
+  for (const alias of catalog.boxes.keys()) grouped.set(alias, []);
+  for (const member of catalog.members.values()) grouped.get(member.alias)?.push(member);
+  return grouped;
 }
 
 /** The boxed tool a qualified name denotes, O(1); `undefined` when there is none. */

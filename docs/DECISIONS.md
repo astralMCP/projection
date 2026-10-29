@@ -701,18 +701,37 @@ a server past it.
 
 Interim gaps, until the follow-up PRs:
 
-- code mode is off: it defaults off, `projections.codeMode: true` fails the
-  wrap, `projections.catalog: false` fails it too (the catalog is the only
-  projection served), and `describe_tool` returns no types (its `types`
-  argument says so) — R45 typegen, `discover_apis` and the workflow prompts
-  still print the single-server identity (listed under `TODO(R45)` in
-  `multi/facade.ts`);
 - `optional: true` is unsupported (fails the wrap; `optional: false` is
   accepted), and `introspectTimeoutMs` is not built (R47);
 - `catalog.globalSearch: false` is unsupported, and there are no
   `search_<alias>` tools or box overviews yet (R43); the instructions carry
   a minimal shelf (alias, host description, tool count) without the R44
   fallback to the server's first sentence.
+
+Implementation (code mode, R45, 2026-10-29): code mode is on by default on
+multi-server facades, as on single-server ones, and either projection can be
+turned off. Typegen takes the branded view and emits one `tools.<alias>`
+object-type property per box — object types, not `namespace`s, so a
+reserved-word alias is a valid property — with `<alias>_<Pascal>` type names
+(unique because aliases have no `_`, and stable whichever other boxes are
+wrapped), one `.d.ts` section per box in sorted alias order, and postures
+decided on each tool's qualified entry with the shared `PolicyOptions`. The
+bridge's `tools.<alias>.<name>` binds the qualified name, so a bridge call
+and `toolCall('<alias>.<name>')` reach the host identically, and the machine
+host routes both with `routeCall`. Nothing in the gate changed: the view
+already made `pending`, the audit trail and the key domain box-aware, and
+machine blobs use the `multi` domain because the facade declares it for both
+gated tools. The single-server artifacts are built by the untouched path, so
+their goldens are byte-identical; the multi-server text variants (contract
+rule 10, qualified samples, grouped overview, box-named headers) are
+selected by the brand and parameterized by the first alias in sorted order.
+Two wording choices: the machine's unknown-tool hint on a multi-server facade
+now leads with the R40 did-you-mean (the single-server machine hint is
+unchanged), and the shelf header names the tools that take a qualified name
+for the projections served (`describe_tool`, `call_tool`, `toolCall`). Box
+overview resources serve the server's `instructions` neutralized (newlines
+kept), capped at 8,192 characters with a truncation marker, as an indented
+block.
 
 Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
 dispatching on the alias in front of N single-server facades — N blob

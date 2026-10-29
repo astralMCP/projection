@@ -279,12 +279,39 @@ alias → server mapping and are keyed separately from single-server blobs: a
 blob never resumes on a facade with a different server set, alias mapping or
 server version, nor across facade kinds.
 
-This preview serves the catalog projection only, which therefore cannot be
-turned off (`projections.catalog: false` fails the wrap). Not yet available:
-code mode (`projections.codeMode: true` fails the wrap, and `describe_tool`
-returns no TypeScript types), the per-box `search_<alias>` tools and box
-overviews (`catalog.globalSearch: false` fails the wrap), `optional: true`
-sources, and `introspectTimeoutMs`.
+Both projections are served, as on a single-server facade, and either can be
+turned off (`projections`; both off fails the wrap). In code mode the
+generated `tools.d.ts` has one property per box — `tools.fs.read_file`,
+`tools.github["create-ticket!"]` — as object types rather than TypeScript
+namespaces, so an alias that is a reserved word (`delete`, `class`) still
+type-checks. Type names carry the alias (`fs_ReadFileInput`,
+`github_WriteFileOutput`), so two boxes' same-named tools never collide.
+Machines call tools by qualified name, `toolCall('fs.read_file', args)`, and
+Projection routes each call to its box; an unqualified or unknown name fails
+validation with a did-you-mean hint listing qualified names (from the named
+box only, when the alias is one you configured). One machine may use several
+boxes: each gated call is approved on its own, and parallel gated calls to
+different boxes share one round trip with one approval prompt each. Audit
+entries, sealed `pending` calls and machine blobs carry the qualified names
+and use the multi-server key domain, like `call_tool` blobs.
+
+`discover_apis` names the boxes (`Projection code mode over the toolboxes
+fs, github.`), lists the tools grouped per box under alias headings, and
+links one `projection://boxes/<alias>/overview.md` resource per box whose
+server sends `instructions` — that server's own text, capped at 8,192
+characters with a truncation marker — so a box's guidance is reachable with
+the catalog projection off. Above `catalogInlineThreshold`, counted across
+all boxes, it prints the per-box counts and points at the search tools
+instead. The authoring contract adds one rule — tool names are qualified —
+and its samples, like the `happy-path` and `denial-fallback` examples, call
+tools in the first box in sorted alias order (`fs.read_file`).
+`describe_tool({ name: 'fs.read_file', types: true })` returns that tool's
+slice of the `.d.ts` under `// Member of tools.fs:`, and the workflow prompts
+name the boxes, never what the servers call themselves.
+
+Not yet available: the per-box `search_<alias>` tools
+(`catalog.globalSearch: false` fails the wrap), `optional: true` sources, and
+`introspectTimeoutMs`.
 
 ## Legacy clients (pre-2026-07-28)
 
