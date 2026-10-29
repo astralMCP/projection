@@ -283,17 +283,20 @@ call_tool       …
 ```
 
 A `search_<alias>` tool's description is your `description` when you give
-one, else the first sentence of the server's `instructions` — neutralized,
-capped and quoted, so it reads as the server's words, not yours — else
-nothing; then the box's tool count. It searches that box only, with the
-same query rules, entries and paging as `search_tools`; its cursors work
-only with it. The first page of an empty-query `search_<alias>` leads with
-the **box overview**: the server's full `instructions`, neutralized, capped
-at 8 KB (with a truncation marker), and indented under
-`Guidance from the fs box (the server's own words; it applies to fs tools only):`,
-so nothing in it can pass for a tool line. The same block is served as the
-resource `projection://boxes/<alias>/overview.md` for each box whose server
-sends instructions.
+one, else the first sentence of the server's `instructions` (its first
+line that is neither blank nor a Markdown heading) — neutralized, capped
+and quoted, so it reads as the server's words, not yours — else nothing;
+then the box's tool count. It searches that box only, with the same query
+rules, entries and paging as `search_tools`; its cursors work only with
+it. The first page of an empty-query `search_<alias>` leads with the **box
+overview**: the server's full `instructions`, neutralized, capped at 8 KB
+(with a truncation marker), and indented under
+`Guidance from the fs box (the server's own words; it applies to fs tools only):`
+and a blank line, so nothing in it can pass for a tool line and, in
+Markdown, it is a code block. The same block is served as the resource
+`projection://boxes/<alias>/overview.md` for each box whose server sends
+readable instructions. Invisible characters (zero-width, tag and other
+format characters) are stripped from server text on every box surface.
 
 `search_tools` searches every box: each entry carries its `box`, the header
 names the boxes searched, an empty query's first page leads with the

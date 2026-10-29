@@ -150,16 +150,6 @@ export function boxSearchTool(alias: string): string {
   return `search_${alias}`;
 }
 
-/**
- * The search tools a boxed view's facade serves (R43), in registration
- * order: one `search_<alias>` per box in sorted alias order, then
- * `search_tools` when the global search is on.
- */
-export function servedSearchTools(catalog: BoxedCatalog): string[] {
-  const tools = [...catalog.boxes.keys()].map(boxSearchTool);
-  return catalog.globalSearch ? [...tools, 'search_tools'] : tools;
-}
-
 /** The boxed tool a qualified name denotes, O(1); `undefined` when there is none. */
 export function boxedTool(catalog: BoxedCatalog, name: string): BoxedTool | undefined {
   return catalog.members.get(name);

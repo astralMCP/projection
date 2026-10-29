@@ -40,7 +40,6 @@ import { boxOverview, renderOverviewBlock, toolCount } from './box-guidance.js';
 import {
   boxSearchTool,
   isBoxedCatalog,
-  servedSearchTools,
   splitQualified,
   type BoxedCatalog,
   type BoxedTool,
@@ -229,7 +228,8 @@ export function searchBoxes(
   options: SearchBoxesOptions = {},
 ): CallToolResult {
   const box = options.box;
-  if (box !== undefined && !catalog.boxes.has(box)) {
+  const scope = box !== undefined ? catalog.boxes.get(box) : undefined;
+  if (box !== undefined && scope === undefined) {
     // The facade only serves search tools for wrapped boxes; reaching this
     // is a library bug, never a model input.
     throw new ProjectionError('terminal', `no box ${JSON.stringify(box)} to search`);
@@ -252,9 +252,7 @@ export function searchBoxes(
   );
   const firstListing = query.length === 0 && offset === 0;
   const overview =
-    box !== undefined && firstListing
-      ? boxOverview(catalog.boxes.get(box)?.catalog.instructions)
-      : undefined;
+    scope !== undefined && firstListing ? boxOverview(scope.catalog.instructions) : undefined;
   const result: BoxedSearchPage = { ...(overview !== undefined ? { overview } : {}), ...page };
 
   const lines: string[] = [];
@@ -406,14 +404,20 @@ function unknownBoxedToolError(
 }
 
 /**
- * The search tools a multi-server facade serves, as copy names them (R43):
- * `search_tools` (every box) and the per-box tools when the global search is
- * on, only the per-box tools when it is off. Aliases are grammar-checked
- * (R39), so the names print raw.
+ * The search tools a multi-server facade serves, as copy names them (R43,
+ * R37): `search_tools (every box) or …` when the global search is on, then
+ * the per-box tools — `search_fs` for a single box, `the search_<box> tool
+ * of a box (search_fs, search_github)` for several. Aliases are
+ * grammar-checked (R39), so the names print raw. Stable: shared with the
+ * code-mode projection (the R37 pointer in `discover_apis`, R45), so every
+ * surface names the same tools.
  */
 export function searchToolsPhrase(catalog: BoxedCatalog): string {
-  const boxTools = servedSearchTools(catalog).filter((tool) => tool !== 'search_tools');
-  const perBox = `the search_<box> tool of a box (${boxTools.join(', ')})`;
+  const [only, ...others] = [...catalog.boxes.keys()].map(boxSearchTool);
+  const perBox =
+    only !== undefined && others.length === 0
+      ? only
+      : `the search_<box> tool of a box (${[only, ...others].join(', ')})`;
   return catalog.globalSearch ? `search_tools (every box) or ${perBox}` : perBox;
 }
 

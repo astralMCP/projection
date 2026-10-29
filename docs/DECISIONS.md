@@ -722,13 +722,24 @@ names a search tool — the unknown-name hint, the `describe_tool` /
 `call_tool` argument descriptions, the preamble, the facade API's errors —
 derives from the same flag and never names a tool that is not served; a
 qualified name whose box exists points at that box's own search tool. The
-server text a box surface shows is attributed by shape: the first sentence
-is a JSON string literal followed by `(server's words)`, so a quote in it
-cannot close the quotation and forge host copy, and the overview is an
-indented block under a library header (also a Markdown code block in the
-`.md` resource), so no line of it can pass for a tool line, a header or a
-shelf line. Its truncation marker is part of the overview text, so the
-structured `overview`, the text rendering and the resource agree.
+server text a box surface shows is first stripped of invisible characters
+(Unicode format characters and the tag block, so no zero-width or
+tag-character payload rides along unseen; bidi controls still show as
+`�`), and a box whose server text is then empty or only `�` shows no
+about, no overview and no resource. The rest is attributed by shape. The
+first sentence — of the first line that is neither blank nor a Markdown
+heading — is a JSON string literal followed by `(server's words)`; inside
+it ASCII `"` becomes `”` and a literal `(server's words)` or tool count
+is removed, so it cannot seem to close the quotation and one shelf line
+never shows two attributions or counts. The overview is an indented block
+under a library header, separated from it by a blank line: in the `.md`
+resource that makes it a CommonMark indented code block (directly under the
+header it would continue the header's paragraph, and its links, images and
+raw HTML would render), so no line of it can pass for a tool line, a
+header, a shelf line or markup. It is cut at a line break, else a space,
+in the last tenth of the 8 KB window, never inside a grapheme cluster, and
+its truncation marker is part of the overview text, so the structured
+`overview`, the text rendering and the resource agree.
 
 Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
 dispatching on the alias in front of N single-server facades — N blob

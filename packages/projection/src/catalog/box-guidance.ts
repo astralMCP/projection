@@ -7,10 +7,17 @@
  *
  * Box aliases and descriptions are host-controlled (R39); a server's
  * `instructions` are S5-untrusted. Server text therefore reaches a box
- * surface only neutralized, capped and visibly attributed: the first
- * sentence as a quoted JSON string literal followed by `(server's words)`,
- * the overview as an indented block under a library header, so it can never
- * forge a shelf line, a tool line or the header itself.
+ * surface only stripped of invisible characters, neutralized, capped and
+ * visibly attributed: the first sentence as a quoted JSON string literal
+ * followed by `(server's words)`, the overview as an indented block under a
+ * library header — a Markdown indented code block, so it renders as inert
+ * text — so it can never forge a shelf line, a tool line or the header
+ * itself.
+ *
+ * Stable exports, shared with the code-mode projection (R45):
+ * {@link boxOverview}, {@link renderOverviewBlock}, {@link boxOverviewUri}
+ * and {@link boxOverviewResources}; {@link boxAbout} for any surface that
+ * names what a box is about.
  */
 
 import type { ProjectionResource } from '../mrtr/discover.js';
@@ -29,43 +36,117 @@ export function toolCount(count: number): string {
   return `${count} ${count === 1 ? 'tool' : 'tools'}`;
 }
 
+// Characters a reader cannot see: Unicode format characters (`\p{Cf}`:
+// zero-width space, joiners, word joiner and invisible operators, BOM, soft
+// hyphen, Mongolian vowel separator, interlinear annotation marks, …) and
+// the whole tag block U+E0000–E007F, whose tag characters spell hidden
+// ASCII ("ASCII smuggling"). The bidi controls among them are left to
+// `neutralizeControlChars`, which shows them as `�` like every other S5
+// surface does.
+const INVISIBLE = /[\p{Cf}\u{E0000}-\u{E007F}]/gu;
+const BIDI_CONTROL = /^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]$/;
+
+/** Strip invisible characters from box server text (S5); bidi controls stay for the neutralizer. */
+function stripInvisible(text: string): string {
+  return text.replace(INVISIBLE, (ch) => (BIDI_CONTROL.test(ch) ? ch : ''));
+}
+
+/** Nothing a reader could use: only whitespace and replacement characters. */
+function isBlank(text: string): boolean {
+  return /^[\s\ufffd]*$/u.test(text);
+}
+
+// Bound the raw `instructions` before any pass runs over a hostile multi-MB
+// string: twice the overview cap still leaves the cap after CRLF
+// normalization and stripping.
+const MAX_RAW_INSTRUCTIONS_CHARS = 16_384;
+
+// What the shelf appends after a quotation — an attribution or a tool count
+// — removed from inside it, so one line never shows two of either.
+const FORGED_SUFFIX = /\s*\(\s*(?:server['\u2019]s\s+words|\d+\s+tools?)\s*\)/gi;
+
+/** A Markdown ATX heading line (`# Title`), skipped when choosing the first line. */
+const HEADING_LINE = /^#{1,6}(\s|$)/;
+
 /**
  * What the shelf and the `search_<alias>` description say a box is about
  * (R43, R44): the host's `description` unquoted (already neutralized and
  * capped at wrap time, R39), else the first sentence of the server's
- * `instructions` — neutralized and capped like a tool's purpose, then
- * rendered as a JSON string literal and attributed, so a quote or a forged
- * `(server's words)` inside it stays inside the literal — else `undefined`.
+ * `instructions` — invisible characters stripped, leading blank and
+ * Markdown heading lines skipped, then neutralized and capped like a tool's
+ * purpose, rendered as a JSON string literal and attributed — else
+ * `undefined`, also when nothing but whitespace or `�` would remain.
+ *
+ * A quotation cannot forge a second attribution or tool count: ASCII `"`
+ * inside it becomes `”`, so it cannot seem to close, and a literal
+ * `(server's words)` or `(<n> tools)` is removed.
  */
 export function boxAbout(box: ToolBox): string | undefined {
   if (box.description !== undefined) return box.description;
-  const sentence = purposeSentence(box.catalog.instructions);
-  return sentence !== undefined ? `${JSON.stringify(sentence)} (server's words)` : undefined;
+  const instructions = box.catalog.instructions;
+  if (instructions === undefined) return undefined;
+  const lines = stripInvisible(instructions.slice(0, MAX_RAW_INSTRUCTIONS_CHARS))
+    .trimStart()
+    .split(/\r?\n/);
+  const first = lines.find((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !HEADING_LINE.test(trimmed);
+  });
+  const sentence = purposeSentence(first)
+    ?.replace(/"/g, '\u201d')
+    .replace(FORGED_SUFFIX, '')
+    .trim();
+  if (sentence === undefined || isBlank(sentence)) return undefined;
+  return `${JSON.stringify(sentence)} (server's words)`;
 }
 
 /**
  * The box overview (R43): the server's full `instructions`, trimmed, line
- * endings normalized, neutralized (control and bidi characters; newlines
- * kept) and capped at {@link MAX_OVERVIEW_CHARS} with
- * {@link OVERVIEW_TRUNCATION_MARKER}. `undefined` when the server sends no
- * instructions, or only whitespace.
+ * endings normalized, invisible characters stripped, neutralized (control
+ * and bidi characters; newlines kept) and capped at
+ * {@link MAX_OVERVIEW_CHARS} with {@link OVERVIEW_TRUNCATION_MARKER} on a
+ * line of its own. A cut lands on a line break, else a space, when one lies
+ * in the last tenth of the window, and never inside a grapheme cluster.
+ * `undefined` when the server sends no instructions, or nothing but
+ * whitespace and `�` remains.
+ *
+ * Shared with the code-mode projection (R45: `discover_apis` links the
+ * overview resources), so the overview reads the same on every surface.
  */
 export function boxOverview(instructions: string | undefined): string | undefined {
   if (instructions === undefined) return undefined;
   const start = instructions.trimStart();
-  // Bound the work before any further pass runs over a hostile multi-MB
-  // string: twice the cap still leaves the cap after CRLF normalization.
-  const bound = MAX_OVERVIEW_CHARS * 2;
-  const text = start.slice(0, bound).replace(/\r\n/g, '\n').trimEnd();
-  if (text.length === 0) return undefined;
-  if (text.length <= MAX_OVERVIEW_CHARS && start.length <= bound) {
-    return neutralizeControlChars(text, { allowNewline: true });
+  const bounded = start.length > MAX_RAW_INSTRUCTIONS_CHARS;
+  const text = stripInvisible(start.slice(0, MAX_RAW_INSTRUCTIONS_CHARS))
+    .replace(/\r\n/g, '\n')
+    .trim();
+  if (text.length <= MAX_OVERVIEW_CHARS && !bounded) {
+    const whole = neutralizeControlChars(text, { allowNewline: true });
+    return isBlank(whole) ? undefined : whole;
   }
-  let cut = text.slice(0, MAX_OVERVIEW_CHARS);
-  // Never end on half of a surrogate pair.
-  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
-  const kept = neutralizeControlChars(cut.trimEnd(), { allowNewline: true });
-  return `${kept}\n${OVERVIEW_TRUNCATION_MARKER}`;
+  const kept = neutralizeControlChars(cutOverview(text).trimEnd(), { allowNewline: true });
+  return isBlank(kept) ? undefined : `${kept}\n${OVERVIEW_TRUNCATION_MARKER}`;
+}
+
+/**
+ * The first {@link MAX_OVERVIEW_CHARS} of `text`, cut at the last line break
+ * (else space) in the window's last tenth, then shortened to a grapheme
+ * boundary so no surrogate pair, combining mark or joined sequence is split.
+ */
+function cutOverview(text: string): string {
+  if (text.length <= MAX_OVERVIEW_CHARS) return text;
+  const window = text.slice(0, MAX_OVERVIEW_CHARS);
+  const floor = Math.floor(MAX_OVERVIEW_CHARS * 0.9);
+  const newline = window.lastIndexOf('\n');
+  const space = window.lastIndexOf(' ');
+  let end = newline >= floor ? newline : space >= floor ? space : MAX_OVERVIEW_CHARS;
+  // Segment a little past the cut, so the cluster straddling it is whole.
+  const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(
+    text.slice(0, end + 32),
+  );
+  const straddling = segments.containing(end);
+  if (straddling !== undefined && straddling.index < end) end = straddling.index;
+  return text.slice(0, end);
 }
 
 /** The header the overview block sits under (R43). Aliases are grammar-checked (R39). */
@@ -75,12 +156,16 @@ export function overviewHeader(alias: string): string {
 
 /**
  * The overview block as the first page of an empty-query `search_<alias>`
- * renders it and the overview resource serves it: the header, then the
- * overview indented — as `describe_tool` renders a description — so no line
- * of it can pass for a tool line or a header.
+ * renders it and the overview resource serves it: the header, a blank line,
+ * then the overview indented — as `describe_tool` renders a description —
+ * so no line of it can pass for a tool line or a header. The blank line
+ * makes the indented lines a CommonMark indented code block (an indented
+ * line directly under a paragraph would continue that paragraph), so in the
+ * `.md` resource no link, image, HTML, heading or fence in the server's
+ * text renders as anything but literal text.
  */
 export function renderOverviewBlock(alias: string, overview: string): string {
-  return `${overviewHeader(alias)}\n${indentBlock(overview)}`;
+  return `${overviewHeader(alias)}\n\n${indentBlock(overview)}`;
 }
 
 /** URI of a box's overview resource (R3, R45). */
@@ -91,7 +176,9 @@ export function boxOverviewUri(alias: string): string {
 /**
  * One overview resource per box whose server sends `instructions` (R3,
  * R45), in sorted alias order. The description names the box by its alias
- * only — never by anything the server reported.
+ * only — never by anything the server reported. The catalog projection
+ * registers these; code mode links them from `discover_apis` (R45), so a
+ * box's guidance is reachable with either projection alone.
  */
 export function boxOverviewResources(catalog: BoxedCatalog): ProjectionResource[] {
   const resources: ProjectionResource[] = [];
