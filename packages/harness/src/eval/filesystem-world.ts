@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { createRecordingProxy } from './recording-proxy.js';
-import type { EvalWorld } from './world.js';
+import type { ServerWorld, WorldOptions } from './world.js';
 
 const require = createRequire(import.meta.url);
 
@@ -111,7 +111,9 @@ export function filesystemServerEntry(): string {
  * server spawned on it, a recording proxy in front. `close` kills the
  * server and removes the tree.
  */
-export async function openFilesystemWorld(): Promise<EvalWorld> {
+export async function openFilesystemWorld(
+  options: Pick<WorldOptions, 'onCall'> = {},
+): Promise<ServerWorld> {
   // A neutral prefix: the prompts carry this path, and a name like
   // "projection-eval" would tell the model what it is being measured for.
   let root: string | undefined;
@@ -135,7 +137,11 @@ export async function openFilesystemWorld(): Promise<EvalWorld> {
     });
     transport.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
     await client.connect(transport);
-    const proxy = await createRecordingProxy(client, { name: 'filesystem-eval', version: '0.0.0' });
+    const proxy = await createRecordingProxy(
+      client,
+      { name: 'filesystem-eval', version: '0.0.0' },
+      options.onCall !== undefined ? { onCall: options.onCall } : {},
+    );
     return {
       name: 'filesystem',
       server: proxy.server,
@@ -143,7 +149,7 @@ export async function openFilesystemWorld(): Promise<EvalWorld> {
       instructions: proxy.instructions,
       calls: proxy.calls,
       facts: { root },
-      directSystemPrompt: FILESYSTEM_DIRECT_SYSTEM_PROMPT,
+      hostSystemPrompt: FILESYSTEM_DIRECT_SYSTEM_PROMPT,
       close,
     };
   } catch (err) {

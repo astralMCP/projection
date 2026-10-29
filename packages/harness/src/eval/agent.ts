@@ -128,6 +128,53 @@ export interface EpisodeUsage {
   cacheCreationInputTokens: number;
 }
 
+/**
+ * One content block of the recorded transcript, as the model produced or
+ * saw it: text, a tool call, its thinking (text only — the signature is
+ * dropped), or a tool result's text exactly as it was returned to the model.
+ * Any other block keeps only its type.
+ */
+export type TranscriptBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'thinking'; thinking: string }
+  | { type: 'redacted_thinking' }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: true }
+  | { type: string };
+
+export interface TranscriptMessage {
+  role: 'user' | 'assistant';
+  /** A string for the task prompt; blocks for everything after it. */
+  content: string | TranscriptBlock[];
+}
+
+/** What the model saw and said in one episode, in order. */
+export interface Transcript {
+  /** The system prompt every turn was sent with. */
+  system: string;
+  /**
+   * The task prompt, every assistant turn (the last one included, whatever
+   * its stop reason) and every tool-result message.
+   */
+  messages: TranscriptMessage[];
+}
+
+/** An assistant block as the transcript records it. */
+function transcriptBlock(block: Anthropic.ContentBlock): TranscriptBlock {
+  switch (block.type) {
+    case 'text':
+      return { type: 'text', text: block.text };
+    case 'tool_use':
+      return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+    case 'thinking':
+      return { type: 'thinking', thinking: block.thinking };
+    case 'redacted_thinking':
+      return { type: 'redacted_thinking' };
+    default:
+      return { type: block.type };
+  }
+}
+
 export interface AgentEpisode {
   /** Messages API calls made. */
   apiTurns: number;
@@ -141,6 +188,10 @@ export interface AgentEpisode {
   stopReason?: string;
   /** Text blocks of the final assistant message, joined. */
   finalText: string;
+  /** The model the API reported serving (the last response's `model`), if any call completed. */
+  servedModel?: string;
+  /** The full conversation, for reading what the model saw. */
+  transcript: Transcript;
   /**
    * True when the loop stopped because the turn budget (`maxTurns` counting
    * turns, or `maxTotalTurns` in all) was spent while the model was still
@@ -229,6 +280,11 @@ export async function runAgentEpisode(
   let budgetTurns = 0;
   let stopReason: string | undefined;
   let finalText = '';
+  let servedModel: string | undefined;
+  const transcript: Transcript = {
+    system: runtime.system,
+    messages: [{ role: 'user', content: prompt }],
+  };
 
   const finish = (harnessError?: string, turnCapped = false): AgentEpisode => ({
     apiTurns,
@@ -238,6 +294,8 @@ export async function runAgentEpisode(
     wallMs: Math.round(performance.now() - started),
     ...(stopReason !== undefined ? { stopReason } : {}),
     finalText,
+    ...(servedModel !== undefined ? { servedModel } : {}),
+    transcript,
     turnCapped,
     ...(harnessError !== undefined ? { harnessError } : {}),
   });
@@ -258,6 +316,8 @@ export async function runAgentEpisode(
       return finish(`api error: ${errorMessage(err)}`);
     }
     apiTurns += 1;
+    servedModel = message.model;
+    transcript.messages.push({ role: 'assistant', content: message.content.map(transcriptBlock) });
     usage.inputTokens += message.usage.input_tokens;
     usage.outputTokens += message.usage.output_tokens;
     usage.cacheReadInputTokens += message.usage.cache_read_input_tokens ?? 0;
@@ -285,6 +345,7 @@ export async function runAgentEpisode(
       // answer every tool_use block in ONE user message.
       messages.push({ role: 'assistant', content: message.content });
       const results: Anthropic.ToolResultBlockParam[] = [];
+      const seen: TranscriptBlock[] = [];
       for (const block of message.content) {
         if (block.type !== 'tool_use') continue;
         const input = isRecord(block.input) ? block.input : {};
@@ -301,8 +362,15 @@ export async function runAgentEpisode(
           content: result.text,
           ...(result.isError === true ? { is_error: true } : {}),
         });
+        seen.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: result.text,
+          ...(result.isError === true ? { is_error: true as const } : {}),
+        });
       }
       messages.push({ role: 'user', content: results });
+      transcript.messages.push({ role: 'user', content: seen });
       continue;
     }
 

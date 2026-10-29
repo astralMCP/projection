@@ -125,6 +125,9 @@ export {
   type ModelCaller,
   type ModelPreset,
   type ToolUseRecord,
+  type Transcript,
+  type TranscriptBlock,
+  type TranscriptMessage,
 } from './eval/agent.js';
 export {
   promptFor,
@@ -144,15 +147,37 @@ export {
 export { FILESYSTEM_TASKS } from './eval/filesystem-tasks.js';
 export { MONGODB_TASKS } from './eval/mongodb-tasks.js';
 export {
+  boxOf,
+  isBoxWrite,
+  shippedCounts,
+  taskBoxes,
+  unbox,
+  unboxCall,
+  wrongShippedComment,
+  MULTI_TASKS,
+} from './eval/multi-tasks.js';
+export {
   githubWorld,
   openWorld,
   GITHUB_DIRECT_SYSTEM_PROMPT,
+  type BoxAlias,
   type EvalWorld,
+  type MultiWorld,
+  type ServerWorld,
+  type ServerWorldName,
+  type WorldBox,
   type WorldFacts,
   type WorldName,
   type WorldOptions,
   type WorldTool,
 } from './eval/world.js';
+export {
+  openMultiWorld,
+  qualifiedName,
+  MULTI_BOX_DESCRIPTIONS,
+  MULTI_BOXES,
+  MULTI_DIRECT_SYSTEM_PROMPT,
+} from './eval/multi-world.js';
 export {
   filesystemServerEntry,
   openFilesystemWorld,
@@ -191,17 +216,28 @@ export {
 } from './eval/mongodb-world.js';
 export { createRecordingProxy, type RecordingProxy } from './eval/recording-proxy.js';
 export {
+  hostToolName,
+  isProjectionMode,
+  modeApplies,
+  multiDirectSystemPrompt,
   openDirectSession,
+  openMultiDirectSession,
+  openMultiProjectionSession,
   openProjectionSession,
   openSession,
   resolveModes,
   toolResultText,
   EVAL_MODES,
+  HOST_TOOL_NAME_MAX,
+  HOST_TOOL_NAME_PATTERN,
+  MULTI_INSTRUCTIONS_HEADER,
   PROJECTION_DISCOVERY_TOOLS,
   type EvalMode,
   type ModeSession,
+  type SessionOptions,
 } from './eval/modes.js';
 export {
+  boxRouting,
   createResultsWriter,
   estimateUsd,
   formatEpisodeLine,
@@ -210,8 +246,10 @@ export {
   summarizeToolChoice,
   writeToolChoiceResults,
   MODEL_PRICES,
+  type BoxRouting,
   type CellSummary,
   type EpisodeRecord,
+  type RoutingSummary,
   type ProjectionRoute,
   type ProjectionUse,
   type ResultsMeta,

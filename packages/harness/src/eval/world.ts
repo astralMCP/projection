@@ -11,7 +11,9 @@
  *   stdio against a throwaway fixture tree, behind a recording proxy
  *   (filesystem-world.ts);
  * - **mongodb**: the official MongoDB MCP server on a seeded throwaway
- *   `mongod`, likewise behind a recording proxy (mongodb-world.ts).
+ *   `mongod`, likewise behind a recording proxy (mongodb-world.ts);
+ * - **multi**: all three at once, each a box under an alias (`github`,
+ *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts).
  *
  * Real-server effects land for real; tasks verify the end state (on disk,
  * in the database) as well as the recorded calls.
@@ -20,10 +22,13 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { SideEffect } from '../types.js';
 import { openFilesystemWorld } from './filesystem-world.js';
-import { createGithubFake, type GithubFakeOptions } from './github-fake.js';
+import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
+import { openMultiWorld } from './multi-world.js';
 
-export type WorldName = 'github' | 'filesystem' | 'mongodb';
+export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi';
+/** The worlds that are one upstream server. */
+export type ServerWorldName = Exclude<WorldName, 'multi'>;
 
 /** One tool as a world serves it (the model sees name, description, schema). */
 export interface WorldTool {
@@ -48,10 +53,8 @@ export interface WorldFacts {
   mongoUri?: string;
 }
 
-export interface EvalWorld {
+interface WorldBase {
   name: WorldName;
-  /** The upstream, not yet connected: hand it to `wrapMcpServer` or a transport. */
-  server: McpServer;
   readonly tools: readonly WorldTool[];
   /** The `instructions` the upstream advertises (undefined when none). */
   readonly instructions: string | undefined;
@@ -59,37 +62,56 @@ export interface EvalWorld {
   readonly calls: SideEffect[];
   readonly facts: WorldFacts;
   /**
-   * The one-line host framing direct mode puts before the upstream's
-   * instructions. Projection mode uses the facade's instructions instead.
+   * The one-line host framing every mode's system prompt starts with (a
+   * real host has its own system prompt whatever it connects): direct mode
+   * follows it with the upstream's instructions, the Projection modes with
+   * the facade's.
    */
-  directSystemPrompt: string;
+  hostSystemPrompt: string;
   /** Tear the episode's upstream down (kill the child, remove the sandbox). */
   close(): Promise<void>;
 }
 
+/** A world that is one upstream server. */
+export interface ServerWorld extends WorldBase {
+  name: ServerWorldName;
+  /** The upstream, not yet connected: hand it to `wrapMcpServer` or a transport. */
+  server: McpServer;
+}
+
+/** The aliases of the multi world's boxes. */
+export type BoxAlias = 'github' | 'fs' | 'mongo';
+
+/** One box of the multi world: a single-server world under its alias. */
+export interface WorldBox {
+  alias: BoxAlias;
+  world: ServerWorld;
+}
+
+/**
+ * Several single-server worlds in one episode. `calls` records every box's
+ * calls in the order they ran, each named `<alias>.<name>`; `tools` lists
+ * every box's tools under the same qualified names; `instructions` is
+ * undefined (each box keeps its own); `facts` merges the boxes' facts.
+ */
+export interface MultiWorld extends WorldBase {
+  name: 'multi';
+  readonly boxes: readonly WorldBox[];
+}
+
+export type EvalWorld = ServerWorld | MultiWorld;
+
+export { githubWorld, GITHUB_DIRECT_SYSTEM_PROMPT } from './github-world.js';
+
 export interface WorldOptions {
   /** github: whether the fake advertises the real server's instructions. Default true. */
   instructions?: boolean;
-}
-
-export const GITHUB_DIRECT_SYSTEM_PROMPT =
-  "You operate GitHub through the tools provided. Complete the user's task, then stop.";
-
-/** The GitHub fake as a world. */
-export function githubWorld(options: WorldOptions = {}): EvalWorld {
-  const fakeOptions: GithubFakeOptions =
-    options.instructions === false ? { instructions: false } : {};
-  const fake = createGithubFake(fakeOptions);
-  return {
-    name: 'github',
-    server: fake.server,
-    tools: fake.tools,
-    instructions: fake.instructions,
-    calls: fake.calls,
-    facts: {},
-    directSystemPrompt: GITHUB_DIRECT_SYSTEM_PROMPT,
-    close: async () => {},
-  };
+  /**
+   * Called with every call the upstream executes, as it is recorded (after
+   * schema validation, before the result). The multi world uses it to keep
+   * one ordered log across its boxes.
+   */
+  onCall?: (call: SideEffect) => void;
 }
 
 /** A fresh world for one episode. */
@@ -98,8 +120,10 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
     case 'github':
       return Promise.resolve(githubWorld(options));
     case 'filesystem':
-      return openFilesystemWorld();
+      return openFilesystemWorld(options);
     case 'mongodb':
-      return openMongodbWorld();
+      return openMongodbWorld(options);
+    case 'multi':
+      return openMultiWorld(options);
   }
 }

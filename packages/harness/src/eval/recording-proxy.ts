@@ -62,6 +62,7 @@ async function listAllTools(client: Client): Promise<WorldTool[]> {
 export async function createRecordingProxy(
   client: Client,
   info: { name: string; version: string },
+  options: { onCall?: (call: SideEffect) => void } = {},
 ): Promise<RecordingProxy> {
   const tools = await listAllTools(client);
   const instructions = client.getInstructions();
@@ -84,6 +85,7 @@ export async function createRecordingProxy(
       async (args) => {
         const recorded = args ?? {};
         calls.push({ tool: tool.name, args: recorded });
+        options.onCall?.({ tool: tool.name, args: recorded });
         const result = await client.callTool({ name: tool.name, arguments: recorded });
         return {
           content: Array.isArray(result.content) ? result.content : [],

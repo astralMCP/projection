@@ -45,7 +45,7 @@ function normalizePath(value: unknown): string | undefined {
 }
 
 /** The value names `relative` (a file or directory under the root), absolute or relative. */
-function pathIs(value: unknown, relative: string): boolean {
+export function pathIs(value: unknown, relative: string): boolean {
   const path = normalizePath(value);
   return path !== undefined && (path === relative || path.endsWith(`/${relative}`));
 }
@@ -60,7 +60,7 @@ function pathsInclude(value: unknown, relative: string): boolean {
   return Array.isArray(value) && value.some((item) => pathIs(item, relative));
 }
 
-function readText(root: string, relative: string): string | undefined {
+export function readText(root: string, relative: string): string | undefined {
   try {
     return readFileSync(join(root, relative), 'utf8');
   } catch {
@@ -73,14 +73,14 @@ function sameContent(actual: string | undefined, expected: string): boolean {
   return actual !== undefined && actual.replace(/\n$/, '') === expected.replace(/\n$/, '');
 }
 
-function root(context: VerifyContext): string {
+export function root(context: VerifyContext): string {
   const value = context.facts.root;
   if (value === undefined) throw new Error('filesystem task verified without a root');
   return value;
 }
 
 /** The tools that show a file's contents. */
-const FILE_READ_TOOLS = ['read_text_file', 'read_file', 'read_multiple_files'];
+export const FILE_READ_TOOLS = ['read_text_file', 'read_file', 'read_multiple_files'];
 
 /** The tools that can read a file's contents or metadata. */
 const READ_TOOLS = [
@@ -93,10 +93,10 @@ const READ_TOOLS = [
 ];
 
 /** The tools that list a directory flat (`directory_tree` recurses). */
-const FLAT_LISTINGS = ['list_directory', 'list_directory_with_sizes'];
+export const FLAT_LISTINGS = ['list_directory', 'list_directory_with_sizes'];
 
 /** A call to one of `FILE_READ_TOOLS` that shows `relative`. */
-function readsFile(args: Args, relative: string): boolean {
+export function readsFile(args: Args, relative: string): boolean {
   return pathIs(args['path'], relative) || pathsInclude(args['paths'], relative);
 }
 
@@ -130,9 +130,9 @@ function looksAt(calls: SideEffect[], relative: string, directory: string): bool
   );
 }
 
-const EDIT_TOOLS = ['edit_file', 'write_file'];
+export const EDIT_TOOLS = ['edit_file', 'write_file'];
 
-function editsFile(args: Args, relative: string): boolean {
+export function editsFile(args: Args, relative: string): boolean {
   return pathIs(args['path'], relative) && args['dryRun'] !== true;
 }
 

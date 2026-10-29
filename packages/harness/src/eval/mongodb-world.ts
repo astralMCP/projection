@@ -44,7 +44,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createRecordingProxy } from './recording-proxy.js';
-import type { EvalWorld, WorldFacts } from './world.js';
+import type { ServerWorld, WorldFacts, WorldOptions } from './world.js';
 
 /**
  * The MongoDB server version `mongodb-memory-server` downloads and runs.
@@ -344,7 +344,9 @@ function serverEnv(uri: string): Record<string, string> {
  * server spawned on it, a recording proxy in front. `close` kills the
  * server and the `mongod`.
  */
-export async function openMongodbWorld(): Promise<EvalWorld> {
+export async function openMongodbWorld(
+  options: Pick<WorldOptions, 'onCall'> = {},
+): Promise<ServerWorld> {
   const entry = mongodbServerEntry();
   const mongod = await MongoMemoryServer.create({
     binary: { version: MONGODB_VERSION, downloadDir: mongodbBinaryDir() },
@@ -385,7 +387,11 @@ export async function openMongodbWorld(): Promise<EvalWorld> {
     client = new Client({ name: 'tool-choice-eval', version: '0.0.0' }, { capabilities: {} });
     await client.connect(transport);
     started = true;
-    const proxy = await createRecordingProxy(client, { name: 'mongodb-eval', version: '0.0.0' });
+    const proxy = await createRecordingProxy(
+      client,
+      { name: 'mongodb-eval', version: '0.0.0' },
+      options.onCall !== undefined ? { onCall: options.onCall } : {},
+    );
     const listed = proxy.tools.map((t) => t.name).toSorted();
     if (JSON.stringify(listed) !== JSON.stringify(MONGODB_EXPECTED_TOOLS)) {
       const missing = MONGODB_EXPECTED_TOOLS.filter((n) => !listed.includes(n));
@@ -403,7 +409,7 @@ export async function openMongodbWorld(): Promise<EvalWorld> {
       instructions: proxy.instructions,
       calls: proxy.calls,
       facts: { mongoUri: uri },
-      directSystemPrompt: MONGODB_DIRECT_SYSTEM_PROMPT,
+      hostSystemPrompt: MONGODB_DIRECT_SYSTEM_PROMPT,
       close,
     };
   } catch (err) {

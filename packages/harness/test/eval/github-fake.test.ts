@@ -505,6 +505,44 @@ describe('github fake', () => {
       });
     });
 
+    it('get_repository_tree: recursive adds the src files; path_filter keeps a prefix', () => {
+      const paths = (args: Record<string, unknown>): string[] =>
+        (
+          answer('get_repository_tree', { ...ACME, ...args }) as { tree: { path: string }[] }
+        ).tree.map((entry) => entry.path);
+      expect(paths({})).toEqual(['package.json', 'readme.md', 'src']);
+      expect(paths({ recursive: true })).toEqual([
+        'package.json',
+        'readme.md',
+        'src',
+        'src/auth.ts',
+        'src/fetch.ts',
+        'src/index.ts',
+      ]);
+      expect(paths({ recursive: true, path_filter: 'src' })).toEqual([
+        'src',
+        'src/auth.ts',
+        'src/fetch.ts',
+        'src/index.ts',
+      ]);
+      expect(paths({ recursive: true, path_filter: './src/' })).toEqual([
+        'src/auth.ts',
+        'src/fetch.ts',
+        'src/index.ts',
+      ]);
+      expect(paths({ path_filter: 'src' })).toEqual(['src']);
+    });
+
+    it('add_issue_comment: needs a body or a reaction, as the real server does', () => {
+      expect(answer('add_issue_comment', { ...ACME, issue_number: 23 })).toBeInstanceOf(FakeError);
+      expect(answer('add_issue_comment', { ...ACME, issue_number: 23, body: 'hi' })).toEqual({
+        ok: true,
+      });
+      expect(answer('add_issue_comment', { ...ACME, issue_number: 23, reaction: 'eyes' })).toEqual({
+        ok: true,
+      });
+    });
+
     it('list_starred_repositories: acme/widgets is already starred, whoever asks', () => {
       const starred = answer('list_starred_repositories', {}) as { full_name: string }[];
       expect(starred.map((r) => r.full_name)).toEqual(['acme/widgets', 'octocat/Hello-World']);

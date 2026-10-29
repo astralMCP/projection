@@ -10,10 +10,11 @@
  * documents in the deployment) the recorded verdict stands while `expect`
  * and `forbid` still pass, and is downgraded when they no longer do. Such a
  * task can therefore never be upgraded offline: the end state is gone
- * (DECISIONS D13).
+ * (DECISIONS D13). A multi-tier record's box routing (`boxes`) is
+ * recomputed too, from the recorded calls and the task's current steps.
  */
 
-import type { EpisodeRecord } from './run.js';
+import { boxRouting, type EpisodeRecord } from './run.js';
 import type { WorldFacts } from './world.js';
 import { TOOL_CHOICE_TASKS, type EvalTask } from './tasks.js';
 
@@ -153,7 +154,8 @@ export async function rescoreRecords(
     }
     const after = rescored.verdict;
     if (rescored.worldFailureKept) worldFailuresKept += 1;
-    out.push({ ...record, ...after });
+    const boxes = boxRouting(task, record.upstreamCalls, record.toolUses);
+    out.push({ ...record, ...after, ...(boxes !== undefined ? { boxes } : {}) });
     if (
       before.success !== after.success ||
       before.toolCorrect !== after.toolCorrect ||
