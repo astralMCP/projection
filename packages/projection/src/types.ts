@@ -139,15 +139,42 @@ export type ApprovalsMode = 'every-write' | 'destructive-only';
  *
  * `approvals` is required — the context is *resolved* — so a bare
  * {@link PolicyOverrides} object cannot be passed where a context is
- * expected and silently lose its overrides. A multi-server facade will add
- * an optional per-source mode here (it takes precedence over `approvals`,
- * R49) without changing `decidePolicy`'s signature.
+ * expected and silently lose its overrides. A multi-server facade adds its
+ * per-source modes as `toolApprovals`, resolved per qualified tool (they
+ * take precedence over `approvals`, R49), without changing `decidePolicy`'s
+ * signature.
  */
 export interface PolicyContext {
   /** Per-tool overrides (R14); an override always wins. */
   overrides?: PolicyOverrides | undefined;
   /** The approvals mode (R49) that applies when no override does. */
   approvals: ApprovalsMode;
+  /**
+   * A multi-server facade's per-source approvals modes (R49), resolved at
+   * wrap time to one entry per qualified tool name (`fs.write_file`) from
+   * the boxed view's members — so the box is never re-derived by splitting
+   * a name. A tool with an entry decides with that mode instead of
+   * `approvals`. Absent on single-server facades.
+   */
+  toolApprovals?: ReadonlyMap<string, ApprovalsMode> | undefined;
+}
+
+/**
+ * The policy options every deciding surface takes (R14, R49) — the gate
+ * deps, `searchTools`, `describeTool`, the machine host and typegen — in one
+ * shape, turned into a {@link PolicyContext} by `policyContext`. Absent
+ * options mean no overrides and `'every-write'`.
+ */
+export interface PolicyOptions {
+  /** Per-tool policy overrides (R14). */
+  policy?: PolicyOverrides | undefined;
+  /** Approvals mode (R49), decided with `policy`. */
+  approvals?: ApprovalsMode | undefined;
+  /**
+   * Per-source approvals modes of a multi-server facade, resolved per
+   * qualified tool name (R49; see {@link PolicyContext.toolApprovals}).
+   */
+  toolApprovals?: ReadonlyMap<string, ApprovalsMode> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +462,9 @@ export interface AuditEntry {
 export interface RedactionHook {
   /**
    * Mask sensitive argument fields before they appear in elicitation copy
-   * (R16). Receives the tool name and resolved args; returns args to display.
+   * (R16). Receives the tool name — qualified (`<alias>.<tool>`) on a
+   * multi-server facade — and a copy of the resolved args; returns args to
+   * display.
    */
   (toolName: string, args: Record<string, unknown>): Record<string, unknown>;
 }

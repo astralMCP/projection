@@ -215,6 +215,77 @@ upstream request fails with a named error and the machine receives an ordinary
 forwards upstream elicitations (D7). If you pass your own connected `Client`,
 its elicitation handlers are yours to govern.
 
+## Several servers behind one facade (preview)
+
+`wrapMcpServers` fronts several servers at once, each as a **tool box**
+under an alias you choose:
+
+```ts
+import { wrapMcpServers } from '@astral-mcp/projection';
+
+const facade = await wrapMcpServers(
+  {
+    fs: filesServer, // an McpServer or a connected Client
+    github: { source: githubClient, description: 'Issues and pull requests.' },
+  },
+  {
+    blob: { key: blobKey },
+    policy: { 'github.delete_repository': 'deny' }, // keys are qualified names
+  },
+);
+export default createMcpHandler(facade.serverFactory);
+```
+
+Every tool is addressed as `<alias>.<name>` — `fs.write_file`,
+`github.issue_write` — in search results, `describe_tool`, `call_tool`
+results and approval prompts. A server's own dotted tool name stays in its
+box: if `fs` declares `github.delete_repo`, it is `fs.github.delete_repo`,
+gated by `fs.` policy keys. Aliases match `^[a-z][a-z0-9]{0,23}$` (`default`
+and `tools` are reserved); a facade takes 1–16 sources and at most 4,000
+tools in total. The total counts every tool each server declares, before
+duplicate names inside a box are dropped, so a server that repeats names
+cannot slip past the cap: over it, the wrap fails (`protocol`).
+
+The options are required: `blob.key` seals approvals, and
+`wrapMcpServers(sources)` without it fails the wrap. Policy keys must be
+qualified with a configured alias, and a source configuration accepts only
+`source`, `description`, `approvals` (a per-box approvals mode that
+overrides the global one) and `optional: false` (`true` is not supported
+yet) — any other key, an unknown alias in a policy key, the same server under
+two aliases, or an `McpServer` that is already connected to a transport fails
+the wrap with a `validate` error before anything connects. A `source` must be
+an `McpServer` or a connected `Client`; any other object fails the wrap with
+a `validate` error naming the alias. If any source fails to connect or
+introspect, the wrap fails and every connection Projection opened is closed;
+a `Client` you passed in is yours, and stays open both after a failed wrap
+and after `facade.close()`.
+
+Approval prompts name the box by your alias, never by what the server calls
+itself: the title reads `Approve (fs): write file` (`⚠ Approve (fs): …` for a
+destructive tool), the purpose line `What fs says it does: "…"` — or
+`What fs says it does: (no description)` — and the footer
+`Tool: fs.write_file`, or `Tool: fs › "github.delete_repo"` for a dotted tool
+name, so it never reads as the `github` box's. Your `redact` hook receives
+the qualified name (`fs.write_file`), so it can tell two boxes' same-named
+tools apart.
+
+`search_tools` searches every box: each entry carries its `box`, the header
+names the boxes searched, and a query word equal to an alias boosts that
+box's tools without matching any tool's text, so one server cannot outrank
+another for its name. The facade's instructions are a short preamble plus
+one line per box (your `description`, else just the tool count); the
+servers' own instructions are not forwarded. Approval blobs bind the whole
+alias → server mapping and are keyed separately from single-server blobs: a
+blob never resumes on a facade with a different server set, alias mapping or
+server version, nor across facade kinds.
+
+This preview serves the catalog projection only, which therefore cannot be
+turned off (`projections.catalog: false` fails the wrap). Not yet available:
+code mode (`projections.codeMode: true` fails the wrap, and `describe_tool`
+returns no TypeScript types), the per-box `search_<alias>` tools and box
+overviews (`catalog.globalSearch: false` fails the wrap), `optional: true`
+sources, and `introspectTimeoutMs`.
+
 ## Legacy clients (pre-2026-07-28)
 
 By default a legacy client can run read-only machines and calls, and any

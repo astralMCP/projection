@@ -30,18 +30,25 @@
  */
 
 import type { Client } from '@modelcontextprotocol/client';
+import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
 import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
+import { ProjectionError, toStructuredError } from './errors.js';
 import {
-  McpServer,
-  type Implementation,
-  type McpServerFactory,
-} from '@modelcontextprotocol/server';
-import { z } from 'zod';
-import { DASHBOARD_RESOURCE_URI } from './apps/dashboard.js';
-import { toStructuredError } from './errors.js';
-import { WORKFLOW_PROMPTS } from './prompts/workflow-prompts.js';
+  approvalGateDeps,
+  freezePolicySettings,
+  resolveProjections,
+  type PolicySettings,
+  type RegisterOptions,
+  type WrapOptions,
+} from './facade/options.js';
+import {
+  createProjectionServer,
+  registerCatalogTools,
+  registerCodeModeTools,
+  registerResources,
+  type CatalogToolCopy,
+} from './facade/server.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
-import { assertApprovalsMode } from './policy/index.js';
 import {
   buildInstructions,
   buildResources,
@@ -57,98 +64,10 @@ import {
   type ToolCallResult,
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
-import {
-  clampCaps,
-  DEFAULT_SERVER_ALIAS,
-  type ApprovalsMode,
-  type BlobSealerConfig,
-  type PolicyOverrides,
-  type RedactionHook,
-  type ReplayCache,
-  type ResourceCaps,
-  type ServerCatalog,
-} from './types.js';
-import { ProjectionError } from './errors.js';
+import { assertApprovalsMode } from './policy/index.js';
+import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
 
-export interface WrapOptions {
-  /** Blob sealing configuration; required for any gated flow (R22). */
-  blob: BlobSealerConfig;
-  /** Resource cap overrides, clamped at the hard maxima (R12). */
-  caps?: Partial<ResourceCaps>;
-  /**
-   * Per-tool policy overrides (R14). Read once, at wrap time: the facade
-   * keeps its own frozen copy, so later changes to this object are not seen.
-   */
-  policy?: PolicyOverrides;
-  /**
-   * Approvals mode (R49). `'every-write'` (default) asks before every tool
-   * that is not read-only. `'destructive-only'` also runs, without approval,
-   * a non-read-only tool whose annotations declare `destructiveHint: false`
-   * exactly; a missing or any other `destructiveHint` still asks. A per-tool
-   * `policy` override wins over the mode. This extends the trust placed in
-   * `readOnlyHint` to `destructiveHint: false` — a hostile server can
-   * mislabel a damaging tool, so enable it only for servers you trust.
-   * Read once, at wrap time; any other value fails the wrap (`validate`).
-   */
-  approvals?: ApprovalsMode;
-  /** Masks sensitive argument fields before they reach an approval prompt (R16). */
-  redact?: RedactionHook;
-  /**
-   * Replaces the whole R29 preamble, whichever projections are on (the
-   * code-mode, catalog or routing copy).
-   */
-  codeModePreamble?: string;
-  /** Compatibility switches for pre-2026-07-28 clients. */
-  compat?: {
-    /**
-     * Serve approval suspensions to legacy clients through the SDK's
-     * server→client `elicitation/create` shim instead of failing fast
-     * (R28 amendment; DECISIONS D6). The client must declare the
-     * `elicitation` capability. Statelessness is suspended for the open
-     * call — free over stdio, needs session affinity over legacy HTTP.
-     */
-    legacyElicitation?: boolean;
-  };
-  /** Identity the servers built by `createServer` advertise. */
-  serverInfo?: Implementation;
-  /**
-   * R37: above this many tools, `discover_apis` omits the per-tool list and
-   * points at `search_tools` / `describe_tool` (only when the catalog
-   * projection is on). Default 40.
-   */
-  catalogInlineThreshold?: number;
-  /**
-   * Shared replay cache (R38). Consulted after blob verification and before
-   * any gated execution, for both `execute_machine` and `call_tool`. None
-   * ships by default; supply a store shared across instances.
-   */
-  replayCache?: ReplayCache;
-  /**
-   * Which projections the facade serves (R1, R32): code mode
-   * (`execute_machine`, `discover_apis`) and the catalog projection
-   * (`search_tools`, `describe_tool`, `call_tool`). Both default on;
-   * disabling both is an error at wrap time.
-   */
-  projections?: ProjectionsOptions;
-}
-
-/** Per-projection on/off switches (R1, R32). */
-export interface ProjectionsOptions {
-  codeMode?: boolean;
-  catalog?: boolean;
-}
-
-const DEFAULT_PROJECTIONS: ProjectionSelection = { codeMode: true, catalog: true };
-
-/** Options for registering the projections on a server the caller built. */
-export interface RegisterOptions {
-  /**
-   * The protocol era this server instance serves (R28). Omitted means
-   * `'legacy'`: a hand-connected `McpServer` never negotiates 2026-07-28, so
-   * defaulting to legacy is the honest — and fail-safe — reading.
-   */
-  era?: ProtocolEra;
-}
+export type { ProjectionsOptions, RegisterOptions, WrapOptions } from './facade/options.js';
 
 export interface ProjectionFacade {
   /** Catalog of the wrapped server. */
@@ -215,6 +134,21 @@ const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSO
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
+const CATALOG_TOOL_COPY: CatalogToolCopy = {
+  searchDescription: SEARCH_TOOLS_DESCRIPTION,
+  searchQuery:
+    'Words to match against tool names, titles and descriptions; any word matches, name hits weigh more.',
+  describeDescription: DESCRIBE_TOOL_DESCRIPTION,
+  callDescription: CALL_TOOL_DESCRIPTION,
+  toolName: 'Tool name as listed by search_tools.',
+  describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
+};
+
+const CODE_MODE_COPY = {
+  executeMachine: EXECUTE_MACHINE_DESCRIPTION,
+  discoverApis: DISCOVER_APIS_DESCRIPTION,
+};
+
 /**
  * Wrap an MCP server (an in-process instance or a connected client) into a
  * Projection facade.
@@ -244,12 +178,8 @@ export async function wrapMcpServer(
   // The policy settings (overrides + approvals mode) are snapshotted once,
   // here, and that one frozen copy feeds typegen AND the gate / catalog
   // tools: the posture baked into the `.d.ts` resource and the overview must
-  // be the posture `describe_tool` and the approval gate decide with, which
-  // a caller mutating their options after wrap could otherwise drift apart.
-  const policySettings: PolicySettings = Object.freeze({
-    ...(options.policy !== undefined ? { policy: Object.freeze({ ...options.policy }) } : {}),
-    ...(approvals !== undefined ? { approvals } : {}),
-  });
+  // be the posture `describe_tool` and the approval gate decide with.
+  const policySettings = freezePolicySettings({ policy: options.policy, approvals });
 
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
   const resources = buildResources(catalog, dts);
@@ -269,28 +199,6 @@ export async function wrapMcpServer(
     projections,
   });
 }
-
-/**
- * R1: at least one projection must be on, or the facade serves nothing. The
- * selection is frozen: it is exposed on the facade and read per request.
- */
-function resolveProjections(
-  options: ProjectionsOptions | undefined,
-): Readonly<ProjectionSelection> {
-  const selection: ProjectionSelection = {
-    codeMode: options?.codeMode ?? DEFAULT_PROJECTIONS.codeMode,
-    catalog: options?.catalog ?? DEFAULT_PROJECTIONS.catalog,
-  };
-  if (!selection.codeMode && !selection.catalog) {
-    throw new ProjectionError('terminal', 'at least one projection must be enabled', {
-      hint: 'Set projections.codeMode and/or projections.catalog to true (both default to on).',
-    });
-  }
-  return Object.freeze(selection);
-}
-
-/** The policy options every surface decides with, frozen; absent ones stay absent (`exactOptionalPropertyTypes`). */
-type PolicySettings = Readonly<Pick<ApprovalGateDeps, 'policy' | 'approvals'>>;
 
 interface FacadeDeps {
   introspector: Introspector;
@@ -353,25 +261,20 @@ class Facade implements ProjectionFacade {
    * The approval-gate dependencies both gated tools share (R35, R38): one
    * place to wire the facade's options, so `execute_machine` and `call_tool`
    * can never drift on policy, redaction, caps or replay protection.
-   * `exactOptionalPropertyTypes`: absent options stay absent.
    */
   private gateDeps(
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
   ): ApprovalGateDeps {
-    const { options, policySettings } = this.deps;
-    return {
+    return approvalGateDeps({
       catalog: this.deps.catalog,
+      blobDomain: 'single',
       executor: this.deps.introspector,
-      blob: options.blob,
-      ...(options.caps !== undefined ? { caps: options.caps } : {}),
-      ...policySettings,
-      ...(options.redact !== undefined ? { redact: options.redact } : {}),
-      ...(era !== undefined ? { protocolEra: era } : {}),
-      ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
-      ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
-      ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
-    };
+      options: this.deps.options,
+      policySettings: this.deps.policySettings,
+      era,
+      clientCanElicit,
+    });
   }
 
   discoverApis(): CallToolResult {
@@ -408,20 +311,10 @@ class Facade implements ProjectionFacade {
    * recommended entry point.
    */
   createServer(ctx?: RegisterOptions): McpServer {
-    const server = new McpServer(
-      this.deps.options.serverInfo ?? {
-        name: `projection-${this.deps.catalog.alias}`,
-        version: '0.1.0',
-      },
-      {
-        instructions: this.instructions,
-        // Keeps the SDK shim's round budget aligned with Projection's R18
-        // trip cap, so Projection's structured trip-cap error always fires
-        // before the shim's generic round-limit failure (which would
-        // otherwise cap legacy-elicitation flows at the SDK default of 8
-        // rounds even when caps.maxRoundTrips is raised).
-        inputRequired: { maxRounds: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips },
-      },
+    const server = createProjectionServer(
+      this.deps.options,
+      `projection-${this.deps.catalog.alias}`,
+      this.instructions,
     );
     this.registerOn(server, ctx);
     return server;
@@ -429,230 +322,14 @@ class Facade implements ProjectionFacade {
 
   registerOn(server: McpServer, options?: RegisterOptions): void {
     const era = options?.era;
-
-    if (this.projections.codeMode) this.registerCodeMode(server, era);
-    if (this.projections.catalog) this.registerCatalog(server, era);
-
-    // Resources back both projections: describe_tool points at the .d.ts,
-    // and the MCP Apps dashboard rides execute_machine results.
-    for (const resource of this.resources) {
-      server.registerResource(
-        resource.name,
-        resource.uri,
-        {
-          description: resource.description,
-          mimeType: resource.mimeType,
-          ...(resource._meta !== undefined ? { _meta: resource._meta } : {}),
-        },
-        () => ({
-          contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text }],
-        }),
-      );
+    if (this.projections.codeMode) {
+      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.catalog);
     }
-  }
-
-  /** Catalog projection (R32–R35): `search_tools`, `describe_tool`, `call_tool`. */
-  private registerCatalog(server: McpServer, era: ProtocolEra | undefined): void {
-    // `search_tools` and `describe_tool` are pure reads over the catalog; the
-    // annotation lets hosts that gate on annotations run them without a
-    // prompt (R35).
-    server.registerTool(
-      'search_tools',
-      {
-        title: 'Search the tool catalog',
-        description: SEARCH_TOOLS_DESCRIPTION,
-        inputSchema: z.object({
-          query: z
-            .string()
-            .optional()
-            .describe(
-              'Words to match against tool names, titles and descriptions; any word matches, name hits weigh more.',
-            ),
-          cursor: z.string().optional().describe('nextCursor from a previous page.'),
-        }),
-        annotations: { readOnlyHint: true },
-      },
-      (args) =>
-        this.searchTools({
-          ...(args.query !== undefined ? { query: args.query } : {}),
-          ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
-        }),
-    );
-
-    server.registerTool(
-      'describe_tool',
-      {
-        title: 'Describe one tool',
-        description: DESCRIBE_TOOL_DESCRIPTION,
-        inputSchema: z.object({
-          name: z.string().describe('Tool name as listed by search_tools.'),
-          types: z
-            .boolean()
-            .optional()
-            .describe(
-              'Also return the generated TypeScript for this tool (for authoring a machine).',
-            ),
-        }),
-        annotations: { readOnlyHint: true },
-      },
-      (args) =>
-        this.describeTool({
-          name: args.name,
-          ...(args.types !== undefined ? { types: args.types } : {}),
-        }),
-    );
-
-    // No annotations on purpose (R35): hosts that gate on annotations must
-    // never auto-run it. `args` is validated by Projection, not zod, so a
-    // non-object arrives as an R25 structured error rather than an SDK one.
-    server.registerTool(
-      'call_tool',
-      {
-        title: 'Call one tool',
-        description: CALL_TOOL_DESCRIPTION,
-        inputSchema: z.object({
-          name: z.string().describe('Tool name as listed by search_tools.'),
-          args: z.unknown().optional().describe('JSON object of arguments per describe_tool.'),
-        }),
-      },
-      async (args, ctx) =>
-        await this.callTool(
-          {
-            name: args.name,
-            ...(args.args !== undefined ? { args: args.args } : {}),
-            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
-            ...(ctx.mcpReq.inputResponses !== undefined
-              ? { inputResponses: ctx.mcpReq.inputResponses }
-              : {}),
-          },
-          era,
-          clientCanElicit(server),
-        ),
-    );
-  }
-
-  /** Code mode (R1–R3): `execute_machine`, `discover_apis`, the workflow prompts. */
-  private registerCodeMode(server: McpServer, era: ProtocolEra | undefined): void {
-    server.registerTool(
-      'execute_machine',
-      {
-        title: 'Execute a state machine',
-        description: EXECUTE_MACHINE_DESCRIPTION,
-        inputSchema: EXECUTE_MACHINE_INPUT_SCHEMA,
-        // MCP Apps (SEP-1865): app-capable hosts render the workflow
-        // dashboard in place of the raw result. Hosts without the extension
-        // ignore _meta.ui entirely.
-        _meta: { ui: { resourceUri: DASHBOARD_RESOURCE_URI } },
-      },
-      async (args, ctx) =>
-        await this.executeMachine(
-          {
-            code: args.code,
-            // `exactOptionalPropertyTypes`: an absent optional argument must
-            // stay absent rather than becoming an explicit `undefined`.
-            ...(args.lang !== undefined ? { lang: args.lang } : {}),
-            ...(args.input !== undefined ? { input: args.input } : {}),
-            // MRTR's retry fields are request params, not tool arguments:
-            // the SDK lifts them off `params` before the handler runs, so
-            // they are read from the context rather than from `args`. The
-            // raw wire string is what we want — `openBlob` performs the full
-            // R21 verification, including the `codeHash` binding that a
-            // `requestState.verify` hook could not check (it never sees the
-            // re-sent `code`).
-            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
-            ...(ctx.mcpReq.inputResponses !== undefined
-              ? { inputResponses: ctx.mcpReq.inputResponses }
-              : {}),
-          },
-          era,
-          clientCanElicit(server),
-        ),
-    );
-
-    server.registerTool(
-      'discover_apis',
-      {
-        title: 'Discover the tool API',
-        description: DISCOVER_APIS_DESCRIPTION,
-        inputSchema: z.object({}),
-      },
-      () => this.discoverApis(),
-    );
-
-    // Workflow prompts (/save-workflow, /visualize-workflow): templated
-    // guidance the client's model runs against ITS conversation context —
-    // the facade is stateless (R27) and holds no call history itself.
-    for (const prompt of WORKFLOW_PROMPTS) {
-      const shape: Record<string, z.ZodType> = {};
-      for (const [arg, spec] of Object.entries(prompt.args)) {
-        const base = z.string().describe(spec.description);
-        shape[arg] = spec.required ? base : base.optional();
-      }
-      server.registerPrompt(
-        prompt.name,
-        { title: prompt.title, description: prompt.description, argsSchema: z.object(shape) },
-        (args: Record<string, unknown>) => ({
-          messages: [
-            {
-              role: 'user' as const,
-              content: {
-                type: 'text' as const,
-                // Safe: the zod argsSchema above admits only (optional) strings.
-                text: prompt.build(args as Record<string, string | undefined>, this.catalog),
-              },
-            },
-          ],
-        }),
-      );
-    }
+    if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
+    registerResources(server, this.resources);
   }
 
   close(): Promise<void> {
     return this.deps.introspector.close();
   }
 }
-
-/**
- * Legacy compat: whether the SDK's elicitation shim has a channel to this
- * client. Read per call — capabilities are negotiated on the connection, not
- * known at registration — and left unknown when the SDK has none to report
- * (per-request legacy HTTP), so the shim's own per-request failure stays the
- * one the caller sees there. Mirrors the shim's form-capability rule: form
- * mode needs `elicitation.form`, and a bare `elicitation: {}` counts as
- * implied form support only when `url` is absent too.
- */
-function clientCanElicit(server: McpServer): boolean | undefined {
-  const clientCaps = server.server.getClientCapabilities();
-  if (clientCaps === undefined) return undefined;
-  const elicitation = clientCaps.elicitation;
-  return (
-    elicitation !== undefined && (elicitation.form !== undefined || elicitation.url === undefined)
-  );
-}
-
-/**
- * `ctx.mcpReq.requestState()` is typed as a caller-asserted cast, so it is
- * read as `unknown` and narrowed here: without a configured
- * `ServerOptions.requestState.verify` hook the SDK hands back the raw wire
- * string, and anything else means someone wired a decoding hook Projection
- * does not own.
- */
-function maybeRequestState(state: unknown): { requestState?: string } {
-  return typeof state === 'string' ? { requestState: state } : {};
-}
-
-/**
- * `execute_machine` arguments (R2).
- *
- * The MRTR retry fields are deliberately absent: `requestState` and
- * `inputResponses` are siblings of `arguments` in a `tools/call`, not
- * members of it, and the SDK surfaces them on the handler context.
- */
-const EXECUTE_MACHINE_INPUT_SCHEMA = z.object({
-  code: z.string().describe('The machine module source: a default-exported XState v5 machine.'),
-  lang: z
-    .enum(['ts', 'js'])
-    .optional()
-    .describe('Language of `code`. Defaults to TypeScript-compatible parsing.'),
-  input: z.unknown().optional().describe('Passed to the machine as its `input`.'),
-});

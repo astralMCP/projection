@@ -31,7 +31,7 @@
  * ```
  */
 
-// Entry point
+// Entry points: one wrapped server, or several as tool boxes (PRD §6.9)
 export {
   wrapMcpServer,
   type ProjectionFacade,
@@ -39,6 +39,12 @@ export {
   type RegisterOptions,
   type WrapOptions,
 } from './wrap.js';
+export {
+  wrapMcpServers,
+  type MultiProjectionFacade,
+  type ServerSourceConfig,
+  type WrapServersOptions,
+} from './multi/index.js';
 
 // Catalog projection — search_tools / describe_tool / call_tool (PRD §6.8, R32–R38)
 export {
@@ -61,6 +67,8 @@ export {
   type CallToolOutcome,
   type DescribeToolArgs,
   type DescribeToolOptions,
+  type BoxedSearchPage,
+  type BoxedToolSummary,
   type SanitizedSchema,
   type SearchToolsArgs,
   type SearchToolsOptions,
@@ -128,6 +136,7 @@ export {
   ENVELOPE_PREFIX,
   LIB_VERSION,
   XSTATE_VERSION,
+  type BlobKeyDomain,
   type OpenBlobOptions,
 } from './blob/index.js';
 

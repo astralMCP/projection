@@ -51,6 +51,7 @@ import {
   type ResourceCaps,
   type ToolCatalogEntry,
 } from '../types.js';
+import { approvalSubject, blobKeyDomain, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
 import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
@@ -183,9 +184,12 @@ function suspend(
     args: toolArgs,
     stateName: 'call_tool',
   };
-  // S6: copy from catalog data and redacted args only.
-  const copy = buildElicitationCopy(pending, entry, {
+  // S6: copy from catalog data and redacted args only. On a multi-server
+  // facade it is built from the box's own entry and names the box (R46).
+  const subject = approvalSubject(deps.catalog, entry);
+  const copy = buildElicitationCopy(pending, subject.entry, {
     origin: 'direct',
+    ...(subject.box !== undefined ? { box: subject.box } : {}),
     ...(deps.redact !== undefined ? { redact: deps.redact } : {}),
   });
 
@@ -200,7 +204,7 @@ function suspend(
     trip: 1,
     ttlMs: deps.blob.callTtlMs ?? DEFAULT_CALL_TTL_MS,
   });
-  const requestState = sealBlob(payload, deps.blob);
+  const requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog, deps.blobDomain));
 
   return inputRequired({
     inputRequests: {
@@ -241,6 +245,7 @@ async function resume(
     code: canonicalRequest(args.name, toolArgs),
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
+    domain: blobKeyDomain(deps.catalog, deps.blobDomain),
   });
   await assertNotReplayed(payload, deps.replayCache);
 
@@ -279,7 +284,9 @@ async function execute(
   deps: CallToolDeps,
   caps: ResourceCaps,
 ): Promise<CallToolResult> {
-  const result = await deps.executor.callTool(deps.catalog.alias, name, toolArgs);
+  // A multi-server facade routes the qualified name to its box (R40).
+  const target = routeCall(deps.catalog, name);
+  const result = await deps.executor.callTool(target.alias, target.name, toolArgs);
   if (!result.ok) {
     // R25 `upstream`: the wrapped tool failed. Its message is S5 text headed
     // straight for the model — inert and bounded; the hint is library copy.

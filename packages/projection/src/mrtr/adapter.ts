@@ -4,7 +4,14 @@
  * R28, S2).
  */
 
-import { hashCode, openBlob, sealBlob, buildBlobPayload } from '../blob/index.js';
+import {
+  hashCode,
+  openBlob,
+  sealBlob,
+  buildBlobPayload,
+  type BlobKeyDomain,
+} from '../blob/index.js';
+import { approvalSubject, blobKeyDomain } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
@@ -14,18 +21,17 @@ import {
   clampCaps,
   findTool,
   type ApprovalVerdict,
-  type ApprovalsMode,
   type AuditEntry,
   type BlobSealerConfig,
   type LogEntry,
   type PendingToolCall,
-  type PolicyOverrides,
   type RedactionHook,
   type ReplayCache,
   type ErrorPhase,
   type ResourceCaps,
   type SegmentOutcome,
   type ServerCatalog,
+  type PolicyOptions,
   type StructuredError,
   type ToolExecutor,
 } from '../types.js';
@@ -66,14 +72,18 @@ export interface ExecuteMachineArgs extends RetryEnvelope {
  * protocol-era and replay settings. `execute_machine` adds the sandbox
  * bridge; `call_tool` needs nothing more (R35, R38).
  */
-export interface ApprovalGateDeps {
+export interface ApprovalGateDeps extends PolicyOptions {
   catalog: ServerCatalog;
   executor: ToolExecutor;
   blob: BlobSealerConfig;
+  /**
+   * The key domain of the facade kind serving this gate (R41): `single` for
+   * `wrapMcpServer`, `multi` for `wrapMcpServers`. Checked against the
+   * catalog, failing closed on a mismatch (`blobKeyDomain`). Omitted, it is
+   * derived from the catalog alone.
+   */
+  blobDomain?: BlobKeyDomain;
   caps?: Partial<ResourceCaps>;
-  policy?: PolicyOverrides;
-  /** Approvals mode (R49), decided with `policy` on every gate. */
-  approvals?: ApprovalsMode;
   redact?: RedactionHook;
   /**
    * Protocol era this request is being served on, for down-negotiation
@@ -140,6 +150,7 @@ export async function executeMachine(
       caps,
       ...(deps.policy !== undefined ? { policy: deps.policy } : {}),
       ...(deps.approvals !== undefined ? { approvals: deps.approvals } : {}),
+      ...(deps.toolApprovals !== undefined ? { toolApprovals: deps.toolApprovals } : {}),
       segment: resume?.trip ?? 0,
       ...(resume !== undefined ? { resume } : {}),
     });
@@ -179,6 +190,7 @@ async function openResume(
     code: args.code,
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
+    domain: blobKeyDomain(deps.catalog, deps.blobDomain),
   });
   await assertNotReplayed(payload, deps.replayCache);
 
@@ -314,11 +326,13 @@ function suspendResult(
     }
     // S6: copy is built from catalog data and redacted args only — never
     // from model-authored free text.
-    const copy = buildElicitationCopy(
-      call,
-      entry,
-      deps.redact !== undefined ? { redact: deps.redact } : {},
-    );
+    // On a multi-server facade the copy is built from the box's own entry
+    // and names the box (R46).
+    const subject = approvalSubject(deps.catalog, entry);
+    const copy = buildElicitationCopy(call, subject.entry, {
+      ...(subject.box !== undefined ? { box: subject.box } : {}),
+      ...(deps.redact !== undefined ? { redact: deps.redact } : {}),
+    });
     // The 2026-07-28 elicitation params dropped `title` (the revision carries
     // `message` and `requestedSchema` only), so the summary line becomes the
     // first line of the message rather than being silently lost.
@@ -340,7 +354,7 @@ function suspendResult(
 
   let requestState: string;
   try {
-    requestState = sealBlob(payload, deps.blob);
+    requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog, deps.blobDomain));
   } catch (err) {
     // R23 (blob over the size ceiling) is a failure the model can act on, so
     // it must keep this segment's console output (R31) rather than losing it

@@ -718,6 +718,69 @@ tools and concatenated instructions against Projection with the global
 search on and off. Its results set the `globalSearch` default and get their
 own entry here.
 
+Implementation (multi-server core, 2026-10-29): the first `wrapMcpServers`
+slice (R39–R43, R46, R48, R49) adds no second gate. The facade builds one
+merged view of its boxes (`catalog/boxes.ts`): an ordinary `ServerCatalog`
+whose entries carry qualified names, deduplicated per box, whose `identity`
+is the R41 server-set string, plus its members (each tool's box, bare entry
+and qualified entry) and per-box tool counts. Everything that resolves a
+name against a catalog — `findTool`, `decidePolicy` with facade policy keyed
+by qualified names, the R36 binding hash, the blob's `pending` entries — is
+therefore box-aware without a code path of its own. The few places that
+must know they serve boxes ask `isBoxedCatalog` (a brand set only by
+`buildBoxedCatalog`, never by shape): call routing (`routeCall` sends the
+bare name to the box's connection, for `call_tool` and for the machine host
+alike), the box-scoped did-you-mean and unknown-tool messages, the describe
+and search headers, and the approval copy, which is built from the box's
+own entry plus the host alias (R46, S6). A box's bare entry is copy-only: it
+is never handed to `decidePolicy`, since its name can spell another box's
+qualified name.
+
+The key domain is declared, not inferred: each facade passes its kind
+(`blobDomain: 'single' | 'multi'`) in the gate deps, and `blobKeyDomain`
+checks it against the brand, failing closed (`terminal`) on a mismatch — a
+spread copy of a view loses the brand, and must never seal or open in the
+`single` domain. Undeclared (a direct library caller), a catalog carrying
+the view's alias or a `multi:` identity without the brand is refused the
+same way; a single-server facade declares `single`, so a server that
+reports a `multi:` name still works there and R41's domains keep the kinds
+apart.
+
+The per-source approvals mode (R49) rides `PolicyContext.toolApprovals`,
+resolved at wrap time from the view's members to one entry per qualified
+tool whose box has a mode — the policy engine never re-derives a box by
+splitting a name, so a server's dotted tool name can only take its own
+box's mode. The policy fields every deciding surface takes (`policy`,
+`approvals`, `toolApprovals`) are one `PolicyOptions` type.
+
+Wrapping is fail-closed (R47): configuration mistakes — including a missing
+`blob.key` and an `McpServer` already attached to a transport — are
+`validate` errors before anything connects; once sources are connected,
+any throw closes every connection Projection opened, and caller-owned
+`Client`s stay open (after a failed wrap and after `close()`). The R48
+total is counted before the per-box dedupe, so repeated names cannot slip
+a server past it.
+
+Interim gaps, until the follow-up PRs:
+
+- code mode is off: it defaults off, `projections.codeMode: true` fails the
+  wrap, `projections.catalog: false` fails it too (the catalog is the only
+  projection served), and `describe_tool` returns no types (its `types`
+  argument says so) — R45 typegen, `discover_apis` and the workflow prompts
+  still print the single-server identity (listed under `TODO(R45)` in
+  `multi/facade.ts`);
+- `optional: true` is unsupported (fails the wrap; `optional: false` is
+  accepted), and `introspectTimeoutMs` is not built (R47);
+- `catalog.globalSearch: false` is unsupported, and there are no
+  `search_<alias>` tools or box overviews yet (R43); the instructions carry
+  a minimal shelf (alias, host description, tool count) without the R44
+  fallback to the server's first sentence.
+
+Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
+dispatching on the alias in front of N single-server facades — N blob
+identities and key domains to reconcile, and policy, search and the
+did-you-mean hint would each need a cross-facade layer anyway.
+
 ## D17 — Approvals mode: `every-write` or `destructive-only` (2026-10-29)
 
 History: a flag to skip the approval on non-destructive writes was floated
@@ -763,8 +826,9 @@ any context whose `approvals` is not one of the two modes, so even an old
 overrides map naming a tool `approvals` fails closed. Annotation hints are
 read with own-property semantics, like overrides. Direct library users of
 `executeMachine` / `generateToolTypes` validate the option with the exported
-`assertApprovalsMode`. The per-source mode of a multi-server facade will be
-an optional field of the same context.
+`assertApprovalsMode`. The per-source mode of a multi-server facade is an
+optional field of the same context, `toolApprovals`, resolved per qualified
+tool (D16, implementation addendum).
 
 The mode is deliberately not bound into blobs: it only ever relaxes `ask` to
 `auto`, a pending entry always needs an accepted verdict to run, and `deny`
@@ -780,3 +844,202 @@ every surface already renders from the resolved decision, so the copy is
 accurate under every mode and every per-tool override. This supersedes the
 earlier mode-specific wording; models that matched on it see a minor-version
 copy change.
+
+## D19 — Upstream sign-in is just-in-time and bring-your-own (2026-10-29)
+
+Context. Remote MCP servers that need authorization are usually wired up
+today by pasting a token into an MCP client's configuration file, where it
+sits in plaintext, gets copied between machines and is never rotated. PRD
+§12.4 held per-user upstream OAuth as a stretch goal and had already
+decided two things: authorization is semantically an approval, so it
+belongs in an MRTR suspension; and credentials never enter the sandbox,
+the blob or any model-visible surface. The maintainer wants getting started
+to need nothing more than a URL, and wants Projection to ask for sign-in
+only when a request first needs it. GitHub's remote MCP server, the most
+common case, has no dynamic client registration, and its maintainers do not
+plan to add it (github/github-mcp-server#1404). Its authorization server
+does support the device flow: `https://github.com/login/oauth` advertises
+`device_authorization_endpoint`, checked 2026-10-29. A GitHub OAuth app
+allows the device flow without a client secret when "Enable Device Flow"
+is ticked, but its authorization-code exchange requires a secret even with
+PKCE.
+
+Decision (PRD §6.10, R50–R62):
+
+- **Sources by URL.** A source can be an `UpstreamSpec`, `{ url, oauth? }`,
+  in `wrapMcpServer`, in `wrapMcpServers` and as a `ServerSourceConfig.source`.
+  Projection then builds a Streamable HTTP transport (`https:` except on
+  loopback) and installs its own `OAuthClientProvider`. Pre-built `Client`s
+  keep integrator-owned auth, and their outputs stay byte-identical.
+- **Bring-your-own registration.** Projection ships no OAuth app and
+  recommends none. Client identity is resolved in the SDK `auth()` order:
+  configured `oauth.clientId` (with an optional, discouraged
+  `clientSecret`), then a CIMD URL when the server supports CIMD, then
+  dynamic registration (both phase 1b). When none applies, the request
+  ends directly in an `auth` error that names what to configure.
+- **Flows.** The device flow (RFC 8628) is used whenever it is available,
+  from metadata or the `oauth.deviceAuthorizationEndpoint` override. The
+  device code is sealed in the sign-in blob. A retry first re-reads the
+  token store, then holds the request and polls at the server's interval
+  for up to 25 s before re-suspending. Sign-in round trips have their own
+  counter, bounded by the device code's expiry rather than the R12 trip
+  cap. Otherwise (phase 1b) Projection uses authorization code + PKCE S256
+  with a loopback redirect on `127.0.0.1`, carrying the verifier in a
+  sealed `state`. Every request carries RFC 8707 `resource`, but the
+  audience binding is enforced on Projection's side, because servers may
+  ignore it (GitHub does). Endpoint and scope overrides cover incomplete
+  metadata. Hosted redirect URIs are out of scope.
+- **Sign-in host rule.** The authorization, device-authorization and
+  verification URLs must share the host of the validated issuer, unless
+  the integrator overrode that endpoint or listed the host in
+  `oauth.signInHosts`. The sign-in message names the resource host and the
+  issuer host.
+- **Locked boxes.** A 401 at wrap time locks the box rather than failing
+  the wrap. The shelf shows it as `sign-in required`, and its
+  `search_<alias>` is still served. The first request that needs the box
+  suspends for sign-in. The retry introspects the box lazily on that
+  instance, and the original request proceeds. The tool list never
+  changes, a box's `search_<alias>` description is fixed at wrap time, and
+  no list-changed notification is sent. Any request that names a box
+  locked on this instance, a resume included, re-reads the token store
+  first.
+- **The sign-in request.** It is a URL-mode elicitation:
+  `Sign in to <alias> (<resource host>)`, then
+  `You'll be sent to <issuer host>`. It falls back to a form with an "I've
+  signed in" confirmation, then to a normal `sign_in_required` result whose
+  link the model shows the user, backed by a per-instance pending flow that
+  the next call redeems. The request is carried by a new blob kind, `signin`, bound to the original
+  request and the facade identity, single-use, and expiring with the flow.
+  When the sign-in completes, the request continues and a write still asks
+  for approval. A decline is `sign_in_declined`, or `TOOL_DENIED` in a
+  machine (phase 1b). Failures get a new `auth` phase. A mid-workflow 401 re-locks the
+  box and suspends; re-lock is compare-and-delete against the store, since
+  two processes sharing one keychain entry is normal.
+- **Token residence.** Tokens live only in a `TokenStore`: by default the
+  OS credential store (macOS Keychain, Linux Secret Service, Windows
+  Credential Manager) through the native keyring library
+  `@napi-rs/keyring`, an optional dependency loaded on first use. When it
+  is absent, fails to load, or the store is unavailable, locked or hung
+  (5 s timeout per operation), Projection falls back to an in-memory store
+  with a warning. Entries are keyed by the SHA-256 of the store key, so no
+  URL appears in the store's metadata. The store is pluggable for hosted
+  deployments. Refresh is automatic, and `signOut` re-locks.
+- **Identity.** A URL source's identity is `url:<canonical url>`. It is
+  stable whether the box is locked or unlocked, and it cannot equal a
+  `name@version`, because a canonical URL has no `@`.
+- **Scope and phases.** One principal; §12.4 keeps per-user principals,
+  hosted redirects, secret references and credentials in source URLs.
+  Phase 1, the GitHub milestone, is a configured `clientId`, the keyring
+  store and its fallback, the device flow with hold-and-poll, URL and form
+  elicitation and the `sign_in_required` fallback, locked boxes for the
+  catalog tools (`search_<alias>`, `describe_tool`, `call_tool` and their
+  single-server equivalents), re-lock on 401, `signOut` without revocation
+  and the live GitHub smoke. Phase 1b adds authorization code + PKCE with
+  the loopback listener, DCR and CIMD, `insufficient_scope` step-up, RFC
+  7009 revocation, the `discover_apis` suspension and machine-held sign-in.
+  Until then a machine `toolCall` to a locked box is a `TOOL_ERROR` naming
+  the box's search tool, so the model signs in there and runs the workflow
+  again.
+
+Why the device flow first. It needs no redirect listener, no port, no
+client secret and no browser on the same machine. It is the only one of the
+two flows that works in a hosted deployment, and it is stateless across
+MRTR retries: everything needed to finish it rides sealed in
+`requestState`, so any instance can poll. For GitHub, the case that
+motivated this work, it is also the only flow that works without a secret.
+The authorization-code flow stays as the fallback for servers without a
+device endpoint, and it is local-only by construction.
+
+Why a new blob kind rather than a pending entry. `pending` is the S2
+approval map. If a sign-in were a pending entry, every approval path would
+need to know that one entry is not an approval, and a single missed check
+in `call_tool`'s exactly-one-`call` rule would execute a gated call on an
+`accept` meant for a sign-in. A separate kind, with R36's kind check
+extended to the origin tool, makes that confusion impossible. It also
+keeps sign-in and approval sequential: sign in first, then approve, never
+one prompt doing both.
+
+Why locked boxes. Failing the wrap on a 401 would make "start with nothing"
+impossible. Skipping the source, as `optional` does, would hide the box
+from the model, so it could never ask for it. A locked box keeps the
+facade's tool set fixed: hosts cache tool lists and models plan from them,
+and the 2026-07-28 wire has no session to send a list-changed notification
+on. The shelf tells the model the box exists and what it needs, and the
+box's own search tool is the natural place to trigger sign-in.
+
+Why hold and poll. Clients retry the moment the user accepts the
+elicitation, usually before the sign-in in the browser has finished. A
+retry that polled once would mostly find `authorization_pending` and burn
+a round trip; holding for up to 25 s at the server's interval turns the
+common case into one retry. Counting sign-in round trips against the R12
+cap would let a fast-retrying client exhaust it while the user is still
+typing the code, so the loop is bounded by the code's own expiry instead.
+That also removes the need for a background poller: a pending fallback
+flow is redeemed by the next call that needs the box.
+
+Why the OS store, through a native library. A token file in plaintext is
+the problem this work replaces, just moved to a different place. A file
+encrypted under the blob key would put the key that protects every blob
+next to every token it unlocks, and an integrator who shares the blob key
+across instances would be sharing tokens too. The OS credential store is
+per user, encrypted at rest, and already where users expect credentials
+to live. `@napi-rs/keyring` reaches it in-process on macOS, Linux and
+Windows from prebuilt binaries: no subprocess, no argv, no size limit.
+Being optional, it never blocks installation; when it is missing or the
+store is unavailable, an in-memory store with a warning is honest about
+the cost: the user signs in again after a restart. The threat model is
+stated in R59: the store protects against other OS users and disk theft,
+not against code running as the same user, which can read the item, as
+it can under every OS-store approach.
+
+Why the sign-in host rule. The SDK validates that metadata is internally
+consistent, but a hostile server can point at a legitimate identity
+provider that is not its own, and a user who sees a familiar sign-in page
+approves it. Requiring the URLs the user is sent to to share the
+validated issuer's host, and naming both the resource host and the issuer
+host in the message, makes that visible; `oauth.signInHosts` covers
+providers that legitimately split hosts (Google's device flow, for
+example), as an explicit integrator decision.
+
+Why a URL-based identity. A sign-in blob is minted while the box is locked,
+before Projection has seen the server's `name@version`. An identity that
+changed on unlock would make every first sign-in fail verification. The
+host-chosen URL is known at wrap time and stable. Trade-off: an upgrade of
+the server behind that URL no longer invalidates in-flight blobs. That is
+acceptable because blobs live for minutes, and a resumed call is validated
+against the catalog the instance holds when it resumes.
+
+Alternatives rejected:
+
+- **Projection-owned OAuth apps for popular providers** (a GitHub OAuth app
+  shipped with the library, for example). This would give the lowest
+  friction for those providers. But the maintainer does not want Projection
+  to be prescriptive about which servers it wraps, and a shipped client id
+  makes Projection the operator of an app that every user's token is issued
+  to.
+- **Failing the wrap on 401.** It contradicts the goal: a wrapper that
+  needs a token before it starts brings the token back into configuration.
+- **Static tokens with secret references as the primary path.** This is
+  less machinery, but it keeps the user minting, storing and rotating
+  long-lived tokens by hand. It stays available as integrator-owned
+  `Client` auth, and secret references stay in §12.4.
+- **A plaintext token file, or one encrypted under the blob key.** See the
+  OS-store rationale above.
+- **The OS store through helper processes** (`/usr/bin/security` on macOS,
+  `secret-tool` on Linux). A secret passed on stdin to `security` is
+  silently truncated or stored empty; passed in argv, it is visible to
+  other local users in the process table; and the interactive mode has
+  line-length and quoting limits. It also left Windows without a store.
+
+Known gaps carried forward:
+
+- The authorization-code flow cannot tell when the browser is on another
+  machine.
+- In the no-elicitation fallback, the link passes through the model, which
+  brings the phishing and fixation risks R61 names. Fixation is accepted
+  for single-user phase 1.
+- A pending fallback flow (the no-elicitation path) lives on one
+  instance. Behind a load balancer without a shared token store, the next
+  call may reach another instance, which starts its own flow.
+- The OS store does not protect tokens from other code running as the
+  same user.
