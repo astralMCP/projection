@@ -21,8 +21,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
     "@astral-mcp/projection": "workspace:*",
-    "@modelcontextprotocol/client": "2.3.1",
-    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "mongodb": "7.5.0",
     "mongodb-memory-server": "11.3.0",
     "zod": "^4.6.7"
