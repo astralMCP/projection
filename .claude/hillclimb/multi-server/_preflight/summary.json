@@ -1,0 +1,43 @@
+{
+  "description": "Pre-baseline canary (4 projection episodes) and direct-mode cost probe (8 episodes); spend only, not a round",
+  "target": "code",
+  "phases": {
+    "canary": {
+      "file": "raw/canary.json",
+      "sha256": "b4aa8ce8e223645e6d856d89fe8f37e2e48198178d28e8fcdd62c17032f95c77",
+      "generatedAt": "2026-10-29T23:37:21.081Z",
+      "updatedAt": "2026-10-29T23:37:34.534Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["multi"],
+      "runs": 1,
+      "tasks": 2,
+      "records": 4,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "boxDescriptions": false
+    },
+    "direct-probe": {
+      "file": "raw/direct-probe.json",
+      "sha256": "6ecf218dbde1062f82da72dcf543caabd0fd34b496a09efc2f8ba686a90c3ee8",
+      "generatedAt": "2026-10-29T23:51:15.573Z",
+      "updatedAt": "2026-10-29T23:51:33.224Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["direct"],
+      "tiers": ["multi"],
+      "runs": 1,
+      "tasks": 4,
+      "records": 8,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "boxDescriptions": false
+    }
+  },
+  "rows": 12,
+  "errors": 0,
+  "served_models": {
+    "claude-haiku-4-5 -> claude-haiku-4-5-20251001": 6,
+    "claude-sonnet-5-5 -> claude-sonnet-5-5": 6
+  },
+  "cost_usd": 1.1536
+}

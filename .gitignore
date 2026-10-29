@@ -11,3 +11,12 @@ apps/demo-host/public/host.iife.js
 # The harness's tool-choice eval (PR #41) writes its JSON results here.
 eval-results/
 .claude/worktrees/
+# Hill-climb flows (.claude/hillclimb/<flow>/): per-round transcripts, raw
+# harness JSON and per-episode results stay local; _state.json, narrative.md,
+# metrics.md, summary.json, trajectory/ and vN/change.* are committed.
+.claude/hillclimb/**/traces/
+.claude/hillclimb/**/raw/
+.claude/hillclimb/**/results.jsonl
+.claude/hillclimb/**/errors.jsonl
+.claude/hillclimb/**/progress.txt
+.claude/hillclimb/**/report.html

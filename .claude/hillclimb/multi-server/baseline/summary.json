@@ -1,0 +1,64 @@
+{
+  "description": "baseline: Projection at origin/main e05fd03, no changes",
+  "target": "system_prompt",
+  "phases": {
+    "guard": {
+      "file": "raw/guard.json",
+      "sha256": "6fd516a810073744a2197306e840336317112d3eaaf368ec6742acc5b365ee5b",
+      "generatedAt": "2026-10-29T23:47:14.719Z",
+      "updatedAt": "2026-10-29T23:51:01.726Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["basic", "hard", "filesystem", "mongodb"],
+      "runs": 1,
+      "tasks": 60,
+      "records": 120,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "boxDescriptions": false
+    },
+    "multi": {
+      "file": "raw/multi.json",
+      "sha256": "6dbf5c4b855dc1ecc7f2a99d7d7a95db8763a69f4ebb03f2823fe474044de13c",
+      "generatedAt": "2026-10-29T23:38:14.541Z",
+      "updatedAt": "2026-10-29T23:47:11.672Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection", "projection-boxes"],
+      "tiers": ["multi"],
+      "runs": 3,
+      "tasks": 17,
+      "records": 204,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "boxDescriptions": false
+    }
+  },
+  "rows": 324,
+  "errors": 0,
+  "served_models": {
+    "claude-haiku-4-5 -> claude-haiku-4-5-20251001": 162,
+    "claude-sonnet-5-5 -> claude-sonnet-5-5": 162
+  },
+  "cost_usd": 6.5062,
+  "fingerprint": {
+    "commit": "e05fd034d55ceb01c29ea30e52f6f7d82a923c55",
+    "local_changes": "none",
+    "pnpm_lock_sha256": "0e49cb80c4f5944bc67577a1569bfee4fb872cb0ccf213ba93f57490d4a9b054",
+    "node": "v24.22.2",
+    "models": {
+      "haiku45": "claude-haiku-4-5 (served claude-haiku-4-5-20251001), no thinking",
+      "sonnet-low": "claude-sonnet-5-5, adaptive thinking, effort low"
+    },
+    "mongodb_mcp_server": "3.2.1 (vendored)",
+    "turn_budget": "12 action turns / 24 total"
+  },
+  "headline": {
+    "gating_pass": 0.8431372549019608,
+    "gating_tasks_all_reps": "25/34",
+    "haiku45_projection": "37/51, 10/17 tasks",
+    "sonnet-low_projection": "49/51, 15/17 tasks",
+    "guard_pass": 0.95,
+    "guard_haiku45": "55/60",
+    "guard_sonnet-low": "59/60"
+  }
+}
