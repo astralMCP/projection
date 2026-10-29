@@ -333,6 +333,137 @@ code mode (`projections.codeMode: true` fails the wrap, and `describe_tool`
 returns no TypeScript types), `optional: true` sources, and
 `introspectTimeoutMs`.
 
+## Upstream authentication
+
+> **Status.** This is the foundation of just-in-time upstream sign-in (PRD
+> §6.10, phase 1A): wrapping a remote server by URL, the token store,
+> stored-token use and refresh, and `signOut`. **Just-in-time sign-in** —
+> a box that comes up locked and asks the user to sign in (device flow) the
+> first time a request needs it — **comes next**. Until it lands, a server
+> that needs a token Projection does not have fails the wrap with an `auth`
+> error.
+
+**Never put a token in an MCP configuration file** (or an environment
+variable, argv, or the source URL). Those files sit in plaintext, get
+copied between machines and are never rotated. If a token was ever in one,
+rotate it. Projection reads no upstream credential from configuration for
+the sources it connects to by URL: the only tokens it holds are ones a user
+granted through sign-in, and they live in the token store.
+
+### Wrap a remote server by URL
+
+Pass `{ url, oauth? }` wherever a source goes — as `wrapMcpServer`'s
+source, as a `wrapMcpServers` source value, or as a
+`ServerSourceConfig.source`:
+
+```ts
+const facade = await wrapMcpServers(
+  {
+    fs: fsServer,
+    github: {
+      source: {
+        url: 'https://api.githubcopilot.com/mcp/',
+        oauth: { clientId: process.env.GITHUB_OAUTH_CLIENT_ID!, scopes: ['repo'] },
+      },
+      description: 'Issues and pull requests',
+    },
+  },
+  { blob: { key: blobKey } },
+);
+```
+
+Projection builds the Streamable HTTP transport itself, installs its own
+OAuth client provider on it, owns the connection and closes it in
+`close()`.
+
+- **URL rules.** `https:`, except `http:` on `127.0.0.1`, `[::1]` and
+  `localhost`. No credentials before the host and no `#fragment` (both
+  `validate` errors). The URL is canonicalized — scheme and host lowercased,
+  default port dropped, an empty path written as `/` (`/mcp` and `/mcp/`
+  stay different), the query kept, every `@` in the path and query written
+  `%40` — and two sources with the same canonical URL are a `validate`
+  error. Don't put a credential in the query string: Projection treats the
+  URL as configuration, not as a secret, and does not try to detect one.
+- **`oauth`.** `clientId` is a client _you_ register with the server's
+  authorization server — Projection ships no OAuth app (for GitHub: an OAuth
+  app with "Enable Device Flow" ticked; no secret needed). `clientSecret` is
+  accepted but discouraged. `scopes` replaces the scope selection from
+  metadata — set it explicitly. `signInHosts`, `tokenEndpoint` and
+  `deviceAuthorizationEndpoint` are validated now and used by the sign-in
+  flow that comes next. Unknown keys, and `clientMetadataUrl` /
+  `authorizationEndpoint` (later phase), are `validate` errors. A server that
+  needs no authorization works without `oauth`.
+- **Identity.** A URL source's blob identity is `url:<canonical url>` — on
+  a multi-server facade, its entry in the `multi:` pairs — instead of the
+  server's `name@version`. It is host-chosen and stable, so an upgrade of
+  the server behind the URL does not invalidate in-flight blobs; a resumed
+  call is validated against the catalog the instance holds.
+- **Stored tokens.** When the store holds a token for the source, every
+  request carries it (the store is re-read per request, so a token another
+  process stored or refreshed is picked up). On a 401 with a refresh token,
+  the SDK refreshes and the rotated set is stored; a definitive refresh
+  failure (`invalid_grant`) deletes the stored record only if it is still
+  the one that failed (compare-and-delete), so two processes sharing an
+  entry don't clobber each other.
+- **Failures.** A 401 with no usable token, a missing `oauth.clientId`, an
+  `insufficient_scope` answer, or an authorization-server refusal fails the
+  wrap with an `auth` error. It carries library copy and at most the OAuth
+  `error` code — never SDK text, server text or token-store errors. Any
+  other connection failure fails the wrap as it does for any source.
+
+### The token store
+
+Tokens live only in a `TokenStore`; access tokens, refresh tokens and
+client secrets never enter the sandbox, a blob, a log, stderr, an error or
+anything the model sees.
+
+```ts
+interface TokenStore {
+  get(key: string): Promise<TokenRecord | undefined>;
+  set(key: string, record: TokenRecord): Promise<void>;
+  // With `expected`: delete only if the stored record still equals it.
+  delete(key: string, expected?: TokenRecord): Promise<boolean>;
+}
+```
+
+- **Default: the OS credential store** — macOS Keychain, Linux Secret
+  Service, Windows Credential Manager — through `@napi-rs/keyring`, an
+  optional dependency loaded on first use (prebuilt binaries, no install
+  script, no subprocess). Entries are filed under the service
+  `@astral-mcp/projection` with the SHA-256 of the key as the account, so no
+  URL appears in the store's metadata. Every write is read back, and every
+  operation times out after 5 s. On Linux the entry is pinned to the Secret
+  Service (never the session-only kernel keyring).
+- **Fallback.** If the module is missing or fails to load, or the store is
+  unavailable, locked or hung, Projection keeps tokens in memory for the
+  rest of the process and prints one warning to stderr: users sign in again
+  after a restart.
+- **Threat model.** The OS store protects tokens against other OS users and
+  disk theft. It does not protect them from code running as the same user:
+  any process of that user (an npm `postinstall` script, another MCP server)
+  can read the item. That is true of every OS-store approach.
+- **Your own store.** `WrapOptions.tokenStore` replaces the default — for a
+  hosted single-user deployment, or a shared store behind a load balancer.
+  `MemoryTokenStore` (exported) keeps tokens in memory, and `sameTokenRecord`
+  is the comparison compare-and-delete uses. Never log a record.
+
+### Signing out
+
+`await facade.signOut()` deletes the stored tokens of a single-server
+facade's URL source; on a multi-server facade `signOut('github')` clears one
+box and `signOut()` every box given by URL. A box built from a pre-built
+`McpServer` or `Client`, or an unknown alias, is a `validate` error; a store
+that cannot delete is an `auth` error, so a sign-out never silently leaves a
+token behind. Tokens are not revoked at the authorization server yet.
+
+### Bringing your own `Client`
+
+A pre-built `Client` keeps its own transport and auth: Projection installs
+nothing on it, it keeps `name@version` as its identity, and a 401 from it
+surfaces as it always has. Use it for per-user (multi-tenant) auth, hosted
+redirect URIs, static tokens from a secret manager, or any scheme
+Projection's sign-in does not cover.
+
 ## Legacy clients (pre-2026-07-28)
 
 By default a legacy client can run read-only machines and calls, and any
@@ -424,8 +555,9 @@ only be restructured and resubmitted.
 
 ## Lifecycle and operations
 
-- `facade.close()` on shutdown. It closes the connection Projection opened
-  for an in-process server; a `Client` you passed in stays yours.
+- `facade.close()` on shutdown. It closes the connections Projection opened
+  for in-process servers and servers given by URL; a `Client` you passed in
+  stays yours.
 - Every failure is a normal `isError` result with a structured body
   (`phase`, `message`, `diagnostics`, `hint`, `logs`; PRD R25 lists the
   phases) — nothing throws across the wire.
@@ -450,7 +582,8 @@ only be restructured and resubmitted.
   every approval blob is single-use. No default implementation ships: an
   in-memory one would silently break horizontal scaling.
 
-- Blobs are bound to the wrapped server's identity (`name@version`), or on a
+- Blobs are bound to the wrapped server's identity (`name@version`, or
+  `url:<canonical url>` for a server given by URL), or on a
   `wrapMcpServers` facade to its alias-to-identity set. Two facades that
   share a blob key over the same identities can resume each other's blobs —
   use one key per facade (per distinct server set).

@@ -46,6 +46,16 @@ export {
   type WrapServersOptions,
 } from './multi/index.js';
 
+// Upstream auth — sources given by URL and the token store (PRD §6.10, R51, R59)
+export {
+  MemoryTokenStore,
+  sameTokenRecord,
+  type TokenRecord,
+  type TokenStore,
+  type UpstreamOAuthOptions,
+  type UpstreamSpec,
+} from './auth/index.js';
+
 // Catalog projection — search_tools / describe_tool / call_tool (PRD §6.8, R32–R38)
 export {
   callTool,

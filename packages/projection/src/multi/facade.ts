@@ -32,6 +32,7 @@
 
 import type { Client } from '@modelcontextprotocol/client';
 import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
+import { tokenStoreOption, UpstreamConnector, type UpstreamSpec } from '../auth/index.js';
 import { boxAbout, boxOverviewResources, toolCount } from '../catalog/box-guidance.js';
 import {
   boxSearchTool,
@@ -116,12 +117,12 @@ export interface MultiProjectionFacade extends Omit<ProjectionFacade, 'catalog' 
  * fails the wrap and closes every connection Projection opened (R47).
  */
 export async function wrapMcpServers(
-  sources: Record<string, McpServer | Client | ServerSourceConfig>,
+  sources: Record<string, McpServer | Client | UpstreamSpec | ServerSourceConfig>,
   options: WrapServersOptions,
 ): Promise<MultiProjectionFacade> {
   // R39: every configuration mistake fails here, before any connection.
   assertOptionsGiven(options);
-  const resolved = resolveSources(sources);
+  const resolved = resolveSources(sources, tokenStoreOption(options.tokenStore));
   const aliases = new Set(resolved.map((source) => source.alias));
   assertPolicyKeys(options.policy, aliases);
   const approvals = assertApprovalsMode(options.approvals);
@@ -160,8 +161,13 @@ export async function wrapMcpServers(
       toolApprovals: toolApprovalsFor(view, sourceModes),
     });
 
+    const upstreams = new Map<string, UpstreamConnector>();
+    for (const source of resolved) {
+      if (source.source instanceof UpstreamConnector) upstreams.set(source.alias, source.source);
+    }
     return new MultiFacade({
       introspector,
+      upstreams,
       view,
       instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
       options,
@@ -387,6 +393,8 @@ function catalogToolCopy(view: BoxedCatalog): CatalogToolCopy {
 
 interface MultiFacadeDeps {
   introspector: Introspector;
+  /** The boxes given by URL (R51), by alias. */
+  upstreams: ReadonlyMap<string, UpstreamConnector>;
   view: BoxedCatalog;
   instructions: string;
   options: WrapServersOptions;
@@ -492,6 +500,41 @@ class MultiFacade implements MultiProjectionFacade {
       registerCatalogTools(server, options?.era, this, this.copy);
     }
     registerResources(server, this.resources);
+  }
+
+  async signOut(alias?: string): Promise<void> {
+    const upstreams = this.deps.upstreams;
+    if (alias === undefined) {
+      if (upstreams.size === 0) {
+        throw new ProjectionError('validate', 'signOut: no box on this facade is given by URL', {
+          hint: 'signOut applies to sources given as { url }; pre-built McpServer and Client sources manage their own authorization.',
+        });
+      }
+      // Every box, even when one fails; the first failure is reported.
+      const settled = await Promise.allSettled([...upstreams.values()].map((box) => box.signOut()));
+      const failed = settled.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failed !== undefined) throw failed.reason;
+      return;
+    }
+    const connector = typeof alias === 'string' ? upstreams.get(alias) : undefined;
+    if (connector === undefined) {
+      const name = JSON.stringify(capLength(neutralizeControlChars(String(alias)), 64));
+      throw new ProjectionError(
+        'validate',
+        this.deps.view.boxes.has(String(alias))
+          ? `signOut: box ${name} is not given by URL`
+          : `signOut: no box ${name} on this facade`,
+        {
+          hint:
+            upstreams.size > 0
+              ? `Boxes given by URL: ${[...upstreams.keys()].join(', ')}.`
+              : 'No box on this facade is given by URL.',
+        },
+      );
+    }
+    await connector.signOut();
   }
 
   close(): Promise<void> {

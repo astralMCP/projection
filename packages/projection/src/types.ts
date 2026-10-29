@@ -210,6 +210,11 @@ export type ErrorPhase =
   | 'protocol'
   /** An `isError` result or transport failure from the wrapped tool, surfaced by `call_tool` (R25). */
   | 'upstream'
+  /**
+   * An upstream sign-in is required or could not complete (R25, R57):
+   * library copy only, plus at most the OAuth `error` code.
+   */
+  | 'auth'
   | 'terminal';
 
 export interface Diagnostic {

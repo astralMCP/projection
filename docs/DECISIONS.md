@@ -1070,3 +1070,80 @@ Known gaps carried forward:
   call may reach another instance, which starts its own flow.
 - The OS store does not protect tokens from other code running as the
   same user.
+
+### D19 addendum — phase 1A implementation notes (2026-10-29)
+
+Phase 1A ships the foundation of §6.10: `UpstreamSpec` sources (R51), the
+`url:` identity (R60), the token store (R59), stored-token use and refresh
+(R58), `signOut` without revocation, and the `auth` error phase (R25).
+Locked boxes, the device flow and every sign-in suspension are phase 1B.
+Decisions made while building it:
+
+- **Interim behaviour for a source that needs sign-in.** Until locked boxes
+  land, a 401 at wrap time with no usable token fails the wrap with an
+  `auth` error saying sign-in is required and that just-in-time sign-in
+  comes next. It contacts no authorization server: with nothing stored,
+  `onUnauthorized` refuses before any discovery. Phase 1B replaces this
+  failure with a locked box; the code path (`UpstreamConnector.mapError`)
+  is where that switch happens.
+- **The transport gets an `AuthProvider`, not the `OAuthClientProvider`.**
+  Handed an `OAuthClientProvider`, the transport adapts it internally and
+  runs `auth()` where Projection cannot bracket it, so the SDK's
+  `console.warn` output (which quotes authorization-server bodies, refresh
+  tokens included, as the tests showed) could not be confined to the auth
+  run. Projection's `AuthProvider` reproduces `adaptOAuthProvider` — `token()`
+  re-reads the store per request; `onUnauthorized` runs the SDK's `auth()` —
+  over a fresh `ProjectionOAuthProvider` delegate per run, with
+  `[mcp-sdk]`-prefixed warnings dropped for exactly that run. The per-run
+  delegate is also what makes compare-and-delete exact: it remembers the
+  record it presented, and `invalidateCredentials('tokens')` deletes only
+  that one. Consequence: the transport's own step-up path never runs (it
+  needs the `OAuthClientProvider`), which is what
+  `onInsufficientScope: 'throw'` asks for anyway.
+- **`state()` stops `auth()` before an authorization URL is built.** Phase
+  1 starts no flow from inside the transport. `redirectToAuthorization`
+  still only records, as R58 says, but `auth()` would first generate PKCE
+  and validate `response_types_supported` (failing on a device-only server
+  with SDK text). Throwing a marked sign-in-required error from `state()`
+  ends the run one step earlier. No `saveClientInformation` means the SDK
+  never registers a client dynamically; a missing `clientId` stops in
+  `clientInformation()`.
+- **What counts as an auth failure.** Projection's marker, `UnauthorizedError`
+  and `InsufficientScopeError` (R58's three), plus the transport's
+  `SdkHttpError` with `ClientHttpAuthentication` — the 401 a request still
+  gets after `onUnauthorized` succeeded. It is the same condition one step
+  later, so it is classified with the three. Errors from `auth()` are
+  reduced to a fixed-copy `UpstreamAuthError` with no `cause`; an OAuth
+  `error` code survives only if it matches `^[a-z_]+$`. Phase 1A does not
+  carry `error_description` at all (R57 allows a neutralized, capped one;
+  phase 1B can add it with the sign-in copy).
+- **`TokenStore` is typed.** The PRD's first draft had opaque string
+  values and a void `delete`; compare-and-delete needs the store to compare
+  and to say whether it deleted, so the interface takes `TokenRecord`s and
+  `delete(key, expected?)` returns a boolean (R59 updated). The default
+  store compares serialized ASCII JSON. Phase 1B's DCR registrations will
+  need their own record type or a widened one.
+- **Keyring specifics.** `@napi-rs/keyring` 2.1.2 is an optional
+  dependency with prebuilt per-platform binaries and no install script, so
+  `pnpm install --frozen-lockfile` needs no `allowBuilds` entry. It has no
+  label setting, so entries carry none. On Linux its default silently falls
+  back to the kernel keyring, which does not survive a reboot or logout;
+  entries are pinned to the Secret Service so a machine without one takes
+  Projection's in-memory fallback, with its warning, instead. The fallback
+  is per store and process-wide for the default store, so the warning
+  prints once. A failing `delete` also falls back, but throws: a sign-out
+  that silently left the token in the OS store would be worse than an
+  error.
+- **Endpoint overrides are validated but not yet used.** `tokenEndpoint`
+  and `deviceAuthorizationEndpoint` are checked (R51's `https:` rule) and
+  stored; the device-code redemption of phase 1B uses them. A refresh in
+  phase 1A uses the discovered token endpoint. `signInHosts` is likewise
+  validated now and enforced with the sign-in host rule (R61) in phase 1B.
+- **`clientId` is required inside `oauth`** for now (R52's CIMD and DCR
+  alternatives are phase 1b); `oauth` itself is optional, so a public server
+  can be wrapped by URL. `clientMetadataUrl` and `authorizationEndpoint`
+  are refused by name rather than as unknown keys, and are not in the type.
+- **Not yet enforced:** R54's "an `UpstreamSpec` with the catalog
+  projection off is a `validate` error". It exists because nothing would
+  reach a locked box; with no locked boxes yet, a code-mode-only facade
+  over a URL with a stored token works, so the rule lands with locked boxes.

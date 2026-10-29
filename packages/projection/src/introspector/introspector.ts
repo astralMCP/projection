@@ -24,6 +24,7 @@ import {
   ProtocolErrorCode,
   type Tool,
 } from '@modelcontextprotocol/server';
+import { UpstreamConnector } from '../auth/connect.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { ProjectionError } from '../errors.js';
 import type {
@@ -40,16 +41,19 @@ import type {
 export type ServerSource = McpServer | Client;
 
 /**
- * Aliased server sources (R30). v1 instantiates exactly one entry, but the
- * interface accepts a set so the multi-server stretch goal (PRD §12.2) needs
- * no signature break.
+ * Aliased server sources (R30): one per alias. An {@link UpstreamConnector}
+ * is a source given by URL (R51), validated by the facade: the introspector
+ * opens it, owns the resulting client, and records its `url:` identity
+ * (R60).
  */
-export type IntrospectorSources = Record<ServerAlias, ServerSource>;
+export type IntrospectorSources = Record<ServerAlias, ServerSource | UpstreamConnector>;
 
 interface Connection {
   client: Client;
-  /** True when the introspector created the client (in-process source). */
+  /** True when the introspector created the client (in-process source, or a source given by URL). */
   owned: boolean;
+  /** The `url:` identity of a source given by URL (R60). */
+  urlIdentity?: string;
 }
 
 const CLIENT_INFO = { name: 'projection-introspector', version: '0.1.0' };
@@ -216,13 +220,18 @@ interface IntrospectedServer {
   definitions: Map<string, Tool>;
 }
 
-async function introspectServer(alias: ServerAlias, client: Client): Promise<IntrospectedServer> {
+async function introspectServer(
+  alias: ServerAlias,
+  client: Client,
+  urlIdentity: string | undefined,
+): Promise<IntrospectedServer> {
   const tools = await listAllTools(client, alias);
   const info = client.getServerVersion();
   const catalog: ServerCatalog = {
     alias,
-    // Stable identity recorded into blobs (R30): server name + version.
-    identity: info !== undefined ? `${info.name}@${info.version}` : alias,
+    // Stable identity recorded into blobs (R30): server name + version; for
+    // a source given by URL, its host-chosen `url:<canonical url>` (R60).
+    identity: urlIdentity ?? (info !== undefined ? `${info.name}@${info.version}` : alias),
     tools: tools.map(toCatalogEntry),
   };
   const instructions = client.getInstructions();
@@ -308,7 +317,15 @@ export class Introspector implements ToolExecutor {
         if (source === undefined) return;
         const connection = await Introspector.#connect(alias, source);
         connections.set(alias, connection);
-        servers.set(alias, await introspectServer(alias, connection.client));
+        try {
+          servers.set(
+            alias,
+            await introspectServer(alias, connection.client, connection.urlIdentity),
+          );
+        } catch (err) {
+          // A 401 during introspection is an auth failure, not a protocol one.
+          throw source instanceof UpstreamConnector ? source.mapError(err) : err;
+        }
       }),
     );
     const failed = settled.find(
@@ -321,7 +338,13 @@ export class Introspector implements ToolExecutor {
     return new Introspector(connections, servers);
   }
 
-  static async #connect(alias: ServerAlias, source: ServerSource): Promise<Connection> {
+  static async #connect(
+    alias: ServerAlias,
+    source: ServerSource | UpstreamConnector,
+  ): Promise<Connection> {
+    if (source instanceof UpstreamConnector) {
+      return { client: await source.open(), owned: true, urlIdentity: source.identity };
+    }
     if (source instanceof McpServer) {
       if (source.isConnected()) {
         throw new ProjectionError(
@@ -376,7 +399,10 @@ export class Introspector implements ToolExecutor {
       await Promise.all(
         [...this.#connections].map(
           async ([alias, connection]) =>
-            [alias, await introspectServer(alias, connection.client)] as const,
+            [
+              alias,
+              await introspectServer(alias, connection.client, connection.urlIdentity),
+            ] as const,
         ),
       ),
     );

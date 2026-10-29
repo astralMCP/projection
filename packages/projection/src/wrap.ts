@@ -31,6 +31,13 @@
 
 import type { Client } from '@modelcontextprotocol/client';
 import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
+import {
+  isUpstreamSpecShape,
+  resolveUpstreamSpec,
+  tokenStoreOption,
+  UpstreamConnector,
+  type UpstreamSpec,
+} from './auth/index.js';
 import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
@@ -116,6 +123,14 @@ export interface ProjectionFacade {
   createServer(ctx?: RegisterOptions): McpServer;
   /** Register the enabled projections' tools and the resources on an `McpServer` the caller built. */
   registerOn(server: McpServer, options?: RegisterOptions): void;
+  /**
+   * Delete the stored upstream tokens (R59) of the sources given by URL:
+   * on a single-server facade, its source (call it without an alias); on a
+   * multi-server facade, the box named by `alias`, or every such box
+   * without one. No revocation yet. A facade or box not built from an
+   * `UpstreamSpec`, or an unknown alias, is a `validate` error.
+   */
+  signOut(alias?: string): Promise<void>;
   /** Close the connection to the wrapped server. */
   close(): Promise<void>;
 }
@@ -155,20 +170,31 @@ const CODE_MODE_COPY = {
 };
 
 /**
- * Wrap an MCP server (an in-process instance or a connected client) into a
- * Projection facade.
+ * Wrap an MCP server — an in-process instance, a connected client, or a
+ * remote server given by URL (`{ url, oauth? }`, R51) — into a Projection
+ * facade.
  */
 export async function wrapMcpServer(
-  source: McpServer | Client,
+  source: McpServer | Client | UpstreamSpec,
   options: WrapOptions,
 ): Promise<ProjectionFacade> {
-  // Validate the selection and the approvals mode BEFORE connecting: the
-  // throw must not leave an in-process wrapped server attached to a
-  // transport nobody will close.
+  // Validate the selection, the approvals mode, the token store and a URL
+  // source BEFORE connecting: the throw must not leave an in-process wrapped
+  // server attached to a transport nobody will close.
   const projections = resolveProjections(options.projections);
   const approvals = assertApprovalsMode(options.approvals);
+  const tokenStore = tokenStoreOption(options.tokenStore);
+  const connector = isUpstreamSpecShape(source)
+    ? new UpstreamConnector(
+        resolveUpstreamSpec(source, 'the wrapped server'),
+        tokenStore(),
+        'the wrapped server',
+      )
+    : undefined;
 
-  const introspector = await createIntrospector({ [DEFAULT_SERVER_ALIAS]: source });
+  const introspector = await createIntrospector({
+    [DEFAULT_SERVER_ALIAS]: connector ?? (source as McpServer | Client),
+  });
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
   if (catalog === undefined) {
     throw new ProjectionError(
@@ -202,6 +228,7 @@ export async function wrapMcpServer(
     options,
     policySettings,
     projections,
+    ...(connector !== undefined ? { connector } : {}),
   });
 }
 
@@ -221,6 +248,8 @@ interface FacadeDeps {
    */
   policySettings: PolicySettings;
   projections: Readonly<ProjectionSelection>;
+  /** The source given by URL, when the facade wraps one (R51). */
+  connector?: UpstreamConnector;
 }
 
 class Facade implements ProjectionFacade {
@@ -332,6 +361,25 @@ class Facade implements ProjectionFacade {
     }
     if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
     registerResources(server, this.resources);
+  }
+
+  async signOut(alias?: string): Promise<void> {
+    if (alias !== undefined) {
+      throw new ProjectionError('validate', 'signOut on a single-server facade takes no alias', {
+        hint: 'Call signOut() without arguments.',
+      });
+    }
+    const connector = this.deps.connector;
+    if (connector === undefined) {
+      throw new ProjectionError(
+        'validate',
+        'signOut applies only to a facade over a server given by URL',
+        {
+          hint: 'This facade wraps a pre-built McpServer or Client, whose authorization its owner manages.',
+        },
+      );
+    }
+    await connector.signOut();
   }
 
   close(): Promise<void> {

@@ -397,13 +397,13 @@ R59. **Token residence** (amends R27, S1). Tokens live only in a `TokenStore`:
 
 ```ts
 interface TokenStore {
-  get(key: string): Promise<string | undefined>;
-  set(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
+  get(key: string): Promise<TokenRecord | undefined>;
+  set(key: string, record: TokenRecord): Promise<void>;
+  delete(key: string, expected?: TokenRecord): Promise<boolean>;
 }
 ```
 
-Values are opaque serialized records. Projection derives two kinds of key:
+Records are typed (`TokenRecord`, below), and `delete` with `expected` is the compare-and-delete of R58: it deletes only when the stored record still equals `expected`, and reports whether it deleted. The default store serializes records as ASCII JSON. Projection derives two kinds of key:
 
 - token sets, keyed by canonical resource URL, client id and principal. A token-set record is ASCII JSON `{ access_token, refresh_token?, expires_at?, scope?, issuer }`; an `id_token` is never stored;
 - _(phase 1b)_ DCR registrations, keyed by issuer, canonical resource and principal.

@@ -77,6 +77,17 @@ false` turns it off). This preview serves the catalog projection only; code
 mode and optional sources are not available yet. See
 `docs/server-authors.md`.
 
+### Remote servers by URL (preview)
+
+Any source can be `{ url, oauth?: { clientId, scopes } }`: Projection builds
+the Streamable HTTP connection itself, uses and refreshes tokens from a
+token store (the OS credential store through the optional
+`@napi-rs/keyring` dependency by default, or `WrapOptions.tokenStore`), and
+`facade.signOut()` clears them. Never put a token in an MCP configuration
+file. Just-in-time sign-in (asking the user on first use) comes next; until
+then a server that needs a token Projection lacks fails the wrap with an
+`auth` error. See "Upstream authentication" in `docs/server-authors.md`.
+
 ## Security model
 
 | Invariant                                               | How it holds                                                                                                                                      |

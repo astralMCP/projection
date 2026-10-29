@@ -9,6 +9,7 @@
 
 import type { Implementation } from '@modelcontextprotocol/server';
 import { ProjectionError } from '../errors.js';
+import type { TokenStore } from '../auth/token-store.js';
 import type { BlobKeyDomain } from '../blob/index.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
 import type {
@@ -89,6 +90,14 @@ export interface WrapOptions {
    * disabling both is an error at wrap time.
    */
   projections?: ProjectionsOptions;
+  /**
+   * Where upstream tokens for sources given by URL live (R59). Default: the
+   * OS credential store through the optional `@napi-rs/keyring` dependency,
+   * falling back to memory (with one stderr warning) when it is absent or
+   * the store is unavailable. A horizontally scaled deployment supplies a
+   * shared store (R27). Unused by pre-built `McpServer` / `Client` sources.
+   */
+  tokenStore?: TokenStore;
 }
 
 /** Per-projection on/off switches (R1, R32). */
