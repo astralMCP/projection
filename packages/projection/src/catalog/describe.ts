@@ -27,8 +27,7 @@ import type { CallToolResult } from '../mrtr/protocol.js';
 import type { ToolTypeText } from '../typegen/index.js';
 import {
   findTool,
-  type ApprovalsMode,
-  type PolicyOverrides,
+  type PolicyOptions,
   type ServerCatalog,
   type ToolAnnotations,
 } from '../types.js';
@@ -46,13 +45,8 @@ export interface DescribeToolArgs {
   types?: boolean;
 }
 
-export interface DescribeToolOptions {
-  /** Per-tool policy overrides (R14); decides the rendered posture. */
-  policy?: PolicyOverrides;
-  /** Approvals mode (R49); decides the rendered posture with `policy`. */
-  approvals?: ApprovalsMode;
-  /** Per-source approvals modes of a multi-server facade, by box alias (R49). */
-  sourceApprovals?: ReadonlyMap<string, ApprovalsMode>;
+/** The policy options (R14, R49) decide the rendered posture. */
+export interface DescribeToolOptions extends PolicyOptions {
   /** Per-tool generated types from typegen (R34). */
   toolTypes?: ReadonlyMap<string, ToolTypeText>;
 }

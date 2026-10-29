@@ -141,6 +141,7 @@ const CATALOG_TOOL_COPY: CatalogToolCopy = {
   describeDescription: DESCRIBE_TOOL_DESCRIPTION,
   callDescription: CALL_TOOL_DESCRIPTION,
   toolName: 'Tool name as listed by search_tools.',
+  describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
 };
 
 const CODE_MODE_COPY = {
@@ -267,6 +268,7 @@ class Facade implements ProjectionFacade {
   ): ApprovalGateDeps {
     return approvalGateDeps({
       catalog: this.deps.catalog,
+      blobDomain: 'single',
       executor: this.deps.introspector,
       options: this.deps.options,
       policySettings: this.deps.policySettings,

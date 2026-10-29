@@ -39,9 +39,8 @@ import type { CallToolResult } from '../mrtr/protocol.js';
 import { isBoxedCatalog, splitQualified, type BoxedCatalog, type BoxedTool } from './boxes.js';
 import {
   dedupeTools,
-  type ApprovalsMode,
   type PolicyContext,
-  type PolicyOverrides,
+  type PolicyOptions,
   type ServerCatalog,
   type ToolCatalogEntry,
 } from '../types.js';
@@ -56,13 +55,8 @@ export interface SearchToolsArgs {
   cursor?: string;
 }
 
-export interface SearchToolsOptions {
-  /** Per-tool policy overrides (R14); decides the rendered posture. */
-  policy?: PolicyOverrides;
-  /** Approvals mode (R49); decides the rendered posture with `policy`. */
-  approvals?: ApprovalsMode;
-  /** Per-source approvals modes of a multi-server facade, by box alias (R49). */
-  sourceApprovals?: ReadonlyMap<string, ApprovalsMode>;
+/** The policy options (R14, R49) decide the rendered posture. */
+export interface SearchToolsOptions extends PolicyOptions {
   /** Tools per page. Default {@link DEFAULT_SEARCH_PAGE_SIZE}, clamped to [1, 200]. */
   pageSize?: number;
 }
@@ -108,37 +102,71 @@ export function searchTools(
   args: SearchToolsArgs,
   options: SearchToolsOptions = {},
 ): CallToolResult {
-  const pageSize = Math.min(
-    MAX_PAGE_SIZE,
-    Math.max(1, options.pageSize ?? DEFAULT_SEARCH_PAGE_SIZE),
+  const context = policyContext(options);
+  const { page, query, offset, queryTruncated } = paginate(
+    args,
+    options.pageSize,
+    undefined,
+    // First occurrence wins, as for `findTool` and typegen (S5).
+    (q) => rankTools(dedupeTools(catalog.tools), q),
+    (entry) => summarizeTool(entry, context),
   );
+  return {
+    content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
+    structuredContent: { ...page },
+  };
+}
+
+/** One page of a search, with the normalized query it answered. */
+interface Paged<S> {
+  page: { tools: S[]; total: number; nextCursor?: string };
+  /** The query after truncation to {@link MAX_QUERY_CHARS}. */
+  query: string;
+  offset: number;
+  queryTruncated: boolean;
+}
+
+/**
+ * The paging every search tool shares (R33, R43): clamp the page size,
+ * truncate the query, decode the cursor (bound to `tool` when given), rank
+ * with `rank`, refuse an offset past the end, and assemble the page with its
+ * next cursor. Cursors are unauthenticated paging hints, not a security
+ * boundary: a forged one can only select another page of results the caller
+ * may list anyway — every name it leads to is still resolved, gated and
+ * approved by the call path.
+ */
+function paginate<T, S>(
+  args: SearchToolsArgs,
+  pageSizeOption: number | undefined,
+  tool: string | undefined,
+  rank: (query: string) => readonly T[],
+  summarize: (item: T) => S,
+): Paged<S> {
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? DEFAULT_SEARCH_PAGE_SIZE));
   // Slice, not capLength: an ellipsis would change what the filter matches.
   const rawQuery = args.query ?? '';
   const query = rawQuery.slice(0, MAX_QUERY_CHARS);
   const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
-  const offset = decodeCursor(args.cursor, query);
+  const offset = decodeCursor(args.cursor, query, tool);
 
-  // First occurrence wins, as for `findTool` and typegen (S5).
-  const matches = rankTools(dedupeTools(catalog.tools), query);
+  const matches = rank(query);
   // A cursor is only ever issued while more results remain, so an offset at
   // or beyond the end was not issued by us (or not for this catalog): refuse
   // it rather than answer with an empty page that contradicts `total`.
   if (offset > 0 && offset >= matches.length) {
-    throw cursorError('cursor is past the end of the results');
+    throw cursorError('cursor is past the end of the results', tool);
   }
   const slice = matches.slice(offset, offset + pageSize);
-  const context = policyContext(options);
-  const tools = slice.map((entry) => summarizeTool(entry, context));
   const end = offset + slice.length;
-  const page: SearchToolsPage = {
-    tools,
-    total: matches.length,
-    ...(end < matches.length ? { nextCursor: encodeCursor(query, end) } : {}),
-  };
-
   return {
-    content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
-    structuredContent: { ...page },
+    page: {
+      tools: slice.map(summarize),
+      total: matches.length,
+      ...(end < matches.length ? { nextCursor: encodeCursor(query, end, tool) } : {}),
+    },
+    query,
+    offset,
+    queryTruncated,
   };
 }
 
@@ -184,57 +212,44 @@ export function searchBoxes(
   options: SearchBoxesOptions = {},
 ): CallToolResult {
   const tool = options.tool ?? 'search_tools';
-  const pageSize = Math.min(
-    MAX_PAGE_SIZE,
-    Math.max(1, options.pageSize ?? DEFAULT_SEARCH_PAGE_SIZE),
-  );
-  const rawQuery = args.query ?? '';
-  const query = rawQuery.slice(0, MAX_QUERY_CHARS);
-  const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
-  const offset = decodeCursor(args.cursor, query, tool);
-
-  const members = [...catalog.members.values()];
-  const matches =
-    query.length === 0
-      ? members
-      : scoreBoxedTools(members, query, new Set(catalog.boxes.keys())).map((item) => item.member);
-  if (offset > 0 && offset >= matches.length) {
-    throw cursorError('cursor is past the end of the results', tool);
-  }
-  const slice = matches.slice(offset, offset + pageSize);
   const context = policyContext(options);
-  const tools = slice.map((member): BoxedToolSummary => ({
-    ...summarizeTool(member.qualified, context),
-    box: member.alias,
-  }));
-  const end = offset + slice.length;
-  const page: BoxedSearchPage = {
-    tools,
-    total: matches.length,
-    ...(end < matches.length ? { nextCursor: encodeCursor(query, end, tool) } : {}),
-  };
+  const members = [...catalog.members.values()];
+  const aliases = new Set(catalog.boxes.keys());
+  const { page, query, offset, queryTruncated } = paginate(
+    args,
+    options.pageSize,
+    tool,
+    (q) => (q.length === 0 ? members : scoreBoxedTools(members, q, aliases).map((i) => i.member)),
+    (member): BoxedToolSummary => ({
+      ...summarizeTool(member.qualified, context),
+      box: member.alias,
+    }),
+  );
+  const result: BoxedSearchPage = page;
 
   const lines: string[] = [];
   if (queryTruncated) {
     lines.push(`(query truncated to its first ${MAX_QUERY_CHARS} characters)`, '');
   }
-  if (query.length === 0 && offset === 0) {
-    // Aliases are host-chosen and grammar-checked (R39): safe to print raw.
-    const counts = [...catalog.boxes.keys()].map((alias) => {
-      let count = 0;
-      for (const member of members) if (member.alias === alias) count += 1;
-      return `${alias} (${count} ${count === 1 ? 'tool' : 'tools'})`;
-    });
+  // Aliases are host-chosen and grammar-checked (R39): safe to print raw.
+  const countsLine = query.length === 0 && offset === 0;
+  if (countsLine) {
+    const counts = [...catalog.counts].map(
+      ([alias, count]) => `${alias} (${count} ${count === 1 ? 'tool' : 'tools'})`,
+    );
     lines.push(`Boxes: ${counts.join(', ')}.`);
   }
-  lines.push(...renderEntries(page, query, offset, tool, 'in any box'));
+  // R39: a surface that spans the facade names the sorted alias list (the
+  // counts line already does on an empty query's first page).
+  const scopeLabel = countsLine ? undefined : `in boxes ${[...aliases].join(', ')}`;
+  lines.push(...renderEntries(result, query, offset, tool, 'in any box', scopeLabel));
   lines.push(
     '',
     'Tool names are qualified as <box>.<tool>. Call describe_tool with a name before calling a tool whose arguments you have not seen.',
   );
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
-    structuredContent: { ...page },
+    structuredContent: { ...result },
   };
 }
 
@@ -363,12 +378,21 @@ function unknownBoxedToolError(
  */
 export function tokenize(query: string): string[] {
   const lowered = query.toLowerCase().normalize('NFC');
-  const tokens = lowered.split(/[^\p{L}\p{M}\p{N}]+/u).filter((token) => token.length >= 2);
+  const tokens = splitWords(query).filter((token) => token.length >= 2);
   // Nothing survived (one-letter words, or punctuation only): fall back to
   // the whole query as the single token so `a b` still means the literal `a b`.
   if (tokens.length > 0) return tokens;
   const whole = lowered.trim();
   return whole.length > 0 ? [whole] : [];
+}
+
+/** A query's words, lowercased and NFC-normalized, of any length (empty strings dropped). */
+function splitWords(query: string): string[] {
+  return query
+    .toLowerCase()
+    .normalize('NFC')
+    .split(/[^\p{L}\p{M}\p{N}]+/u)
+    .filter((word) => word.length > 0);
 }
 
 /**
@@ -453,10 +477,12 @@ function scoreBoxedTools(
   query: string,
   aliases: ReadonlySet<string>,
 ): ScoredBoxedTool[] {
-  const tokens = new Set(tokenize(query));
-  if (tokens.size === 0) return [];
-  const aliasTokens = new Set([...tokens].filter((token) => aliases.has(token)));
-  const textTokens = new Set([...tokens].filter((token) => !aliasTokens.has(token)));
+  // Alias tokens come from the raw split, before `tokenize` drops words
+  // under two characters, so a one-letter alias still boosts its box in a
+  // multi-word query ("a files").
+  const aliasTokens = new Set(splitWords(query).filter((word) => aliases.has(word)));
+  const textTokens = new Set(tokenize(query).filter((token) => !aliasTokens.has(token)));
+  if (aliasTokens.size === 0 && textTokens.size === 0) return [];
   const scored: ScoredBoxedTool[] = [];
   for (const member of members) {
     const { score, nameHits } = scoreEntry(member.entry, textTokens);

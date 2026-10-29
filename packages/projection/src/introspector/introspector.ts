@@ -335,7 +335,14 @@ export class Introspector implements ToolExecutor {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       const client = new Client(CLIENT_INFO, { capabilities: {} });
       await source.connect(serverTransport);
-      await client.connect(clientTransport);
+      try {
+        await client.connect(clientTransport);
+      } catch (err) {
+        // The server side is attached and nothing would ever close it:
+        // release it so a failed wrap leaves the McpServer reusable.
+        await serverTransport.close().catch(() => undefined);
+        throw err;
+      }
       return { client, owned: true };
     }
     if (looksLikeForeignMcpServer(source)) {
@@ -397,7 +404,7 @@ export class Introspector implements ToolExecutor {
     const connection = this.#connections.get(alias);
     if (connection === undefined) {
       throw new ProjectionError('protocol', `Unknown wrapped-server alias "${alias}".`, {
-        hint: `Known aliases: ${[...this.#connections.keys()].join(', ')}. v1 wraps exactly one server under the "default" alias.`,
+        hint: `Known aliases: ${[...this.#connections.keys()].join(', ')}. A single-server facade wraps its server under the "default" alias; a multi-server facade routes each qualified <alias>.<tool> name to its box's alias (routeCall).`,
       });
     }
     // Validate against the definition recorded at introspection, not the

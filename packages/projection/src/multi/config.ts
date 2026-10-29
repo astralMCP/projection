@@ -56,6 +56,13 @@ export interface WrapServersOptions extends WrapOptions {
 export interface ResolvedSource {
   alias: string;
   source: ServerSource;
+  /**
+   * False for a duck-typed source — anything with a `connect` or `callTool`
+   * function that is not an `McpServer` or `Client` from Projection's SDK
+   * copy. Its connect or introspection failure is reported as a pointed
+   * {@link ProjectionError} naming the alias, never a raw `TypeError`.
+   */
+  sdk: boolean;
   description?: string;
   approvals?: ApprovalsMode;
 }
@@ -102,7 +109,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * A wrapped-server source as the introspector takes it: an `McpServer` or
  * `Client` from Projection's SDK copy, or anything with a `connect` or
  * `callTool` function — a server or client from a second SDK copy, which
- * the introspector diagnoses with a pointed error of its own.
+ * the introspector diagnoses with a pointed error of its own. Any other
+ * duck-typed object (`{ connect() {…} }`) passes here too, but if it then
+ * fails to connect or introspect, `wrapMcpServers` reports a `protocol`
+ * {@link ProjectionError} naming its alias instead of the raw `TypeError`
+ * the SDK would surface (see {@link ResolvedSource.sdk}).
  */
 function asSource(value: unknown): ServerSource | undefined {
   if (value instanceof McpServer || value instanceof Client) return value;
@@ -125,6 +136,25 @@ function isSourceConfig(value: unknown): value is Record<string, unknown> {
     typeof value['callTool'] !== 'function' &&
     typeof value['connect'] !== 'function'
   );
+}
+
+function isSdkSource(source: ServerSource): boolean {
+  return source instanceof McpServer || source instanceof Client;
+}
+
+/**
+ * An `McpServer` already attached to a transport cannot be wrapped: the
+ * introspector would refuse it after its siblings had connected. Refuse it
+ * here, before anything connects (R39).
+ */
+function assertNotConnected(alias: string, source: ServerSource): ServerSource {
+  if (source instanceof McpServer && source.isConnected()) {
+    throw invalid(
+      `source ${quoted(alias)} is an McpServer that is already connected to a transport`,
+      "Pass a dedicated, unconnected McpServer instance: Projection owns the wrapped server's transport. To share a running server, connect a Client to it and pass the Client.",
+    );
+  }
+  return source;
 }
 
 function assertAlias(alias: string): void {
@@ -151,7 +181,7 @@ function resolveSource(alias: string, value: unknown): ResolvedSource {
         'Pass an McpServer instance, a connected Client, or { source, description?, approvals? }.',
       );
     }
-    return { alias, source };
+    return { alias, source: assertNotConnected(alias, source), sdk: isSdkSource(source) };
   }
 
   for (const key of Object.keys(value)) {
@@ -170,7 +200,11 @@ function resolveSource(alias: string, value: unknown): ResolvedSource {
     );
   }
 
-  const resolved: ResolvedSource = { alias, source };
+  const resolved: ResolvedSource = {
+    alias,
+    source: assertNotConnected(alias, source),
+    sdk: isSdkSource(source),
+  };
   const description = value['description'];
   if (description !== undefined) {
     if (typeof description !== 'string') {
@@ -195,6 +229,7 @@ function resolveSource(alias: string, value: unknown): ResolvedSource {
     }
   }
 
+  // `optional: false` is accepted: it is the fail-closed default.
   const optional = value['optional'];
   if (optional !== undefined && optional !== false) {
     // TODO(R47): skip an optional source that fails to connect or introspect.
@@ -220,7 +255,7 @@ export function resolveSources(sources: unknown): ResolvedSource[] {
       'Pass an object such as { fs: fsServer, github: { source: githubClient } }.',
     );
   }
-  const aliases = Object.keys(sources).sort();
+  const aliases = Object.keys(sources).toSorted();
   if (aliases.length === 0) {
     throw invalid('wrapMcpServers needs at least one source', 'Pass at least one aliased source.');
   }

@@ -65,6 +65,11 @@ async function wrap(
   return facade;
 }
 
+/** A hand-built search cursor: cursors are unauthenticated paging hints. */
+function forge(payload: unknown): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
 /** Approve (or decline) a suspended call_tool by retrying it with the echoed blob. */
 async function retry(
   f: MultiProjectionFacade,
@@ -134,10 +139,12 @@ describe('qualified routing (R40)', () => {
 
   it('refuses unqualified names and unknown aliases with validate errors', async () => {
     const f = await wrap();
-    for (const name of ['read_file', 'gh.get_issue', 'fs.nope', '.read_file']) {
-      const result = await f.callTool({ name, args: {} }, 'modern');
-      expect(structured(result)['phase']).toBe('validate');
-    }
+    const results = await Promise.all(
+      ['read_file', 'gh.get_issue', 'fs.nope', '.read_file'].map((name) =>
+        f.callTool({ name, args: {} }, 'modern'),
+      ),
+    );
+    for (const result of results) expect(structured(result)['phase']).toBe('validate');
     expect(log).toEqual([]);
   });
 });
@@ -152,6 +159,12 @@ describe('hostile tool names stay in their box (R40, R42, R46, S5, S6)', () => {
     const message = elicitation(suspended, 'call').message;
     expect(message).toContain('Tool: fs › "github.delete_repo"');
     expect(message).not.toContain('Tool: github.delete_repo');
+    // R46: the title and the purpose line name the box the tool really lives in.
+    const [title] = message.split('\n');
+    expect(title).toMatch(/^⚠ Approve \(fs\): /);
+    expect(message).toContain('What fs says it does: "Mirror of github: github github github."');
+    expect(message).not.toContain('Approve (github)');
+    expect(message).not.toContain('What github says');
     expect(log).toEqual([]);
 
     const approved = await retry(f, call, suspended);
@@ -263,6 +276,27 @@ describe('search_tools across boxes (R43)', () => {
     expect(fsOnly.every((tool) => tool.box === 'fs')).toBe(true);
   });
 
+  it('names the boxes it spans in the header of a query', async () => {
+    const f = await wrap();
+    const header = text(f.searchTools({ query: 'write' })).split('\n')[0];
+    expect(header).toBe('Tools 1–3 of 3 matching "write" (in boxes fs, github):');
+  });
+
+  it('boosts a one-character alias in a multi-word query (alias tokens precede the length filter)', async () => {
+    log = [];
+    facade = await wrapMcpServers(
+      { z: fsServer(log), github: githubServer(log) },
+      { blob: { key: KEY } },
+    );
+    // Without the boost github.write_file would tie z's file tools and lead
+    // by sorted alias order; the alias token "z" puts z's tools first.
+    const tools = structured(facade.searchTools({ query: 'z file' }))['tools'] as {
+      box: string;
+    }[];
+    expect(tools.slice(0, 3).map((tool) => tool.box)).toEqual(['z', 'z', 'z']);
+    expect(tools.at(-1)?.box).toBe('github');
+  });
+
   it('renders postures from facade policy keyed by qualified names', async () => {
     const f = await wrap({ policy: { 'github.write_file': 'deny', 'fs.write_file': 'auto' } });
     const tools = structured(f.searchTools({ query: 'write_file' }))['tools'] as {
@@ -291,8 +325,6 @@ describe('search_tools across boxes (R43)', () => {
     expect(structured(second)['tools']).toHaveLength(67 - 50);
     expect(text(second).startsWith('Boxes:')).toBe(false);
 
-    const forge = (payload: unknown) =>
-      Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
     const noTool = structured(f.searchTools({ cursor: forge({ q: '', o: 50 }) }));
     expect(noTool['phase']).toBe('validate');
     const otherTool = structured(
@@ -381,6 +413,21 @@ describe('approvals modes per source (R49)', () => {
     ]);
   });
 
+  it('shows the per-source posture in describe_tool', async () => {
+    log = [];
+    facade = await wrapMcpServers(
+      {
+        fs: { source: fsServer(log, quiet), approvals: 'destructive-only' },
+        github: githubServer(log, quiet),
+      },
+      { blob: { key: KEY } },
+    );
+    expect(structured(facade.describeTool({ name: 'fs.tag' }))['posture']).toBe('runs immediately');
+    expect(structured(facade.describeTool({ name: 'github.tag' }))['posture']).toBe(
+      'asks for approval',
+    );
+  });
+
   it('keeps a per-tool override above the per-source mode', async () => {
     log = [];
     facade = await wrapMcpServers(
@@ -407,5 +454,29 @@ describe('approvals modes per source (R49)', () => {
     expect(isSuspended(await facade.callTool({ name: 'fs.github.tag', args: {} }, 'modern'))).toBe(
       true,
     );
+  });
+});
+
+describe('the redaction hook on a multi-server facade (R16)', () => {
+  it('receives the qualified name, so same-named tools in two boxes are told apart', async () => {
+    const seen: string[] = [];
+    const f = await wrap({
+      redact: (name, args) => {
+        seen.push(name);
+        return name === 'github.write_file' ? { ...args, content: '[hidden]' } : args;
+      },
+    });
+    const fsMessage = elicitation(
+      await f.callTool({ name: 'fs.write_file', args: { content: 'fs body' } }, 'modern'),
+      'call',
+    ).message;
+    const ghMessage = elicitation(
+      await f.callTool({ name: 'github.write_file', args: { content: 'gh body' } }, 'modern'),
+      'call',
+    ).message;
+    expect(seen).toEqual(['fs.write_file', 'github.write_file']);
+    expect(fsMessage).toContain('fs body');
+    expect(ghMessage).not.toContain('gh body');
+    expect(ghMessage).toContain('[hidden]');
   });
 });

@@ -204,7 +204,7 @@ function suspend(
     trip: 1,
     ttlMs: deps.blob.callTtlMs ?? DEFAULT_CALL_TTL_MS,
   });
-  const requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog));
+  const requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog, deps.blobDomain));
 
   return inputRequired({
     inputRequests: {
@@ -245,7 +245,7 @@ async function resume(
     code: canonicalRequest(args.name, toolArgs),
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
-    domain: blobKeyDomain(deps.catalog),
+    domain: blobKeyDomain(deps.catalog, deps.blobDomain),
   });
   await assertNotReplayed(payload, deps.replayCache);
 

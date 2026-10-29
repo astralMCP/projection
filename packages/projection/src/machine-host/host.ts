@@ -6,18 +6,18 @@
 
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
+import { routeCall } from '../catalog/boxes.js';
 import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
   type ApprovalVerdict,
-  type ApprovalsMode,
   type AuditEntry,
   type ErrorPhase,
   type HostEvent,
   type LogEntry,
   type PendingToolCall,
   type PolicyContext,
-  type PolicyOverrides,
+  type PolicyOptions,
   type ResourceCaps,
   type SegmentOutcome,
   type ServerCatalog,
@@ -47,7 +47,8 @@ interface DrainResult {
   requests: RawRequest[];
 }
 
-export interface RunSegmentOptions {
+/** The policy options (R14, R49) are decided at the gate and on resume. */
+export interface RunSegmentOptions extends PolicyOptions {
   /** Submitted module source (R2). */
   code: string;
   lang?: 'ts' | 'js';
@@ -61,12 +62,6 @@ export interface RunSegmentOptions {
   executor: ToolExecutor;
   /** Resource caps; clamped at the hard maxima (R12). */
   caps?: Partial<ResourceCaps>;
-  /** Per-tool policy overrides (R14). */
-  policy?: PolicyOverrides;
-  /** Approvals mode (R49), decided with `policy` at the gate and on resume. */
-  approvals?: ApprovalsMode;
-  /** Per-source approvals modes of a multi-server facade, by box alias (R49). */
-  sourceApprovals?: ReadonlyMap<string, ApprovalsMode>;
   /** Zero-based MRTR segment index — stamps logs (R31). */
   segment?: number;
   /**
@@ -413,11 +408,10 @@ class SegmentRunner {
 
   /** Execute one call against the wrapped server and build its event. */
   private async execute(request: RawRequest, decision: 'auto' | 'approved'): Promise<HostEvent> {
-    const outcome = await this.deps.executor.callTool(
-      this.deps.catalog.alias,
-      request.name,
-      request.args,
-    );
+    // A multi-server facade routes the qualified name to its box (R40, R45);
+    // a single-server catalog sends it to its one alias unchanged.
+    const target = routeCall(this.deps.catalog, request.name);
+    const outcome = await this.deps.executor.callTool(target.alias, target.name, request.args);
     if (outcome.ok) {
       this.deps.audit.push({
         callId: request.id,

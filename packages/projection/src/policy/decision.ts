@@ -11,13 +11,14 @@
 
 import { ProjectionError } from '../errors.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { isBoxedCatalog, splitQualified } from '../catalog/boxes.js';
 import { findTool } from '../types.js';
 import type {
   ApprovalsMode,
   PendingToolCall,
   PolicyContext,
   PolicyDecision,
-  PolicyOverrides,
+  PolicyOptions,
   ServerCatalog,
   ToolCatalogEntry,
 } from '../types.js';
@@ -96,38 +97,28 @@ function ownHint(entry: ToolCatalogEntry, key: 'readOnlyHint' | 'destructiveHint
 
 /**
  * The approvals mode that applies to `entry` (R49): its box's per-source
- * mode on a multi-server facade, else the facade's. The box is the alias
- * before the first dot of the qualified name (R40), so a server's own
- * dotted tool name (`fs.github.delete_repo`) can only ever select its own
- * box's mode.
+ * mode on a multi-server facade, else the facade's. `toolApprovals` is keyed
+ * by qualified name and built from the boxed view's members at wrap time,
+ * so a server's own dotted tool name (`fs.github.delete_repo`) can only ever
+ * select its own box's mode. `entry` must be the qualified entry the gate
+ * resolved, never a box's bare entry (see `BoxedTool.entry`).
  */
 function approvalsFor(entry: ToolCatalogEntry, context: PolicyContext): ApprovalsMode {
-  const { sourceApprovals } = context;
-  if (sourceApprovals !== undefined) {
-    const dot = entry.name.indexOf('.');
-    const mode = dot > 0 ? sourceApprovals.get(entry.name.slice(0, dot)) : undefined;
-    if (mode !== undefined) return mode;
-  }
-  return context.approvals;
+  return context.toolApprovals?.get(entry.name) ?? context.approvals;
 }
 
 /**
- * Build the {@link PolicyContext} for a set of options carrying the per-tool
- * `policy` overrides (R14) and the `approvals` mode (R49) — the shape of
- * `WrapOptions`, the gate deps and the catalog / typegen options. An absent
- * mode resolves to `'every-write'`.
+ * Build the {@link PolicyContext} for a set of {@link PolicyOptions} — the
+ * per-tool `policy` overrides (R14), the `approvals` mode and a multi-server
+ * facade's per-tool `toolApprovals` (R49), the shape the gate deps, the
+ * catalog tools, the machine host and typegen all take. An absent mode
+ * resolves to `'every-write'`.
  */
-export function policyContext(
-  options: {
-    policy?: PolicyOverrides | undefined;
-    approvals?: ApprovalsMode | undefined;
-    sourceApprovals?: ReadonlyMap<string, ApprovalsMode> | undefined;
-  } = {},
-): PolicyContext {
+export function policyContext(options: PolicyOptions = {}): PolicyContext {
   return {
     ...(options.policy !== undefined ? { overrides: options.policy } : {}),
     approvals: options.approvals ?? 'every-write',
-    ...(options.sourceApprovals !== undefined ? { sourceApprovals: options.sourceApprovals } : {}),
+    ...(options.toolApprovals !== undefined ? { toolApprovals: options.toolApprovals } : {}),
   };
 }
 
@@ -185,19 +176,39 @@ export function resolveCallPolicy(
   if (entry === undefined) {
     return {
       ok: false,
-      error: new ProjectionError(
-        'validate',
-        `Unknown tool "${call.name}": the wrapped server does not declare it`,
-        {
-          diagnostics: [
-            { message: `Requested from machine state "${call.stateName}" (call id ${call.id})` },
-          ],
-          hint: 'Call discover_apis and use only the tool names listed in @astral-mcp/tools.',
-        },
-      ),
+      error: new ProjectionError('validate', unknownCallMessage(catalog, call.name), {
+        diagnostics: [
+          { message: `Requested from machine state "${call.stateName}" (call id ${call.id})` },
+        ],
+        hint: isBoxedCatalog(catalog)
+          ? 'Call discover_apis and use only the qualified tool names (<box>.<tool>) listed in @astral-mcp/tools.'
+          : 'Call discover_apis and use only the tool names listed in @astral-mcp/tools.',
+      }),
     };
   }
   return { ok: true, decision: decidePolicy(entry, context), entry };
+}
+
+/**
+ * The unknown-tool message for a machine's `toolCall`. On a multi-server
+ * view (R40) it says which part of the qualified name failed; aliases are
+ * host-chosen and grammar-checked (R39), so they print raw. The single-server
+ * message is unchanged.
+ */
+function unknownCallMessage(catalog: ServerCatalog, name: string): string {
+  if (!isBoxedCatalog(catalog)) {
+    return `Unknown tool "${name}": the wrapped server does not declare it`;
+  }
+  const quoted = JSON.stringify(capLength(neutralizeControlChars(name), MAX_TOOL_NAME_CHARS));
+  const boxes = [...catalog.boxes.keys()].join(', ');
+  const split = splitQualified(name);
+  if (split === undefined) {
+    return `Unknown tool ${quoted}: tool names here are qualified as <box>.<tool> (boxes: ${boxes})`;
+  }
+  if (catalog.boxes.has(split.alias)) {
+    return `Unknown tool ${quoted}: the ${split.alias} box does not declare it`;
+  }
+  return `Unknown tool ${quoted}: there is no box ${JSON.stringify(capLength(neutralizeControlChars(split.alias), MAX_TOOL_NAME_CHARS))} (boxes: ${boxes})`;
 }
 
 /**

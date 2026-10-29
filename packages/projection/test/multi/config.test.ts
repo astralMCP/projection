@@ -41,7 +41,7 @@ describe('source discrimination and settings (R39)', () => {
       },
       options,
     );
-    expect([...facade.catalog.servers.keys()].sort()).toEqual(['fs', 'github']);
+    expect([...facade.catalog.servers.keys()].toSorted()).toEqual(['fs', 'github']);
     expect(facade.skipped).toEqual([]);
     await facade.close();
   });
@@ -139,7 +139,7 @@ describe('aliases (R39, R48)', () => {
       { ['a'.repeat(24)]: fsServer([]), delete: githubServer([]) },
       options,
     );
-    expect([...facade.catalog.servers.keys()].sort()).toEqual(['a'.repeat(24), 'delete']);
+    expect([...facade.catalog.servers.keys()].toSorted()).toEqual(['a'.repeat(24), 'delete']);
     await facade.close();
   });
 
@@ -211,21 +211,34 @@ describe('facade options', () => {
     await facade.close();
   });
 
-  it('still refuses a facade with no projection at all (R1)', async () => {
-    let caught: unknown;
-    try {
-      await wrapMcpServers({ fs: fsServer([]) }, { ...options, projections: { catalog: false } });
-    } catch (err) {
-      caught = err;
+  it('refuses turning the catalog projection off, the only one served yet (R1, R45)', async () => {
+    const server = fsServer([]);
+    const error = await validateError({ fs: server }, { projections: { catalog: false } });
+    expect(error.message).toContain('the catalog projection is required on multi-server facades');
+    expect(error.hint).toContain('Omit projections.catalog');
+    expect(server.isConnected()).toBe(false);
+  });
+
+  it('requires options with blob.key, before anything connects', async () => {
+    const server = fsServer([]);
+    const outcomes = await Promise.allSettled(
+      [undefined, {}, { blob: {} }].map((missing) =>
+        wrapMcpServers({ fs: server }, missing as unknown as WrapServersOptions),
+      ),
+    );
+    for (const outcome of outcomes) {
+      expect(outcome.status).toBe('rejected');
+      const caught: unknown = outcome.status === 'rejected' ? outcome.reason : undefined;
+      expect(caught).toBeInstanceOf(ProjectionError);
+      expect((caught as ProjectionError).phase).toBe('validate');
+      expect((caught as ProjectionError).message).toContain('blob.key');
     }
-    expect((caught as ProjectionError).phase).toBe('terminal');
+    expect(server.isConnected()).toBe(false);
   });
 });
 
 describe('limits (R48)', () => {
   it('fails the wrap with a protocol error over 4000 tools in total, closing every connection', async () => {
-    const many = (prefix: string) =>
-      Array.from({ length: 1_400 }, (_, i) => ({ name: `${prefix}_${i}`, readOnly: true }));
     const servers = [0, 1, 2].map((i) => fsServer([], many(`t${i}`)));
     let caught: unknown;
     try {
@@ -238,6 +251,11 @@ describe('limits (R48)', () => {
     for (const server of servers) expect(server.isConnected()).toBe(false);
   });
 });
+
+/** 1,400 read-only tools named `<prefix>_<i>`. */
+function many(prefix: string): { name: string; readOnly: boolean }[] {
+  return Array.from({ length: 1_400 }, (_, i) => ({ name: `${prefix}_${i}`, readOnly: true }));
+}
 
 function structuredPhase(result: object): unknown {
   return (result as { structuredContent?: Record<string, unknown> }).structuredContent?.['phase'];

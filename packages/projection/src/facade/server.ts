@@ -32,6 +32,8 @@ export interface CatalogToolCopy {
   callDescription: string;
   /** Description of the `name` argument of `describe_tool` and `call_tool`. */
   toolName: string;
+  /** Description of `describe_tool`'s `types` argument. */
+  describeTypes: string;
 }
 
 /** The catalog tools' handlers (R32–R35). */
@@ -133,12 +135,7 @@ export function registerCatalogTools(
       description: copy.describeDescription,
       inputSchema: z.object({
         name: z.string().describe(copy.toolName),
-        types: z
-          .boolean()
-          .optional()
-          .describe(
-            'Also return the generated TypeScript for this tool (for authoring a machine).',
-          ),
+        types: z.boolean().optional().describe(copy.describeTypes),
       }),
       annotations: { readOnlyHint: true },
     },

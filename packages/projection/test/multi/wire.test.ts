@@ -98,12 +98,17 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
   it('serves the catalog projection only: search_tools, describe_tool, call_tool', async () => {
     const c = await connectModern(await wrap());
     const { tools } = await c.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual([
+    expect(tools.map((tool) => tool.name).toSorted()).toEqual([
       'call_tool',
       'describe_tool',
       'search_tools',
     ]);
     expect(c.getInstructions()).toContain('- fs (3 tools)');
+    // R45 is not served yet: describe_tool says types are unavailable here.
+    const properties = tools.find((tool) => tool.name === 'describe_tool')?.inputSchema
+      .properties as Record<string, { description?: string }> | undefined;
+    const types = properties?.['types'];
+    expect(types?.description).toContain('Not available on this server yet');
   });
 
   it('searches every box and describes a tool by its qualified name', async () => {
@@ -124,7 +129,10 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
   it('approves a qualified call: one elicitation naming the box, then the recorded args run in that box', async () => {
     const c = await connectModern(await wrap());
     const { requestState, message } = await suspendWrite(c);
-    expect(message).toContain('Approve: write file');
+    // R46: the title and the purpose line name the box by its host alias.
+    expect(message.split('\n')[0]).toBe('Approve (fs): write file');
+    expect(message).toContain('What fs says it does: "Write content to a file."');
+    expect(message).not.toContain('What the server says it does');
     expect(message).toContain('Tool: fs.write_file');
     expect(message).toContain('via the fs box');
     expect(log).toEqual([]);

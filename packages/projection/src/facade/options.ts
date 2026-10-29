@@ -9,9 +9,11 @@
 
 import type { Implementation } from '@modelcontextprotocol/server';
 import { ProjectionError } from '../errors.js';
+import type { BlobKeyDomain } from '../blob/index.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
 import type {
   ApprovalsMode,
+  PolicyOptions,
   BlobSealerConfig,
   PolicyOverrides,
   RedactionHook,
@@ -42,7 +44,13 @@ export interface WrapOptions {
    * Read once, at wrap time; any other value fails the wrap (`validate`).
    */
   approvals?: ApprovalsMode;
-  /** Masks sensitive argument fields before they reach an approval prompt (R16). */
+  /**
+   * Masks sensitive argument fields before they reach an approval prompt
+   * (R16). It receives the tool name and a copy of the arguments. On a
+   * `wrapMcpServers` facade the name is the qualified `<alias>.<tool>`
+   * (`fs.write_file`), so one hook can tell the boxes' same-named tools
+   * apart; on `wrapMcpServer` it is the server's own tool name.
+   */
   redact?: RedactionHook;
   /**
    * Replaces the whole R29 preamble, whichever projections are on (the
@@ -124,9 +132,7 @@ export function resolveProjections(
  * The policy options every surface decides with (R14, R49), frozen at wrap
  * time; absent ones stay absent (`exactOptionalPropertyTypes`).
  */
-export type PolicySettings = Readonly<
-  Pick<ApprovalGateDeps, 'policy' | 'approvals' | 'sourceApprovals'>
->;
+export type PolicySettings = Readonly<PolicyOptions>;
 
 /**
  * The wrap-time snapshot of the policy settings (see {@link WrapOptions}):
@@ -134,16 +140,12 @@ export type PolicySettings = Readonly<
  * posture every surface shows is the posture the gate decides with, which a
  * caller mutating their options after wrap could otherwise drift apart.
  */
-export function freezePolicySettings(settings: {
-  policy?: PolicyOverrides | undefined;
-  approvals?: ApprovalsMode | undefined;
-  sourceApprovals?: ReadonlyMap<string, ApprovalsMode> | undefined;
-}): PolicySettings {
+export function freezePolicySettings(settings: PolicyOptions): PolicySettings {
   return Object.freeze({
     ...(settings.policy !== undefined ? { policy: Object.freeze({ ...settings.policy }) } : {}),
     ...(settings.approvals !== undefined ? { approvals: settings.approvals } : {}),
-    ...(settings.sourceApprovals !== undefined && settings.sourceApprovals.size > 0
-      ? { sourceApprovals: settings.sourceApprovals }
+    ...(settings.toolApprovals !== undefined && settings.toolApprovals.size > 0
+      ? { toolApprovals: settings.toolApprovals }
       : {}),
   });
 }
@@ -154,6 +156,8 @@ export function freezePolicySettings(settings: {
  */
 export function approvalGateDeps(input: {
   catalog: ServerCatalog;
+  /** The facade kind's key domain (R41), checked against the catalog. */
+  blobDomain: BlobKeyDomain;
   executor: ToolExecutor;
   options: WrapOptions;
   policySettings: PolicySettings;
@@ -163,6 +167,7 @@ export function approvalGateDeps(input: {
   const { options, era, clientCanElicit } = input;
   return {
     catalog: input.catalog,
+    blobDomain: input.blobDomain,
     executor: input.executor,
     blob: options.blob,
     ...(options.caps !== undefined ? { caps: options.caps } : {}),

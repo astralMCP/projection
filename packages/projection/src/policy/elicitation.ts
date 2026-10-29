@@ -60,9 +60,12 @@ export interface ElicitationCopyOptions {
   /**
    * Multi-server facades (R40, R46): the alias of the box the tool lives
    * in. `entry` is then the box's own catalog entry (bare name) and the
-   * call's name is qualified: the footer names the box — `Tool: fs.write_file`,
-   * or `Tool: fs › "github.delete_repo"` when the bare name has a dot, so it
-   * never reads as another box's tool — and the redaction hook receives the
+   * call's name is qualified. The copy names the box (R46): the title reads
+   * `Approve (fs): …` (`⚠ Approve (fs): …` when destructive), the purpose
+   * line `What fs says it does: "…"` — always rendered, `(no description)`
+   * when the server gives none — and the footer `Tool: fs.write_file`, or
+   * `Tool: fs › "github.delete_repo"` when the bare name has a dot, so it
+   * never reads as another box's tool. The redaction hook receives the
    * qualified name. The alias is the host's, never a server-reported name
    * (S6).
    */
@@ -133,15 +136,27 @@ export function buildElicitationCopy(
   // dispatch value so the approver sees "… — create", not just "issue".
   const method = dispatchMethod(call.args, entry);
   const action = method !== undefined ? `${friendly} — ${method}` : friendly;
-  const title = destructive ? `⚠ Approve: ${action}` : `Approve: ${action}`;
+  // R46: on a multi-server facade the title and the purpose line name the
+  // box by its host alias (S6); single-server copy is unchanged.
+  const { box } = options;
+  const approve = box !== undefined ? `Approve (${box})` : 'Approve';
+  const title = destructive ? `⚠ ${approve}: ${action}` : `${approve}: ${action}`;
 
   const lines: string[] = [];
   if (destructive) lines.push(DESTRUCTIVE_WARNING, '');
   // The purpose is the wrapped server's own words (S5-untrusted), so it is
   // attributed and quoted as inert data — never rendered as prose in the
-  // assistant's voice, where "safe, pre-approved" copy could mislead.
-  if (purpose !== undefined)
+  // assistant's voice, where "safe, pre-approved" copy could mislead. On a
+  // multi-server facade it is always rendered, so the approver always sees
+  // which box is asking.
+  if (box !== undefined) {
+    lines.push(
+      `What ${box} says it does: ${purpose !== undefined ? JSON.stringify(purpose) : '(no description)'}`,
+      '',
+    );
+  } else if (purpose !== undefined) {
     lines.push(`What the server says it does: ${JSON.stringify(purpose)}`, '');
+  }
   lines.push('Details:', indentBlock(neutralizeControlChars(renderedArgs, { allowNewline: true })));
   // Compact technical footer: exact tool id and, for a machine step, the
   // workflow step that asked (R16). Kept plain — "requested by the model"

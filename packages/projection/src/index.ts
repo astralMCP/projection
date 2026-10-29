@@ -67,6 +67,8 @@ export {
   type CallToolOutcome,
   type DescribeToolArgs,
   type DescribeToolOptions,
+  type BoxedSearchPage,
+  type BoxedToolSummary,
   type SanitizedSchema,
   type SearchToolsArgs,
   type SearchToolsOptions,

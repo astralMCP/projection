@@ -30,7 +30,12 @@
 
 import type { Client } from '@modelcontextprotocol/client';
 import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
-import { buildBoxedCatalog, type BoxedCatalog, type ToolBox } from '../catalog/boxes.js';
+import {
+  buildBoxedCatalog,
+  toolApprovalsFor,
+  type BoxedCatalog,
+  type ToolBox,
+} from '../catalog/boxes.js';
 import { callTool, describeTool, searchBoxes, type CallToolArgs } from '../catalog/index.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
@@ -57,12 +62,14 @@ import {
 } from '../mrtr/index.js';
 import { assertApprovalsMode } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
-import type { ApprovalsMode, StructuredError, ToolCatalog } from '../types.js';
+import { MCP_SDK_VERSION } from '../blob/versions.js';
+import { isRecord, type ApprovalsMode, type StructuredError, type ToolCatalog } from '../types.js';
 import type { ProjectionFacade } from '../wrap.js';
 import {
   assertCatalogOptions,
   assertPolicyKeys,
   resolveSources,
+  type ResolvedSource,
   type ServerSourceConfig,
   type WrapServersOptions,
 } from './config.js';
@@ -106,6 +113,7 @@ export async function wrapMcpServers(
   options: WrapServersOptions,
 ): Promise<MultiProjectionFacade> {
   // R39: every configuration mistake fails here, before any connection.
+  assertOptionsGiven(options);
   const resolved = resolveSources(sources);
   const aliases = new Set(resolved.map((source) => source.alias));
   assertPolicyKeys(options.policy, aliases);
@@ -113,12 +121,11 @@ export async function wrapMcpServers(
   assertCatalogOptions(options.catalog);
   const projections = resolveMultiProjections(options);
 
-  const introspector = await createIntrospector(
-    Object.fromEntries(resolved.map((source) => [source.alias, source.source])),
-  );
-  let boxes: ToolBox[];
+  const introspector = await introspect(resolved);
+  // R47 fail-closed: anything that throws once the sources are connected
+  // closes every connection Projection opened (caller-owned Clients stay open).
   try {
-    boxes = resolved.map((source) => {
+    const boxes = resolved.map((source): ToolBox => {
       const catalog = introspector.catalog.servers.get(source.alias);
       if (catalog === undefined) {
         throw new ProjectionError(
@@ -134,37 +141,93 @@ export async function wrapMcpServers(
       };
     });
     assertToolTotal(boxes);
+
+    const view = buildBoxedCatalog(boxes);
+    const sourceModes = new Map<string, ApprovalsMode>();
+    for (const source of resolved) {
+      if (source.approvals !== undefined) sourceModes.set(source.alias, source.approvals);
+    }
+    const policySettings = freezePolicySettings({
+      policy: options.policy,
+      approvals,
+      toolApprovals: toolApprovalsFor(view, sourceModes),
+    });
+
+    return new MultiFacade({
+      introspector,
+      view,
+      instructions: buildMultiInstructions(view, options.codeModePreamble),
+      options,
+      policySettings,
+      projections,
+    });
   } catch (err) {
     await introspector.close();
     throw err;
   }
+}
 
-  const view = buildBoxedCatalog(boxes);
-  const sourceApprovals = new Map<string, ApprovalsMode>();
-  for (const source of resolved) {
-    if (source.approvals !== undefined) sourceApprovals.set(source.alias, source.approvals);
+/**
+ * R39: the options are required — `blob.key` seals every approval — and a
+ * missing object would otherwise surface as a `TypeError` deep in the wrap.
+ */
+function assertOptionsGiven(options: unknown): asserts options is WrapServersOptions {
+  const blob: unknown = isRecord(options) ? options['blob'] : undefined;
+  if (!isRecord(blob) || blob['key'] === undefined) {
+    throw new ProjectionError('validate', 'wrapMcpServers needs options with blob.key', {
+      hint: 'Pass wrapMcpServers(sources, { blob: { key } }) with a 32-byte secret key: every approval is sealed with it (R22).',
+    });
   }
-  const policySettings = freezePolicySettings({
-    policy: options.policy,
-    approvals,
-    sourceApprovals,
-  });
+}
 
-  return new MultiFacade({
-    introspector,
-    view,
-    instructions: buildMultiInstructions(view, options.codeModePreamble),
-    options,
-    policySettings,
-    projections,
-  });
+/**
+ * Connect and introspect every source (R47: all settle, then any failure
+ * fails the wrap and closes what Projection opened). A duck-typed source —
+ * not an `McpServer` or `Client` from Projection's SDK copy — that fails
+ * with anything but a {@link ProjectionError} is reported as a pointed
+ * `protocol` error naming it, not as the SDK's raw `TypeError`.
+ */
+async function introspect(resolved: readonly ResolvedSource[]): Promise<Introspector> {
+  try {
+    return await createIntrospector(
+      Object.fromEntries(resolved.map((source) => [source.alias, source.source])),
+    );
+  } catch (err) {
+    const foreign = resolved.filter((source) => !source.sdk).map((source) => source.alias);
+    if (err instanceof ProjectionError || foreign.length === 0) throw err;
+    const named = foreign.map((alias) => `"${alias}"`).join(', ');
+    throw new ProjectionError(
+      'protocol',
+      foreign.length === 1
+        ? `source ${named} failed to connect or introspect: it is not an McpServer or a Client from the MCP SDK Projection uses`
+        : `a source failed to connect or introspect; ${named} are not McpServer or Client instances from the MCP SDK Projection uses`,
+      {
+        hint: `Pass an McpServer instance or a connected Client from @modelcontextprotocol/server / @modelcontextprotocol/client ${MCP_SDK_VERSION} (a single installed copy).`,
+        cause: err,
+      },
+    );
+  }
 }
 
 /**
  * R45: code mode on a multi-server facade needs per-box typegen, which is
- * not built yet — so it defaults off here and an explicit request fails the
- * wrap rather than serving a code mode whose types do not match its names.
- * TODO(R45): default code mode on once typegen emits `tools.<alias>`.
+ * not built yet — so it defaults off here, an explicit request fails the
+ * wrap rather than serving a code mode whose types do not match its names,
+ * and the catalog projection, the only one served, cannot be turned off.
+ *
+ * TODO(R45) — what code mode on a multi-server facade still needs. The
+ * machine host already routes each qualified `toolCall` to its box
+ * (`routeCall`) and names boxes in its unknown-tool error; these surfaces
+ * still print the single-server identity and must name the aliases instead
+ * (R39) before code mode can default on here:
+ *
+ * - typegen (`typegen/generate.ts`): the `.d.ts`, bridge and overview
+ *   headers, and one `tools.<alias>` object type per box;
+ * - `discover_apis` (`mrtr/discover.ts`): the overview header and the
+ *   `tools.d.ts` resource description, plus the per-box grouping and the
+ *   box overview resources;
+ * - the workflow prompts (`prompts/workflow-prompts.ts`): the server label;
+ * - `describe_tool({ types: true })`: the `tools.<alias>.<name>` slice.
  */
 function resolveMultiProjections(options: WrapServersOptions): Readonly<ProjectionSelection> {
   if (options.projections?.codeMode === true) {
@@ -173,6 +236,15 @@ function resolveMultiProjections(options: WrapServersOptions): Readonly<Projecti
       'code mode is not supported on multi-server facades yet',
       {
         hint: 'Omit projections.codeMode: a wrapMcpServers facade serves the catalog projection (search_tools, describe_tool, call_tool).',
+      },
+    );
+  }
+  if (options.projections?.catalog === false) {
+    throw new ProjectionError(
+      'validate',
+      'the catalog projection is required on multi-server facades until code mode is supported there',
+      {
+        hint: 'Omit projections.catalog: it is the only projection a wrapMcpServers facade serves for now (search_tools, describe_tool, call_tool).',
       },
     );
   }
@@ -194,7 +266,7 @@ function assertToolTotal(boxes: readonly ToolBox[]): void {
 }
 
 /** The multi-server preamble (R44) for the catalog projection, naming the served search tool. */
-export const DEFAULT_MULTI_CATALOG_PREAMBLE = `This server fronts several toolboxes, each wrapping another server. Call search_tools to find a tool in any box, describe_tool to see its arguments, then call_tool to run it. Any tool that is not read-only pauses and asks the user to approve that specific action before it runs.`;
+export const DEFAULT_MULTI_CATALOG_PREAMBLE = `This server fronts several toolboxes, each wrapping another server. Call search_tools to find a tool in any box, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
 
 /**
  * The facade's `instructions` (R44): Projection's preamble, then the shelf.
@@ -210,8 +282,7 @@ export function buildMultiInstructions(view: BoxedCatalog, preamble?: string): s
     'Toolboxes — tools are named <box>.<tool>; pass that full name to describe_tool and call_tool:',
   ];
   for (const [alias, box] of view.boxes) {
-    let count = 0;
-    for (const member of view.members.values()) if (member.alias === alias) count += 1;
+    const count = view.counts.get(alias) ?? 0;
     const tools = `${count} ${count === 1 ? 'tool' : 'tools'}`;
     // The description is host-trusted, neutralized and capped at wrap time.
     lines.push(
@@ -223,20 +294,23 @@ export function buildMultiInstructions(view: BoxedCatalog, preamble?: string): s
   return `${preamble ?? DEFAULT_MULTI_CATALOG_PREAMBLE}\n\n${lines.join('\n')}`;
 }
 
-const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more); a word that is a box's name ranks that box's tools first. Each entry gives the tool's qualified name (<box>.<tool>), its box, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more); a word that is a box's name boosts that box's tools. Each entry gives the tool's qualified name (<box>.<tool>), its box, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool.`;
 
 // TODO(R45): point at execute_machine for multi-step work once code mode is served here.
-const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. Read-only tools run immediately. Any other tool first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool.`;
+const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool.`;
 
 const CATALOG_TOOL_COPY: CatalogToolCopy = {
   searchDescription: SEARCH_TOOLS_DESCRIPTION,
   searchQuery:
-    "Words to match against tool names, titles and descriptions; any word matches, name hits weigh more, and a box's name ranks that box first.",
+    "Words to match against tool names, titles and descriptions; any word matches, name hits weigh more, and a box's name boosts that box's tools.",
   describeDescription: DESCRIBE_TOOL_DESCRIPTION,
   callDescription: CALL_TOOL_DESCRIPTION,
   toolName: 'Qualified tool name (<box>.<tool>) as listed by search_tools.',
+  // TODO(R45): offer the tools.<alias>.<name> slice once typegen covers boxes.
+  describeTypes:
+    'Not available on this server yet: TypeScript types are generated for code mode, which multi-server facades do not serve. The JSON Schemas carry the same shapes.',
 };
 
 interface MultiFacadeDeps {
@@ -313,6 +387,7 @@ class MultiFacade implements MultiProjectionFacade {
       args,
       approvalGateDeps({
         catalog: this.deps.view,
+        blobDomain: 'multi',
         // Routed per call by qualified name (catalog/boxes.ts `routeCall`).
         executor: this.deps.introspector,
         options: this.deps.options,
