@@ -269,22 +269,69 @@ name, so it never reads as the `github` box's. Your `redact` hook receives
 the qualified name (`fs.write_file`), so it can tell two boxes' same-named
 tools apart.
 
+Each box is a search tool of its own. The catalog projection lists one
+`search_<alias>` per box, in sorted alias order, then `search_tools`,
+`describe_tool` and `call_tool` — N + 3 tools for N boxes:
+
+```text
+search_fs       Search the fs toolbox. "Read and write files under /srv." (server's words) (3 tools)
+search_github   Search the github toolbox. Issues and pull requests. (4 tools)
+search_notes    Search the notes toolbox. (1 tool)
+search_tools    Search the tools of every toolbox at once, …
+describe_tool   …
+call_tool       …
+```
+
+A `search_<alias>` tool's description is your `description` when you give
+one, else the first sentence of the server's `instructions` (its first
+line that is neither blank nor a Markdown heading) — neutralized, capped
+and quoted, so it reads as the server's words, not yours — else nothing;
+then the box's tool count. It searches that box only, with the same query
+rules, entries and paging as `search_tools`; its cursors work only with
+it. The first page of an empty-query `search_<alias>` leads with the **box
+overview**: the server's full `instructions`, neutralized, capped at 8 KB
+(with a truncation marker), and indented under
+`Guidance from the fs box (the server's own words; it applies to fs tools only):`
+and a blank line, so nothing in it can pass for a tool line and, in
+Markdown, it is a code block. The same block is served as the resource
+`projection://boxes/<alias>/overview.md` for each box whose server sends
+readable instructions. Invisible characters (zero-width, tag and other
+format characters) are stripped from server text on every box surface.
+
 `search_tools` searches every box: each entry carries its `box`, the header
-names the boxes searched, and a query word equal to an alias boosts that
-box's tools without matching any tool's text, so one server cannot outrank
-another for its name. The facade's instructions are a short preamble plus
-one line per box (your `description`, else just the tool count); the
-servers' own instructions are not forwarded. Approval blobs bind the whole
-alias → server mapping and are keyed separately from single-server blobs: a
-blob never resumes on a facade with a different server set, alias mapping or
-server version, nor across facade kinds.
+names the boxes searched, an empty query's first page leads with the
+per-box tool counts, and a query word equal to an alias boosts that box's
+tools without matching any tool's text, so one server cannot outrank
+another for its name. `catalog: { globalSearch: false }` drops it, leaving
+the per-box tools; every piece of Projection's copy that names a search
+tool — the system prompt, the `describe_tool` / `call_tool` argument
+descriptions, the unknown-tool hint — then names the `search_<alias>` tools
+instead. The default is on until the multi-server eval settles it.
+
+The facade's instructions — the system prompt — are a short preamble plus
+the **shelf**, one line per box in sorted alias order. The servers' own
+instructions are not forwarded; each is its box's overview:
+
+```text
+This server fronts several toolboxes, each wrapping another server. Call search_tools to find a tool in any box, … each tool's listing says whether it runs immediately or asks for approval.
+
+Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool and call_tool:
+- fs — "Read and write files under /srv." (server's words) (3 tools)
+- github — Issues and pull requests. (4 tools)
+- notes (1 tool)
+```
+
+`codeModePreamble` replaces the preamble; the shelf, header included, is
+always kept, so the qualified-name rule cannot be dropped. Approval blobs
+bind the whole alias → server mapping and are keyed separately from
+single-server blobs: a blob never resumes on a facade with a different
+server set, alias mapping or server version, nor across facade kinds.
 
 This preview serves the catalog projection only, which therefore cannot be
 turned off (`projections.catalog: false` fails the wrap). Not yet available:
 code mode (`projections.codeMode: true` fails the wrap, and `describe_tool`
-returns no TypeScript types), the per-box `search_<alias>` tools and box
-overviews (`catalog.globalSearch: false` fails the wrap), `optional: true`
-sources, and `introspectTimeoutMs`.
+returns no TypeScript types), `optional: true` sources, and
+`introspectTimeoutMs`.
 
 ## Legacy clients (pre-2026-07-28)
 

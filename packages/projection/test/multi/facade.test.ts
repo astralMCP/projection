@@ -336,11 +336,14 @@ describe('search_tools across boxes (R43)', () => {
     expect(otherQuery['message']).toContain('different query');
   });
 
-  it('answers a per-box search with a validate error until search_<alias> is served', async () => {
+  it('answers a search for an unknown box with a validate error naming the served search tools', async () => {
     const f = await wrap();
-    const result = structured(f.searchTools({}, 'fs'));
+    const result = structured(f.searchTools({}, 'gh'));
     expect(result['phase']).toBe('validate');
-    expect(result['message']).toContain('search_fs is not served');
+    expect(result['message']).toContain('"search_gh" is not served');
+    expect(result['hint']).toBe(
+      'Call search_tools (every box) or the search_<box> tool of a box (search_fs, search_github) instead.',
+    );
   });
 });
 
@@ -358,17 +361,20 @@ describe('describe_tool on a multi-server facade (R34, R39)', () => {
   });
 });
 
-describe('instructions (R44, minimal shelf)', () => {
-  it('carry the preamble and one shelf line per box, never the servers’ instructions', async () => {
+describe('instructions (R44)', () => {
+  it('carry the preamble and one shelf line per box', async () => {
     log = [];
     facade = await wrapMcpServers(
       { fs: fsServer(log), github: { source: githubServer(log), description: 'Issues and PRs.' } },
       { blob: { key: KEY } },
     );
     expect(facade.instructions).toContain('Call search_tools to find a tool in any box');
-    expect(facade.instructions).toContain('- fs (3 tools)');
+    expect(facade.instructions).toContain(
+      `- fs — "FS-SERVER-INSTRUCTIONS: read me first." (server's words) (3 tools)`,
+    );
     expect(facade.instructions).toContain('- github — Issues and PRs. (4 tools)');
-    expect(facade.instructions).not.toContain('SERVER-INSTRUCTIONS');
+    // The host description replaces the server's words on the shelf.
+    expect(facade.instructions).not.toContain('GH-SERVER-INSTRUCTIONS');
   });
 
   it('keep the shelf when codeModePreamble replaces the preamble', async () => {

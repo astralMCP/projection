@@ -135,9 +135,14 @@ const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSO
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
 const CATALOG_TOOL_COPY: CatalogToolCopy = {
-  searchDescription: SEARCH_TOOLS_DESCRIPTION,
-  searchQuery:
-    'Words to match against tool names, titles and descriptions; any word matches, name hits weigh more.',
+  searches: [
+    {
+      title: 'Search the tool catalog',
+      description: SEARCH_TOOLS_DESCRIPTION,
+      query:
+        'Words to match against tool names, titles and descriptions; any word matches, name hits weigh more.',
+    },
+  ],
   describeDescription: DESCRIBE_TOOL_DESCRIPTION,
   callDescription: CALL_TOOL_DESCRIPTION,
   toolName: 'Tool name as listed by search_tools.',

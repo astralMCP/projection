@@ -70,10 +70,12 @@ Projection in front of a server you don't own.
 
 `wrapMcpServers({ fs: filesServer, github: { source: githubClient } }, options)`
 fronts several servers as tool boxes: tools are addressed as
-`<alias>.<name>` (`fs.write_file`), policy keys are qualified names, and
-`search_tools` searches every box. This preview serves the catalog
-projection only; code mode, per-box search tools and optional sources are
-not available yet. See `docs/server-authors.md`.
+`<alias>.<name>` (`fs.write_file`), policy keys are qualified names, each
+box has its own `search_<alias>` tool (whose first page shows the server's
+guidance), and `search_tools` searches every box (`catalog.globalSearch:
+false` turns it off). This preview serves the catalog projection only; code
+mode and optional sources are not available yet. See
+`docs/server-authors.md`.
 
 ## Security model
 

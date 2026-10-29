@@ -187,17 +187,19 @@ describe('facade options', () => {
     } as unknown as Partial<WrapServersOptions>);
   });
 
-  it('rejects catalog.globalSearch: false until per-box search is served, and unknown catalog keys', async () => {
-    const error = await validateError({ fs: fsServer([]) }, { catalog: { globalSearch: false } });
-    expect(error.message).toContain('not supported yet');
+  it('accepts catalog.globalSearch either way and rejects unknown catalog keys or non-booleans (R43)', async () => {
     await validateError({ fs: fsServer([]) }, {
       catalog: { global: true },
     } as unknown as Partial<WrapServersOptions>);
-    const facade = await wrapMcpServers(
-      { fs: fsServer([]) },
-      { ...options, catalog: { globalSearch: true } },
+    await validateError({ fs: fsServer([]) }, {
+      catalog: { globalSearch: 'no' },
+    } as unknown as Partial<WrapServersOptions>);
+    const facades = await Promise.all(
+      [true, false].map((globalSearch) =>
+        wrapMcpServers({ fs: fsServer([]) }, { ...options, catalog: { globalSearch } }),
+      ),
     );
-    await facade.close();
+    await Promise.all(facades.map((facade) => facade.close()));
   });
 
   it('defaults code mode off (R45, not served yet) and refuses an explicit request for it', async () => {

@@ -69,6 +69,19 @@ export interface BoxedCatalog extends ServerCatalog {
   readonly members: ReadonlyMap<string, BoxedTool>;
   /** Tools per box after the per-box dedupe, by alias in sorted order (R43, R44). */
   readonly counts: ReadonlyMap<string, number>;
+  /**
+   * Whether the facade serves the global `search_tools` next to the per-box
+   * `search_<alias>` tools (R43 `catalog.globalSearch`). Every piece of copy
+   * that names a search tool reads it, so none names a tool that is not
+   * served.
+   */
+  readonly globalSearch: boolean;
+}
+
+/** Options of {@link buildBoxedCatalog}. */
+export interface BoxedCatalogOptions {
+  /** Serve the global `search_tools` (R43). Default `true`. */
+  globalSearch?: boolean;
 }
 
 /**
@@ -99,7 +112,10 @@ export function multiServerIdentity(boxes: Iterable<ToolBox>): string {
 }
 
 /** Build the merged view over the wrapped boxes (R40, R41). */
-export function buildBoxedCatalog(boxes: Iterable<ToolBox>): BoxedCatalog {
+export function buildBoxedCatalog(
+  boxes: Iterable<ToolBox>,
+  options: BoxedCatalogOptions = {},
+): BoxedCatalog {
   const sorted = [...boxes].toSorted((a, b) =>
     a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0,
   );
@@ -123,9 +139,15 @@ export function buildBoxedCatalog(boxes: Iterable<ToolBox>): BoxedCatalog {
     boxes: new Map(sorted.map((box) => [box.alias, box])),
     members,
     counts,
+    globalSearch: options.globalSearch ?? true,
   };
   boxedViews.add(view);
   return view;
+}
+
+/** The per-box search tool of `alias` (R43): `search_<alias>`. */
+export function boxSearchTool(alias: string): string {
+  return `search_${alias}`;
 }
 
 /** The boxed tool a qualified name denotes, O(1); `undefined` when there is none. */

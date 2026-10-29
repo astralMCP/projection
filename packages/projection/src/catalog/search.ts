@@ -36,7 +36,14 @@ import {
   purposeSentence,
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
-import { isBoxedCatalog, splitQualified, type BoxedCatalog, type BoxedTool } from './boxes.js';
+import { boxOverview, renderOverviewBlock, toolCount } from './box-guidance.js';
+import {
+  boxSearchTool,
+  isBoxedCatalog,
+  splitQualified,
+  type BoxedCatalog,
+  type BoxedTool,
+} from './boxes.js';
 import {
   dedupeTools,
   type PolicyContext,
@@ -171,7 +178,7 @@ function paginate<T, S>(
 }
 
 // ---------------------------------------------------------------------------
-// Multi-server facades: one search across every box (R43)
+// Multi-server facades: search across every box, or inside one (R43)
 // ---------------------------------------------------------------------------
 
 /** One entry of a multi-server search page (R43): the R33 entry plus its box. */
@@ -181,6 +188,12 @@ export interface BoxedToolSummary extends ToolSummary {
 }
 
 export interface BoxedSearchPage {
+  /**
+   * The box overview (R43): the server's full `instructions`, neutralized
+   * and capped. Only on the first page of an empty-query `search_<alias>`
+   * whose server sends instructions.
+   */
+  overview?: string;
   tools: BoxedToolSummary[];
   /** Matching tools across all pages. */
   total: number;
@@ -189,32 +202,44 @@ export interface BoxedSearchPage {
 
 export interface SearchBoxesOptions extends SearchToolsOptions {
   /**
-   * The search tool being served, which its cursors are bound to (R43).
-   * Default `search_tools`.
+   * Search this box only — the tool `search_<box>` — instead of every box
+   * (`search_tools`). Must be a box of the catalog.
    */
-  tool?: string;
+  box?: string;
 }
 
 /**
- * Run `search_tools` on a multi-server facade (R43): R33 semantics over
- * every box, scored per tool against its bare name, title and description,
- * plus alias tokens (see {@link scoreBoxedTools}); ties in sorted alias
- * order, then catalog order. Entries are `{ name, box, purpose, posture,
- * destructive }` with `name` qualified; `posture` is decided on the
- * qualified entry, so it is the posture the gate applies (R42). Cursors
- * carry the issuing tool (`{ t, q, o }`) and are refused anywhere else. The
- * first page of an empty query leads with the per-box tool counts, so one
- * large box cannot hide the others.
+ * Run a multi-server search (R43): `search_tools` across every box, or
+ * `search_<alias>` inside one when `options.box` is given. R33 semantics,
+ * scored per tool against its bare name, title and description; across
+ * boxes a query token equal to an alias is an alias token (see
+ * {@link scoreBoxedTools}), inside one box there is nothing for it to
+ * select. Ties keep sorted alias order, then catalog order. Entries are
+ * `{ name, box, purpose, posture, destructive }` with `name` qualified;
+ * `posture` is decided on the qualified entry, so it is the posture the gate
+ * applies (R42). Cursors carry the issuing tool (`{ t, q, o }`) and are
+ * refused by every other search tool. The first page of an empty query
+ * leads with the per-box tool counts across boxes, so one large box cannot
+ * hide the others, and with the box overview inside one box.
  */
 export function searchBoxes(
   catalog: BoxedCatalog,
   args: SearchToolsArgs,
   options: SearchBoxesOptions = {},
 ): CallToolResult {
-  const tool = options.tool ?? 'search_tools';
+  const box = options.box;
+  const scope = box !== undefined ? catalog.boxes.get(box) : undefined;
+  if (box !== undefined && scope === undefined) {
+    // The facade only serves search tools for wrapped boxes; reaching this
+    // is a library bug, never a model input.
+    throw new ProjectionError('terminal', `no box ${JSON.stringify(box)} to search`);
+  }
+  const tool = box !== undefined ? boxSearchTool(box) : 'search_tools';
   const context = policyContext(options);
-  const members = [...catalog.members.values()];
-  const aliases = new Set(catalog.boxes.keys());
+  const members = [...catalog.members.values()].filter(
+    (member) => box === undefined || member.alias === box,
+  );
+  const aliases = box !== undefined ? new Set<string>() : new Set(catalog.boxes.keys());
   const { page, query, offset, queryTruncated } = paginate(
     args,
     options.pageSize,
@@ -225,24 +250,30 @@ export function searchBoxes(
       box: member.alias,
     }),
   );
-  const result: BoxedSearchPage = page;
+  const firstListing = query.length === 0 && offset === 0;
+  const overview =
+    scope !== undefined && firstListing ? boxOverview(scope.catalog.instructions) : undefined;
+  const result: BoxedSearchPage = { ...(overview !== undefined ? { overview } : {}), ...page };
 
   const lines: string[] = [];
   if (queryTruncated) {
     lines.push(`(query truncated to its first ${MAX_QUERY_CHARS} characters)`, '');
   }
   // Aliases are host-chosen and grammar-checked (R39): safe to print raw.
-  const countsLine = query.length === 0 && offset === 0;
-  if (countsLine) {
-    const counts = [...catalog.counts].map(
-      ([alias, count]) => `${alias} (${count} ${count === 1 ? 'tool' : 'tools'})`,
-    );
+  let scopeLabel: string | undefined;
+  if (box !== undefined) {
+    if (overview !== undefined) lines.push(renderOverviewBlock(box, overview), '');
+    scopeLabel = `in the ${box} box`;
+  } else if (firstListing) {
+    const counts = [...catalog.counts].map(([alias, count]) => `${alias} (${toolCount(count)})`);
     lines.push(`Boxes: ${counts.join(', ')}.`);
+  } else {
+    // R39: a surface that spans the facade names the sorted alias list (the
+    // counts line already does on an empty query's first page).
+    scopeLabel = `in boxes ${[...aliases].join(', ')}`;
   }
-  // R39: a surface that spans the facade names the sorted alias list (the
-  // counts line already does on an empty query's first page).
-  const scopeLabel = countsLine ? undefined : `in boxes ${[...aliases].join(', ')}`;
-  lines.push(...renderEntries(result, query, offset, tool, 'in any box', scopeLabel));
+  const where = box !== undefined ? `in the ${box} box` : 'in any box';
+  lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel));
   lines.push(
     '',
     'Tool names are qualified as <box>.<tool>. Call describe_tool with a name before calling a tool whose arguments you have not seen.',
@@ -356,17 +387,38 @@ function unknownBoxedToolError(
   // Aliases are host-chosen and grammar-checked (R39): safe to print raw.
   const boxes = [...catalog.boxes.keys()].join(', ');
   let why: string;
-  if (split === undefined) {
-    why = `tool names here are qualified as <box>.<tool> (boxes: ${boxes})`;
-  } else if (catalog.boxes.has(split.alias)) {
+  let search: string;
+  if (split !== undefined && catalog.boxes.has(split.alias)) {
     why = `the ${split.alias} box does not declare it`;
+    search = `Call ${boxSearchTool(split.alias)} to list the tools the ${split.alias} box declares`;
   } else {
-    why = `there is no box ${inertName(split.alias)} (boxes: ${boxes})`;
+    why =
+      split === undefined
+        ? `tool names here are qualified as <box>.<tool> (boxes: ${boxes})`
+        : `there is no box ${inertName(split.alias)} (boxes: ${boxes})`;
+    search = `Call ${searchToolsPhrase(catalog)} to list the tools the boxes declare`;
   }
   return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
-    // TODO(PR3): name the per-box search_<alias> tools once they are served (R43).
-    hint: `${didYouMean}Call search_tools to list the tools every box declares, then ${via} with one of those qualified names exactly.`,
+    hint: `${didYouMean}${search}, then ${via} with one of those qualified names exactly.`,
   });
+}
+
+/**
+ * The search tools a multi-server facade serves, as copy names them (R43,
+ * R37): `search_tools (every box) or …` when the global search is on, then
+ * the per-box tools — `search_fs` for a single box, `the search_<box> tool
+ * of a box (search_fs, search_github)` for several. Aliases are
+ * grammar-checked (R39), so the names print raw. Stable: shared with the
+ * code-mode projection (the R37 pointer in `discover_apis`, R45), so every
+ * surface names the same tools.
+ */
+export function searchToolsPhrase(catalog: BoxedCatalog): string {
+  const [only, ...others] = [...catalog.boxes.keys()].map(boxSearchTool);
+  const perBox =
+    only !== undefined && others.length === 0
+      ? only
+      : `the search_<box> tool of a box (${[only, ...others].join(', ')})`;
+  return catalog.globalSearch ? `search_tools (every box) or ${perBox}` : perBox;
 }
 
 /**
