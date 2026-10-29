@@ -790,10 +790,9 @@ selected by the brand and parameterized by the first alias in sorted order.
 Two wording choices: the machine's unknown-tool hint on a multi-server facade
 now leads with the R40 did-you-mean (the single-server machine hint is
 unchanged), and the shelf header names the tools that take a qualified name
-for the projections served (`describe_tool`, `call_tool`, `toolCall`). Box
-overview resources serve the server's `instructions` neutralized (newlines
-kept), capped at 8,192 characters with a truncation marker, as an indented
-block.
+for the projections served (`describe_tool`, `call_tool`, `toolCall`). The box overview resources are the
+tool-boxes slice's (`catalog/box-guidance.ts`); `discover_apis` links every
+resource the facade serves except the dashboard.
 
 Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
 dispatching on the alias in front of N single-server facades — N blob

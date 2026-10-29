@@ -298,8 +298,7 @@ and use the multi-server key domain, like `call_tool` blobs.
 `discover_apis` names the boxes (`Projection code mode over the toolboxes
 fs, github.`), lists the tools grouped per box under alias headings, and
 links one `projection://boxes/<alias>/overview.md` resource per box whose
-server sends `instructions` — that server's own text, capped at 8,192
-characters with a truncation marker — so a box's guidance is reachable with
+server sends `instructions` — the box overview — so a box's guidance is reachable with
 the catalog projection off. Above `catalogInlineThreshold`, counted across
 all boxes, it prints the per-box counts and points at the search tools
 instead. The authoring contract adds one rule — tool names are qualified —

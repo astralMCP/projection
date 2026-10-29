@@ -340,14 +340,6 @@ const CODE_MODE_COPY = {
   discoverApis: DISCOVER_APIS_DESCRIPTION,
 };
 
-/**
- * The search tools this facade serves, for the R37 pointer in
- * `discover_apis` (R43, R45). Only the global `search_tools` for now.
- */
-function servedSearchTools(): readonly string[] {
-  return ['search_tools'];
-}
-
 interface MultiFacadeDeps {
   introspector: Introspector;
   view: BoxedCatalog;
@@ -400,7 +392,9 @@ class MultiFacade implements MultiProjectionFacade {
     const { catalogInlineThreshold } = this.deps.options;
     return discoverApis(this.deps.view, this.deps.overview, {
       catalog: this.projections.catalog,
-      searchTools: servedSearchTools(),
+      // TODO(multi-boxes): searchToolsPhrase(view) once #63 lands.
+      searchPhrase: 'search_tools',
+      resources: this.resources,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
     });
   }
