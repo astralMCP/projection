@@ -326,7 +326,7 @@ describe('legacy elicitation compat (R28 amendment, D6)', () => {
     // the model gets an actionable hint instead of a dead end.
     expect(result.structuredContent?.['phase']).toBe('protocol');
     expect(String(result.structuredContent?.['message'])).toContain('elicitation capability');
-    expect(String(result.structuredContent?.['hint'])).toContain('read-only');
+    expect(String(result.structuredContent?.['hint'])).toContain('run without approval');
     // Nothing executed (S2).
     expect(files['/notes.txt']).toBe('original notes');
   });

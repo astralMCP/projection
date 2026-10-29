@@ -45,14 +45,15 @@ const DEFAULT_POLICY_CONTEXT: PolicyContext = Object.freeze({ approvals: 'every-
  *    destructive).
  * 4. Otherwise `ask` (S5: unannotated defaults to ask).
  *
- * Only the exact string `'destructive-only'` relaxes anything: a context
- * that reaches here with any other mode value decides as `'every-write'`
- * (the wrap rejects malformed modes up front — see
+ * A context whose `approvals` is not one of the two modes throws a
+ * `TypeError` — fail closed, never decide on a malformed context (the wrap
+ * rejects malformed modes up front with a `validate` error — see
  * {@link assertApprovalsMode}).
  *
- * Only own properties of `context.overrides` are consulted, so tools named like
- * `Object.prototype` members (`toString`, `constructor`, ...) cannot pick up
- * inherited junk as a decision.
+ * Only own properties of `context.overrides` and of `entry.annotations` are
+ * consulted, so tools named like `Object.prototype` members (`toString`,
+ * `constructor`, ...) cannot pick up inherited junk as a decision, and an
+ * annotations object cannot inherit a relaxing hint from its prototype.
  */
 export function decidePolicy(
   entry: ToolCatalogEntry,
@@ -60,8 +61,9 @@ export function decidePolicy(
 ): PolicyDecision {
   // A pre-R49 caller passing a bare overrides object (untyped, or cast)
   // would otherwise have its overrides — a `deny` included — silently
-  // ignored. Refuse it: fail closed, never open.
-  if (typeof context.approvals !== 'string') {
+  // ignored; one whose map names a tool `approvals` would otherwise pass a
+  // string check. Refuse anything that is not a known mode: fail closed.
+  if (typeof context.approvals !== 'string' || !APPROVALS_MODES.has(context.approvals)) {
     throw new TypeError('decidePolicy expects a PolicyContext; build one with policyContext()');
   }
   const { overrides } = context;
@@ -73,14 +75,23 @@ export function decidePolicy(
     // Malformed override value: fail safe. Never auto-execute on garbage.
     return 'ask';
   }
-  if (entry.annotations?.readOnlyHint === true) return 'auto';
+  if (ownHint(entry, 'readOnlyHint') === true) return 'auto';
   if (
     approvalsFor(entry, context) === 'destructive-only' &&
-    entry.annotations?.destructiveHint === false
+    ownHint(entry, 'destructiveHint') === false
   ) {
     return 'auto';
   }
   return 'ask';
+}
+
+/** An annotation hint, read with own-property semantics like overrides. */
+function ownHint(entry: ToolCatalogEntry, key: 'readOnlyHint' | 'destructiveHint'): unknown {
+  const annotations: unknown = entry.annotations;
+  if (typeof annotations !== 'object' || annotations === null) return undefined;
+  return Object.hasOwn(annotations, key)
+    ? (annotations as Record<string, unknown>)[key]
+    : undefined;
 }
 
 /**
@@ -124,7 +135,9 @@ export function policyContext(
  * Validate an `approvals` option (R49): absent, or one of the two modes. A
  * malformed value is a `validate`-phase {@link ProjectionError} — the mode
  * is one deploy-time switch, so a typo fails the wrap instead of silently
- * changing who gets asked (DECISIONS D17).
+ * changing who gets asked (DECISIONS D17). `wrapMcpServer` calls it; call
+ * it yourself when passing `approvals` to `executeMachine` or
+ * `generateToolTypes` directly.
  */
 export function assertApprovalsMode(value: unknown): ApprovalsMode | undefined {
   if (value === undefined) return undefined;

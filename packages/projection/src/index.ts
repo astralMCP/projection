@@ -103,8 +103,12 @@ export {
 // Text safety — inert rendering of untrusted strings (S5, S6)
 export { capLength, neutralizeControlChars } from './text-safety.js';
 
-// Policy engine — approval decisions and elicitation copy
+// Policy engine — approval decisions and elicitation copy. Call
+// `assertApprovalsMode` on an untrusted `approvals` value when using
+// `executeMachine` / `generateToolTypes` directly (`wrapMcpServer` already
+// does): it turns a malformed mode into a `validate` ProjectionError.
 export {
+  assertApprovalsMode,
   buildElicitationCopy,
   decidePolicy,
   policyContext,

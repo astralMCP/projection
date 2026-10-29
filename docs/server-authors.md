@@ -6,8 +6,9 @@ plus `projection://` resources.
 **Code mode** (`discover_apis`, `execute_machine`) lets models author XState v5
 machines against generated types; the **catalog projection** (`search_tools`,
 `describe_tool`, `call_tool`) lets them find and run one tool at a time. Both
-run through one gate: read-only calls run inline; everything else pauses for
-human approval over MRTR (MCP 2026-07-28). The advertised instructions route
+run through one gate: read-only calls (or, under `destructive-only`, a
+non-destructive write) run inline; everything else pauses for human approval
+over MRTR (MCP 2026-07-28). The advertised instructions route
 the model — one step → `call_tool`; a workflow → `execute_machine`. With code
 mode on, the server also offers two prompts (`/save-workflow`,
 `/visualize-workflow`) and a `ui://projection/dashboard.html` MCP App that
@@ -95,8 +96,8 @@ const facade = await wrapMcpServer(myServer, {
   },
 
   // Skip approval for writes the server declares non-destructive (see
-  // "Approvals mode" below). Default 'every-write'.
-  approvals: 'destructive-only',
+  // "Approvals mode" below; trusted servers only). Default 'every-write'.
+  // approvals: 'destructive-only',
 
   // Mask sensitive argument fields before they reach an approval prompt.
   // Fails closed: if this throws, the prompt shows a placeholder, never args.

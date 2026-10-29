@@ -254,13 +254,13 @@ export function buildInstructions(
 }
 
 /** Preamble when only code mode is on (R29). */
-export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Any tool that is not read-only pauses the machine and asks the user to approve that specific action before it runs. Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
+export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Tools that change something may pause the machine and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval. Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
 
 /** Preamble when only the catalog projection is on (R29, R32). */
-export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Any tool that is not read-only pauses and asks the user to approve that specific action before it runs.`;
+export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
 
 /** Preamble when both projections are on: the routing rule (R29). */
-export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, any action that is not read-only pauses and asks the user to approve that specific action before it runs.`;
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
 
 /** The R29 preamble variant for a projection selection. */
 export function defaultPreamble(projections: ProjectionSelection): string {

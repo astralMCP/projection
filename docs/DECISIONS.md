@@ -696,38 +696,25 @@ Implementation (single-server, 2026-10-29): one decision function,
 `policy` / `approvals` options every surface already carries. `approvals` is
 required in the context, so passing a bare overrides object (the pre-R49
 second argument) is a type error — and, for untyped callers, a runtime
-`TypeError` rather than a silently dropped `deny`. The per-source mode of a
-multi-server facade will be an optional field of the same context.
+`TypeError` rather than a silently dropped `deny`: `decidePolicy` throws on
+any context whose `approvals` is not one of the two modes, so even an old
+overrides map naming a tool `approvals` fails closed. Annotation hints are
+read with own-property semantics, like overrides. Direct library users of
+`executeMachine` / `generateToolTypes` validate the option with the exported
+`assertApprovalsMode`. The per-source mode of a multi-server facade will be
+an optional field of the same context.
 
-## D18 — Multi-server core: the boxed view is a `ServerCatalog` (2026-10-29)
+The mode is deliberately not bound into blobs: it only ever relaxes `ask` to
+`auto`, a pending entry always needs an accepted verdict to run, and `deny`
+is re-checked on resume — so a blob carried to a facade with another mode
+can never skip an approval.
 
-The first `wrapMcpServers` slice (R39–R43) adds no second gate. The facade
-builds one merged view of its boxes (`catalog/boxes.ts`): an ordinary
-`ServerCatalog` whose entries carry qualified names, deduplicated per box,
-whose `identity` is the R41 server-set string. Everything that resolves a
-name against a catalog — `findTool`, `decidePolicy` with facade policy keyed
-by qualified names, the R36 binding hash, the blob's `pending` entries —
-is therefore box-aware without a code path of its own. The few places that
-must know they serve boxes ask `isBoxedCatalog` (a brand set only by
-`buildBoxedCatalog`, never by shape): call routing (`routeCall` sends the
-bare name to the box's connection), the blob key domain (derived from the
-catalog, so identity and domain can never disagree), the box-scoped
-did-you-mean, the describe header and the approval footer, which is built
-from the box's own entry plus the host alias (S6).
-
-The per-source approvals mode (R49) rides `PolicyContext.sourceApprovals`,
-keyed by alias; `decidePolicy` selects it by the part of the qualified name
-before the first dot, so a server's dotted tool name can only select its
-own box's mode.
-
-Interim, until the follow-up PRs: code mode defaults off on a multi-server
-facade and an explicit `codeMode: true` fails the wrap (R45 typegen is not
-built); `optional: true` and `catalog.globalSearch: false` fail the wrap
-(R47, and the per-box search tools of R43); the instructions carry a
-minimal shelf (alias, host description, tool count) without the R44
-fallback to the server's first sentence.
-
-Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
-dispatching on the alias in front of N single-server facades — N blob
-identities and key domains to reconcile, and policy, search and the
-did-you-mean hint would each need a cross-facade layer anyway.
+Model-facing copy (2026-10-29): the preambles, the `execute_machine` and
+`call_tool` descriptions and authoring-contract item 5 no longer say
+"read-only tools run immediately; every other tool asks" — that is false
+under `'destructive-only'` and under any per-tool `auto`. They now point at
+the per-tool postures (R33: "runs immediately" / "asks for approval"), which
+every surface already renders from the resolved decision, so the copy is
+accurate under every mode and every per-tool override. This supersedes the
+earlier mode-specific wording; models that matched on it see a minor-version
+copy change.
