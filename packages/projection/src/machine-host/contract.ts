@@ -99,25 +99,55 @@ export function whenCall(id) {
 }
 `;
 
+/** One tool name a sample calls (R45), and whether the facade really serves it. */
+export interface SampleTool {
+  /** The qualified name: a real tool of the sample box, or a generic placeholder in it. */
+  name: string;
+  /** True when no suitable tool exists and `name` is a generic placeholder. */
+  placeholder: boolean;
+}
+
+/**
+ * The tool names a multi-server facade's samples call (R45), picked from
+ * the first box's catalog (`mrtr/discover.ts` `toolSamples`).
+ */
+export interface ToolSamples {
+  /** A tool that runs immediately: the happy path, and the denial example's follow-up. */
+  read: SampleTool;
+  /** A tool that asks for approval: the denial example. */
+  gated: SampleTool;
+  /** The denial example's follow-up listing call: `read`, or a placeholder. */
+  list: SampleTool;
+}
+
+/** What the samples say about a name the facade does not serve. */
+export const SAMPLE_NAMES_NOTE = '(sample names; use the names in tools.d.ts)';
+
+/** The trailing comment a placeholder sample's `toolCall` line carries. */
+export function sampleNote(sample: SampleTool): string {
+  return sample.placeholder ? ` // ${SAMPLE_NAMES_NOTE}` : '';
+}
+
 /**
  * Human-readable authoring contract. `discover_apis` publishes this inline
  * (R3) so a model can author a valid machine without fetching resources.
  *
- * `sampleBox` is set on a multi-server facade (R45): the samples call
- * qualified names in that box (the facade's first alias in sorted order),
- * and one rule is added — tool names are qualified. Without it the text is
- * the single-server contract, byte for byte.
+ * `samples` is set on a multi-server facade (R45): the samples call those
+ * qualified names, a placeholder's line says so, and one rule is added —
+ * tool names are qualified. Without it the text is the single-server
+ * contract, byte for byte.
  */
-export function authoringContract(sampleBox?: string): string {
-  const tool = (name: string): string => (sampleBox === undefined ? name : `${sampleBox}.${name}`);
+export function authoringContract(samples?: ToolSamples): string {
+  const read = samples?.read ?? { name: 'read_file', placeholder: false };
+  const gated = samples?.gated ?? { name: 'write_file', placeholder: false };
   const qualifiedRule =
-    sampleBox === undefined
+    samples === undefined
       ? ''
       : `10. Tool names on this server are qualified: <box>.<tool>. Each box's tools
     sit under tools.<box> in tools.d.ts; pass the qualified name to toolCall,
-    e.g. toolCall('${tool('read_file')}', ...). An unqualified name is rejected.
-    One machine may call tools in several boxes; every call that asks for
-    approval is approved on its own.
+    e.g. toolCall('${read.name}', ...) ${SAMPLE_NAMES_NOTE}.
+    An unqualified name is rejected. One machine may call tools in several
+    boxes; every call that asks for approval is approved on its own.
 `;
   return `Projection authoring contract (execute_machine)
 
@@ -149,7 +179,7 @@ Rules:
    handle them, so an unguarded region will consume another call's result:
 
      import { toolCall, whenCall } from '@astral-mcp/tools';
-     entry: toolCall('${tool('write_file')}', () => ({ path: '/a' }), { id: 'a' }),
+     entry: toolCall('${gated.name}', () => ({ path: '/a' }), { id: 'a' }),${sampleNote(gated)}
      on: { TOOL_RESULT: { guard: whenCall('a'), target: 'done' } },
 5. Tools marked "asks for approval" pause the machine for user approval;
    tools marked "runs immediately" do not. The arguments captured at that
@@ -177,7 +207,7 @@ Example — happy path with a read-only call (run with input: { path }):
     initial: 'reading',
     states: {
       reading: {
-        entry: toolCall('${tool('read_file')}', ({ context }) => ({ path: context.path })),
+        entry: toolCall('${read.name}', ({ context }) => ({ path: context.path })),${sampleNote(read)}
         on: {
           TOOL_RESULT: { target: 'done', actions: assign({ result: ({ event }) => event.result }) },
           TOOL_ERROR: 'failed',
@@ -200,7 +230,7 @@ Example — handling a denied approval (run with input: { path }):
     initial: 'writing',
     states: {
       writing: {
-        entry: toolCall('${tool('write_file')}', ({ context }) => ({ path: context.path, content: 'hello' })),
+        entry: toolCall('${gated.name}', ({ context }) => ({ path: context.path, content: 'hello' })),${sampleNote(gated)}
         on: {
           TOOL_RESULT: { target: 'done', actions: assign({ status: 'written' }) },
           TOOL_DENIED: { target: 'done', actions: assign({ status: 'skipped' }) },

@@ -810,7 +810,14 @@ machine blobs use the `multi` domain because the facade declares it for both
 gated tools. The single-server artifacts are built by the untouched path, so
 their goldens are byte-identical; the multi-server text variants (contract
 rule 10, qualified samples, grouped overview, box-named headers) are
-selected by the brand and parameterized by the first alias in sorted order.
+selected by the brand. The samples call real tools of the first box in
+sorted alias order — the first that runs immediately and the first that
+asks for approval under the facade's policy, if its name is a plain
+identifier (S5) — and fall back to generic names in that box, marked as
+sample names, so a model is never shown a tool that does not exist without
+being told. `buildBoxedCatalog` re-checks the alias grammar and the bridge
+header is rendered inert like the single-server identity: aliases print raw
+everywhere else, so the view refuses any alias the wrap would have refused.
 Two wording choices: the machine's unknown-tool hint on a multi-server facade
 now leads with the R40 did-you-mean (the single-server machine hint is
 unchanged), and the shelf header names the tools that take a qualified name

@@ -16,6 +16,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { buildBoxedCatalog } from '../../src/catalog/boxes.js';
 import { describeTool } from '../../src/catalog/index.js';
+import { ProjectionError } from '../../src/errors.js';
 import { generateToolTypes, TOOL_CALL_HOST_GLOBAL } from '../../src/typegen/index.js';
 import type { ServerCatalog, ToolCatalogEntry } from '../../src/types.js';
 import { multiFixturePolicy, multiFixtureView } from './multi-fixture.js';
@@ -103,7 +104,10 @@ describe('generateToolTypes over a multi-server view — .d.ts (R45)', () => {
     );
     expect(generated.dts).not.toContain('files@1.0.0');
     expect(generated.dts).not.toContain('multi:');
-    expect(generated.bridgeSource).toContain('// from the toolboxes delete, fs, github.');
+    // The bridge is evaluated source: its header is rendered inert, JSON-quoted.
+    expect(generated.bridgeSource).toContain(
+      '// from "the toolboxes delete, fs, github". Do not edit.',
+    );
     expect(generated.bridgeSource).not.toContain('gh-server');
   });
 
@@ -235,6 +239,67 @@ describe('reserved-word aliases (R39, R45)', () => {
       'void tools.purge;',
     ].join('\n');
     expect(typecheck({ '/v/tools.d.ts': dts, '/v/use.ts': consumer })).toEqual([]);
+  });
+
+  it('constructor and prototype type-check and bind in the bridge', async () => {
+    const { dts, bridgeSource } = generateToolTypes(
+      buildBoxedCatalog([
+        box('constructor', [tool('list', { annotations: { readOnlyHint: true } })]),
+        box('prototype', [tool('constructor'), tool('purge')]),
+      ]),
+    );
+    expect(dts).toMatch(/^ {2}constructor: \{$/m);
+    expect(dts).toMatch(/^ {2}prototype: \{$/m);
+    const consumer = [
+      "import { tools } from './tools';",
+      'export const listed: Promise<unknown> = tools.constructor.list();',
+      'export const made: Promise<unknown> = tools.prototype.constructor();',
+      'export const purged: Promise<unknown> = tools.prototype.purge();',
+    ].join('\n');
+    expect(typecheck({ '/v/tools.d.ts': dts, '/v/use.ts': consumer })).toEqual([]);
+
+    const url = `data:text/javascript;base64,${Buffer.from(bridgeSource).toString('base64')}`;
+    const { tools } = (await import(/* @vite-ignore */ url)) as {
+      tools: Record<string, Record<string, (args?: unknown) => unknown>>;
+    };
+    expect(Object.keys(tools)).toEqual(['constructor', 'prototype']);
+    expect(Object.getPrototypeOf(tools['constructor'])).toBeNull();
+    expect(Object.keys(tools['prototype'] ?? {})).toEqual(['constructor', 'purge']);
+    const calls: string[] = [];
+    const hook = TOOL_CALL_HOST_GLOBAL as '__projection_toolcall';
+    (globalThis as Record<string, unknown>)[hook] = (name: string) => {
+      calls.push(name);
+      return null;
+    };
+    try {
+      tools['constructor']?.['list']?.();
+      tools['prototype']?.['constructor']?.();
+      tools['prototype']?.['purge']?.();
+    } finally {
+      delete (globalThis as Record<string, unknown>)[hook];
+    }
+    expect(calls).toEqual(['constructor.list', 'prototype.constructor', 'prototype.purge']);
+  });
+});
+
+describe('buildBoxedCatalog alias grammar (R39, defense in depth)', () => {
+  it.each([
+    ['a newline that would end the bridge comment', 'fs\nglobalThis.pwned = 1;//'],
+    ['a dot', 'fs.evil'],
+    ['an underscore', 'fs_evil'],
+    ['upper case', 'Fs'],
+    ['an empty alias', ''],
+  ])('refuses a view over %s', (_label, alias) => {
+    let thrown: unknown;
+    try {
+      buildBoxedCatalog([box('fs', [tool('read_file')]), box(alias, [tool('purge')])]);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ProjectionError);
+    expect((thrown as ProjectionError).phase).toBe('terminal');
+    // The refused alias is never echoed back.
+    if (alias.length > 0) expect((thrown as ProjectionError).message).not.toContain(alias);
   });
 });
 

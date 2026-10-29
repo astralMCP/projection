@@ -61,6 +61,7 @@ import {
 } from '../facade/server.js';
 import { createIntrospector, type Introspector } from '../introspector/index.js';
 import {
+  APPROVAL_SENTENCE_TAIL,
   buildResources,
   discoverApis,
   errorResult,
@@ -180,7 +181,7 @@ export async function wrapMcpServers(
       overview,
       toolTypes,
       // The code-mode resources (R3, R45), then the box overviews (R43, R45).
-      resources: [...buildResources(view, dts), ...boxOverviewResources(view)],
+      resources: [...buildResources(view, dts, policySettings), ...boxOverviewResources(view)],
       instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
       options,
       policySettings,
@@ -264,23 +265,18 @@ export interface MultiPreambleOptions {
  */
 export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const { projections, globalSearch } = options;
-  const approval =
-    "tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.";
   if (!projections.catalog) {
-    return `This server fronts several toolboxes, each wrapping another server, and runs in code mode: instead of calling their tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you, across boxes when the task needs it. Call discover_apis first for every box's tool types, the authoring contract, worked examples and each box's own guidance. Tools that change something may pause the machine and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
+    return `This server fronts several toolboxes, each wrapping another server, and runs in code mode: instead of calling their tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you, across boxes when the task needs it. Call discover_apis first for every box's tool types, the authoring contract, worked examples and each box's own guidance. Tools that change something may pause the machine ${APPROVAL_SENTENCE_TAIL}`;
   }
+  // What to call, after a leading "call"/"Call".
   const find = globalSearch
-    ? "call search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
-    : "call a box's search_<box> tool to look inside that box";
-  const catalogSteps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it.`;
+    ? "search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
+    : "a box's search_<box> tool to look inside that box";
+  const steps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it.`;
   if (!projections.codeMode) {
-    return `This server fronts several toolboxes, each wrapping another server. ${capitalize(catalogSteps)} ${capitalize(approval)}`;
+    return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
   }
-  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, ${catalogSteps} For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, ${approval}`;
-}
-
-function capitalize(text: string): string {
-  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call ${steps} For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 }
 
 /**
@@ -467,6 +463,8 @@ class MultiFacade implements MultiProjectionFacade {
       searchPhrase: searchToolsPhrase(this.deps.view),
       // Links every resource but the dashboard, box overviews included (R45).
       resources: this.resources,
+      // The samples are picked under the facade's policy (R45).
+      policy: this.deps.policySettings,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
     });
   }

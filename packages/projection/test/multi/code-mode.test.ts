@@ -13,6 +13,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { openBlob } from '../../src/blob/index.js';
 import { OVERVIEW_TRUNCATION_MARKER } from '../../src/catalog/box-guidance.js';
+import { buildBoxedCatalog } from '../../src/catalog/boxes.js';
+import { authoringContract } from '../../src/machine-host/index.js';
+import { exampleDenialFallback, exampleHappyPath, toolSamples } from '../../src/mrtr/discover.js';
+import type { ToolCatalogEntry } from '../../src/types.js';
 import {
   wrapMcpServer,
   wrapMcpServers,
@@ -305,6 +309,25 @@ describe('unknown and unqualified names in a machine (R40, R24/R25)', () => {
   });
 });
 
+describe('prototype-named tools in a machine on a boxed view (R40, S5)', () => {
+  it.each([
+    'constructor',
+    'toString',
+    '__proto__',
+    'fs.constructor',
+    'fs.__proto__',
+    'fs.hasOwnProperty',
+    'constructor.read_file',
+    '__proto__.read_file',
+    'prototype.read_file',
+  ])('rejects %s before anything reaches a box', async (name) => {
+    const facade = await wrap();
+    const error = structured(await facade.executeMachine({ code: oneCall(name) }, 'modern'));
+    expect(error['phase']).toBe('validate');
+    expect(log).toEqual([]);
+  });
+});
+
 describe('a hostile dotted tool name in a machine (R40, R46, S5, S6)', () => {
   it('stays in its own box, and the approval names that box', async () => {
     const facade = await wrap({}, [
@@ -368,6 +391,41 @@ describe('machine blobs and the key domain (R41)', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('refuses a resume after the box dropped the tool, same identity, before anything runs', async () => {
+    const minted = await multiFsOnly([]);
+    const state = sealedState(await minted.executeMachine({ code: CODE }, 'modern'));
+    const calls: RecordedCall[] = [];
+    // files@1.0.0 again, so the server-set identity matches, but write_file is gone.
+    const changed = await wrapMcpServers(
+      {
+        fs: recordingServer(
+          { name: 'files', version: '1.0.0' },
+          [{ name: 'read_file', readOnly: true }],
+          calls,
+        ),
+      },
+      { blob: { key: KEY } },
+    );
+    facades.push(changed);
+    // The blob opens (same server-set identity, same key domain) …
+    openBlob(state, {
+      expectedKind: 'machine',
+      code: CODE,
+      serverIdentity: 'multi:[["fs","files@1.0.0"]]',
+      config: { key: KEY },
+      domain: 'multi',
+    });
+    expect(changed.dts).not.toContain('write_file');
+    const result = await changed.executeMachine(
+      { code: CODE, requestState: state, inputResponses: { c: ACCEPT } },
+      'modern',
+    );
+    // … so the refusal is the replay's unknown tool, not blob verification.
+    expect(structured(result)['phase']).toBe('validate');
+    expect(structured(result)['message']).toContain('write_file');
+    expect(calls).toEqual([]);
+  });
+
   it('refuses a multi-server machine blob on a single-server facade', async () => {
     const minted = await multiFsOnly([]);
     const state = sealedState(await minted.executeMachine({ code: CODE }, 'modern'));
@@ -412,6 +470,29 @@ describe('machine blobs and the key domain (R41)', () => {
       'modern',
     );
     expect(structured(result)['phase']).toBe('blob_verification');
+  });
+});
+
+describe('the R12 read-call cap on a multi-server facade', () => {
+  it('counts calls that run immediately across boxes in one segment', async () => {
+    const facade = await wrap({ caps: { maxReadCallsPerSegment: 1 } });
+    const code = `import { setup } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'reads',
+  initial: 'fs',
+  states: {
+    fs: { entry: toolCall('fs.read_file', { path: '/a' }), on: { TOOL_RESULT: 'github', TOOL_ERROR: 'done' } },
+    github: { entry: toolCall('github.get_issue', {}), on: { TOOL_RESULT: 'done', TOOL_ERROR: 'done' } },
+    done: { type: 'final' },
+  },
+});
+`;
+    const error = structured(await facade.executeMachine({ code }, 'modern'));
+    expect(error['phase']).toBe('cap_exceeded');
+    // The first read ran in fs; the second, in another box, was refused.
+    expect(log).toEqual([{ server: 'files', tool: 'read_file', args: { path: '/a' } }]);
   });
 });
 
@@ -470,6 +551,35 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
     expect(facade.instructions).toContain('run it with execute_machine');
   });
 
+  it('names no search_tools anywhere on a code-mode-only facade without the global search', async () => {
+    const facade = await wrap({
+      catalogInlineThreshold: 1,
+      projections: { catalog: false },
+      catalog: { globalSearch: false },
+    });
+    const c = await connectModern(facade);
+    const surfaces: unknown[] = [
+      facade.instructions,
+      c.getInstructions(),
+      await c.listTools(),
+      facade.discoverApis(),
+      await c.callTool({ name: 'discover_apis', arguments: {} }),
+      facade.dts,
+    ];
+    const { resources } = await c.listResources();
+    const { prompts } = await c.listPrompts();
+    surfaces.push(
+      resources,
+      prompts,
+      ...(await Promise.all(resources.map(({ uri }) => c.readResource({ uri })))),
+      ...(await Promise.all(prompts.map(({ name }) => c.getPrompt({ name, arguments: {} })))),
+    );
+    expect(resources.map((resource) => resource.uri)).toContain(
+      'projection://docs/authoring-contract.md',
+    );
+    for (const surface of surfaces) expect(JSON.stringify(surface)).not.toContain('search_tools');
+  });
+
   it('keeps the list inline at the threshold, and with the catalog projection off', async () => {
     expect(textOf((await wrap({ catalogInlineThreshold: 7 })).discoverApis())).toContain(
       '- fs.read_file',
@@ -516,7 +626,7 @@ describe('resources, prompts and describe types on a multi-server facade (R3, R3
       "toolCall('fs.write_file'",
     );
     expect(await read('projection://docs/authoring-contract.md')).toContain(
-      "toolCall('fs.read_file', ...). An unqualified name is rejected.",
+      "e.g. toolCall('fs.read_file', ...) (sample names; use the names in tools.d.ts).\n    An unqualified name is rejected.",
     );
   });
 
@@ -559,5 +669,97 @@ describe('resources, prompts and describe types on a multi-server facade (R3, R3
       'write_file: (args?: github_WriteFileInput) => Promise<unknown>;',
     );
     expect(structured(facade.describeTool({ name: 'github.write_file' }))['types']).toBeUndefined();
+  });
+});
+
+/** A bare catalog entry for the sample-name tests. */
+function sampleEntry(
+  name: string,
+  annotations?: ToolCatalogEntry['annotations'],
+): ToolCatalogEntry {
+  return { name, inputSchema: { type: 'object' }, ...(annotations ? { annotations } : {}) };
+}
+
+/** A two-box view whose first box, `alpha`, holds `first`. */
+function sampleView(first: ToolCatalogEntry[]) {
+  return buildBoxedCatalog([
+    { alias: 'alpha', catalog: { alias: 'alpha', identity: 'a@1', tools: first } },
+    {
+      alias: 'beta',
+      catalog: {
+        alias: 'beta',
+        identity: 'b@1',
+        tools: [sampleEntry('look', { readOnlyHint: true }), sampleEntry('poke')],
+      },
+    },
+  ]);
+}
+
+describe('sample tool names in the contract and examples (R45)', () => {
+  const NOTE = '(sample names; use the names in tools.d.ts)';
+
+  it("calls the first box's own read-only and gated tools, without the placeholder note", () => {
+    const samples = toolSamples(
+      sampleView([
+        sampleEntry('poke'),
+        sampleEntry('peek', { readOnlyHint: true }),
+        sampleEntry('zap'),
+      ]),
+    );
+    expect(samples.read).toEqual({ name: 'alpha.peek', placeholder: false });
+    expect(samples.gated).toEqual({ name: 'alpha.poke', placeholder: false });
+    expect(samples.list).toEqual(samples.read);
+    expect(exampleHappyPath(samples)).toContain("toolCall('alpha.peek', ");
+    expect(exampleHappyPath(samples)).not.toContain(NOTE);
+    expect(exampleDenialFallback(samples)).toContain("toolCall('alpha.poke', ");
+    expect(exampleDenialFallback(samples)).not.toContain(NOTE);
+    const contract = authoringContract(samples);
+    expect(contract).toContain("toolCall('alpha.poke', () => ({ path: '/a' }), { id: 'a' }),\n");
+    expect(contract).toContain(
+      "toolCall('alpha.peek', ({ context }) => ({ path: context.path })),\n",
+    );
+    // Rule 10 always carries the note.
+    expect(contract).toContain(`e.g. toolCall('alpha.peek', ...) ${NOTE}.`);
+  });
+
+  it('decides read-only and gated under the facade policy', () => {
+    const samples = toolSamples(
+      sampleView([sampleEntry('peek', { readOnlyHint: true }), sampleEntry('poke')]),
+      {
+        policy: { 'alpha.peek': 'ask', 'alpha.poke': 'auto' },
+      },
+    );
+    expect(samples.read.name).toBe('alpha.poke');
+    expect(samples.gated.name).toBe('alpha.peek');
+  });
+
+  it('falls back to generic names in the first box, marked as samples', () => {
+    const samples = toolSamples(sampleView([sampleEntry('peek', { readOnlyHint: true })]));
+    expect(samples.read).toEqual({ name: 'alpha.peek', placeholder: false });
+    expect(samples.gated).toEqual({ name: 'alpha.write_file', placeholder: true });
+    expect(exampleDenialFallback(samples)).toContain(`toolCall('alpha.write_file', `);
+    expect(exampleDenialFallback(samples)).toContain(`content: 'hello' })), // ${NOTE}`);
+    expect(exampleHappyPath(samples)).not.toContain(NOTE);
+
+    const empty = toolSamples(sampleView([]));
+    expect(empty.read).toEqual({ name: 'alpha.read_file', placeholder: true });
+    expect(empty.list).toEqual({ name: 'alpha.list_dir', placeholder: true });
+    expect(exampleHappyPath(empty)).toContain(
+      `toolCall('alpha.read_file', ({ context }) => ({ path: context.path })), // ${NOTE}`,
+    );
+  });
+
+  it('never samples a name that could forge the text, nor a dotted one', () => {
+    const samples = toolSamples(
+      sampleView([
+        sampleEntry("x'), evil('", { readOnlyHint: true }),
+        sampleEntry('a\nb', { readOnlyHint: true }),
+        sampleEntry('github.delete_repo', { readOnlyHint: true }),
+        sampleEntry('blocked'),
+      ]),
+      { policy: { 'alpha.blocked': 'deny' } },
+    );
+    expect(samples.read).toEqual({ name: 'alpha.read_file', placeholder: true });
+    expect(samples.gated).toEqual({ name: 'alpha.write_file', placeholder: true });
   });
 });

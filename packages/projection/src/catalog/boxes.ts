@@ -78,6 +78,14 @@ export interface BoxedCatalog extends ServerCatalog {
   readonly globalSearch: boolean;
 }
 
+/**
+ * Alias grammar (R39): dot-free and underscore-free, short enough for
+ * `search_<alias>`. `wrapMcpServers` validates every alias against it at wrap
+ * time (`multi/config.ts`), and {@link buildBoxedCatalog} re-checks it, since
+ * typegen and the copy print aliases raw (R45).
+ */
+export const ALIAS_PATTERN = /^[a-z][a-z0-9]{0,23}$/;
+
 /** Options of {@link buildBoxedCatalog}. */
 export interface BoxedCatalogOptions {
   /** Serve the global `search_tools` (R43). Default `true`. */
@@ -111,7 +119,13 @@ export function multiServerIdentity(boxes: Iterable<ToolBox>): string {
   return `multi:${JSON.stringify(pairs)}`;
 }
 
-/** Build the merged view over the wrapped boxes (R40, R41). */
+/**
+ * Build the merged view over the wrapped boxes (R40, R41). Every alias must
+ * match {@link ALIAS_PATTERN}: the generated `.d.ts`, the evaluated bridge
+ * header and the model-facing copy print aliases raw, so a view over any
+ * other alias is refused with a `terminal` {@link ProjectionError} (defense
+ * in depth: `wrapMcpServers` already rejects it at wrap time).
+ */
 export function buildBoxedCatalog(
   boxes: Iterable<ToolBox>,
   options: BoxedCatalogOptions = {},
@@ -119,6 +133,13 @@ export function buildBoxedCatalog(
   const sorted = [...boxes].toSorted((a, b) =>
     a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0,
   );
+  for (const box of sorted) {
+    if (!ALIAS_PATTERN.test(box.alias)) {
+      throw new ProjectionError('terminal', 'a multi-server view needs grammar-checked aliases', {
+        hint: `Every box alias must match ${String(ALIAS_PATTERN)} (R39); wrapMcpServers validates aliases before it builds the view.`,
+      });
+    }
+  }
   const members = new Map<string, BoxedTool>();
   const counts = new Map<string, number>();
   for (const box of sorted) {

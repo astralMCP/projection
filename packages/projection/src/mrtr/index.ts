@@ -16,6 +16,7 @@ export {
 } from './adapter.js';
 export { legacySuspendError, type LegacyGateCopy, type LegacyGateInput } from './legacy-gate.js';
 export {
+  APPROVAL_SENTENCE_TAIL,
   buildInstructions,
   buildResources,
   defaultPreamble,

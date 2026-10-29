@@ -350,8 +350,11 @@ catalog projection off. Above `catalogInlineThreshold`, counted across all
 boxes, it prints the per-box counts and points at the search tools the
 facade serves instead. The authoring contract adds one rule — tool names are
 qualified — and its samples, like the `happy-path` and `denial-fallback`
-examples, call tools in the first box in sorted alias order
-(`fs.read_file`). `describe_tool({ name: 'fs.read_file', types: true })`
+examples, call tools of the first box in sorted alias order: its first tool
+that runs immediately and its first that asks for approval under the
+facade's policy (`fs.read_file`, `fs.write_file`), or a generic name marked
+"(sample names; use the names in tools.d.ts)" when the box has none.
+`describe_tool({ name: 'fs.read_file', types: true })`
 returns that tool's slice of the `.d.ts` under `// Member of tools.fs:`, and
 the workflow prompts name the boxes, never what the servers call themselves.
 The instructions' preamble has a variant per projection selection (routing,

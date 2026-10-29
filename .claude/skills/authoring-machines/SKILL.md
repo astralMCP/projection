@@ -58,10 +58,13 @@ export default setup({}).createMachine({
   with a did-you-mean hint. A server's dotted tool name stays in its box
   (`fs.github.delete_repo` is the `fs` box's `github.delete_repo`). The
   `.d.ts` nests each box under `tools.<alias>`, with type names like
-  `fs_ReadFileInput`; the contract text gains rule 10 and its samples use the
-  first alias in sorted order. Default ids are `<qualified name>#N`, so give
-  gated calls explicit ids. One machine may span boxes; each gated call is
-  approved separately (parallel ones share one round trip). Test with
+  `fs_ReadFileInput`; the contract text gains rule 10 and its samples call
+  tools of the first alias in sorted order (real ones when that box has a
+  read-only and a gated tool, else marked "sample names"). Default ids are
+  `<qualified name>#N`; as on one server, calls outstanding at once
+  (parallel regions) need explicit ids and `whenCall` guards. One machine
+  may span boxes; each gated call is approved separately (parallel ones
+  share one round trip). Test with
   `wrapMcpServers({ fs: …, github: … }, { blob: { key } })` — see
   `packages/projection/test/multi/code-mode.test.ts` and the recording
   servers in `test/multi/helpers.ts`.
