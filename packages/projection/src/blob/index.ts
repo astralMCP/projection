@@ -37,6 +37,7 @@ export {
   hashCode,
   openBlob,
   sealBlob,
+  type BlobKeyDomain,
   type BuildBlobPayloadInput,
   type OpenBlobOptions,
 } from './sealer.js';
