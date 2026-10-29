@@ -44,9 +44,10 @@ export interface ServerSourceConfig {
 export interface WrapServersOptions extends WrapOptions {
   catalog?: {
     /**
-     * Serve the global `search_tools` across every box (R43). Default
-     * `true`. `false` is not supported yet: the per-box `search_<alias>`
-     * tools it would leave as the only search tools are not served yet.
+     * Serve the global `search_tools` across every box next to the per-box
+     * `search_<alias>` tools (R43). Default `true`; `false` leaves only the
+     * per-box tools, and every piece of copy that names a search tool names
+     * those instead.
      */
     globalSearch?: boolean;
   };
@@ -313,9 +314,9 @@ export function assertPolicyKeys(policy: unknown, aliases: ReadonlySet<string>):
   }
 }
 
-/** The `catalog` option (R43): validated, then reduced to what this release serves. */
-export function assertCatalogOptions(catalog: unknown): void {
-  if (catalog === undefined) return;
+/** The `catalog` option (R43), validated: whether the global `search_tools` is served. */
+export function resolveCatalogOptions(catalog: unknown): { globalSearch: boolean } {
+  if (catalog === undefined) return { globalSearch: true };
   if (!isPlainObject(catalog)) {
     throw invalid('catalog must be an object', 'Pass e.g. { globalSearch: true }, or omit it.');
   }
@@ -331,11 +332,5 @@ export function assertCatalogOptions(catalog: unknown): void {
   if (globalSearch !== undefined && typeof globalSearch !== 'boolean') {
     throw invalid('catalog.globalSearch must be a boolean', 'Omit it for the default (true).');
   }
-  if (globalSearch === false) {
-    // TODO(PR3): serve the per-box search_<alias> tools, then honour false (R43).
-    throw invalid(
-      'catalog.globalSearch: false is not supported yet',
-      'Omit catalog.globalSearch: the per-box search tools it would leave are not served yet.',
-    );
-  }
+  return { globalSearch: globalSearch !== false };
 }

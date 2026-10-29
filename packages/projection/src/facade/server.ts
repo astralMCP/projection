@@ -34,11 +34,29 @@ export interface CatalogToolCopy {
   toolName: string;
   /** Description of `describe_tool`'s `types` argument. */
   describeTypes: string;
+  /**
+   * Multi-server facades (R43): the per-box `search_<alias>` tools,
+   * registered in this order before `search_tools`.
+   */
+  boxSearches?: readonly BoxSearchCopy[];
+  /** `false` omits `search_tools` (R43 `catalog.globalSearch`). Default `true`. */
+  globalSearch?: boolean;
+}
+
+/** The copy of one `search_<alias>` tool (R43). */
+export interface BoxSearchCopy {
+  /** The box alias; the tool is `search_<alias>`. */
+  alias: string;
+  title: string;
+  description: string;
+  /** Description of the `query` argument. */
+  query: string;
 }
 
 /** The catalog tools' handlers (R32–R35). */
 export interface CatalogHandlers {
-  searchTools(args: { query?: string; cursor?: string }): CallToolResult;
+  /** `search_tools`, or `search_<alias>` when `alias` is given (multi-server, R43). */
+  searchTools(args: { query?: string; cursor?: string }, alias?: string): CallToolResult;
   describeTool(args: { name: string; types?: boolean }): CallToolResult;
   callTool(
     args: CallToolArgs,
@@ -107,26 +125,26 @@ export function registerCatalogTools(
   handlers: CatalogHandlers,
   copy: CatalogToolCopy,
 ): void {
-  // `search_tools` and `describe_tool` are pure reads over the catalog; the
-  // annotation lets hosts that gate on annotations run them without a
-  // prompt (R35).
-  server.registerTool(
-    'search_tools',
-    {
-      title: 'Search the tool catalog',
-      description: copy.searchDescription,
-      inputSchema: z.object({
-        query: z.string().optional().describe(copy.searchQuery),
-        cursor: z.string().optional().describe('nextCursor from a previous page.'),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    (args) =>
-      handlers.searchTools({
-        ...(args.query !== undefined ? { query: args.query } : {}),
-        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
-      }),
-  );
+  // The search tools and `describe_tool` are pure reads over the catalog;
+  // the annotation lets hosts that gate on annotations run them without a
+  // prompt (R35, R43).
+  for (const box of copy.boxSearches ?? []) {
+    registerSearchTool(server, `search_${box.alias}`, box, (args) =>
+      handlers.searchTools(args, box.alias),
+    );
+  }
+  if (copy.globalSearch !== false) {
+    registerSearchTool(
+      server,
+      'search_tools',
+      {
+        title: 'Search the tool catalog',
+        description: copy.searchDescription,
+        query: copy.searchQuery,
+      },
+      (args) => handlers.searchTools(args),
+    );
+  }
 
   server.registerTool(
     'describe_tool',
@@ -172,6 +190,32 @@ export function registerCatalogTools(
         era,
         clientCanElicit(server),
       ),
+  );
+}
+
+/** One search tool (R33, R43): `{ query?, cursor? }`, read-only. */
+function registerSearchTool(
+  server: McpServer,
+  name: string,
+  copy: { title: string; description: string; query: string },
+  search: (args: { query?: string; cursor?: string }) => CallToolResult,
+): void {
+  server.registerTool(
+    name,
+    {
+      title: copy.title,
+      description: copy.description,
+      inputSchema: z.object({
+        query: z.string().optional().describe(copy.query),
+        cursor: z.string().optional().describe('nextCursor from a previous page.'),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    (args) =>
+      search({
+        ...(args.query !== undefined ? { query: args.query } : {}),
+        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+      }),
   );
 }
 

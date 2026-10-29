@@ -709,10 +709,26 @@ Interim gaps, until the follow-up PRs:
   `multi/facade.ts`);
 - `optional: true` is unsupported (fails the wrap; `optional: false` is
   accepted), and `introspectTimeoutMs` is not built (R47);
-- `catalog.globalSearch: false` is unsupported, and there are no
-  `search_<alias>` tools or box overviews yet (R43); the instructions carry
-  a minimal shelf (alias, host description, tool count) without the R44
-  fallback to the server's first sentence.
+- the R37 pointer in `discover_apis` still names only `search_tools`; it
+  is code-mode copy and lands with R45 (`searchToolsPhrase` in
+  `catalog/search.ts` names the served search tools for it).
+
+Tool boxes (2026-10-29, R43–R45): the `search_<alias>` tools, the box
+overviews (in the first page of an empty-query box search and as
+`projection://boxes/<alias>/overview.md` resources), `catalog.globalSearch`
+and the full R44 shelf are served. The view records whether the global
+search is on (`BoxedCatalog.globalSearch`), so every piece of copy that
+names a search tool — the unknown-name hint, the `describe_tool` /
+`call_tool` argument descriptions, the preamble, the facade API's errors —
+derives from the same flag and never names a tool that is not served; a
+qualified name whose box exists points at that box's own search tool. The
+server text a box surface shows is attributed by shape: the first sentence
+is a JSON string literal followed by `(server's words)`, so a quote in it
+cannot close the quotation and forge host copy, and the overview is an
+indented block under a library header (also a Markdown code block in the
+`.md` resource), so no line of it can pass for a tool line, a header or a
+shelf line. Its truncation marker is part of the overview text, so the
+structured `overview`, the text rendering and the resource agree.
 
 Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
 dispatching on the alias in front of N single-server facades — N blob

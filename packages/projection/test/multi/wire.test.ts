@@ -95,15 +95,17 @@ async function retryWrite(
 }
 
 describe('a multi-server facade over the 2026-07-28 wire', () => {
-  it('serves the catalog projection only: search_tools, describe_tool, call_tool', async () => {
+  it('serves the catalog projection only: one search per box, then search_tools, describe_tool, call_tool', async () => {
     const c = await connectModern(await wrap());
     const { tools } = await c.listTools();
-    expect(tools.map((tool) => tool.name).toSorted()).toEqual([
-      'call_tool',
-      'describe_tool',
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'search_fs',
+      'search_github',
       'search_tools',
+      'describe_tool',
+      'call_tool',
     ]);
-    expect(c.getInstructions()).toContain('- fs (3 tools)');
+    expect(c.getInstructions()).toContain(`- fs — "FS-SERVER-INSTRUCTIONS: read me first."`);
     // R45 is not served yet: describe_tool says types are unavailable here.
     const properties = tools.find((tool) => tool.name === 'describe_tool')?.inputSchema
       .properties as Record<string, { description?: string }> | undefined;
