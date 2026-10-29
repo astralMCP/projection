@@ -146,7 +146,7 @@ pnpm run build && PROJ_LIVE_BENCH=1 pnpm --filter @astral-mcp/harness exec vites
 
 ## Development
 
-Requires Node ≥ 22 and pnpm (via corepack).
+Requires Node ≥ 22.12 (CI tests 22 and 24) and pnpm (via corepack).
 
 ```bash
 pnpm install
