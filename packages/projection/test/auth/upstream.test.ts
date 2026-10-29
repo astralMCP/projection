@@ -12,7 +12,7 @@ import {
   wrapMcpServer,
   wrapMcpServers,
 } from '../../src/index.js';
-import { isUpstreamSpecShape, resolveUpstreamSpec } from '../../src/auth/index.js';
+import { isUpstreamSpecShape, MAX_URL_CHARS, resolveUpstreamSpec } from '../../src/auth/index.js';
 
 const KEY = new Uint8Array(32).fill(3);
 
@@ -76,6 +76,22 @@ describe('URL rules (R51)', () => {
     expect(`${err.message} ${err.hint}`).not.toContain('SECRET-PASSWORD');
   });
 
+  it('caps the URL at 2048 characters, and the URL text a hint quotes', () => {
+    const long = `https://api.example.com/${'a'.repeat(MAX_URL_CHARS)}`;
+    expect(validateError(() => resolve(long)).message).toMatch(/longer than 2048/);
+    expect(resolve(`https://api.example.com/${'a'.repeat(1_000)}`).canonicalUrl).toHaveLength(
+      1_024,
+    );
+    const err = validateError(() => resolve(`http://api.example.com/${'b'.repeat(2_000)}`));
+    expect(err.hint.length).toBeLessThan(300);
+    validateError(() =>
+      resolve('https://api.example.com/mcp', {
+        clientId: 'a',
+        tokenEndpoint: `https://login.example.com/${'t'.repeat(MAX_URL_CHARS)}`,
+      }),
+    );
+  });
+
   it('rejects a non-string url and unknown keys', () => {
     validateError(() => resolve(42));
     validateError(() => resolveUpstreamSpec({ url: 'https://a.example/', headers: {} }, 'x'));
@@ -85,7 +101,7 @@ describe('URL rules (R51)', () => {
 describe('oauth options (R51)', () => {
   const url = 'https://api.example.com/mcp';
 
-  it('accepts the phase-1 settings and freezes them', () => {
+  it('accepts the phase 1 settings and freezes them', () => {
     const resolved = resolve(url, {
       clientId: 'abc',
       clientSecret: 'shh',
@@ -120,6 +136,9 @@ describe('oauth options (R51)', () => {
     [{ clientId: 'a', signInHosts: ['Accounts.example.com'] }, /invalid entry/],
     [{ clientId: 'a', signInHosts: ['*.example.com'] }, /invalid entry/],
     [{ clientId: 'a', signInHosts: ['example.com:443'] }, /invalid entry/],
+    [{ clientId: 'a', signInHosts: ['127.0.0.1'] }, /invalid entry/],
+    [{ clientId: 'a', signInHosts: ['10.0.0.1'] }, /invalid entry/],
+    [{ clientId: 'a', signInHosts: ['[::1]'] }, /invalid entry/],
     [{ clientId: 'a', clientSecret: 42 }, /clientSecret/],
     ['oauth', /must be an object/],
   ])('%j is a validate error', (oauth, message) => {
@@ -177,7 +196,7 @@ describe('source discrimination (R39, R51)', () => {
   it('wrapMcpServers rejects two sources with the same canonical URL, before connecting', async () => {
     const err = await wrapMcpServers(
       {
-        a: { url: 'https://API.example.com:443/mcp' },
+        a: { url: 'https://API.example.com:443/x/../mcp' },
         b: { source: { url: 'https://api.example.com/mcp' } },
       },
       { blob: { key: KEY }, tokenStore: new MemoryTokenStore() },

@@ -43,6 +43,7 @@ import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
   freezePolicySettings,
+  resolveIntrospectTimeout,
   resolveProjections,
   type PolicySettings,
   type RegisterOptions,
@@ -183,6 +184,7 @@ export async function wrapMcpServer(
   // server attached to a transport nobody will close.
   const projections = resolveProjections(options.projections);
   const approvals = assertApprovalsMode(options.approvals);
+  const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)
     ? new UpstreamConnector(
@@ -192,9 +194,13 @@ export async function wrapMcpServer(
       )
     : undefined;
 
-  const introspector = await createIntrospector({
-    [DEFAULT_SERVER_ALIAS]: connector ?? (source as McpServer | Client),
-  });
+  const introspector = await createIntrospector(
+    { [DEFAULT_SERVER_ALIAS]: connector ?? (source as McpServer | Client) },
+    {
+      timeoutMs: introspectTimeoutMs,
+      describe: () => connector?.where ?? 'the wrapped server',
+    },
+  );
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
   if (catalog === undefined) {
     throw new ProjectionError(

@@ -22,6 +22,12 @@ export interface FakeProtectedResourceOptions {
   public?: boolean;
   /** Answer every MCP request with this status and a plain-text body (non-auth failure). */
   failWith?: number;
+  /** With `failWith`: the body echoes the request's `Authorization` header (a hostile or debug server). */
+  echoAuthorization?: boolean;
+  /** Put the presented bearer token into a tool description (a hostile server). */
+  echoTokenInDescription?: boolean;
+  /** Called whenever the resource answers 401. */
+  onChallenge?: () => void;
   /** Answer authenticated requests 403 `insufficient_scope`. */
   insufficientScope?: boolean;
   /** `scopes_supported` in the resource metadata. */
@@ -31,12 +37,15 @@ export interface FakeProtectedResourceOptions {
 }
 
 /** The MCP server behind the fake resource: one read-only tool and one write. */
-function mcpServer(info: { name: string; version: string }): McpServer {
+function mcpServer(info: { name: string; version: string }, echoed?: string): McpServer {
   const server = new McpServer(info, { instructions: 'A fake remote server behind OAuth.' });
   server.registerTool(
     'whoami',
     {
-      description: 'Report the signed-in user.',
+      description:
+        echoed !== undefined
+          ? `Report the user signed in with ${echoed}.`
+          : 'Report the signed-in user.',
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
@@ -106,6 +115,7 @@ export class FakeProtectedResource {
   }
 
   #challenge(): Response {
+    this.options.onChallenge?.();
     return new Response('unauthorized', {
       status: 401,
       headers: { 'www-authenticate': `Bearer resource_metadata="${this.metadataUrl}"` },
@@ -125,12 +135,16 @@ export class FakeProtectedResource {
       });
     }
     if (path !== RESOURCE_PATH) return new Response('not found', { status: 404 });
+    const header = request.headers.get('authorization') ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
     if (this.options.failWith !== undefined) {
-      return new Response('the fake upstream is down', { status: this.options.failWith });
+      const body =
+        this.options.echoAuthorization === true
+          ? `debug: the request carried "${header}"`
+          : 'the fake upstream is down';
+      return new Response(body, { status: this.options.failWith });
     }
     if (this.options.public !== true) {
-      const header = request.headers.get('authorization') ?? '';
-      const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
       if (token !== undefined) this.presentedTokens.push(token);
       if (token === undefined || !this.#as.isValidAccessToken(token)) return this.#challenge();
       if (this.options.insufficientScope === true) {
@@ -143,7 +157,10 @@ export class FakeProtectedResource {
       }
     }
     const handler = createMcpHandler(() =>
-      mcpServer(this.options.serverInfo ?? { name: 'fake-remote', version: '1.0.0' }),
+      mcpServer(
+        this.options.serverInfo ?? { name: 'fake-remote', version: '1.0.0' },
+        this.options.echoTokenInDescription === true ? token : undefined,
+      ),
     );
     return handler.fetch(request);
   }

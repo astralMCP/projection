@@ -1,29 +1,27 @@
 /**
- * The token store (PRD R58, R59, §13 "Token store"): keys, compare-and-
- * delete, the keyring adapter against a fake `@napi-rs/keyring` (CI never
- * touches the real OS store), the in-memory fallback with exactly one
- * warning, the 5-second timeout, and fixed-copy failures. One opt-in test
- * (`PROJ_LIVE_KEYCHAIN=1`) round-trips a ≥4 KB record through the real OS
- * store and deletes it.
+ * The token store (PRD R58, R59, §13 "Token store"): keys, Projection's
+ * record serialization, compare-and-delete over opaque strings, the keyring
+ * adapter against a fake `@napi-rs/keyring` (CI never touches the real OS
+ * store), the in-memory fallback with exactly one warning, the 5-second
+ * timeout, per-key serialization, late writes, deletes after the fallback,
+ * and fixed-copy failures. One opt-in test (`PROJ_LIVE_KEYCHAIN=1`)
+ * round-trips a ≥4 KB record through the real OS store and deletes it.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
+  decodeTokenRecord,
+  encodeTokenRecord,
   FALLBACK_WARNING,
   KEYRING_SERVICE,
   KEYRING_TIMEOUT_MS,
   keyringAccount,
   KeyringTokenStore,
   MemoryTokenStore,
-  sameTokenRecord,
   tokenStoreKey,
+  TokenStoreError,
   type TokenRecord,
 } from '../../src/auth/index.js';
-import {
-  TokenStoreError,
-  parseTokenRecord,
-  serializeTokenRecord,
-} from '../../src/auth/token-store.js';
 import { createFakeKeyring, LIBRARY_ERROR_TEXT } from './fakes/keyring.js';
 import { dump } from './leak-guard.js';
 
@@ -35,6 +33,8 @@ const RECORD: TokenRecord = {
   scope: 'repo',
   issuer: 'https://login.example.com',
 };
+const VALUE = encodeTokenRecord(RECORD);
+const NEWER = encodeTokenRecord({ ...RECORD, access_token: 'AT-NEWER-SECRET' });
 
 function keyringStore(mode: Parameters<typeof createFakeKeyring>[0] = 'ok', timeoutMs = 50) {
   const fake = createFakeKeyring(mode);
@@ -47,48 +47,68 @@ function keyringStore(mode: Parameters<typeof createFakeKeyring>[0] = 'ok', time
   return { fake, store, warnings };
 }
 
+/** The one OS entry the fake holds, if any. */
+function osEntry(fake: ReturnType<typeof createFakeKeyring>): string | undefined {
+  return [...fake.items.values()][0];
+}
+
+async function until(check: () => boolean, ms = 1_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('condition not reached');
+    // eslint-disable-next-line no-await-in-loop -- polling a background effect
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
 describe('keys and records (R59, R62)', () => {
-  it('keys by canonical URL, client id and the local principal, injectively', () => {
+  it('keys a token set by kind, canonical URL, client id and the local principal, injectively', () => {
     expect(URL_KEY).toBe(
-      JSON.stringify(['tokens', 'https://api.example.com/mcp?tenant=acme', 'client-1', 'local']),
+      `tokens:${JSON.stringify(['https://api.example.com/mcp?tenant=acme', 'client-1', 'local'])}`,
     );
+    expect(URL_KEY.startsWith('tokens:')).toBe(true);
     expect(tokenStoreKey('a","b', 'c')).not.toBe(tokenStoreKey('a', 'b","c'));
   });
 
   it('serializes records as ASCII JSON without unknown fields (no id_token)', () => {
-    const text = serializeTokenRecord({
+    const text = encodeTokenRecord({
       ...RECORD,
       scope: 'répo',
       id_token: 'ID-TOKEN',
     } as TokenRecord);
     expect(text).toMatch(/^[\x20-\x7e]*$/);
     expect(text).not.toContain('ID-TOKEN');
-    expect(parseTokenRecord(text)?.scope).toBe('répo');
-    expect(parseTokenRecord('not json')).toBeUndefined();
-    expect(parseTokenRecord('{"access_token":""}')).toBeUndefined();
+    expect(decodeTokenRecord(text)?.scope).toBe('répo');
+    expect(decodeTokenRecord('not json')).toBeUndefined();
+    expect(decodeTokenRecord('{"access_token":""}')).toBeUndefined();
+    expect(decodeTokenRecord(42)).toBeUndefined();
+    expect(decodeTokenRecord(undefined)).toBeUndefined();
   });
 });
 
 describe('MemoryTokenStore compare-and-delete (R58)', () => {
-  it('deletes unconditionally without expected, only on a match with it', async () => {
+  it('stores opaque strings; deletes unconditionally without expected, only on an exact match with it', async () => {
     const store = new MemoryTokenStore();
-    await store.set(URL_KEY, RECORD);
-    expect(await store.delete(URL_KEY, { ...RECORD, access_token: 'OTHER' })).toBe(false);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
-    expect(await store.delete(URL_KEY, { ...RECORD })).toBe(true);
+    await store.set(URL_KEY, VALUE);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
+    expect(await store.delete(URL_KEY, NEWER)).toBe(false);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
+    expect(await store.delete(URL_KEY, VALUE)).toBe(true);
     expect(await store.get(URL_KEY)).toBeUndefined();
     expect(await store.delete(URL_KEY)).toBe(false);
-    await store.set(URL_KEY, RECORD);
+    await store.set(URL_KEY, VALUE);
     expect(await store.delete(URL_KEY)).toBe(true);
-    expect(sameTokenRecord(RECORD, { ...RECORD })).toBe(true);
+    await expect(store.set(URL_KEY, RECORD as unknown as string)).rejects.toBeInstanceOf(
+      TokenStoreError,
+    );
   });
 });
 
 describe('KeyringTokenStore (R59)', () => {
   it('files entries under the service with a SHA-256 account: no URL in the metadata', async () => {
     const { fake, store, warnings } = keyringStore();
-    await store.set(URL_KEY, RECORD);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
+    await store.set(URL_KEY, VALUE);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
     expect(fake.entries.length).toBeGreaterThan(0);
     for (const entry of fake.entries) {
       expect(entry.service).toBe(KEYRING_SERVICE);
@@ -101,21 +121,21 @@ describe('KeyringTokenStore (R59)', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('round-trips a large record and reads back every write', async () => {
+  it('round-trips a large value and reads back every write', async () => {
     const { fake, store } = keyringStore();
-    const large: TokenRecord = { ...RECORD, access_token: `AT-${'x'.repeat(5000)}` };
+    const large = encodeTokenRecord({ ...RECORD, access_token: `AT-${'x'.repeat(5000)}` });
     await store.set(URL_KEY, large);
-    expect(await store.get(URL_KEY)).toEqual(large);
+    expect(await store.get(URL_KEY)).toBe(large);
     // set, then the read-back get.
     expect(fake.ops.slice(0, 2).map((op) => op.op)).toEqual(['set', 'get']);
   });
 
-  it('compare-and-deletes against the stored record', async () => {
+  it('compare-and-deletes against the stored string', async () => {
     const { store } = keyringStore();
-    await store.set(URL_KEY, RECORD);
-    expect(await store.delete(URL_KEY, { ...RECORD, access_token: 'NEWER' })).toBe(false);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
-    expect(await store.delete(URL_KEY, RECORD)).toBe(true);
+    await store.set(URL_KEY, VALUE);
+    expect(await store.delete(URL_KEY, NEWER)).toBe(false);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
+    expect(await store.delete(URL_KEY, VALUE)).toBe(true);
     expect(await store.get(URL_KEY)).toBeUndefined();
   });
 
@@ -126,17 +146,18 @@ describe('KeyringTokenStore (R59)', () => {
         Promise.reject(new Error(`Cannot find module '@napi-rs/keyring' ${LIBRARY_ERROR_TEXT}`)),
       warn: (message) => warnings.push(message),
     });
-    await store.set(URL_KEY, RECORD);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
-    await store.set(tokenStoreKey('https://b.example/', 'c'), RECORD);
+    await store.set(URL_KEY, VALUE);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
+    await store.set(tokenStoreKey('https://b.example/', 'c'), VALUE);
+    expect(await store.delete(URL_KEY)).toBe(true);
     expect(warnings).toEqual([FALLBACK_WARNING]);
     expect(store.fallenBack).toBe(true);
   });
 
   it('falls back when the store throws; the warning carries no library text or secret', async () => {
     const { store, warnings } = keyringStore('throw');
-    await store.set(URL_KEY, RECORD);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
+    await store.set(URL_KEY, VALUE);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).not.toContain(LIBRARY_ERROR_TEXT);
     expect(warnings[0]).not.toContain('SECRET');
@@ -144,18 +165,18 @@ describe('KeyringTokenStore (R59)', () => {
 
   it('a write that reads back differently is a store failure (verified writes)', async () => {
     const { store, warnings } = keyringStore('corrupt-readback');
-    await store.set(URL_KEY, RECORD);
+    await store.set(URL_KEY, VALUE);
     expect(store.fallenBack).toBe(true);
     expect(warnings).toHaveLength(1);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
   });
 
   it('a hung operation times out and falls back', async () => {
     const { store, warnings } = keyringStore('hang', 20);
     const started = Date.now();
-    await store.set(URL_KEY, RECORD);
+    await store.set(URL_KEY, VALUE);
     expect(Date.now() - started).toBeLessThan(2_000);
-    expect(await store.get(URL_KEY)).toEqual(RECORD);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
     expect(warnings).toHaveLength(1);
   });
 
@@ -176,12 +197,109 @@ describe('KeyringTokenStore (R59)', () => {
 
   it('a failing delete throws fixed copy (a sign-out must not silently keep the token)', async () => {
     const { fake, store } = keyringStore();
-    await store.set(URL_KEY, RECORD);
+    await store.set(URL_KEY, VALUE);
     fake.mode = 'throw-on-delete';
     const err = await store.delete(URL_KEY).catch((caught: unknown) => caught);
     expect(err).toBeInstanceOf(TokenStoreError);
     expect(dump(err)).not.toContain(LIBRARY_ERROR_TEXT);
     expect(store.fallenBack).toBe(true);
+  });
+});
+
+describe('KeyringTokenStore after the fallback (R59)', () => {
+  it('a delete still removes the OS entry left behind by a transient failure (sign-out)', async () => {
+    const { fake, store } = keyringStore();
+    await store.set(URL_KEY, VALUE);
+    fake.mode = 'throw';
+    await store.get(URL_KEY); // e.g. a keychain prompt dismissed once
+    expect(store.fallenBack).toBe(true);
+    fake.mode = 'ok';
+    expect(await store.delete(URL_KEY)).toBe(true);
+    expect(fake.items.size).toBe(0);
+  });
+
+  it('a delete that cannot reach the OS entry throws fixed copy', async () => {
+    const { fake, store } = keyringStore();
+    await store.set(URL_KEY, VALUE);
+    fake.mode = 'throw';
+    await store.get(URL_KEY);
+    const err = await store.delete(URL_KEY).catch((caught: unknown) => caught);
+    expect(err).toBeInstanceOf(TokenStoreError);
+    expect(dump(err)).not.toContain(LIBRARY_ERROR_TEXT);
+    expect(fake.items.size).toBe(1);
+  });
+
+  it('a rotated value is written behind to the OS entry, so it never keeps a dead refresh token', async () => {
+    const { fake, store } = keyringStore();
+    await store.set(URL_KEY, VALUE);
+    fake.mode = 'throw';
+    await store.get(URL_KEY);
+    fake.mode = 'ok';
+    await store.set(URL_KEY, NEWER);
+    expect(await store.get(URL_KEY)).toBe(NEWER);
+    await until(() => osEntry(fake) === NEWER);
+  });
+
+  it('a compare-and-delete of a key never seen in the keyring stays in memory', async () => {
+    const { fake, store } = keyringStore('throw');
+    await store.set(URL_KEY, VALUE); // falls back at once
+    fake.mode = 'ok';
+    const opsBefore = fake.ops.length;
+    expect(await store.delete(URL_KEY, VALUE)).toBe(true);
+    expect(fake.ops.length).toBe(opsBefore);
+  });
+});
+
+describe('KeyringTokenStore ordering and late writes (R58, R59)', () => {
+  it('runs operations on one key one at a time, in order', async () => {
+    const { fake, store } = keyringStore('ok', 1_000);
+    fake.holdWrites = true;
+    const first = store.set(URL_KEY, VALUE);
+    const second = store.set(URL_KEY, NEWER);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The second write has not started: it waits for the first to settle.
+    expect(fake.ops.filter((op) => op.op === 'set')).toHaveLength(1);
+    fake.holdWrites = false;
+    fake.releaseWrites();
+    await Promise.all([first, second]);
+    expect(osEntry(fake)).toBe(NEWER);
+    expect(store.fallenBack).toBe(false);
+  });
+
+  it('a timed-out write that lands later does not leave its stale value in the OS store', async () => {
+    const fake = createFakeKeyring('ok');
+    const slow = new KeyringTokenStore({
+      load: () => Promise.resolve(fake.module),
+      timeoutMs: 20,
+      warn: () => undefined,
+    });
+    const other = new KeyringTokenStore({
+      load: () => Promise.resolve(fake.module),
+      warn: () => undefined,
+    });
+    const stale = encodeTokenRecord({ ...RECORD, access_token: 'AT-SLOW-SECRET' });
+    fake.holdWrites = true;
+    await slow.set(URL_KEY, stale); // times out: this process keeps it in memory
+    expect(slow.fallenBack).toBe(true);
+    fake.holdWrites = false;
+    await other.set(URL_KEY, NEWER); // another process stores a newer record
+    fake.releaseWrites(); // the slow native write lands after it
+    await until(() => osEntry(fake) !== stale);
+    expect(osEntry(fake) ?? '').not.toContain('SLOW');
+  });
+
+  it('a late write is replaced by the newer value this process holds', async () => {
+    const { fake, store } = keyringStore('ok', 20);
+    await store.set(URL_KEY, VALUE); // seen in the keyring
+    fake.holdWrites = true;
+    const stale = encodeTokenRecord({ ...RECORD, access_token: 'AT-SLOW-SECRET' });
+    await store.set(URL_KEY, stale); // times out
+    fake.holdWrites = false;
+    await store.set(URL_KEY, NEWER); // after the fallback: memory, and written behind
+    fake.releaseWrites();
+    await until(() => osEntry(fake) === NEWER);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(osEntry(fake)).toBe(NEWER);
   });
 });
 
@@ -195,11 +313,11 @@ describe.skipIf(process.env['PROJ_LIVE_KEYCHAIN'] !== '1')(
         `https://live-keychain-test.invalid/${Date.now()}`,
         'projection-live-test',
       );
-      const record: TokenRecord = { ...RECORD, access_token: `AT-${'y'.repeat(4200)}` };
+      const value = encodeTokenRecord({ ...RECORD, access_token: `AT-${'y'.repeat(4200)}` });
       try {
-        await store.set(key, record);
+        await store.set(key, value);
         expect(warnings).toEqual([]);
-        expect(await store.get(key)).toEqual(record);
+        expect(await store.get(key)).toBe(value);
       } finally {
         expect(await store.delete(key)).toBe(true);
       }

@@ -17,12 +17,12 @@ import {
   type TokenStore,
   type UpstreamSpec,
 } from '../auth/index.js';
-import { ProjectionError } from '../errors.js';
+import { invalidConfig as invalid, ProjectionError } from '../errors.js';
 import type { WrapOptions } from '../facade/options.js';
 import type { ServerSource } from '../introspector/index.js';
 import { assertApprovalsMode } from '../policy/index.js';
-import { capLength, neutralizeControlChars } from '../text-safety.js';
-import { DEFAULT_SERVER_ALIAS, isRecord, type ApprovalsMode } from '../types.js';
+import { capLength, neutralizeControlChars, quoted } from '../text-safety.js';
+import { DEFAULT_SERVER_ALIAS, isPlainObject, isRecord, type ApprovalsMode } from '../types.js';
 import { splitQualified } from '../catalog/boxes.js';
 
 /** One source with its per-box settings (R39). */
@@ -101,21 +101,6 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'approvals',
   'optional',
 ]);
-
-function invalid(message: string, hint: string): ProjectionError {
-  return new ProjectionError('validate', message, { hint });
-}
-
-/** An integrator-supplied key or alias, quoted and bounded for an error message. */
-function quoted(text: string): string {
-  return JSON.stringify(capLength(neutralizeControlChars(text), 64));
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null) return false;
-  const proto: unknown = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
 
 /**
  * A wrapped-server source as the introspector takes it: an `McpServer` or

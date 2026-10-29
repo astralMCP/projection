@@ -105,6 +105,9 @@ const facade = await wrapMcpServer(myServer, {
 
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
+  // Bound on connecting to the server and reading its tools at wrap time;
+  // past it the wrap fails with a 'protocol' error. Default 30 000 ms.
+  introspectTimeoutMs: 30_000,
   // Advertised identity; default { name: 'projection-default', version: '0.1.0' }.
   serverInfo: { name: 'acme-code-mode', version: '2.0.0' },
 });
@@ -330,18 +333,24 @@ server set, alias mapping or server version, nor across facade kinds.
 This preview serves the catalog projection only, which therefore cannot be
 turned off (`projections.catalog: false` fails the wrap). Not yet available:
 code mode (`projections.codeMode: true` fails the wrap, and `describe_tool`
-returns no TypeScript types), `optional: true` sources, and
-`introspectTimeoutMs`.
+returns no TypeScript types) and `optional: true` sources. Wrapping is
+fail-closed: if any source cannot be connected and introspected within
+`introspectTimeoutMs` (default 30 000 ms per source), the wrap fails with a
+`protocol` error naming the alias, and every connection Projection opened is
+closed — a `Client` you passed in stays open.
 
 ## Upstream authentication
 
 > **Status.** This is the foundation of just-in-time upstream sign-in (PRD
-> §6.10, phase 1A): wrapping a remote server by URL, the token store,
-> stored-token use and refresh, and `signOut`. **Just-in-time sign-in** —
-> a box that comes up locked and asks the user to sign in (device flow) the
-> first time a request needs it — **comes next**. Until it lands, a server
-> that needs a token Projection does not have fails the wrap with an `auth`
-> error.
+> §6.10, phase 1, part A): wrapping a remote server by URL, the token store,
+> stored-token use and refresh, and `signOut`. **Just-in-time sign-in** — a
+> box that comes up locked and asks the user to sign in (device flow) the
+> first time a request needs it — is part B and is not supported in this
+> version. Nothing in part A writes an initial token: with the default
+> store, a server wrapped by URL works if it is public (needs no token), or
+> if you supply a `tokenStore` already holding a token for it (see "The
+> token store"). A server that needs a token Projection does not have fails
+> the wrap with an `auth` error.
 
 **Never put a token in an MCP configuration file** (or an environment
 variable, argv, or the source URL). Those files sit in plaintext, get
@@ -377,8 +386,8 @@ OAuth client provider on it, owns the connection and closes it in
 `close()`.
 
 - **URL rules.** `https:`, except `http:` on `127.0.0.1`, `[::1]` and
-  `localhost`. No credentials before the host and no `#fragment` (both
-  `validate` errors). The URL is canonicalized — scheme and host lowercased,
+  `localhost`. No credentials before the host, no `#fragment`, and at most
+  2048 characters (all `validate` errors). The URL is canonicalized — scheme and host lowercased,
   default port dropped, an empty path written as `/` (`/mcp` and `/mcp/`
   stay different), the query kept, every `@` in the path and query written
   `%40` — and two sources with the same canonical URL are a `validate`
@@ -388,9 +397,11 @@ OAuth client provider on it, owns the connection and closes it in
   authorization server — Projection ships no OAuth app (for GitHub: an OAuth
   app with "Enable Device Flow" ticked; no secret needed). `clientSecret` is
   accepted but discouraged. `scopes` replaces the scope selection from
-  metadata — set it explicitly. `signInHosts`, `tokenEndpoint` and
+  metadata — set it explicitly. `signInHosts` (hostnames only — no scheme,
+  port, wildcard or IP address), `tokenEndpoint` and
   `deviceAuthorizationEndpoint` are validated now and used by the sign-in
-  flow that comes next. Unknown keys, and `clientMetadataUrl` /
+  flow of part B; a refresh today uses the token endpoint the server's
+  metadata names, not `tokenEndpoint`. Unknown keys, and `clientMetadataUrl` /
   `authorizationEndpoint` (later phase), are `validate` errors. A server that
   needs no authorization works without `oauth`.
 - **Identity.** A URL source's blob identity is `url:<canonical url>` — on
@@ -400,16 +411,37 @@ OAuth client provider on it, owns the connection and closes it in
   call is validated against the catalog the instance holds.
 - **Stored tokens.** When the store holds a token for the source, every
   request carries it (the store is re-read per request, so a token another
-  process stored or refreshed is picked up). On a 401 with a refresh token,
-  the SDK refreshes and the rotated set is stored; a definitive refresh
-  failure (`invalid_grant`) deletes the stored record only if it is still
-  the one that failed (compare-and-delete), so two processes sharing an
-  entry don't clobber each other.
-- **Failures.** A 401 with no usable token, a missing `oauth.clientId`, an
-  `insufficient_scope` answer, or an authorization-server refusal fails the
-  wrap with an `auth` error. It carries library copy and at most the OAuth
-  `error` code — never SDK text, server text or token-store errors. Any
-  other connection failure fails the wrap as it does for any source.
+  process stored or refreshed is picked up). A token past its `expires_at`
+  is refreshed before it is sent; on a 401 with a refresh token, the SDK
+  refreshes — once, however many requests failed at the same moment — and
+  the rotated set is stored. A definitive refresh failure (`invalid_grant`)
+  deletes the stored record only if it is still the one that failed
+  (compare-and-delete), so two processes sharing an entry don't clobber
+  each other.
+- **Where the token goes.** Only to the configured URL: a redirect to any
+  other path or origin is refused (a `protocol` error), never followed with
+  the token. Every authorization-server request of an `https:` source is
+  `https:` too.
+- **Failures at wrap time.** A 401 with no usable token, a missing
+  `oauth.clientId`, an `insufficient_scope` answer, a refresh that failed
+  (temporarily — the stored sign-in is kept), a rejected OAuth client
+  (`invalid_client`: check `oauth.clientId` / `oauth.clientSecret`), or an
+  authorization-server refusal fails the wrap with an `auth` error. It
+  carries library copy and at most the OAuth `error` code — never SDK text,
+  server text or token-store errors. Any other connection failure fails the
+  wrap with a `protocol` error, whose text has every token the connection
+  presented replaced with `[redacted]`.
+- **Failures at call time.** The same auth failures after the wrap — a
+  token revoked mid-session that cannot refresh, for example — surface in
+  the `auth` phase (`call_tool`'s `isError` result with `phase: "auth"`, a
+  machine's `TOOL_ERROR`), not as an `upstream` error. Other failures are
+  `upstream` errors as for any server, again with tokens redacted from
+  anything the server echoes — its error text, tool results and tool
+  descriptions.
+- **Code mode only.** A facade over a URL with `projections: { catalog:
+false }` works today; once locked boxes land it becomes a `validate` error
+  (PRD R54), because nothing in code mode would reach a locked box. Keep the
+  catalog projection on for URL sources.
 
 ### The token store
 
@@ -419,12 +451,19 @@ anything the model sees.
 
 ```ts
 interface TokenStore {
-  get(key: string): Promise<TokenRecord | undefined>;
-  set(key: string, record: TokenRecord): Promise<void>;
-  // With `expected`: delete only if the stored record still equals it.
-  delete(key: string, expected?: TokenRecord): Promise<boolean>;
+  get(key: string): Promise<string | undefined>;
+  set(key: string, value: string): Promise<void>;
+  // With `expected`: delete only if the stored value is still exactly it.
+  delete(key: string, expected?: string): Promise<boolean>;
 }
 ```
+
+Keys and values are opaque strings: store them and hand them back byte for
+byte. A key is `<kind>:<JSON array>` — today `tokens:["<canonical URL>",
+"<client id>","local"]`; `registration:` is reserved for a later phase — so
+a store can route or label entries by the kind before the first `:`. A
+`tokens:` value is Projection's ASCII-JSON serialization of the token set;
+treat it as a secret and never parse, log or display it.
 
 - **Default: the OS credential store** — macOS Keychain, Linux Secret
   Service, Windows Credential Manager — through `@napi-rs/keyring`, an
@@ -437,15 +476,18 @@ interface TokenStore {
 - **Fallback.** If the module is missing or fails to load, or the store is
   unavailable, locked or hung, Projection keeps tokens in memory for the
   rest of the process and prints one warning to stderr: users sign in again
-  after a restart.
+  after a restart. `signOut` still removes the OS entry (or fails with an
+  `auth` error), and a refreshed token is still written to an entry the
+  process has seen, so the OS store never keeps a dead refresh token.
 - **Threat model.** The OS store protects tokens against other OS users and
   disk theft. It does not protect them from code running as the same user:
   any process of that user (an npm `postinstall` script, another MCP server)
   can read the item. That is true of every OS-store approach.
 - **Your own store.** `WrapOptions.tokenStore` replaces the default — for a
   hosted single-user deployment, or a shared store behind a load balancer.
-  `MemoryTokenStore` (exported) keeps tokens in memory, and `sameTokenRecord`
-  is the comparison compare-and-delete uses. Never log a record.
+  `MemoryTokenStore` (exported) keeps values in memory. Compare-and-delete
+  compares the exact strings; it need not be atomic across processes (the
+  default store's is read, compare, delete). Never log a value.
 
 ### Signing out
 

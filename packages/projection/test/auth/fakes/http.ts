@@ -62,7 +62,11 @@ export async function startFakeHttpServer(handle: FetchHandler): Promise<FakeHtt
         for await (const chunk of response.body) res.write(chunk);
       }
       res.end();
-    })();
+    })().catch(() => {
+      // A client that went away mid-response (an aborted request, a closed
+      // connection): drop the socket rather than leave a rejection unhandled.
+      res.destroy();
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

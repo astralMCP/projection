@@ -9,8 +9,9 @@
  * quoted only after it parsed without userinfo.
  */
 
-import { ProjectionError } from '../errors.js';
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { invalidConfig as invalid } from '../errors.js';
+import { capLength, quoted } from '../text-safety.js';
+import { isPlainObject } from '../types.js';
 
 /**
  * OAuth settings of an {@link UpstreamSpec} (R51, R52, R53, R61). Phase 1
@@ -28,7 +29,7 @@ export interface UpstreamOAuthOptions {
   scopes?: string[];
   /**
    * Extra hosts the user may be sent to for sign-in, beyond the
-   * authorization server's own (R61). Bare lowercase ASCII hostnames.
+   * authorization server's own (R61). Bare lowercase ASCII hostnames, not IP addresses.
    */
   signInHosts?: string[];
   /** Token endpoint override for servers with incomplete metadata (R53). `https:` only. */
@@ -80,8 +81,8 @@ const OAUTH_KEYS: ReadonlySet<string> = new Set([
   'tokenEndpoint',
   'deviceAuthorizationEndpoint',
 ]);
-/** Settings R51 defines that phase 1 does not use yet: refused rather than ignored. */
-const PHASE_1B_OAUTH_KEYS: ReadonlySet<string> = new Set([
+/** Settings R51 defines for phase 1b, which this version does not use: refused rather than ignored. */
+const LATER_PHASE_OAUTH_KEYS: ReadonlySet<string> = new Set([
   'clientMetadataUrl',
   'authorizationEndpoint',
 ]);
@@ -95,19 +96,11 @@ const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
 const HOSTNAME =
   /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
-function invalid(message: string, hint: string): ProjectionError {
-  return new ProjectionError('validate', message, { hint });
-}
+/** Longest source or endpoint URL accepted (R51): longer is a `validate` error. */
+export const MAX_URL_CHARS = 2048;
 
-function quoted(text: string): string {
-  return JSON.stringify(capLength(neutralizeControlChars(text), 64));
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null) return false;
-  const proto: unknown = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
+/** Longest URL text a hint quotes. */
+const HINT_URL_CHARS = 200;
 
 /**
  * R51: a value is an {@link UpstreamSpec} when it is a plain object with an
@@ -154,6 +147,12 @@ function parseSourceUrl(raw: unknown, label: string): URL {
     );
   }
   const text = raw instanceof URL ? raw.href : raw;
+  if (text.length > MAX_URL_CHARS) {
+    throw invalid(
+      `${label}: "url" is longer than ${MAX_URL_CHARS} characters`,
+      'Pass the server endpoint URL itself; Projection treats the URL as configuration, not as a place for data.',
+    );
+  }
   let url: URL;
   try {
     url = new URL(text);
@@ -181,7 +180,7 @@ function parseSourceUrl(raw: unknown, label: string): URL {
     if (!isLoopbackHost(url.hostname)) {
       throw invalid(
         `${label}: "url" must use https: (http: is allowed only on 127.0.0.1, [::1] and localhost)`,
-        `Use https://${url.host}${url.pathname}.`,
+        `Use ${capLength(`https://${url.host}${url.pathname}`, HINT_URL_CHARS)}.`,
       );
     }
   } else if (url.protocol !== 'https:') {
@@ -204,6 +203,12 @@ function parseEndpoint(
     throw invalid(
       `${label}: oauth.${setting} must be a string URL`,
       `Pass an https: URL for oauth.${setting}, or omit it.`,
+    );
+  }
+  if (raw.length > MAX_URL_CHARS) {
+    throw invalid(
+      `${label}: oauth.${setting} is longer than ${MAX_URL_CHARS} characters`,
+      `Pass the endpoint URL itself for oauth.${setting}.`,
     );
   }
   let url: URL;
@@ -253,8 +258,16 @@ function parseStringList(
   return items;
 }
 
+/**
+ * A `signInHosts` entry (R51, R61): a bare lowercase ASCII hostname, never
+ * an IP address. An IP literal names no identity provider, and a last label
+ * of digits is what makes the WHATWG parser read a host as IPv4, so such an
+ * entry (`127.0.0.1`, `10.0.0.1`) is refused; IPv6 literals fail the
+ * hostname grammar already.
+ */
 function isBareHostname(host: string): boolean {
   if (!HOSTNAME.test(host)) return false;
+  if (/^[0-9]+$/.test(host.slice(host.lastIndexOf('.') + 1))) return false;
   try {
     return new URL(`https://${host}/`).hostname === host;
   } catch {
@@ -270,7 +283,7 @@ function resolveOAuth(raw: unknown, label: string, sourceIsLoopback: boolean): R
     );
   }
   for (const key of Object.keys(raw)) {
-    if (PHASE_1B_OAUTH_KEYS.has(key)) {
+    if (LATER_PHASE_OAUTH_KEYS.has(key)) {
       throw invalid(
         `${label}: oauth.${key} is not supported yet`,
         "Register an OAuth client with the server's authorization server (with the device flow enabled) and set oauth.clientId.",
@@ -327,7 +340,7 @@ function resolveOAuth(raw: unknown, label: string, sourceIsLoopback: boolean): R
         'signInHosts',
         label,
         isBareHostname,
-        'Each entry is a bare lowercase hostname (punycode for internationalized names), with no scheme, port, path or wildcard, e.g. "accounts.example.com".',
+        'Each entry is a bare lowercase hostname (punycode for internationalized names), with no scheme, port, path, wildcard or IP address, e.g. "accounts.example.com".',
       ),
     );
   }

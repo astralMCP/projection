@@ -32,6 +32,14 @@ export interface FakeKeyring {
   /** Every operation performed. */
   ops: { op: 'get' | 'set' | 'delete'; account: string }[];
   mode: FakeKeyringMode;
+  /**
+   * While true, writes ignore their abort signal and land only when
+   * {@link FakeKeyring.releaseWrites} is called (a native call that times
+   * out on the caller's side but completes later).
+   */
+  holdWrites: boolean;
+  /** Land every held write, in order. */
+  releaseWrites(): void;
 }
 
 const failure = (): Promise<never> => Promise.reject(new Error(LIBRARY_ERROR_TEXT));
@@ -44,7 +52,12 @@ export function createFakeKeyring(mode: FakeKeyringMode = 'ok'): FakeKeyring {
     ops: [],
     mode,
     module: undefined as unknown as KeyringModule,
+    holdWrites: false,
+    releaseWrites: () => {
+      for (const release of held.splice(0)) release();
+    },
   };
+  const held: (() => void)[] = [];
   class AsyncEntry implements KeyringEntry {
     readonly #slot: string;
     readonly #account: string;
@@ -66,6 +79,14 @@ export function createFakeKeyring(mode: FakeKeyringMode = 'ok'): FakeKeyring {
       fake.ops.push({ op: 'set', account: this.#account });
       if (fake.mode === 'throw') return failure();
       if (fake.mode === 'hang') return hang();
+      if (fake.holdWrites) {
+        return new Promise<void>((resolve) => {
+          held.push(() => {
+            fake.items.set(this.#slot, password);
+            resolve();
+          });
+        });
+      }
       fake.items.set(this.#slot, password);
       return Promise.resolve();
     }

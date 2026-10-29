@@ -43,6 +43,10 @@ export function captureOutput(): CapturedOutput {
       lines.push(`stderr: ${String(chunk)}`);
       return true;
     }),
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(`stdout: ${String(chunk)}`);
+      return true;
+    }),
   ];
   return {
     lines,

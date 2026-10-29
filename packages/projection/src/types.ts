@@ -98,6 +98,13 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A plain object (prototype `Object.prototype` or `null`): what a configuration value must be. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
 /** Executes a tool call against the wrapped server. Implemented by the introspector. */
 export interface ToolExecutor {
   callTool(
@@ -108,7 +115,17 @@ export interface ToolExecutor {
 }
 
 export type ToolCallOutcome =
-  { ok: true; result: unknown } | { ok: false; error: { message: string; detail?: unknown } };
+  | { ok: true; result: unknown }
+  | {
+      ok: false;
+      error: { message: string; detail?: unknown };
+      /**
+       * Set when the call failed because upstream authorization failed (a
+       * source given by URL, R51): `call_tool` reports it in the R25 `auth`
+       * phase with this library-copy hint, not as an `upstream` failure.
+       */
+      auth?: { hint: string };
+    };
 
 // ---------------------------------------------------------------------------
 // Policy engine (PRD R14)

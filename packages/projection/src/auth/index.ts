@@ -1,14 +1,15 @@
 /**
  * Upstream auth (PRD §6.10, §7): sources given by URL, Projection's OAuth
- * client provider, and the token store. Phase 1A: wrap by URL, use and
- * refresh stored tokens, `signOut`; just-in-time sign-in (locked boxes, the
- * device flow) is phase 1B.
+ * client provider, and the token store. Phase 1, part A: wrap by URL, use
+ * and refresh stored tokens, `signOut`; just-in-time sign-in (locked boxes,
+ * the device flow) is phase 1, part B.
  */
 
 import { ProjectionError } from '../errors.js';
 import { defaultTokenStore, isTokenStore, type TokenStore } from './token-store.js';
 
 export {
+  MAX_URL_CHARS,
   canonicalizeUrl,
   isLoopbackHost,
   isUpstreamSpecShape,
@@ -24,27 +25,41 @@ export {
   keyringAccount,
   KeyringTokenStore,
   MemoryTokenStore,
-  sameTokenRecord,
   tokenStoreKey,
   FALLBACK_WARNING,
   KEYRING_SERVICE,
   KEYRING_TIMEOUT_MS,
   LOCAL_PRINCIPAL,
+  REGISTRATION_KEY_KIND,
+  TOKENS_KEY_KIND,
+  TokenStoreError,
   type KeyringModule,
   type KeyringTokenStoreOptions,
-  type TokenRecord,
   type TokenStore,
 } from './token-store.js';
+export { decodeTokenRecord, encodeTokenRecord, type TokenRecord } from './token-record.js';
+export { REDACTED, SecretSet } from './secrets.js';
 export {
+  assertAuthEndpointAllowed,
+  createProviderContext,
   createUpstreamAuthProvider,
   findUpstreamAuthFailure,
+  installSdkWarningFilter,
   ProjectionOAuthProvider,
   UpstreamAuthError,
   withSdkWarningsSuppressed,
   AUTH_SEAM_MARKER,
   LOOPBACK_REDIRECT_URL,
+  type ProviderContext,
+  type UpstreamAuthReason,
 } from './provider.js';
-export { UpstreamConnector, upstreamAuthProjectionError } from './connect.js';
+export {
+  createUpstreamFetch,
+  UpstreamAuthProjectionError,
+  UpstreamConnector,
+  UpstreamRequestRefused,
+  upstreamAuthProjectionError,
+} from './connect.js';
 
 /**
  * `WrapOptions.tokenStore`, validated (R59): an object with `get`, `set`

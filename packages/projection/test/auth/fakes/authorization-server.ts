@@ -3,9 +3,9 @@
  * on 127.0.0.1, with per-test switches. It is the source of truth for which
  * access tokens are valid: the fake protected resource asks it.
  *
- * Phase 1A exercises the refresh grant. Phase 1B extends this fake with the
- * device authorization, registration and revocation endpoints (the
- * `routes` hook adds a path without touching the core).
+ * Phase 1, part A exercises the refresh grant. Part B extends this fake
+ * with the device authorization endpoint, and phase 1b with registration
+ * and revocation (the `routes` hook adds a path without touching the core).
  */
 
 import { json, startFakeHttpServer, type FakeHttpServer, type FetchHandler } from './http.js';

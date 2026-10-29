@@ -5,48 +5,56 @@
  * Linux Secret Service, Windows Credential Manager), with an in-memory
  * fallback.
  *
- * Nothing in this module logs, rethrows or embeds a token or an error from
- * the keyring library: a store failure is reported in fixed library copy.
+ * A store holds opaque strings. What Projection stores under a `tokens:`
+ * key is its own serialization of a token set (`token-record.ts`); a store
+ * never parses it.
+ *
+ * Nothing in this module logs, rethrows or embeds a stored value or an
+ * error from the keyring library: a store failure is reported in fixed
+ * library copy.
  */
 
 import { createHash } from 'node:crypto';
 
 /**
- * A stored token set (R59). Serialized as ASCII JSON; an `id_token` is never
- * stored. `expires_at` is in seconds since the epoch. `issuer` is the
- * authorization server the tokens were issued by, so they are never
- * presented to another one (SEP-2352 / R61).
- */
-export interface TokenRecord {
-  access_token: string;
-  refresh_token?: string;
-  expires_at?: number;
-  scope?: string;
-  issuer: string;
-}
-
-/**
- * Where upstream tokens live (R59). `WrapOptions.tokenStore` replaces the
- * default OS-credential-store one; a horizontally scaled deployment supplies
- * a shared store (R27).
+ * Where upstream credentials live (R59). `WrapOptions.tokenStore` replaces
+ * the default OS-credential-store one; a horizontally scaled deployment
+ * supplies a shared store (R27).
  *
- * - `get` returns the record stored under `key`, or `undefined`.
+ * Keys and values are opaque strings. A key is `<kind>:<JSON array>`; the
+ * kind before the first `:` says what the value is, so a store can route
+ * or label entries without parsing anything else:
+ *
+ * - `tokens:["<canonical resource URL>","<client id>","<principal>"]` — a
+ *   token set ({@link tokenStoreKey});
+ * - `registration:…` — reserved for dynamic client registrations (phase 1b).
+ *
+ * Values are Projection's serialization (ASCII JSON) and must be returned
+ * byte for byte.
+ *
+ * - `get` returns the value stored under `key`, or `undefined`.
  * - `set` replaces it.
  * - `delete` removes it and reports whether it removed anything. With
  *   `expected`, it is a compare-and-delete (R58): it deletes only when the
- *   stored record still equals `expected` (see {@link sameTokenRecord}), so a
- *   record another process has just stored survives.
+ *   stored value is still exactly `expected`, so a value another process
+ *   has just stored survives.
  *
- * Implementations must never log or surface a record.
+ * Implementations must never log or surface a value.
  */
 export interface TokenStore {
-  get(key: string): Promise<TokenRecord | undefined>;
-  set(key: string, record: TokenRecord): Promise<void>;
-  delete(key: string, expected?: TokenRecord): Promise<boolean>;
+  get(key: string): Promise<string | undefined>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string, expected?: string): Promise<boolean>;
 }
 
 /** The single principal of phase 1 (R62). */
 export const LOCAL_PRINCIPAL = 'local';
+
+/** The key kind of a token set. */
+export const TOKENS_KEY_KIND = 'tokens';
+
+/** The key kind reserved for dynamic client registrations (phase 1b). */
+export const REGISTRATION_KEY_KIND = 'registration';
 
 /** The keyring service name every entry is filed under (R59). */
 export const KEYRING_SERVICE = '@astral-mcp/projection';
@@ -59,108 +67,21 @@ export const FALLBACK_WARNING =
   '[@astral-mcp/projection] The OS credential store is unavailable, so upstream sign-in tokens are kept in memory for this process only: users will sign in again after a restart.\n';
 
 /**
- * The token-set key (R59): canonical resource URL, client id and principal,
- * JSON-encoded so the key is injective whatever the parts contain.
+ * The token-set key (R59): `tokens:` then the JSON array of canonical
+ * resource URL, client id and principal — JSON-encoded so the key is
+ * injective whatever the parts contain.
  */
 export function tokenStoreKey(
   canonicalUrl: string,
   clientId: string,
   principal: string = LOCAL_PRINCIPAL,
 ): string {
-  return JSON.stringify(['tokens', canonicalUrl, clientId, principal]);
+  return `${TOKENS_KEY_KIND}:${JSON.stringify([canonicalUrl, clientId, principal])}`;
 }
 
 /** The keyring account for a store key: lowercase hex SHA-256, so no URL reaches the store's metadata (R59). */
 export function keyringAccount(key: string): string {
   return createHash('sha256').update(key, 'utf8').digest('hex');
-}
-
-/** A copy holding only the {@link TokenRecord} fields, in a fixed order. */
-export function normalizeTokenRecord(record: TokenRecord): TokenRecord {
-  return {
-    access_token: record.access_token,
-    ...(record.refresh_token !== undefined ? { refresh_token: record.refresh_token } : {}),
-    ...(record.expires_at !== undefined ? { expires_at: record.expires_at } : {}),
-    ...(record.scope !== undefined ? { scope: record.scope } : {}),
-    issuer: record.issuer,
-  };
-}
-
-/** Field-by-field equality of two records: what compare-and-delete compares (R58). */
-export function sameTokenRecord(a: TokenRecord, b: TokenRecord): boolean {
-  return serializeTokenRecord(a) === serializeTokenRecord(b);
-}
-
-/** ASCII JSON of a record (R59): every non-ASCII character escaped. */
-export function serializeTokenRecord(record: TokenRecord): string {
-  return JSON.stringify(normalizeTokenRecord(record)).replace(
-    /[\u0080-￿]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  );
-}
-
-function optionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string';
-}
-
-/** Parse a stored record; anything malformed reads as absent (the user signs in again). */
-export function parseTokenRecord(text: string): TokenRecord | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const accessToken = record['access_token'];
-  const issuer = record['issuer'];
-  const expiresAt = record['expires_at'];
-  if (typeof accessToken !== 'string' || accessToken === '' || typeof issuer !== 'string')
-    return undefined;
-  if (!optionalString(record['refresh_token']) || !optionalString(record['scope']))
-    return undefined;
-  if (expiresAt !== undefined && (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt))) {
-    return undefined;
-  }
-  return normalizeTokenRecord(record as unknown as TokenRecord);
-}
-
-function isTokenRecord(value: unknown): value is TokenRecord {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { access_token?: unknown }).access_token === 'string' &&
-    typeof (value as { issuer?: unknown }).issuer === 'string'
-  );
-}
-
-/**
- * The process-local store: the fallback, and what tests and single-process
- * deployments that want no persistence can pass as `tokenStore`.
- */
-export class MemoryTokenStore implements TokenStore {
-  readonly #records = new Map<string, string>();
-
-  get(key: string): Promise<TokenRecord | undefined> {
-    const text = this.#records.get(key);
-    return Promise.resolve(text === undefined ? undefined : parseTokenRecord(text));
-  }
-
-  set(key: string, record: TokenRecord): Promise<void> {
-    if (!isTokenRecord(record)) return Promise.reject(new TokenStoreError());
-    this.#records.set(key, serializeTokenRecord(record));
-    return Promise.resolve();
-  }
-
-  delete(key: string, expected?: TokenRecord): Promise<boolean> {
-    const text = this.#records.get(key);
-    if (text === undefined) return Promise.resolve(false);
-    if (expected !== undefined && text !== serializeTokenRecord(expected))
-      return Promise.resolve(false);
-    this.#records.delete(key);
-    return Promise.resolve(true);
-  }
 }
 
 /**
@@ -171,6 +92,32 @@ export class TokenStoreError extends Error {
   constructor() {
     super('the token store failed');
     this.name = 'TokenStoreError';
+  }
+}
+
+/**
+ * The process-local store: the fallback, and what tests and single-process
+ * deployments that want no persistence can pass as `tokenStore`.
+ */
+export class MemoryTokenStore implements TokenStore {
+  readonly #values = new Map<string, string>();
+
+  get(key: string): Promise<string | undefined> {
+    return Promise.resolve(this.#values.get(key));
+  }
+
+  set(key: string, value: string): Promise<void> {
+    if (typeof value !== 'string') return Promise.reject(new TokenStoreError());
+    this.#values.set(key, value);
+    return Promise.resolve();
+  }
+
+  delete(key: string, expected?: string): Promise<boolean> {
+    const value = this.#values.get(key);
+    if (value === undefined) return Promise.resolve(false);
+    if (expected !== undefined && value !== expected) return Promise.resolve(false);
+    this.#values.delete(key);
+    return Promise.resolve(true);
   }
 }
 
@@ -217,45 +164,71 @@ async function importKeyring(): Promise<KeyringModule> {
   return module as KeyringModule;
 }
 
-/** Thrown inside {@link withTimeout}; never escapes the store. */
+/** A keyring operation that did not finish in time; never escapes the store. */
 class KeyringTimeout extends Error {}
 
-async function withTimeout<T>(
+const noop = (): void => undefined;
+
+/**
+ * `promise`, rejected with {@link KeyringTimeout} (and `controller`
+ * aborted) when it has not settled within `timeoutMs`.
+ */
+function bounded<T>(
   timeoutMs: number,
-  run: (signal: AbortSignal) => Promise<T>,
+  controller: AbortController,
+  promise: Promise<T>,
 ): Promise<T> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
       controller.abort();
       reject(new KeyringTimeout());
     }, timeoutMs);
     // A hung native call must not keep the process alive on its own.
     timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new TokenStoreError());
+      },
+    );
   });
-  try {
-    return await Promise.race([run(controller.signal), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**
  * The default store (R59): one keyring entry per key — service
  * `@astral-mcp/projection`, account the SHA-256 of the key — holding the
- * record as ASCII JSON. On Linux the entry is pinned to the Secret Service,
- * so a machine without one falls back instead of using the non-persistent
- * kernel keyring. `@napi-rs/keyring` has no label setting, so entries carry
- * no label.
+ * value as given. On Linux the entry is pinned to the Secret Service, so a
+ * machine without one falls back instead of using the non-persistent kernel
+ * keyring. `@napi-rs/keyring` has no label setting, so entries carry no
+ * label.
  *
- * Every write is read back and compared. Every operation, and loading the
- * module, is bounded by the timeout. When the module is absent or fails to
- * load, or an operation fails, times out or mis-verifies, the store falls
- * back to memory for the rest of its life with one warning on stderr; the
- * failing `get` / `set` is served from memory. A failing `delete` deletes
- * from memory too but then throws {@link TokenStoreError}: a sign-out that
- * silently left the token in the OS store would be worse than an error.
+ * - **Bounded and serialized.** Every operation, and loading the module, is
+ *   bounded by the timeout. Operations on one key run one at a time, in
+ *   order, within the process, so a slow write cannot land after a later
+ *   one.
+ * - **Verified writes.** Every write is read back and compared.
+ * - **Fallback.** When the module is absent or fails to load, or an
+ *   operation fails, times out or mis-verifies, the store falls back to
+ *   memory for the rest of its life with one warning on stderr; the failing
+ *   `get` / `set` is served from memory.
+ * - **Late writes.** A write that timed out but lands later is reconciled
+ *   once it settles: the entry is rewritten with the newer value this store
+ *   holds in memory, or, when there is none, compare-and-deleted, so the
+ *   abandoned value does not stay in the OS store.
+ * - **After the fallback.** A `set` of a key this store has seen in the
+ *   keyring is also written there, best effort and in the background, so
+ *   the OS entry never keeps a refresh token that rotation has killed. A
+ *   `delete` still deletes from the keyring when the module had loaded
+ *   (a compare-and-delete only for a key seen there), and throws
+ *   {@link TokenStoreError} when it cannot: a sign-out that silently left
+ *   the token in the OS store would be worse than an error.
+ *
+ * Compare-and-delete is read, compare, delete: serialized within the
+ * process, but not atomic across processes (R58 accepts this).
  */
 export class KeyringTokenStore implements TokenStore {
   readonly #load: () => Promise<KeyringModule>;
@@ -264,6 +237,10 @@ export class KeyringTokenStore implements TokenStore {
   readonly #memory = new MemoryTokenStore();
   #module: Promise<KeyringModule | undefined> | undefined;
   #fallenBack = false;
+  /** Keys this store has written to, or read a value from, the keyring. */
+  readonly #inKeyring = new Set<string>();
+  /** Per key, the tail of its queue of keyring operations (it never rejects). */
+  readonly #queues = new Map<string, Promise<void>>();
 
   constructor(options: KeyringTokenStoreOptions = {}) {
     this.#load = options.load ?? importKeyring;
@@ -276,61 +253,163 @@ export class KeyringTokenStore implements TokenStore {
     return this.#fallenBack;
   }
 
-  async get(key: string): Promise<TokenRecord | undefined> {
-    const entry = await this.#entry(key);
-    if (entry === undefined) return this.#memory.get(key);
-    try {
-      const text = await withTimeout(this.#timeoutMs, (signal) => entry.getPassword(signal));
-      return typeof text === 'string' ? parseTokenRecord(text) : undefined;
-    } catch {
-      this.#fallBack();
-      return this.#memory.get(key);
-    }
-  }
-
-  async set(key: string, record: TokenRecord): Promise<void> {
-    if (!isTokenRecord(record)) throw new TokenStoreError();
-    const entry = await this.#entry(key);
-    if (entry === undefined) return this.#memory.set(key, record);
-    const text = serializeTokenRecord(record);
-    try {
-      await withTimeout(this.#timeoutMs, (signal) => entry.setPassword(text, signal));
-      const readBack = await withTimeout(this.#timeoutMs, (signal) => entry.getPassword(signal));
-      if (readBack !== text) throw new TokenStoreError();
-    } catch {
-      this.#fallBack();
-      await this.#memory.set(key, record);
-    }
-  }
-
-  async delete(key: string, expected?: TokenRecord): Promise<boolean> {
-    const entry = await this.#entry(key);
-    if (entry === undefined) return this.#memory.delete(key, expected);
-    try {
-      if (expected !== undefined) {
-        const text = await withTimeout(this.#timeoutMs, (signal) => entry.getPassword(signal));
-        if (typeof text !== 'string' || text !== serializeTokenRecord(expected)) return false;
+  async get(key: string): Promise<string | undefined> {
+    if (!this.#fallenBack) {
+      const entry = await this.#entry(key);
+      if (entry !== undefined) {
+        try {
+          const value = await this.#op(key, (signal) => entry.getPassword(signal));
+          if (typeof value !== 'string') return undefined;
+          this.#inKeyring.add(key);
+          return value;
+        } catch {
+          this.#fallBack();
+        }
       }
-      return await withTimeout(this.#timeoutMs, (signal) => entry.deletePassword(signal));
+    }
+    return this.#memory.get(key);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    if (typeof value !== 'string') throw new TokenStoreError();
+    if (!this.#fallenBack) {
+      const entry = await this.#entry(key);
+      if (entry !== undefined) {
+        try {
+          // Write and read back as one queued operation, so no other
+          // operation on the key can run in between.
+          const readBack = await this.#op(
+            key,
+            async (signal) => {
+              await entry.setPassword(value, signal);
+              return entry.getPassword(signal);
+            },
+            () => this.#reconcileLateWrite(key, entry, value),
+          );
+          if (readBack !== value) throw new TokenStoreError();
+          this.#inKeyring.add(key);
+          return;
+        } catch {
+          this.#fallBack();
+        }
+      }
+    }
+    await this.#memory.set(key, value);
+    this.#writeBehind(key, value);
+  }
+
+  async delete(key: string, expected?: string): Promise<boolean> {
+    if (!this.#fallenBack) {
+      const entry = await this.#entry(key);
+      if (entry !== undefined) {
+        try {
+          return await this.#keyringDelete(key, entry, expected);
+        } catch {
+          this.#fallBack();
+          await this.#memory.delete(key, expected);
+          throw new TokenStoreError();
+        }
+      }
+    }
+    // Fallen back (or the module never loaded): memory, then the keyring
+    // entry this process may have left behind.
+    const fromMemory = await this.#memory.delete(key, expected);
+    const module = await this.#module;
+    if (module === undefined) return fromMemory;
+    if (expected !== undefined && !this.#inKeyring.has(key)) return fromMemory;
+    try {
+      const fromKeyring = await this.#keyringDelete(key, this.#newEntry(module, key), expected);
+      return fromMemory || fromKeyring;
     } catch {
-      this.#fallBack();
-      await this.#memory.delete(key, expected);
       throw new TokenStoreError();
     }
   }
 
+  /** Read, compare, delete — one queued operation (R58). */
+  async #keyringDelete(key: string, entry: KeyringEntry, expected?: string): Promise<boolean> {
+    const deleted = await this.#op(key, async (signal) => {
+      if (expected !== undefined) {
+        const value = await entry.getPassword(signal);
+        if (value !== expected) return false;
+      }
+      return entry.deletePassword(signal);
+    });
+    if (deleted) this.#inKeyring.delete(key);
+    return deleted;
+  }
+
+  /**
+   * Run `run` after every earlier keyring operation on `key` has settled,
+   * bounded by the timeout (queue wait included). An operation whose turn
+   * comes after its timeout is skipped. `onLate` runs when the operation
+   * succeeds after its caller was told it timed out.
+   */
+  #op<T>(key: string, run: (signal: AbortSignal) => Promise<T>, onLate?: () => void): Promise<T> {
+    const controller = new AbortController();
+    const previous = this.#queues.get(key) ?? Promise.resolve();
+    const operation = previous.then(() => {
+      if (controller.signal.aborted) throw new KeyringTimeout();
+      return run(controller.signal);
+    });
+    const tail = operation.then(() => {
+      if (controller.signal.aborted) onLate?.();
+    }, noop);
+    this.#queues.set(key, tail);
+    void tail.then(() => {
+      if (this.#queues.get(key) === tail) this.#queues.delete(key);
+    });
+    return bounded(this.#timeoutMs, controller, operation);
+  }
+
+  /**
+   * A write of `written` landed after its timeout, when this store had
+   * already fallen back to memory. Rewrite the entry with the newer value
+   * memory holds, or compare-and-delete the abandoned one, so a stale value
+   * never stays in the OS store (best effort; queued like any operation).
+   */
+  #reconcileLateWrite(key: string, entry: KeyringEntry, written: string): void {
+    void (async () => {
+      const latest = await this.#memory.get(key);
+      if (latest !== undefined && latest !== written) {
+        await this.#op(key, (signal) => entry.setPassword(latest, signal));
+        this.#inKeyring.add(key);
+      } else {
+        await this.#keyringDelete(key, entry, written);
+      }
+    })().catch(noop);
+  }
+
+  /**
+   * After the fallback, also write a value to the keyring entry this store
+   * has seen, best effort and in the background (see the class comment).
+   */
+  #writeBehind(key: string, value: string): void {
+    if (!this.#inKeyring.has(key)) return;
+    void (async () => {
+      const module = await this.#module;
+      if (module === undefined) return;
+      const entry = this.#newEntry(module, key);
+      await this.#op(key, (signal) => entry.setPassword(value, signal));
+    })().catch(noop);
+  }
+
+  #newEntry(module: KeyringModule, key: string): KeyringEntry {
+    return new module.AsyncEntry(KEYRING_SERVICE, keyringAccount(key), {
+      linux: { store: 'secret-service' },
+    });
+  }
+
   async #entry(key: string): Promise<KeyringEntry | undefined> {
-    if (this.#fallenBack) return undefined;
-    this.#module ??= withTimeout(this.#timeoutMs, () => this.#load()).catch(() => undefined);
+    this.#module ??= bounded(this.#timeoutMs, new AbortController(), this.#load()).catch(
+      () => undefined,
+    );
     const module = await this.#module;
     if (module === undefined) {
       this.#fallBack();
       return undefined;
     }
     try {
-      return new module.AsyncEntry(KEYRING_SERVICE, keyringAccount(key), {
-        linux: { store: 'secret-service' },
-      });
+      return this.#newEntry(module, key);
     } catch {
       this.#fallBack();
       return undefined;

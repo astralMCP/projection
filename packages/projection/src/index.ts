@@ -49,8 +49,6 @@ export {
 // Upstream auth — sources given by URL and the token store (PRD §6.10, R51, R59)
 export {
   MemoryTokenStore,
-  sameTokenRecord,
-  type TokenRecord,
   type TokenStore,
   type UpstreamOAuthOptions,
   type UpstreamSpec,

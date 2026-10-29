@@ -46,6 +46,14 @@ export function capLength(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
 }
 
+/**
+ * An integrator-supplied key, alias or value, inert and bounded (64
+ * characters) and JSON-quoted, for a configuration error message.
+ */
+export function quoted(text: string): string {
+  return JSON.stringify(capLength(neutralizeControlChars(text), 64));
+}
+
 /** Indent used for untrusted blocks embedded in prompt copy. */
 const BLOCK_INDENT = '    ';
 

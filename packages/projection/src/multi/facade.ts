@@ -26,8 +26,8 @@
  *   `search_tools` (switchable, `catalog.globalSearch`), `describe_tool` and
  *   `call_tool` (R43). The instructions are the multi-server preamble plus
  *   the shelf (R44); each box overview is also a resource (R45).
- * - Fail-closed wrapping only; `optional` sources and `introspectTimeoutMs`
- *   (R47) come later.
+ * - Fail-closed wrapping, each source bounded by `introspectTimeoutMs`
+ *   (R47); `optional` sources come later.
  */
 
 import type { Client } from '@modelcontextprotocol/client';
@@ -47,6 +47,7 @@ import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
   freezePolicySettings,
+  resolveIntrospectTimeout,
   resolveProjections,
   type PolicySettings,
   type RegisterOptions,
@@ -128,8 +129,9 @@ export async function wrapMcpServers(
   const approvals = assertApprovalsMode(options.approvals);
   const { globalSearch } = resolveCatalogOptions(options.catalog);
   const projections = resolveMultiProjections(options);
+  const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
 
-  const introspector = await introspect(resolved);
+  const introspector = await introspect(resolved, introspectTimeoutMs);
   // R47 fail-closed: anything that throws once the sources are connected
   // closes every connection Projection opened (caller-owned Clients stay open).
   try {
@@ -200,10 +202,20 @@ function assertOptionsGiven(options: unknown): asserts options is WrapServersOpt
  * with anything but a {@link ProjectionError} is reported as a pointed
  * `protocol` error naming it, not as the SDK's raw `TypeError`.
  */
-async function introspect(resolved: readonly ResolvedSource[]): Promise<Introspector> {
+async function introspect(
+  resolved: readonly ResolvedSource[],
+  timeoutMs: number,
+): Promise<Introspector> {
+  const where = new Map(
+    resolved.map((source) => [
+      source.alias,
+      source.source instanceof UpstreamConnector ? source.source.where : `source "${source.alias}"`,
+    ]),
+  );
   try {
     return await createIntrospector(
       Object.fromEntries(resolved.map((source) => [source.alias, source.source])),
+      { timeoutMs, describe: (alias) => where.get(alias) ?? `source "${alias}"` },
     );
   } catch (err) {
     const foreign = resolved.filter((source) => !source.sdk).map((source) => source.alias);

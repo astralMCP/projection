@@ -33,6 +33,11 @@ export class ProjectionError extends Error {
   }
 }
 
+/** A configuration mistake caught at wrap time (R39's rule): a `validate` error. */
+export function invalidConfig(message: string, hint: string): ProjectionError {
+  return new ProjectionError('validate', message, { hint });
+}
+
 /** Convert any thrown value into a StructuredError, defaulting to `runtime` phase. */
 export function toStructuredError(err: unknown, logs: LogEntry[] = []): StructuredError {
   if (err instanceof ProjectionError) {
