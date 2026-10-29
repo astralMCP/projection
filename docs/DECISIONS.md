@@ -689,3 +689,12 @@ change for every existing facade, and it trusts third-party annotations by
 default; **per-tool `auto` lists only** — the integrator would have to
 enumerate every non-destructive write and keep the list current as servers
 change.
+
+Implementation (single-server, 2026-10-29): one decision function,
+`decidePolicy(entry, context: PolicyContext)`, where `PolicyContext =
+{ overrides?, approvals }` is built with `policyContext(options)` from the
+`policy` / `approvals` options every surface already carries. `approvals` is
+required in the context, so passing a bare overrides object (the pre-R49
+second argument) is a type error — and, for untyped callers, a runtime
+`TypeError` rather than a silently dropped `deny`. The per-source mode of a
+multi-server facade will be an optional field of the same context.

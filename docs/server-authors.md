@@ -94,6 +94,10 @@ const facade = await wrapMcpServer(myServer, {
     get_status: 'auto', // you vouch for this one despite missing annotations
   },
 
+  // Skip approval for writes the server declares non-destructive (see
+  // "Approvals mode" below). Default 'every-write'.
+  approvals: 'destructive-only',
+
   // Mask sensitive argument fields before they reach an approval prompt.
   // Fails closed: if this throws, the prompt shows a placeholder, never args.
   redact: (tool, args) => (tool === 'send_email' ? { ...args, body: '[hidden]' } : args),
@@ -109,6 +113,39 @@ Policy is read once, at `wrapMcpServer`; later changes to your object are not
 seen. Redeploying with a tool set to `deny` is a safe incident-response move: a
 `deny` also wins over approvals already in flight, so a call the user approved
 under an earlier policy comes back as `TOOL_DENIED` / `denied_by_policy`.
+
+### Approvals mode
+
+`approvals` (R49) decides what happens to a tool that is not read-only and
+has no per-tool override:
+
+| `approvals`               | Non-read-only tool with `destructiveHint: false` | Any other non-read-only tool |
+| ------------------------- | ------------------------------------------------ | ---------------------------- |
+| `'every-write'` (default) | `ask`                                            | `ask`                        |
+| `'destructive-only'`      | `auto` — runs without approval                   | `ask`                        |
+
+Only an explicit `destructiveHint: false` counts: a missing hint, `true`, or
+any non-boolean value still asks, matching the MCP default that a
+non-read-only tool is destructive. Read-only tools run immediately in either
+mode. Precedence, strongest first:
+
+1. your per-tool `policy` override — a per-tool `ask` or `deny` holds under
+   `'destructive-only'`, and a per-tool `auto` still runs (a malformed
+   override value still fails safe to `ask`);
+2. the approvals mode;
+3. the annotation default above.
+
+Every surface shows the resolved decision: `search_tools` and
+`describe_tool` postures, the `.d.ts` doc comments and the `discover_apis`
+overview flags. The mode is read once, at `wrapMcpServer`, like `policy`;
+any value other than the two strings fails the wrap with a `validate`
+`ProjectionError` before the wrapped server is connected.
+
+**Trust note.** `'destructive-only'` extends the trust Projection already
+places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come
+from the wrapped server, and a hostile or careless server can label a
+damaging tool non-destructive — enable the mode only for servers you trust,
+and pin anything you doubt with a per-tool `ask` or `deny`.
 
 ## What your metadata becomes
 

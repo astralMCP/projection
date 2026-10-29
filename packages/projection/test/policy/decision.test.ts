@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { ProjectionError } from '../../src/errors.js';
 import {
+  assertApprovalsMode,
   decidePolicy,
+  policyContext,
   POLICY_DENIED_REASON,
   policyDeniedReason,
   resolveCallPolicy,
 } from '../../src/policy/index.js';
 import type {
+  ApprovalsMode,
   PendingToolCall,
+  PolicyContext,
   PolicyDecision,
+  PolicyOverrides,
   ServerCatalog,
   ToolCatalogEntry,
 } from '../../src/types.js';
@@ -46,33 +51,145 @@ describe('decidePolicy', () => {
     for (const annotations of annotationVariants) {
       for (const override of overrideVariants) {
         const e = annotations === undefined ? entry() : entry({ annotations });
-        expect(decidePolicy(e, { demo_tool: override })).toBe(override);
+        expect(decidePolicy(e, policyContext({ policy: { demo_tool: override } }))).toBe(override);
       }
     }
   });
 
   it('deny override wins even over readOnlyHint true', () => {
     const e = entry({ annotations: { readOnlyHint: true } });
-    expect(decidePolicy(e, { demo_tool: 'deny' })).toBe('deny');
+    expect(decidePolicy(e, policyContext({ policy: { demo_tool: 'deny' } }))).toBe('deny');
   });
 
   it('override for a different tool does not apply', () => {
     const e = entry({ annotations: { readOnlyHint: true } });
-    expect(decidePolicy(e, { other_tool: 'deny' })).toBe('auto');
+    expect(decidePolicy(e, policyContext({ policy: { other_tool: 'deny' } }))).toBe('auto');
   });
 
   it('does not inherit decisions from Object.prototype for tools named like its members', () => {
     const e = entry({ name: 'toString' });
-    expect(decidePolicy(e, {})).toBe('ask');
+    expect(decidePolicy(e, policyContext({ policy: {} }))).toBe('ask');
     const readOnly = entry({ name: 'constructor', annotations: { readOnlyHint: true } });
-    expect(decidePolicy(readOnly, {})).toBe('auto');
+    expect(decidePolicy(readOnly, policyContext({ policy: {} }))).toBe('auto');
   });
 
   it('malformed override values fail safe to ask, never auto', () => {
     const e = entry({ annotations: { readOnlyHint: true } });
     const garbage = { demo_tool: 'yolo' } as unknown as Record<string, PolicyDecision>;
-    expect(decidePolicy(e, garbage)).toBe('ask');
+    expect(decidePolicy(e, policyContext({ policy: garbage }))).toBe('ask');
   });
+
+  it('refuses a bare overrides object instead of silently dropping its deny (fail closed)', () => {
+    // A pre-R49 caller (untyped JS, or a cast) passing the old second
+    // argument must not have its `deny` ignored.
+    const legacy = { demo_tool: 'deny' } as unknown as PolicyContext;
+    expect(() => decidePolicy(entry(), legacy)).toThrow(TypeError);
+  });
+});
+
+describe('decidePolicy truth table (R14, R49)', () => {
+  type Hint = boolean | undefined | 'garbage';
+  const readOnlyHints: Hint[] = [true, false, undefined];
+  const destructiveHints: Hint[] = [true, false, undefined, 'garbage'];
+  const modes: (ApprovalsMode | undefined)[] = [undefined, 'every-write', 'destructive-only'];
+  const overrides: (PolicyDecision | 'garbage' | undefined)[] = [
+    undefined,
+    'auto',
+    'ask',
+    'deny',
+    'garbage',
+  ];
+
+  function annotated(readOnlyHint: Hint, destructiveHint: Hint): ToolCatalogEntry {
+    const annotations: Record<string, unknown> = {};
+    if (readOnlyHint !== undefined) annotations['readOnlyHint'] = readOnlyHint;
+    if (destructiveHint === 'garbage') annotations['destructiveHint'] = 'false';
+    else if (destructiveHint !== undefined) annotations['destructiveHint'] = destructiveHint;
+    return entry({ annotations: annotations as NonNullable<ToolCatalogEntry['annotations']> });
+  }
+
+  /** The spec, restated independently of the implementation. */
+  function expected(
+    readOnlyHint: Hint,
+    destructiveHint: Hint,
+    mode: ApprovalsMode | undefined,
+    override: PolicyDecision | 'garbage' | undefined,
+  ): PolicyDecision {
+    if (override === 'garbage') return 'ask';
+    if (override !== undefined) return override;
+    if (readOnlyHint === true) return 'auto';
+    if (mode === 'destructive-only' && destructiveHint === false) return 'auto';
+    return 'ask';
+  }
+
+  for (const readOnlyHint of readOnlyHints) {
+    for (const destructiveHint of destructiveHints) {
+      for (const mode of modes) {
+        for (const override of overrides) {
+          const want = expected(readOnlyHint, destructiveHint, mode, override);
+          const label = `readOnly=${String(readOnlyHint)} destructive=${String(destructiveHint)} mode=${String(mode)} override=${String(override)} -> ${want}`;
+          it(label, () => {
+            const policy =
+              override === undefined
+                ? undefined
+                : ({ demo_tool: override } as unknown as PolicyOverrides);
+            const context = policyContext({
+              ...(policy !== undefined ? { policy } : {}),
+              ...(mode !== undefined ? { approvals: mode } : {}),
+            });
+            expect(decidePolicy(annotated(readOnlyHint, destructiveHint), context)).toBe(want);
+          });
+        }
+      }
+    }
+  }
+
+  it('without a context decides as every-write', () => {
+    expect(decidePolicy(entry({ annotations: { destructiveHint: false } }))).toBe('ask');
+  });
+
+  it('an unrecognized mode string reaching decidePolicy relaxes nothing', () => {
+    const context = { approvals: 'destructive_only' } as unknown as PolicyContext;
+    expect(decidePolicy(entry({ annotations: { destructiveHint: false } }), context)).toBe('ask');
+  });
+
+  it('a destructiveHint: false read-only tool stays auto, and readOnlyHint: false + destructiveHint: false is auto only under destructive-only', () => {
+    const tool = entry({ annotations: { readOnlyHint: false, destructiveHint: false } });
+    expect(decidePolicy(tool, policyContext({ approvals: 'every-write' }))).toBe('ask');
+    expect(decidePolicy(tool, policyContext({ approvals: 'destructive-only' }))).toBe('auto');
+  });
+});
+
+describe('policyContext', () => {
+  it('resolves an absent mode to every-write and carries the overrides', () => {
+    expect(policyContext()).toEqual({ approvals: 'every-write' });
+    const policy: PolicyOverrides = { demo_tool: 'deny' };
+    expect(policyContext({ policy, approvals: 'destructive-only' })).toEqual({
+      overrides: policy,
+      approvals: 'destructive-only',
+    });
+  });
+});
+
+describe('assertApprovalsMode', () => {
+  it('accepts the two modes and absence', () => {
+    expect(assertApprovalsMode(undefined)).toBeUndefined();
+    expect(assertApprovalsMode('every-write')).toBe('every-write');
+    expect(assertApprovalsMode('destructive-only')).toBe('destructive-only');
+  });
+
+  it.each([null, '', 'Destructive-Only', 'destructive_only', 'none', true, 1, {}, ['every-write']])(
+    'rejects %j with a validate-phase ProjectionError',
+    (value) => {
+      try {
+        assertApprovalsMode(value);
+        expect.unreachable('expected a throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ProjectionError);
+        expect(err).toMatchObject({ phase: 'validate' });
+      }
+    },
+  );
 });
 
 function call(name: string): PendingToolCall {
@@ -99,7 +216,11 @@ describe('resolveCallPolicy', () => {
   });
 
   it('applies overrides during resolution', () => {
-    const resolved = resolveCallPolicy(call('read_file'), catalog, { read_file: 'deny' });
+    const resolved = resolveCallPolicy(
+      call('read_file'),
+      catalog,
+      policyContext({ policy: { read_file: 'deny' } }),
+    );
     expect(resolved.ok && resolved.decision).toBe('deny');
   });
 

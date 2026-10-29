@@ -11,6 +11,7 @@ import type { Implementation } from '@modelcontextprotocol/server';
 import { ProjectionError } from '../errors.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
 import type {
+  ApprovalsMode,
   BlobSealerConfig,
   PolicyOverrides,
   RedactionHook,
@@ -30,6 +31,17 @@ export interface WrapOptions {
    * keeps its own frozen copy, so later changes to this object are not seen.
    */
   policy?: PolicyOverrides;
+  /**
+   * Approvals mode (R49). `'every-write'` (default) asks before every tool
+   * that is not read-only. `'destructive-only'` also runs, without approval,
+   * a non-read-only tool whose annotations declare `destructiveHint: false`
+   * exactly; a missing or any other `destructiveHint` still asks. A per-tool
+   * `policy` override wins over the mode. This extends the trust placed in
+   * `readOnlyHint` to `destructiveHint: false` — a hostile server can
+   * mislabel a damaging tool, so enable it only for servers you trust.
+   * Read once, at wrap time; any other value fails the wrap (`validate`).
+   */
+  approvals?: ApprovalsMode;
   /** Masks sensitive argument fields before they reach an approval prompt (R16). */
   redact?: RedactionHook;
   /**
@@ -109,12 +121,31 @@ export function resolveProjections(
 }
 
 /**
- * The wrap-time snapshot of `options.policy` (see {@link WrapOptions.policy}):
- * one frozen copy feeds typegen AND the gate and catalog tools, so the
- * posture every surface shows is the posture the gate decides with.
+ * The policy options every surface decides with (R14, R49), frozen at wrap
+ * time; absent ones stay absent (`exactOptionalPropertyTypes`).
  */
-export function freezePolicy(policy: PolicyOverrides | undefined): PolicyOverrides | undefined {
-  return policy !== undefined ? Object.freeze({ ...policy }) : undefined;
+export type PolicySettings = Readonly<
+  Pick<ApprovalGateDeps, 'policy' | 'approvals' | 'sourceApprovals'>
+>;
+
+/**
+ * The wrap-time snapshot of the policy settings (see {@link WrapOptions}):
+ * one frozen copy feeds typegen AND the gate and catalog tools, so the
+ * posture every surface shows is the posture the gate decides with, which a
+ * caller mutating their options after wrap could otherwise drift apart.
+ */
+export function freezePolicySettings(settings: {
+  policy?: PolicyOverrides | undefined;
+  approvals?: ApprovalsMode | undefined;
+  sourceApprovals?: ReadonlyMap<string, ApprovalsMode> | undefined;
+}): PolicySettings {
+  return Object.freeze({
+    ...(settings.policy !== undefined ? { policy: Object.freeze({ ...settings.policy }) } : {}),
+    ...(settings.approvals !== undefined ? { approvals: settings.approvals } : {}),
+    ...(settings.sourceApprovals !== undefined && settings.sourceApprovals.size > 0
+      ? { sourceApprovals: settings.sourceApprovals }
+      : {}),
+  });
 }
 
 /**
@@ -125,17 +156,17 @@ export function approvalGateDeps(input: {
   catalog: ServerCatalog;
   executor: ToolExecutor;
   options: WrapOptions;
-  policy: PolicyOverrides | undefined;
+  policySettings: PolicySettings;
   era: ProtocolEra | undefined;
   clientCanElicit: boolean | undefined;
 }): ApprovalGateDeps {
-  const { options, policy, era, clientCanElicit } = input;
+  const { options, era, clientCanElicit } = input;
   return {
     catalog: input.catalog,
     executor: input.executor,
     blob: options.blob,
     ...(options.caps !== undefined ? { caps: options.caps } : {}),
-    ...(policy !== undefined ? { policy } : {}),
+    ...input.policySettings,
     ...(options.redact !== undefined ? { redact: options.redact } : {}),
     ...(era !== undefined ? { protocolEra: era } : {}),
     ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),

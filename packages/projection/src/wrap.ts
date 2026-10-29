@@ -35,8 +35,9 @@ import { callTool, describeTool, searchTools, type CallToolArgs } from './catalo
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
-  freezePolicy,
+  freezePolicySettings,
   resolveProjections,
+  type PolicySettings,
   type RegisterOptions,
   type WrapOptions,
 } from './facade/options.js';
@@ -63,7 +64,8 @@ import {
   type ToolCallResult,
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
-import { DEFAULT_SERVER_ALIAS, type PolicyOverrides, type ServerCatalog } from './types.js';
+import { assertApprovalsMode } from './policy/index.js';
+import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
 
 export type { ProjectionsOptions, RegisterOptions, WrapOptions } from './facade/options.js';
 
@@ -154,9 +156,11 @@ export async function wrapMcpServer(
   source: McpServer | Client,
   options: WrapOptions,
 ): Promise<ProjectionFacade> {
-  // Validate the selection BEFORE connecting: the throw must not leave an
-  // in-process wrapped server attached to a transport nobody will close.
+  // Validate the selection and the approvals mode BEFORE connecting: the
+  // throw must not leave an in-process wrapped server attached to a
+  // transport nobody will close.
   const projections = resolveProjections(options.projections);
+  const approvals = assertApprovalsMode(options.approvals);
 
   const introspector = await createIntrospector({ [DEFAULT_SERVER_ALIAS]: source });
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
@@ -170,14 +174,13 @@ export async function wrapMcpServer(
     );
   }
 
-  // The policy is snapshotted once, here, and that one frozen copy feeds
-  // typegen AND the gate / catalog tools: the posture baked into the `.d.ts`
-  // resource and the overview must be the posture `describe_tool` and the
-  // approval gate decide with, which a caller mutating their policy object
-  // after wrap could otherwise drift apart.
-  const policy = freezePolicy(options.policy);
+  // The policy settings (overrides + approvals mode) are snapshotted once,
+  // here, and that one frozen copy feeds typegen AND the gate / catalog
+  // tools: the posture baked into the `.d.ts` resource and the overview must
+  // be the posture `describe_tool` and the approval gate decide with.
+  const policySettings = freezePolicySettings({ policy: options.policy, approvals });
 
-  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, { policy });
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
@@ -191,7 +194,7 @@ export async function wrapMcpServer(
     resources,
     instructions,
     options,
-    ...(policy !== undefined ? { policy } : {}),
+    policySettings,
     projections,
   });
 }
@@ -206,8 +209,11 @@ interface FacadeDeps {
   resources: ProjectionResource[];
   instructions: string;
   options: WrapOptions;
-  /** The wrap-time snapshot of `options.policy` (see `WrapOptions.policy`). */
-  policy?: PolicyOverrides;
+  /**
+   * The wrap-time snapshot of `options.policy` and `options.approvals` (see
+   * `WrapOptions`): the one context every surface decides policy with.
+   */
+  policySettings: PolicySettings;
   projections: Readonly<ProjectionSelection>;
 }
 
@@ -263,7 +269,7 @@ class Facade implements ProjectionFacade {
       catalog: this.deps.catalog,
       executor: this.deps.introspector,
       options: this.deps.options,
-      policy: this.deps.policy,
+      policySettings: this.deps.policySettings,
       era,
       clientCanElicit,
     });
@@ -279,7 +285,7 @@ class Facade implements ProjectionFacade {
 
   searchTools(args: { query?: string; cursor?: string }): CallToolResult {
     try {
-      return searchTools(this.deps.catalog, args, this.policyOption());
+      return searchTools(this.deps.catalog, args, this.deps.policySettings);
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
@@ -288,18 +294,12 @@ class Facade implements ProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
     try {
       return describeTool(this.deps.catalog, args, {
-        ...this.policyOption(),
+        ...this.deps.policySettings,
         toolTypes: this.deps.toolTypes,
       });
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
-  }
-
-  /** `exactOptionalPropertyTypes`: an absent policy must stay absent. */
-  private policyOption(): { policy?: PolicyOverrides } {
-    const { policy } = this.deps;
-    return policy !== undefined ? { policy } : {};
   }
 
   /**
