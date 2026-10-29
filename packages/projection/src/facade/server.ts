@@ -11,6 +11,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { DASHBOARD_RESOURCE_URI } from '../apps/dashboard.js';
+import { boxSearchTool } from '../catalog/boxes.js';
 import type { CallToolArgs } from '../catalog/index.js';
 import type {
   CallToolResult,
@@ -25,9 +26,12 @@ import type { WrapOptions } from './options.js';
 
 /** The model-facing copy of the catalog tools: what differs between facade kinds. */
 export interface CatalogToolCopy {
-  searchDescription: string;
-  /** Description of `search_tools`' `query` argument. */
-  searchQuery: string;
+  /**
+   * The search tools, in registration order (R33, R43): `search_tools` on a
+   * single-server facade; one `search_<alias>` per box on a multi-server
+   * facade, then `search_tools` when its view serves the global search.
+   */
+  searches: readonly SearchToolCopy[];
   describeDescription: string;
   callDescription: string;
   /** Description of the `name` argument of `describe_tool` and `call_tool`. */
@@ -36,9 +40,20 @@ export interface CatalogToolCopy {
   describeTypes: string;
 }
 
+/** The copy of one search tool (R33, R43). */
+export interface SearchToolCopy {
+  /** The box a `search_<alias>` searches (R43); absent for `search_tools`. */
+  alias?: string;
+  title: string;
+  description: string;
+  /** Description of the `query` argument. */
+  query: string;
+}
+
 /** The catalog tools' handlers (R32–R35). */
 export interface CatalogHandlers {
-  searchTools(args: { query?: string; cursor?: string }): CallToolResult;
+  /** `search_tools`, or `search_<alias>` when `alias` is given (multi-server, R43). */
+  searchTools(args: { query?: string; cursor?: string }, alias?: string): CallToolResult;
   describeTool(args: { name: string; types?: boolean }): CallToolResult;
   callTool(
     args: CallToolArgs,
@@ -107,26 +122,19 @@ export function registerCatalogTools(
   handlers: CatalogHandlers,
   copy: CatalogToolCopy,
 ): void {
-  // `search_tools` and `describe_tool` are pure reads over the catalog; the
-  // annotation lets hosts that gate on annotations run them without a
-  // prompt (R35).
-  server.registerTool(
-    'search_tools',
-    {
-      title: 'Search the tool catalog',
-      description: copy.searchDescription,
-      inputSchema: z.object({
-        query: z.string().optional().describe(copy.searchQuery),
-        cursor: z.string().optional().describe('nextCursor from a previous page.'),
-      }),
-      annotations: { readOnlyHint: true },
-    },
-    (args) =>
-      handlers.searchTools({
-        ...(args.query !== undefined ? { query: args.query } : {}),
-        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
-      }),
-  );
+  // The search tools and `describe_tool` are pure reads over the catalog;
+  // the annotation lets hosts that gate on annotations run them without a
+  // prompt (R35, R43).
+  for (const search of copy.searches) {
+    const alias = search.alias;
+    if (alias !== undefined) {
+      registerSearchTool(server, boxSearchTool(alias), search, (args) =>
+        handlers.searchTools(args, alias),
+      );
+    } else {
+      registerSearchTool(server, 'search_tools', search, (args) => handlers.searchTools(args));
+    }
+  }
 
   server.registerTool(
     'describe_tool',
@@ -172,6 +180,32 @@ export function registerCatalogTools(
         era,
         clientCanElicit(server),
       ),
+  );
+}
+
+/** One search tool (R33, R43): `{ query?, cursor? }`, read-only. */
+function registerSearchTool(
+  server: McpServer,
+  name: string,
+  copy: { title: string; description: string; query: string },
+  search: (args: { query?: string; cursor?: string }) => CallToolResult,
+): void {
+  server.registerTool(
+    name,
+    {
+      title: copy.title,
+      description: copy.description,
+      inputSchema: z.object({
+        query: z.string().optional().describe(copy.query),
+        cursor: z.string().optional().describe('nextCursor from a previous page.'),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    (args) =>
+      search({
+        ...(args.query !== undefined ? { query: args.query } : {}),
+        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+      }),
   );
 }
 

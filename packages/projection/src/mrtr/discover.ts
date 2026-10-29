@@ -293,11 +293,7 @@ export function discoverApis(
  * R37 on a multi-server facade (R45): the count across every box, the
  * per-box counts, and a pointer at the search tools the facade serves.
  */
-function deferredBoxesSection(
-  view: BoxedCatalog,
-  toolCount: number,
-  search: string,
-): string {
+function deferredBoxesSection(view: BoxedCatalog, toolCount: number, search: string): string {
   const counts = [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
   return `Tools: ${toolCount} across ${boxesLabel(view)} — too many to list here (${counts}). Call ${search} to find tools by name or purpose and describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`;
 }

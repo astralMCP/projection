@@ -12,6 +12,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { openBlob } from '../../src/blob/index.js';
+import { OVERVIEW_TRUNCATION_MARKER } from '../../src/catalog/box-guidance.js';
 import {
   wrapMcpServer,
   wrapMcpServers,
@@ -452,10 +453,21 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
     const facade = await wrap({ catalogInlineThreshold: 5 });
     const inline = textOf(facade.discoverApis());
     expect(inline).toContain(
-      'Tools: 7 across the toolboxes fs, github — too many to list here (fs: 3, github: 4). Call search_tools to find tools',
+      'Tools: 7 across the toolboxes fs, github — too many to list here (fs: 3, github: 4). Call search_tools (every box) or the search_<box> tool of a box (search_fs, search_github) to find tools',
     );
     expect(inline).toContain('qualified name, <box>.<tool>');
     expect(inline).not.toContain('- fs.read_file');
+  });
+
+  it('names only the per-box search tools in the pointer when the global search is off (R43)', async () => {
+    const facade = await wrap({ catalogInlineThreshold: 5, catalog: { globalSearch: false } });
+    const inline = textOf(facade.discoverApis());
+    expect(inline).toContain(
+      '(fs: 3, github: 4). Call the search_<box> tool of a box (search_fs, search_github) to find tools',
+    );
+    expect(inline).not.toContain('search_tools');
+    expect(facade.instructions).not.toContain('search_tools');
+    expect(facade.instructions).toContain('run it with execute_machine');
   });
 
   it('keeps the list inline at the threshold, and with the catalog projection off', async () => {
@@ -520,9 +532,7 @@ describe('resources, prompts and describe types on a multi-server facade (R3, R3
     const overview = facade.resources.find(
       (resource) => resource.uri === 'projection://boxes/chatty/overview.md',
     )?.text;
-    expect(overview).toContain(
-      "[truncated: the chatty server's instructions continue past 8192 characters]",
-    );
+    expect(overview).toContain(OVERVIEW_TRUNCATION_MARKER);
     expect(overview).not.toContain('\u001b');
   });
 

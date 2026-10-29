@@ -95,17 +95,19 @@ async function retryWrite(
 }
 
 describe('a multi-server facade over the 2026-07-28 wire', () => {
-  it('serves both projections: the catalog tools, execute_machine and discover_apis (R1, R45)', async () => {
+  it('serves both projections: code mode, then one search per box, search_tools, describe_tool, call_tool (R1, R43, R45)', async () => {
     const c = await connectModern(await wrap());
     const { tools } = await c.listTools();
-    expect(tools.map((tool) => tool.name).toSorted()).toEqual([
-      'call_tool',
-      'describe_tool',
-      'discover_apis',
+    expect(tools.map((tool) => tool.name)).toEqual([
       'execute_machine',
+      'discover_apis',
+      'search_fs',
+      'search_github',
       'search_tools',
+      'describe_tool',
+      'call_tool',
     ]);
-    expect(c.getInstructions()).toContain('- fs (3 tools)');
+    expect(c.getInstructions()).toContain(`- fs — "FS-SERVER-INSTRUCTIONS: read me first."`);
     const properties = tools.find((tool) => tool.name === 'describe_tool')?.inputSchema
       .properties as Record<string, { description?: string }> | undefined;
     expect(properties?.['types']?.description).toContain('its member of tools.<box>');

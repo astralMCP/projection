@@ -187,17 +187,19 @@ describe('facade options', () => {
     } as unknown as Partial<WrapServersOptions>);
   });
 
-  it('rejects catalog.globalSearch: false until per-box search is served, and unknown catalog keys', async () => {
-    const error = await validateError({ fs: fsServer([]) }, { catalog: { globalSearch: false } });
-    expect(error.message).toContain('not supported yet');
+  it('accepts catalog.globalSearch either way and rejects unknown catalog keys or non-booleans (R43)', async () => {
     await validateError({ fs: fsServer([]) }, {
       catalog: { global: true },
     } as unknown as Partial<WrapServersOptions>);
-    const facade = await wrapMcpServers(
-      { fs: fsServer([]) },
-      { ...options, catalog: { globalSearch: true } },
+    await validateError({ fs: fsServer([]) }, {
+      catalog: { globalSearch: 'no' },
+    } as unknown as Partial<WrapServersOptions>);
+    const facades = await Promise.all(
+      [true, false].map((globalSearch) =>
+        wrapMcpServers({ fs: fsServer([]) }, { ...options, catalog: { globalSearch } }),
+      ),
     );
-    await facade.close();
+    await Promise.all(facades.map((facade) => facade.close()));
   });
 
   it('serves both projections by default, as a single-server facade does (R1, R45)', async () => {
@@ -213,14 +215,14 @@ describe('facade options', () => {
       { ...options, projections: { catalog: false } },
     );
     expect(codeOnly.projections).toEqual({ codeMode: true, catalog: false });
-    expect(codeOnly.instructions).toContain('pass that full name to toolCall in a machine');
+    expect(codeOnly.instructions).toContain('pass the full name to toolCall in a machine:');
     await codeOnly.close();
     const catalogOnly = await wrapMcpServers(
       { fs: fsServer([]) },
       { ...options, projections: { codeMode: false } },
     );
     expect(catalogOnly.instructions).toContain(
-      'pass that full name to describe_tool and call_tool',
+      'then pass the full name to describe_tool and call_tool:',
     );
     await catalogOnly.close();
 
