@@ -7,11 +7,19 @@
  * it wants them. Clients with weak resource support still function.
  */
 
-import { AUTHORING_CONTRACT } from '../machine-host/index.js';
+import { authoringContract, sampleNote, type ToolSamples } from '../machine-host/index.js';
 import { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from '../apps/dashboard.js';
+import {
+  boxesLabel,
+  firstAlias,
+  isBoxedCatalog,
+  membersByBox,
+  type BoxedCatalog,
+} from '../catalog/boxes.js';
+import { decidePolicy, policyContext } from '../policy/decision.js';
 import { inertIdentity } from '../text-safety.js';
 import { XSTATE_VERSION } from '../blob/index.js';
-import { dedupeTools, type ServerCatalog } from '../types.js';
+import { dedupeTools, type PolicyOptions, type ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
 
 /** Stable URIs the server serves via `resources/read` (R3). */
@@ -33,7 +41,14 @@ export interface ProjectionResource {
   _meta?: Record<string, unknown>;
 }
 
-export const EXAMPLE_HAPPY_PATH = `import { setup, assign } from 'xstate';
+/**
+ * The happy-path example machine. `samples` names its tool on a
+ * multi-server facade (R45, {@link toolSamples}); without it the text is
+ * {@link EXAMPLE_HAPPY_PATH}.
+ */
+export function exampleHappyPath(samples?: ToolSamples): string {
+  const read = samples?.read ?? { name: 'read_file', placeholder: false };
+  return `import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
 
 // Read a file and return the tool's result. Read-only calls run immediately,
@@ -47,7 +62,7 @@ export default setup({}).createMachine({
   initial: 'reading',
   states: {
     reading: {
-      entry: toolCall('read_file', ({ context }) => ({ path: context.path })),
+      entry: toolCall('${read.name}', ({ context }) => ({ path: context.path })),${sampleNote(read)}
       on: {
         TOOL_RESULT: {
           target: 'done',
@@ -69,8 +84,15 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ result: context.result, error: context.error }),
 });
 `;
+}
 
-export const EXAMPLE_DENIAL_FALLBACK = `import { setup, assign } from 'xstate';
+export const EXAMPLE_HAPPY_PATH = exampleHappyPath();
+
+/** The denial-fallback example machine; `samples` as for {@link exampleHappyPath}. */
+export function exampleDenialFallback(samples?: ToolSamples): string {
+  const gated = samples?.gated ?? { name: 'write_file', placeholder: false };
+  const list = samples?.list ?? { name: 'list_dir', placeholder: false };
+  return `import { setup, assign } from 'xstate';
 import { toolCall } from '@astral-mcp/tools';
 
 // Write a file, but keep going if the user declines. TOOL_DENIED is an
@@ -83,7 +105,7 @@ export default setup({}).createMachine({
   initial: 'writing',
   states: {
     writing: {
-      entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
+      entry: toolCall('${gated.name}', ({ context }) => ({ path: context.path, content: 'hello' })),${sampleNote(gated)}
       on: {
         TOOL_RESULT: {
           target: 'summarizing',
@@ -105,7 +127,7 @@ export default setup({}).createMachine({
       },
     },
     summarizing: {
-      entry: toolCall('list_dir', ({ context }) => ({ path: context.dir })),
+      entry: toolCall('${list.name}', ({ context }) => ({ path: context.dir })),${sampleNote(list)}
       on: {
         TOOL_RESULT: { target: 'done' },
         TOOL_ERROR: { target: 'done' },
@@ -116,15 +138,84 @@ export default setup({}).createMachine({
   output: ({ context }) => ({ status: context.status, note: context.note }),
 });
 `;
+}
 
-/** Build the resources Projection serves for a wrapped server (R3). */
-export function buildResources(catalog: ServerCatalog, dts: string): ProjectionResource[] {
+export const EXAMPLE_DENIAL_FALLBACK = exampleDenialFallback();
+
+/**
+ * A bare tool name fit to print inside a sample's string literal: S5 names
+ * are untrusted, so only plain undotted identifiers-with-dashes qualify (a
+ * quote or newline could forge contract text; a dotted name reads as a box).
+ */
+const SAMPLE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * The tool names a multi-server facade's samples call (R45): from the first
+ * box in sorted alias order, its first tool that runs immediately under the
+ * facade's policy for the happy path (and the denial example's follow-up
+ * listing), and its first tool that asks for approval for the denial
+ * example. Where the box has none, the sample keeps a generic name in that
+ * box and is marked a placeholder.
+ */
+export function toolSamples(view: BoxedCatalog, policy: PolicyOptions = {}): ToolSamples {
+  const box = firstAlias(view);
+  const context = policyContext(policy);
+  const pick = (decision: 'auto' | 'ask'): string | undefined =>
+    membersByBox(view)
+      .get(box)
+      ?.find(
+        (member) =>
+          SAMPLE_NAME_PATTERN.test(member.entry.name) &&
+          decidePolicy(member.qualified, context) === decision,
+      )?.qualified.name;
+  const sample = (name: string | undefined, fallback: string) =>
+    name !== undefined
+      ? { name, placeholder: false }
+      : { name: `${box}.${fallback}`, placeholder: true };
+  const read = sample(pick('auto'), 'read_file');
+  return {
+    read,
+    gated: sample(pick('ask'), 'write_file'),
+    list: read.placeholder ? sample(undefined, 'list_dir') : read,
+  };
+}
+
+/**
+ * What the code-mode copy says about the facade it serves (R39, R45): on a
+ * multi-server view, the aliases — never a server-reported identity — and
+ * the tool names the samples call; otherwise the S5-untrusted identity,
+ * rendered inert (`inertIdentity` supplies its own quotes).
+ */
+function codeModeSubject(
+  catalog: ServerCatalog,
+  policy: PolicyOptions | undefined,
+): {
+  label: string;
+  view?: BoxedCatalog;
+  samples?: ToolSamples;
+} {
+  if (!isBoxedCatalog(catalog)) return { label: inertIdentity(catalog.identity) };
+  return { label: boxesLabel(catalog), view: catalog, samples: toolSamples(catalog, policy) };
+}
+
+/**
+ * Build the code-mode resources Projection serves for a wrapped server (R3).
+ * On a multi-server view the descriptions name the boxes and the contract
+ * and the examples call qualified names from its first box, picked under
+ * `policy` (R45, {@link toolSamples}); the box overview resources are the
+ * multi-server facade's own (`catalog/box-guidance.ts`).
+ */
+export function buildResources(
+  catalog: ServerCatalog,
+  dts: string,
+  policy?: PolicyOptions,
+): ProjectionResource[] {
+  const subject = codeModeSubject(catalog, policy);
   return [
     {
       uri: RESOURCE_URIS.toolTypes,
       name: 'tools.d.ts',
-      // The identity is S5-untrusted; inertIdentity supplies its own quotes.
-      description: `TypeScript definitions for the tools of ${inertIdentity(catalog.identity)}.`,
+      description: `TypeScript definitions for the tools of ${subject.label}.`,
       mimeType: 'text/plain',
       text: dts,
     },
@@ -133,21 +224,21 @@ export function buildResources(catalog: ServerCatalog, dts: string): ProjectionR
       name: 'authoring-contract.md',
       description: 'Rules an authored machine must follow.',
       mimeType: 'text/markdown',
-      text: AUTHORING_CONTRACT,
+      text: authoringContract(subject.samples),
     },
     {
       uri: RESOURCE_URIS.happyPath,
       name: 'happy-path.ts',
       description: 'Example machine: read-only work, completes in one call.',
       mimeType: 'text/plain',
-      text: EXAMPLE_HAPPY_PATH,
+      text: exampleHappyPath(subject.samples),
     },
     {
       uri: RESOURCE_URIS.denialFallback,
       name: 'denial-fallback.ts',
       description: 'Example machine: continues gracefully when approval is declined.',
       mimeType: 'text/plain',
-      text: EXAMPLE_DENIAL_FALLBACK,
+      text: exampleDenialFallback(subject.samples),
     },
     {
       // MCP Apps dashboard (PRD 12.1): rendered by app-capable hosts when
@@ -176,6 +267,22 @@ export interface DiscoverApisOptions {
    * clamped at 0, anything else falls back to the default.
    */
   inlineThreshold?: number;
+  /**
+   * How the R37 pointer names the search tools a multi-server facade serves
+   * (R43, R45): `searchToolsPhrase` of the view. Default `search_tools`.
+   */
+  searchPhrase?: string;
+  /**
+   * The resources the facade serves, when they go beyond
+   * {@link buildResources} (a multi-server facade's box overviews, R45):
+   * every one but the `ui://` dashboard is linked.
+   */
+  resources?: readonly ProjectionResource[];
+  /**
+   * The facade's policy (R14, R49), which picks the sample tool names on a
+   * multi-server view (R45, {@link toolSamples}).
+   */
+  policy?: PolicyOptions;
 }
 
 /** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
@@ -199,25 +306,31 @@ export function discoverApis(
   options: DiscoverApisOptions = {},
 ): CallToolResult {
   const threshold = clampInlineThreshold(options.inlineThreshold);
+  const subject = codeModeSubject(catalog, options.policy);
   // Count what the model can reach: typegen and the catalog projection both
-  // dedupe by name (S5), so a repeated name is one tool, not two.
+  // dedupe by name (S5), so a repeated name is one tool, not two. A
+  // multi-server view is deduplicated per box already and counts across
+  // every box (R45).
   const toolCount = dedupeTools(catalog.tools).length;
   const deferred = options.catalog === true && toolCount > threshold;
-  const toolsSection = deferred
-    ? `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`
-    : overview;
+  let toolsSection = overview;
+  if (deferred) {
+    toolsSection =
+      subject.view !== undefined
+        ? deferredBoxesSection(subject.view, toolCount, options.searchPhrase ?? 'search_tools')
+        : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
+  }
   const inline = [
-    // The identity is S5-untrusted; inertIdentity supplies its own quotes.
-    `Projection code mode over ${inertIdentity(catalog.identity)}.`,
+    `Projection code mode over ${subject.label}.`,
     '',
     `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',
     toolsSection,
     '',
-    AUTHORING_CONTRACT,
+    authoringContract(subject.samples),
   ].join('\n');
 
-  const links: ContentBlock[] = buildResources(catalog, '')
+  const links: ContentBlock[] = (options.resources ?? buildResources(catalog, ''))
     .filter((resource) => !resource.uri.startsWith('ui://'))
     .map((resource) => ({
       type: 'resource_link',
@@ -230,6 +343,15 @@ export function discoverApis(
   return {
     content: [{ type: 'text', text: inline }, ...links],
   };
+}
+
+/**
+ * R37 on a multi-server facade (R45): the count across every box, the
+ * per-box counts, and a pointer at the search tools the facade serves.
+ */
+function deferredBoxesSection(view: BoxedCatalog, toolCount: number, search: string): string {
+  const counts = [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
+  return `Tools: ${toolCount} across ${boxesLabel(view)} — too many to list here (${counts}). Call ${search} to find tools by name or purpose and describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`;
 }
 
 /** Which projections a facade serves (R1, R32). */
@@ -253,14 +375,21 @@ export function buildInstructions(
   return wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${copy}` : copy;
 }
 
+/**
+ * The approval sentence every preamble carries (R29), after its subject —
+ * `Tools that change something may pause` (`… may pause the machine` in
+ * code mode) — so a wording change lands on every facade at once.
+ */
+export const APPROVAL_SENTENCE_TAIL = `and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
+
 /** Preamble when only code mode is on (R29). */
-export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Tools that change something may pause the machine and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval. Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
+export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Tools that change something may pause the machine ${APPROVAL_SENTENCE_TAIL} Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
 
 /** Preamble when only the catalog projection is on (R29, R32). */
-export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
+export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** Preamble when both projections are on: the routing rule (R29). */
-export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** The R29 preamble variant for a projection selection. */
 export function defaultPreamble(projections: ProjectionSelection): string {

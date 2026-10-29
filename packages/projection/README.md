@@ -73,9 +73,10 @@ fronts several servers as tool boxes: tools are addressed as
 `<alias>.<name>` (`fs.write_file`), policy keys are qualified names, each
 box has its own `search_<alias>` tool (whose first page shows the server's
 guidance), and `search_tools` searches every box (`catalog.globalSearch:
-false` turns it off). This preview serves the catalog projection only; code
-mode and optional sources are not available yet. See
-`docs/server-authors.md`.
+false` turns it off). Code mode works across boxes: the generated types have
+one `tools.<alias>` property per box, and machines call
+`toolCall('fs.read_file', args)`. Optional sources are not available yet.
+See `docs/server-authors.md`.
 
 ### Remote servers by URL (preview)
 

@@ -16,11 +16,12 @@
  * `catalog/boxes.ts`. Blobs bind the server-set identity and are sealed in
  * their own key domain (R41).
  *
+ * Both projections are served, as on a single-server facade: code mode
+ * generates one `tools.<alias>` object type per box and machines call
+ * `toolCall('<alias>.<name>', …)`, routed by alias (R45).
+ *
  * Scope of this release, by design (the rest of §6.9 lands in follow-ups):
  *
- * - Catalog projection only. Code mode (typegen namespaces per box, R45) is
- *   not served yet, so `projections.codeMode` defaults to off here and
- *   `true` fails the wrap.
  * - The catalog projection is one `search_<alias>` per box, whose
  *   empty-query first page leads with the box overview, then the global
  *   `search_tools` (switchable, `catalog.globalSearch`), `describe_tool` and
@@ -55,14 +56,21 @@ import {
 import {
   createProjectionServer,
   registerCatalogTools,
+  registerCodeModeTools,
   registerResources,
   type CatalogToolCopy,
   type SearchToolCopy,
 } from '../facade/server.js';
 import { createIntrospector, type Introspector } from '../introspector/index.js';
 import {
+  APPROVAL_SENTENCE_TAIL,
+  buildResources,
+  discoverApis,
   errorResult,
+  executeMachine,
+  type ApprovalGateDeps,
   type CallToolResult,
+  type ExecuteMachineArgs,
   type ProjectionResource,
   type ProjectionSelection,
   type ProtocolEra,
@@ -71,6 +79,7 @@ import {
 import { assertApprovalsMode } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
+import { generateToolTypes, type ToolTypeText } from '../typegen/index.js';
 import { isRecord, type ApprovalsMode, type StructuredError, type ToolCatalog } from '../types.js';
 import type { ProjectionFacade } from '../wrap.js';
 import {
@@ -128,7 +137,7 @@ export async function wrapMcpServers(
   assertPolicyKeys(options.policy, aliases);
   const approvals = assertApprovalsMode(options.approvals);
   const { globalSearch } = resolveCatalogOptions(options.catalog);
-  const projections = resolveMultiProjections(options);
+  const projections = resolveProjections(options.projections);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
 
   const introspector = await introspect(resolved, introspectTimeoutMs);
@@ -167,10 +176,20 @@ export async function wrapMcpServers(
     for (const source of resolved) {
       if (source.source instanceof UpstreamConnector) upstreams.set(source.alias, source.source);
     }
+    // R45: one frozen policy snapshot feeds typegen and the gate, so the
+    // postures in the .d.ts and the overview are the ones the gate decides.
+    const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(view, policySettings);
+
     return new MultiFacade({
       introspector,
       upstreams,
       view,
+      dts,
+      bridgeSource,
+      overview,
+      toolTypes,
+      // The code-mode resources (R3, R45), then the box overviews (R43, R45).
+      resources: [...buildResources(view, dts, policySettings), ...boxOverviewResources(view)],
       instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
       options,
       policySettings,
@@ -234,48 +253,6 @@ async function introspect(
   }
 }
 
-/**
- * R45: code mode on a multi-server facade needs per-box typegen, which is
- * not built yet — so it defaults off here, an explicit request fails the
- * wrap rather than serving a code mode whose types do not match its names,
- * and the catalog projection, the only one served, cannot be turned off.
- *
- * TODO(R45) — what code mode on a multi-server facade still needs. The
- * machine host already routes each qualified `toolCall` to its box
- * (`routeCall`) and names boxes in its unknown-tool error; these surfaces
- * still print the single-server identity and must name the aliases instead
- * (R39) before code mode can default on here:
- *
- * - typegen (`typegen/generate.ts`): the `.d.ts`, bridge and overview
- *   headers, and one `tools.<alias>` object type per box;
- * - `discover_apis` (`mrtr/discover.ts`): the overview header and the
- *   `tools.d.ts` resource description, plus the per-box grouping and the
- *   box overview resources;
- * - the workflow prompts (`prompts/workflow-prompts.ts`): the server label;
- * - `describe_tool({ types: true })`: the `tools.<alias>.<name>` slice.
- */
-function resolveMultiProjections(options: WrapServersOptions): Readonly<ProjectionSelection> {
-  if (options.projections?.codeMode === true) {
-    throw new ProjectionError(
-      'validate',
-      'code mode is not supported on multi-server facades yet',
-      {
-        hint: 'Omit projections.codeMode: a wrapMcpServers facade serves the catalog projection (the search tools, describe_tool, call_tool).',
-      },
-    );
-  }
-  if (options.projections?.catalog === false) {
-    throw new ProjectionError(
-      'validate',
-      'the catalog projection is required on multi-server facades until code mode is supported there',
-      {
-        hint: 'Omit projections.catalog: it is the only projection a wrapMcpServers facade serves for now (the search tools, describe_tool, call_tool).',
-      },
-    );
-  }
-  return resolveProjections(options.projections, { codeMode: false, catalog: true });
-}
-
 /** R48: the facade-wide tool bound, checked after introspection. */
 function assertToolTotal(boxes: readonly ToolBox[]): void {
   const total = boxes.reduce((sum, box) => sum + box.catalog.tools.length, 0);
@@ -299,28 +276,46 @@ export interface MultiPreambleOptions {
 }
 
 /**
- * The multi-server preamble (R29, R44): the routing rule, naming the search
- * tools the facade serves (R43), and that a box's own guidance is its
- * overview. Takes the projection selection like the single-server
- * `defaultPreamble`, so the code-mode variants (R45) plug in here without a
- * signature change; until then code mode fails the wrap
- * (`resolveMultiProjections`) and only the catalog variant is reachable.
+ * The multi-server preamble (R29, R44, R45), one variant per projection
+ * selection as the single-server `defaultPreamble`: the routing rule when
+ * both projections are on, naming the search tools the facade serves (R43)
+ * and that a box's own guidance is its overview.
  */
 export function defaultMultiPreamble(options: MultiPreambleOptions): string {
-  // TODO(R45): the code-mode-only and routing variants, keyed on
-  // options.projections, as the single-server defaultPreamble is.
-  const find = options.globalSearch
-    ? "Call search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
-    : "Call a box's search_<box> tool to look inside that box";
-  return `This server fronts several toolboxes, each wrapping another server. ${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it. Tools that change something may pause and ask the user to approve that specific action before it runs; each tool's listing says whether it runs immediately or asks for approval.`;
+  const { projections, globalSearch } = options;
+  if (!projections.catalog) {
+    return `This server fronts several toolboxes, each wrapping another server, and runs in code mode: instead of calling their tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you, across boxes when the task needs it. Call discover_apis first for every box's tool types, the authoring contract, worked examples and each box's own guidance. Tools that change something may pause the machine ${APPROVAL_SENTENCE_TAIL}`;
+  }
+  // What to call, after a leading "call"/"Call".
+  const find = globalSearch
+    ? "search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
+    : "a box's search_<box> tool to look inside that box";
+  const steps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it.`;
+  if (!projections.codeMode) {
+    return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+  }
+  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call ${steps} For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 }
 
 /**
- * The shelf header (R44). It carries the qualified-name rule and names the
- * per-box search tools, so a preamble override cannot drop either.
+ * The shelf header (R44) of a catalog-only facade. It carries the
+ * qualified-name rule and names the per-box search tools, so a preamble
+ * override cannot drop either.
  */
 export const SHELF_HEADER =
   'Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool and call_tool:';
+
+/**
+ * The shelf header for a projection selection (R44, R45): the
+ * qualified-name rule, worded for the tools that take a qualified name.
+ */
+export function shelfHeader(projections: Readonly<ProjectionSelection>): string {
+  if (!projections.catalog) {
+    return 'Toolboxes — tools are named <box>.<tool>; pass the full name to toolCall in a machine:';
+  }
+  if (!projections.codeMode) return SHELF_HEADER;
+  return 'Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:';
+}
 
 /**
  * The facade's `instructions` (R44): Projection's preamble, then the shelf —
@@ -336,7 +331,7 @@ export function buildMultiInstructions(
   projections: Readonly<ProjectionSelection>,
   preamble?: string,
 ): string {
-  const lines = [SHELF_HEADER];
+  const lines = [shelfHeader(projections)];
   for (const [alias, box] of view.boxes) {
     const about = boxAbout(box);
     const tools = toolCount(view.counts.get(alias) ?? 0);
@@ -350,8 +345,25 @@ const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool.`;
 
-// TODO(R45): point at execute_machine for multi-step work once code mode is served here.
 const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool.`;
+
+/** The catalog tools point at execute_machine only when code mode is served (R29). */
+const DESCRIBE_TOOL_TYPES_POINTER = ` Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
+
+const CALL_TOOL_CODE_MODE_POINTER = ` For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
+
+const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.
+
+Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+
+Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
+
+const DISCOVER_APIS_DESCRIPTION = `Return the tool type definitions of every toolbox (tools.<box>.<tool>), the machine authoring contract, worked examples and each box's guidance. Call this before authoring a machine for execute_machine.`;
+
+const CODE_MODE_COPY = {
+  executeMachine: EXECUTE_MACHINE_DESCRIPTION,
+  discoverApis: DISCOVER_APIS_DESCRIPTION,
+};
 
 /**
  * The `search_<alias>` copy (R43): `Search the <alias> toolbox.`, the box's
@@ -386,20 +398,26 @@ const GLOBAL_SEARCH_COPY: SearchToolCopy = {
  * `search_tools` when the view serves it — `view.globalSearch` is the one
  * source of truth — and every search tool the copy names is served.
  */
-function catalogToolCopy(view: BoxedCatalog): CatalogToolCopy {
+function catalogToolCopy(
+  view: BoxedCatalog,
+  projections: Readonly<ProjectionSelection>,
+): CatalogToolCopy {
   return {
     searches: [
       ...[...view.boxes].map(([alias, box]) => boxSearchCopy(view, alias, box)),
       ...(view.globalSearch ? [GLOBAL_SEARCH_COPY] : []),
     ],
-    describeDescription: DESCRIBE_TOOL_DESCRIPTION,
-    callDescription: CALL_TOOL_DESCRIPTION,
+    describeDescription: projections.codeMode
+      ? `${DESCRIBE_TOOL_DESCRIPTION}${DESCRIBE_TOOL_TYPES_POINTER}`
+      : DESCRIBE_TOOL_DESCRIPTION,
+    callDescription: projections.codeMode
+      ? `${CALL_TOOL_DESCRIPTION}${CALL_TOOL_CODE_MODE_POINTER}`
+      : CALL_TOOL_DESCRIPTION,
     toolName: view.globalSearch
       ? 'Qualified tool name (<box>.<tool>) as listed by search_tools or a search_<box> tool.'
       : 'Qualified tool name (<box>.<tool>) as listed by the search_<box> tool of its box.',
-    // TODO(R45): offer the tools.<alias>.<name> slice once typegen covers boxes.
     describeTypes:
-      'Not available on this server yet: TypeScript types are generated for code mode, which multi-server facades do not serve. The JSON Schemas carry the same shapes.',
+      'Also return the generated TypeScript for this tool: its member of tools.<box> and its type aliases (for authoring a machine).',
   };
 }
 
@@ -408,6 +426,14 @@ interface MultiFacadeDeps {
   /** The boxes given by URL (R51), by alias. */
   upstreams: ReadonlyMap<string, UpstreamConnector>;
   view: BoxedCatalog;
+  /** Generated artifacts over the view (R45): `tools.<alias>` per box, qualified names. */
+  dts: string;
+  bridgeSource: string;
+  overview: string;
+  /** Per-tool type slices keyed by qualified name, for `describe_tool` (R34, R45). */
+  toolTypes: Map<string, ToolTypeText>;
+  /** The code-mode resources and the box overviews (R3, R45). */
+  resources: ProjectionResource[];
   instructions: string;
   options: WrapServersOptions;
   policySettings: PolicySettings;
@@ -418,12 +444,8 @@ class MultiFacade implements MultiProjectionFacade {
   readonly catalog: ToolCatalog;
   readonly skipped: readonly { alias: string; error: StructuredError }[] = Object.freeze([]);
   readonly instructions: string;
-  /** TODO(R45): the per-box `.d.ts`, once typegen emits `tools.<alias>`. */
-  readonly dts = '';
-  /**
-   * The box overviews (R3, R45), one per box whose server sends
-   * instructions. TODO(R45): the code-mode resources.
-   */
+  readonly dts: string;
+  /** The code-mode resources, then one box overview per box whose server sends instructions (R3, R45). */
   readonly resources: ProjectionResource[];
   readonly serverFactory: McpServerFactory;
   readonly projections: Readonly<ProjectionSelection>;
@@ -433,20 +455,38 @@ class MultiFacade implements MultiProjectionFacade {
   constructor(deps: MultiFacadeDeps) {
     this.deps = deps;
     this.catalog = deps.introspector.catalog;
-    this.resources = boxOverviewResources(deps.view);
-    this.copy = catalogToolCopy(deps.view);
+    this.dts = deps.dts;
+    this.resources = deps.resources;
+    this.copy = catalogToolCopy(deps.view, deps.projections);
     this.instructions = deps.instructions;
     this.projections = deps.projections;
     // Bound so it can be handed to `createMcpHandler` detached.
     this.serverFactory = (ctx) => this.createServer(ctx);
   }
 
-  executeMachine(): Promise<ToolCallResult> {
-    return Promise.resolve(codeModeUnavailable(this.deps.view, 'execute_machine'));
+  executeMachine(
+    args: ExecuteMachineArgs,
+    era?: ProtocolEra,
+    clientCanElicit?: boolean,
+  ): Promise<ToolCallResult> {
+    return executeMachine(args, {
+      ...this.gateDeps(era, clientCanElicit),
+      bridgeSource: this.deps.bridgeSource,
+    });
   }
 
   discoverApis(): CallToolResult {
-    return codeModeUnavailable(this.deps.view, 'discover_apis');
+    const { catalogInlineThreshold } = this.deps.options;
+    return discoverApis(this.deps.view, this.deps.overview, {
+      catalog: this.projections.catalog,
+      // R37 pointer: the search tools actually served (R43).
+      searchPhrase: searchToolsPhrase(this.deps.view),
+      // Links every resource but the dashboard, box overviews included (R45).
+      resources: this.resources,
+      // The samples are picked under the facade's policy (R45).
+      policy: this.deps.policySettings,
+      ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
+    });
   }
 
   searchTools(args: { query?: string; cursor?: string }, alias?: string): CallToolResult {
@@ -474,7 +514,10 @@ class MultiFacade implements MultiProjectionFacade {
 
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
     try {
-      return describeTool(this.deps.view, args, this.deps.policySettings);
+      return describeTool(this.deps.view, args, {
+        ...this.deps.policySettings,
+        toolTypes: this.deps.toolTypes,
+      });
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
@@ -485,19 +528,28 @@ class MultiFacade implements MultiProjectionFacade {
     era?: ProtocolEra,
     clientCanElicit?: boolean,
   ): Promise<ToolCallResult> {
-    return callTool(
-      args,
-      approvalGateDeps({
-        catalog: this.deps.view,
-        blobDomain: 'multi',
-        // Routed per call by qualified name (catalog/boxes.ts `routeCall`).
-        executor: this.deps.introspector,
-        options: this.deps.options,
-        policySettings: this.deps.policySettings,
-        era,
-        clientCanElicit,
-      }),
-    );
+    return callTool(args, this.gateDeps(era, clientCanElicit));
+  }
+
+  /**
+   * The approval-gate dependencies both gated tools share (R35, R38, R45):
+   * the merged view, the `multi` key domain (R41) — for machine blobs and
+   * call blobs alike — and the frozen policy settings.
+   */
+  private gateDeps(
+    era: ProtocolEra | undefined,
+    clientCanElicit: boolean | undefined,
+  ): ApprovalGateDeps {
+    return approvalGateDeps({
+      catalog: this.deps.view,
+      blobDomain: 'multi',
+      // Routed per call by qualified name (catalog/boxes.ts `routeCall`).
+      executor: this.deps.introspector,
+      options: this.deps.options,
+      policySettings: this.deps.policySettings,
+      era,
+      clientCanElicit,
+    });
   }
 
   createServer(ctx?: RegisterOptions): McpServer {
@@ -507,9 +559,13 @@ class MultiFacade implements MultiProjectionFacade {
   }
 
   registerOn(server: McpServer, options?: RegisterOptions): void {
-    // Code mode is never on here yet (R45; see resolveMultiProjections).
+    const era = options?.era;
+    if (this.projections.codeMode) {
+      // The workflow prompts name the boxes by alias (R39): they read the view.
+      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.deps.view);
+    }
     if (this.projections.catalog) {
-      registerCatalogTools(server, options?.era, this, this.copy);
+      registerCatalogTools(server, era, this, this.copy);
     }
     registerResources(server, this.resources);
   }
@@ -552,15 +608,4 @@ class MultiFacade implements MultiProjectionFacade {
   close(): Promise<void> {
     return this.deps.introspector.close();
   }
-}
-
-/** R45: code mode is not served on a multi-server facade yet. */
-function codeModeUnavailable(view: BoxedCatalog, tool: string): CallToolResult {
-  return errorResult(
-    new ProjectionError(
-      'validate',
-      `${tool} is not available: code mode is not supported on multi-server facades yet`,
-      { hint: `Use ${searchToolsPhrase(view)}, then describe_tool and call_tool.` },
-    ).toStructured(),
-  );
 }

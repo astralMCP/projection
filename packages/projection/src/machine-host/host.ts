@@ -6,7 +6,8 @@
 
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
-import { routeCall } from '../catalog/boxes.js';
+import { isBoxedCatalog, routeCall } from '../catalog/boxes.js';
+import { didYouMeanHint } from '../catalog/search.js';
 import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
@@ -370,7 +371,7 @@ class SegmentRunner {
       // Single resolution path shared with the MRTR adapter: catalog lookup,
       // unknown-tool error, and policy decision in one place.
       const resolved = resolveCallPolicy(call, this.deps.catalog, this.deps.policy);
-      if (!resolved.ok) throw resolved.error;
+      if (!resolved.ok) throw withSuggestions(resolved.error, this.deps.catalog, request.name);
 
       if (resolved.decision === 'deny') {
         const reason = policyDeniedReason(request.name);
@@ -555,6 +556,26 @@ class SegmentRunner {
   private logs(): LogEntry[] {
     return this.deps.session.getLogs();
   }
+}
+
+/**
+ * On a multi-server view, lead an unknown-tool error's hint with the
+ * box-aware did-you-mean suggestions (R40): qualified names, from the named
+ * box only when the name's alias is a wrapped box. The single-server error
+ * is returned unchanged.
+ */
+function withSuggestions(
+  error: ProjectionError,
+  catalog: ServerCatalog,
+  name: string,
+): ProjectionError {
+  if (!isBoxedCatalog(catalog)) return error;
+  const didYouMean = didYouMeanHint(catalog, name);
+  if (didYouMean.length === 0) return error;
+  return new ProjectionError(error.phase, error.message, {
+    diagnostics: error.diagnostics,
+    hint: `${didYouMean}${error.hint}`,
+  });
 }
 
 /** Render an XState state value as a readable path for elicitation copy (R16). */

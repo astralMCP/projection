@@ -23,7 +23,7 @@ import type { ServerSource } from '../introspector/index.js';
 import { assertApprovalsMode } from '../policy/index.js';
 import { capLength, neutralizeControlChars, quoted } from '../text-safety.js';
 import { DEFAULT_SERVER_ALIAS, isPlainObject, isRecord, type ApprovalsMode } from '../types.js';
-import { splitQualified } from '../catalog/boxes.js';
+import { ALIAS_PATTERN, splitQualified } from '../catalog/boxes.js';
 
 /** One source with its per-box settings (R39). */
 export interface ServerSourceConfig {
@@ -81,9 +81,6 @@ export interface ResolvedSource {
 
 /** At most this many sources per facade (R48). */
 export const MAX_SOURCES = 16;
-
-/** Alias grammar (R39): dot-free and underscore-free, short enough for `search_<alias>`. */
-export const ALIAS_PATTERN = /^[a-z][a-z0-9]{0,23}$/;
 
 /**
  * Aliases a facade refuses (R39): the single-server alias, and every suffix

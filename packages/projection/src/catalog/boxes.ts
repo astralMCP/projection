@@ -78,6 +78,14 @@ export interface BoxedCatalog extends ServerCatalog {
   readonly globalSearch: boolean;
 }
 
+/**
+ * Alias grammar (R39): dot-free and underscore-free, short enough for
+ * `search_<alias>`. `wrapMcpServers` validates every alias against it at wrap
+ * time (`multi/config.ts`), and {@link buildBoxedCatalog} re-checks it, since
+ * typegen and the copy print aliases raw (R45).
+ */
+export const ALIAS_PATTERN = /^[a-z][a-z0-9]{0,23}$/;
+
 /** Options of {@link buildBoxedCatalog}. */
 export interface BoxedCatalogOptions {
   /** Serve the global `search_tools` (R43). Default `true`. */
@@ -111,7 +119,13 @@ export function multiServerIdentity(boxes: Iterable<ToolBox>): string {
   return `multi:${JSON.stringify(pairs)}`;
 }
 
-/** Build the merged view over the wrapped boxes (R40, R41). */
+/**
+ * Build the merged view over the wrapped boxes (R40, R41). Every alias must
+ * match {@link ALIAS_PATTERN}: the generated `.d.ts`, the evaluated bridge
+ * header and the model-facing copy print aliases raw, so a view over any
+ * other alias is refused with a `terminal` {@link ProjectionError} (defense
+ * in depth: `wrapMcpServers` already rejects it at wrap time).
+ */
 export function buildBoxedCatalog(
   boxes: Iterable<ToolBox>,
   options: BoxedCatalogOptions = {},
@@ -119,6 +133,13 @@ export function buildBoxedCatalog(
   const sorted = [...boxes].toSorted((a, b) =>
     a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0,
   );
+  for (const box of sorted) {
+    if (!ALIAS_PATTERN.test(box.alias)) {
+      throw new ProjectionError('terminal', 'a multi-server view needs grammar-checked aliases', {
+        hint: `Every box alias must match ${String(ALIAS_PATTERN)} (R39); wrapMcpServers validates aliases before it builds the view.`,
+      });
+    }
+  }
   const members = new Map<string, BoxedTool>();
   const counts = new Map<string, number>();
   for (const box of sorted) {
@@ -143,6 +164,33 @@ export function buildBoxedCatalog(
   };
   boxedViews.add(view);
   return view;
+}
+
+/**
+ * How a surface spanning the whole facade names it (R39): the sorted alias
+ * list — `the toolbox fs`, `the toolboxes fs, github` — never the
+ * server-reported identity. Aliases are host-chosen and grammar-checked, so
+ * they print raw.
+ */
+export function boxesLabel(catalog: BoxedCatalog): string {
+  const aliases = [...catalog.boxes.keys()];
+  return `the ${aliases.length === 1 ? 'toolbox' : 'toolboxes'} ${aliases.join(', ')}`;
+}
+
+/** The facade's first alias in sorted order: the box the R45 samples are written against. */
+export function firstAlias(catalog: BoxedCatalog): string {
+  return catalog.boxes.keys().next().value ?? '';
+}
+
+/**
+ * The view's tools grouped by box, in sorted alias order and each box's
+ * catalog order; a box without tools maps to an empty list.
+ */
+export function membersByBox(catalog: BoxedCatalog): Map<string, BoxedTool[]> {
+  const grouped = new Map<string, BoxedTool[]>();
+  for (const alias of catalog.boxes.keys()) grouped.set(alias, []);
+  for (const member of catalog.members.values()) grouped.get(member.alias)?.push(member);
+  return grouped;
 }
 
 /** The per-box search tool of `alias` (R43): `search_<alias>`. */

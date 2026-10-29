@@ -52,6 +52,22 @@ export default setup({}).createMachine({
   the three events; the host does all I/O.
 - Only `xstate` and `@astral-mcp/tools` resolve as imports (R8). No fs, no
   fetch, no other modules.
+- On a multi-server facade (`wrapMcpServers`, R45) every tool name is
+  qualified, `<alias>.<name>`: `toolCall('fs.read_file', …)`,
+  `toolCall('github.issue_write', …)`. An unqualified name fails `validate`
+  with a did-you-mean hint. A server's dotted tool name stays in its box
+  (`fs.github.delete_repo` is the `fs` box's `github.delete_repo`). The
+  `.d.ts` nests each box under `tools.<alias>`, with type names like
+  `fs_ReadFileInput`; the contract text gains rule 10 and its samples call
+  tools of the first alias in sorted order (real ones when that box has a
+  read-only and a gated tool, else marked "sample names"). Default ids are
+  `<qualified name>#N`; as on one server, calls outstanding at once
+  (parallel regions) need explicit ids and `whenCall` guards. One machine
+  may span boxes; each gated call is approved separately (parallel ones
+  share one round trip). Test with
+  `wrapMcpServers({ fs: …, github: … }, { blob: { key } })` — see
+  `packages/projection/test/multi/code-mode.test.ts` and the recording
+  servers in `test/multi/helpers.ts`.
 - After a `toolCall`, wait in a state for one of these events, each carrying
   the `callId` of the call it answers:
   - `TOOL_RESULT { callId, result }` — the call succeeded

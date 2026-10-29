@@ -352,6 +352,17 @@ function listNames(names: string[]): string {
 }
 
 /**
+ * The did-you-mean lead of an unknown-tool hint (R34, R40): `Did you mean
+ * "a" or "b"? ` with the closest declared tools ({@link suggestTools}) —
+ * box-aware and qualified on a multi-server view — or `''` when nothing
+ * qualifies. Every name is S5-untrusted: neutralized, capped and quoted.
+ */
+export function didYouMeanHint(catalog: ServerCatalog, name: string): string {
+  const suggestions = suggestTools(catalog, name).map(inertName);
+  return suggestions.length === 0 ? '' : `Did you mean ${listNames(suggestions)}? `;
+}
+
+/**
  * The `validate` error for a tool name the catalog does not declare, from
  * `call_tool` or `describe_tool` (R34, R35): names the closest declared
  * tools when there are any, then points at `search_tools`. A model that
@@ -365,8 +376,7 @@ export function unknownToolError(
   name: string,
   via: 'call_tool' | 'describe_tool',
 ): ProjectionError {
-  const suggestions = suggestTools(catalog, name).map(inertName);
-  const didYouMean = suggestions.length === 0 ? '' : `Did you mean ${listNames(suggestions)}? `;
+  const didYouMean = didYouMeanHint(catalog, name);
   if (isBoxedCatalog(catalog)) return unknownBoxedToolError(catalog, name, via, didYouMean);
   return new ProjectionError(
     'validate',

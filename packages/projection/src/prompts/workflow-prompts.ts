@@ -12,7 +12,9 @@
  * fragments are the declared arguments, and the only wrapped-server-controlled
  * fragment is the catalog identity (S5). Both are neutralized, length-capped,
  * and rendered as JSON string literals before interpolation so they cannot
- * forge structure inside the returned guidance.
+ * forge structure inside the returned guidance. On a multi-server facade the
+ * prompts name the boxes by their host aliases instead, never a
+ * server-reported identity (R39, R45).
  */
 
 import {
@@ -21,6 +23,7 @@ import {
   neutralizeControlChars,
 } from '../text-safety.js';
 import type { ServerCatalog } from '../types.js';
+import { boxesLabel, isBoxedCatalog } from '../catalog/boxes.js';
 import { RESOURCE_URIS } from '../mrtr/discover.js';
 
 const MAX_ARG_CHARS = 200;
@@ -39,10 +42,11 @@ function inertArg(value: string | undefined, fallback: string): string {
 /**
  * Inert rendering for the wrapped server's identity (S5-hostile): neutralized,
  * length-capped, and emitted as a JSON string literal — the literal supplies
- * its own quotes.
+ * its own quotes. A multi-server view is named by its host-chosen aliases
+ * (`the toolboxes fs, github`), grammar-checked and safe to print raw.
  */
 function inertIdentity(catalog: ServerCatalog): string {
-  return inertIdentityText(catalog.identity);
+  return isBoxedCatalog(catalog) ? boxesLabel(catalog) : inertIdentityText(catalog.identity);
 }
 
 export interface WorkflowPromptDefinition {
