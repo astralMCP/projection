@@ -525,3 +525,97 @@ Alternatives rejected:
   exposes no accounting hook; `newVariant` is the public seam.
 - **Documenting the gap** and leaving the limit as advisory. The PRD states
   the cap as a bound, and the §9 threat model assumes a hostile machine.
+
+## D16 — Multi-server facades are tool boxes with qualified names (2026-10-29)
+
+PRD §12.2 held "one facade over N servers" as a stretch goal, and R30 laid
+the groundwork: an alias-keyed catalog, a blob that records the server
+identity it was minted against, and a reserved `tools.<alias>.<name>`
+namespace. The maintainer's framing for the model-facing side is the **tool
+box**: each wrapped server is a box the model can see on a shelf, open and
+search, without the whole of every box in the system prompt.
+
+Decision (PRD §6.9, R39–R48):
+
+- `wrapMcpServers(sources, options)`; aliases are integrator-chosen
+  (`^[a-z][a-z0-9_]{0,23}$`, `tools` reserved, 1–16 sources) and are the only
+  server names any model or approver sees. `wrapMcpServer` is untouched,
+  byte for byte, and is not a one-source special case of the new entry.
+- Every tool on a multi-server facade is `<alias>.<name>`, split at the
+  first dot, on every surface: search, describe, call, types, `toolCall`,
+  approval copy, audit, `pending`, binding hash.
+- `serverIdentity` is the sorted set of `alias=identity` lines, so blobs bind
+  the server set, the alias mapping and the server versions.
+- Policy: per-source overrides by bare name, facade overrides by qualified
+  name; naming a tool in both is a wrap-time error.
+- Catalog: one `search_<alias>` per box plus a global `search_tools`
+  (switchable, `catalog.globalSearch`), one `describe_tool`, one
+  `call_tool`. An empty-query first page of `search_<alias>` leads with the
+  server's full instructions (the box overview).
+- System-prompt `instructions`: Projection's preamble plus a one-line-per-box
+  shelf; the servers' own instructions are not concatenated.
+- Code mode: `tools.<alias>` namespaces, `toolCall('<alias>.<name>')`,
+  overview grouped per box; one gated call, one approval, as today.
+- Approval copy names the box: `What <alias> says it does`,
+  `Tool: <alias>.<name>`.
+- Wrap is fail-closed; `optional: true` sources are skipped and reported on
+  `facade.skipped`.
+
+Why qualified names over host-style `alias__name` tool names. The obvious
+alternative — what multi-server hosts do today — exposes every wrapped tool
+as its own MCP tool named `<alias>__<name>`. R1 already rules out exposing
+wrapped tools, and the naming has its own costs: host tool-name limits (64
+characters at common model providers, no dots) truncate or reject long
+tool names once a prefix is added, and the facade's tool list grows by one
+per wrapped tool again, which is what the catalog projection exists to
+avoid. A qualified name is an argument to `call_tool`, not a tool name, so
+it has no length budget to share, and the dot cannot appear in an alias, so
+the split is unambiguous even for tool names that contain dots.
+
+Why the alias rides in the name. `pending`, the audit trail and the R36
+binding hash already record a tool name. Putting the alias inside that
+string makes every one of them box-aware for free — an approval for
+`fs.write_file` cannot be replayed as `github.write_file` — and leaves the
+blob schema at version 1. A separate `alias` field would have been a
+format change, a second field to keep consistent with the name, and a new
+tamper case to test.
+
+Why progressive instructions. Prompt size grows per server: GitHub's
+instructions alone are ~2 KB, and a facade over a handful of real servers
+would put most of its system prompt into guidance for boxes the task never
+opens. The shelf costs one line per box; the full text arrives with the
+first look into a box, which is when the model needs it. It also keeps each
+server's text attributed to its box rather than merged into one voice.
+
+Why fail-closed with opt-in optional. A facade that silently loses a
+server changes what the model can do, what the shelf says and which blobs
+resume, with nothing in the integrator's logs at the moment of the change.
+Failing the wrap makes a missing dependency a deployment error; `optional`
+lets an integrator say a box is a nice-to-have, and `facade.skipped` makes
+the skip observable.
+
+Why per-box and global search, with the default left to the eval. Per-box
+search is what makes a box a box: scoped results, a description the host
+writes, a natural place for the overview. A global search serves the task
+that does not know which box holds the tool. Whether the extra tool helps
+or only adds a choice for the model is an empirical question, so the switch
+ships and the default is decided by the multi-server eval.
+
+Alternatives rejected:
+
+- **One `search_tools({ server })` with the shelf in the instructions.**
+  Fewer tools, but the box has no tool description of its own to carry the
+  host's `description`, and models routinely omit optional filter
+  arguments, which makes it a global search with an unused parameter.
+- **Per-box search only.** Cross-box tasks and "which box has this?" would
+  cost one search per box before the first call.
+- **Merged system-prompt instructions.** The prompt-size argument above, and
+  third-party text from N servers would share one undifferentiated block.
+- **Skip-and-warn as the default.** See fail-closed above; the warning goes
+  to a log nobody reads at wrap time.
+
+Follow-up: the multi-server eval (PRD §13) — offline GitHub fake, filesystem
+reference server and MongoDB MCP server; direct mode with `<alias>__<name>`
+tools and concatenated instructions against Projection with the global
+search on and off. Its results set the `globalSearch` default and get their
+own entry here.
