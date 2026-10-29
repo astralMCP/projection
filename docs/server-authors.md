@@ -214,6 +214,57 @@ upstream request fails with a named error and the machine receives an ordinary
 forwards upstream elicitations (D7). If you pass your own connected `Client`,
 its elicitation handlers are yours to govern.
 
+## Several servers behind one facade (preview)
+
+`wrapMcpServers` fronts several servers at once, each as a **tool box**
+under an alias you choose:
+
+```ts
+import { wrapMcpServers } from '@astral-mcp/projection';
+
+const facade = await wrapMcpServers(
+  {
+    fs: filesServer, // an McpServer or a connected Client
+    github: { source: githubClient, description: 'Issues and pull requests.' },
+  },
+  {
+    blob: { key: blobKey },
+    policy: { 'github.delete_repository': 'deny' }, // keys are qualified names
+  },
+);
+export default createMcpHandler(facade.serverFactory);
+```
+
+Every tool is addressed as `<alias>.<name>` — `fs.write_file`,
+`github.issue_write` — in search results, `describe_tool`, `call_tool`,
+results and approval prompts (`Tool: fs.write_file`). A server's own dotted
+tool name stays in its box: if `fs` declares `github.delete_repo`, it is
+`fs.github.delete_repo`, gated by `fs.` policy keys, and its prompt reads
+`Tool: fs › "github.delete_repo"`. Aliases match `^[a-z][a-z0-9]{0,23}$`
+(`default` and `tools` are reserved); a facade takes 1–16 sources and at most
+4,000 tools in total. Policy keys must be qualified with a configured alias,
+and a source configuration accepts only `source`, `description` and
+`approvals` (a per-box approvals mode that overrides the global one) — any
+other key, an unknown alias in a policy key, or the same server under two
+aliases fails the wrap with a `validate` error before anything connects. If
+any source fails to connect or introspect, the wrap fails and every
+connection Projection opened is closed.
+
+`search_tools` searches every box: each entry carries its `box`, and a query
+word equal to an alias ranks that box's tools first without matching any
+tool's text, so one server cannot outrank another for its name. The
+facade's instructions are a short preamble plus one line per box (your
+`description`, else just the tool count); the servers' own instructions are
+not forwarded. Approval blobs bind the whole alias → server mapping and are
+keyed separately from single-server blobs: a blob never resumes on a facade
+with a different server set, alias mapping or server version, nor across
+facade kinds.
+
+This preview serves the catalog projection only. Not yet available: code mode
+(`projections.codeMode: true` fails the wrap), the per-box `search_<alias>`
+tools and box overviews (`catalog.globalSearch: false` fails the wrap), and
+`optional` sources.
+
 ## Legacy clients (pre-2026-07-28)
 
 By default a legacy client can run read-only machines and calls, and any

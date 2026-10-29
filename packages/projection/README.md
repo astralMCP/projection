@@ -65,6 +65,15 @@ still run read-only machines and calls, and get a structured error the
 moment a call needs approval. You can also wrap a connected SDK `Client` to put
 Projection in front of a server you don't own.
 
+### Several servers (preview)
+
+`wrapMcpServers({ fs: filesServer, github: { source: githubClient } }, options)`
+fronts several servers as tool boxes: tools are addressed as
+`<alias>.<name>` (`fs.write_file`), policy keys are qualified names, and
+`search_tools` searches every box. This preview serves the catalog
+projection only; code mode, per-box search tools and optional sources are
+not available yet. See `docs/server-authors.md`.
+
 ## Security model
 
 | Invariant                                               | How it holds                                                                                                                                      |
