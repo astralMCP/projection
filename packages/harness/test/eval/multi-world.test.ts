@@ -222,51 +222,48 @@ describe.skipIf(!installed)('multi world', () => {
     expect(Object.keys(surfaces).toSorted()).toEqual(['projection', 'projection-boxes']);
   }, 120_000);
 
-  describe.concurrent(
-    'golden fidelity: every golden runs clean through every mode and scores',
-    () => {
-      for (const task of MULTI_TASKS) {
-        const golden = GOLDEN[task.name] as Golden;
-        for (const mode of EVAL_MODES) {
-          it(`${task.name} via ${mode}`, async () => {
-            const world = await openMulti();
-            try {
-              const root = world.facts.root ?? '';
-              const calls = rebase(golden.calls, root);
-              const context = (finalText: string) => ({
-                calls: world.calls,
-                finalText,
-                facts: world.facts,
-              });
-              if (golden.mutates === true && task.verify !== undefined) {
-                expect(await task.verify(context(golden.answer ?? ''))).toBe(false);
-              }
-              const session = await openSession(mode, world);
-              try {
-                await replay(session, calls);
-              } finally {
-                await session.close();
-              }
-              expect(world.calls.map((c) => c.tool)).toEqual(golden.calls.map((c) => c.tool));
-              expect(task.expect(world.calls)).toBe(true);
-              const forbid = task.forbid;
-              if (forbid !== undefined) expect(world.calls.some((c) => forbid(c))).toBe(false);
-              if (task.verify !== undefined) {
-                expect(await task.verify(context(golden.answer ?? ''))).toBe(true);
-                if (golden.wrongAnswer !== undefined) {
-                  expect(await task.verify(context(golden.wrongAnswer))).toBe(false);
-                }
-              }
-            } finally {
-              await world.close();
+  describe('golden fidelity: every golden runs clean through every mode and scores', () => {
+    for (const task of MULTI_TASKS) {
+      const golden = GOLDEN[task.name] as Golden;
+      for (const mode of EVAL_MODES) {
+        it(`${task.name} via ${mode}`, async () => {
+          const world = await openMulti();
+          try {
+            const root = world.facts.root ?? '';
+            const calls = rebase(golden.calls, root);
+            const context = (finalText: string) => ({
+              calls: world.calls,
+              finalText,
+              facts: world.facts,
+            });
+            if (golden.mutates === true && task.verify !== undefined) {
+              expect(await task.verify(context(golden.answer ?? ''))).toBe(false);
             }
-          }, 120_000);
-        }
+            const session = await openSession(mode, world);
+            try {
+              await replay(session, calls);
+            } finally {
+              await session.close();
+            }
+            expect(world.calls.map((c) => c.tool)).toEqual(golden.calls.map((c) => c.tool));
+            expect(task.expect(world.calls)).toBe(true);
+            const forbid = task.forbid;
+            if (forbid !== undefined) expect(world.calls.some((c) => forbid(c))).toBe(false);
+            if (task.verify !== undefined) {
+              expect(await task.verify(context(golden.answer ?? ''))).toBe(true);
+              if (golden.wrongAnswer !== undefined) {
+                expect(await task.verify(context(golden.wrongAnswer))).toBe(false);
+              }
+            }
+          } finally {
+            await world.close();
+          }
+        }, 120_000);
       }
-    },
-  );
+    }
+  });
 
-  describe.concurrent('golden variants and wrong effects run clean against the real boxes', () => {
+  describe('golden variants and wrong effects run clean against the real boxes', () => {
     for (const task of MULTI_TASKS) {
       const golden = GOLDEN[task.name] as Golden;
       const cases: [string, SideEffect[], boolean][] = [
