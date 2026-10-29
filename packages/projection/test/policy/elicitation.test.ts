@@ -404,3 +404,46 @@ describe('buildElicitationCopy', () => {
     expect(copy.message).not.toContain('model');
   });
 });
+
+describe('buildElicitationCopy on a multi-server facade (R46, S6)', () => {
+  it('names the box in the title, the purpose line and the footer', () => {
+    const copy = buildElicitationCopy(call(), entry(), { box: 'fs', origin: 'direct' });
+    expect(copy.title).toBe('Approve (fs): write file');
+    expect(copy.toolName).toBe('fs.write_file');
+    expect(copy.message).toContain('What fs says it does: "Writes content to a file on disk."');
+    expect(copy.message).not.toContain('What the server says it does');
+    expect(copy.message.trim().endsWith('Tool: fs.write_file')).toBe(true);
+  });
+
+  it('prefixes ⚠ for a destructive tool and always renders the purpose line', () => {
+    const bare: ToolCatalogEntry = {
+      name: 'github.delete_repo',
+      inputSchema: { type: 'object' },
+      annotations: { destructiveHint: true },
+    };
+    const copy = buildElicitationCopy(call({ name: 'fs.github.delete_repo' }), bare, {
+      box: 'fs',
+    });
+    expect(copy.title).toMatch(/^⚠ Approve \(fs\): /);
+    expect(copy.message).toContain('What fs says it does: (no description)');
+    expect(copy.message).toContain('Tool: fs › "github.delete_repo" · workflow step');
+  });
+
+  it('hands the redaction hook the qualified name (R16)', () => {
+    const seen: string[] = [];
+    buildElicitationCopy(call(), entry(), {
+      box: 'fs',
+      redact: (name, args) => {
+        seen.push(name);
+        return args;
+      },
+    });
+    buildElicitationCopy(call(), entry(), {
+      redact: (name, args) => {
+        seen.push(name);
+        return args;
+      },
+    });
+    expect(seen).toEqual(['fs.write_file', 'write_file']);
+  });
+});

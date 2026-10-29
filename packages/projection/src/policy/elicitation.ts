@@ -39,7 +39,7 @@ export interface ElicitationCopy {
   title: string;
   /** Full human-readable summary (plain text with an indented JSON block). */
   message: string;
-  /** Tool name, taken from the catalog entry. */
+  /** Tool name, taken from the catalog entry; qualified with `box` when given. */
   toolName: string;
   /** Machine state path that requested the call (raw; render with care). */
   stateName: string;
@@ -57,6 +57,19 @@ export interface ElicitationCopyOptions {
    * (R35). Selects the footer; nothing else differs.
    */
   origin?: 'machine' | 'direct';
+  /**
+   * Multi-server facades (R40, R46): the alias of the box the tool lives
+   * in. `entry` is then the box's own catalog entry (bare name) and the
+   * call's name is qualified. The copy names the box (R46): the title reads
+   * `Approve (fs): …` (`⚠ Approve (fs): …` when destructive), the purpose
+   * line `What fs says it does: "…"` — always rendered, `(no description)`
+   * when the server gives none — and the footer `Tool: fs.write_file`, or
+   * `Tool: fs › "github.delete_repo"` when the bare name has a dot, so it
+   * never reads as another box's tool. The redaction hook receives the
+   * qualified name. The alias is the host's, never a server-reported name
+   * (S6).
+   */
+  box?: string;
   /**
    * Backstop cap on the whole rendered args JSON, in characters. Default
    * 4096. Each string leaf is independently capped at 512 characters first.
@@ -103,7 +116,9 @@ export function buildElicitationCopy(
   let renderedArgs: string;
   try {
     const displayArgs =
-      options.redact !== undefined ? options.redact(entry.name, cloneArgs(call.args)) : call.args;
+      options.redact !== undefined
+        ? options.redact(qualifiedName(entry, options.box), cloneArgs(call.args))
+        : call.args;
     renderedArgs = renderArgsJson(displayArgs, maxArgsChars);
   } catch {
     renderedArgs = REDACTION_FAILED;
@@ -121,36 +136,64 @@ export function buildElicitationCopy(
   // dispatch value so the approver sees "… — create", not just "issue".
   const method = dispatchMethod(call.args, entry);
   const action = method !== undefined ? `${friendly} — ${method}` : friendly;
-  const title = destructive ? `⚠ Approve: ${action}` : `Approve: ${action}`;
+  // R46: on a multi-server facade the title and the purpose line name the
+  // box by its host alias (S6); single-server copy is unchanged.
+  const { box } = options;
+  const approve = box !== undefined ? `Approve (${box})` : 'Approve';
+  const title = destructive ? `⚠ ${approve}: ${action}` : `${approve}: ${action}`;
 
   const lines: string[] = [];
   if (destructive) lines.push(DESTRUCTIVE_WARNING, '');
   // The purpose is the wrapped server's own words (S5-untrusted), so it is
   // attributed and quoted as inert data — never rendered as prose in the
-  // assistant's voice, where "safe, pre-approved" copy could mislead.
-  if (purpose !== undefined)
+  // assistant's voice, where "safe, pre-approved" copy could mislead. On a
+  // multi-server facade it is always rendered, so the approver always sees
+  // which box is asking.
+  if (box !== undefined) {
+    lines.push(
+      `What ${box} says it does: ${purpose !== undefined ? JSON.stringify(purpose) : '(no description)'}`,
+      '',
+    );
+  } else if (purpose !== undefined) {
     lines.push(`What the server says it does: ${JSON.stringify(purpose)}`, '');
+  }
   lines.push('Details:', indentBlock(neutralizeControlChars(renderedArgs, { allowNewline: true })));
   // Compact technical footer: exact tool id and, for a machine step, the
   // workflow step that asked (R16). Kept plain — "requested by the model"
   // style phrasing was jargon to approvers. The state is model-authored, so
   // quoted as an inert JSON literal.
   const safeState = neutralizeControlChars(capLength(call.stateName, MAX_STATE_NAME_CHARS));
+  const toolId = options.box !== undefined ? boxedToolId(options.box, safeName) : safeName;
   lines.push(
     '',
     options.origin === 'direct'
-      ? `Tool: ${safeName}`
-      : `Tool: ${safeName} · workflow step ${JSON.stringify(safeState)}`,
+      ? `Tool: ${toolId}`
+      : `Tool: ${toolId} · workflow step ${JSON.stringify(safeState)}`,
   );
 
   return {
     title,
     message: lines.join('\n'),
-    toolName: entry.name,
+    toolName: qualifiedName(entry, options.box),
     stateName: call.stateName,
     args: renderedArgs,
     destructive,
   };
+}
+
+/** The name the gate knows the tool by: qualified on a multi-server facade (R40). */
+function qualifiedName(entry: ToolCatalogEntry, box: string | undefined): string {
+  return box !== undefined ? `${box}.${entry.name}` : entry.name;
+}
+
+/**
+ * The footer's tool id on a multi-server facade (R46): `<alias>.<name>`, or
+ * `<alias> › "<name>"` when the bare name contains a dot, so the `fs` box's
+ * `github.delete_repo` never reads as the `github` box's `delete_repo`.
+ * `safeName` is already neutralized and capped.
+ */
+function boxedToolId(box: string, safeName: string): string {
+  return safeName.includes('.') ? `${box} › ${JSON.stringify(safeName)}` : `${box}.${safeName}`;
 }
 
 /** Top-level argument names that conventionally select a tool's sub-action. */

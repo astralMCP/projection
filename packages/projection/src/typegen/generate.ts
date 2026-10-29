@@ -18,9 +18,8 @@ import {
   purposeSentence,
 } from '../text-safety.js';
 import {
-  type ApprovalsMode,
   type PolicyContext,
-  type PolicyOverrides,
+  type PolicyOptions,
   dedupeTools,
   type ServerCatalog,
   type ToolCatalog,
@@ -373,12 +372,11 @@ export function generateToolTypes(
   };
 }
 
-export interface GenerateToolTypesOptions {
-  /** Per-tool policy overrides (R14): decide the posture wording in docs and overview. */
-  policy?: PolicyOverrides | undefined;
-  /** Approvals mode (R49): decides the posture wording with `policy`. */
-  approvals?: ApprovalsMode | undefined;
-}
+/**
+ * The policy options (R14, R49) decide the posture wording in the doc
+ * comments and the overview.
+ */
+export type GenerateToolTypesOptions = PolicyOptions;
 
 /**
  * Drop tools whose name repeats an earlier one, first occurrence wins.

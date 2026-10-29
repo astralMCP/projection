@@ -656,6 +656,69 @@ tools and concatenated instructions against Projection with the global
 search on and off. Its results set the `globalSearch` default and get their
 own entry here.
 
+Implementation (multi-server core, 2026-10-29): the first `wrapMcpServers`
+slice (R39–R43, R46, R48, R49) adds no second gate. The facade builds one
+merged view of its boxes (`catalog/boxes.ts`): an ordinary `ServerCatalog`
+whose entries carry qualified names, deduplicated per box, whose `identity`
+is the R41 server-set string, plus its members (each tool's box, bare entry
+and qualified entry) and per-box tool counts. Everything that resolves a
+name against a catalog — `findTool`, `decidePolicy` with facade policy keyed
+by qualified names, the R36 binding hash, the blob's `pending` entries — is
+therefore box-aware without a code path of its own. The few places that
+must know they serve boxes ask `isBoxedCatalog` (a brand set only by
+`buildBoxedCatalog`, never by shape): call routing (`routeCall` sends the
+bare name to the box's connection, for `call_tool` and for the machine host
+alike), the box-scoped did-you-mean and unknown-tool messages, the describe
+and search headers, and the approval copy, which is built from the box's
+own entry plus the host alias (R46, S6). A box's bare entry is copy-only: it
+is never handed to `decidePolicy`, since its name can spell another box's
+qualified name.
+
+The key domain is declared, not inferred: each facade passes its kind
+(`blobDomain: 'single' | 'multi'`) in the gate deps, and `blobKeyDomain`
+checks it against the brand, failing closed (`terminal`) on a mismatch — a
+spread copy of a view loses the brand, and must never seal or open in the
+`single` domain. Undeclared (a direct library caller), a catalog carrying
+the view's alias or a `multi:` identity without the brand is refused the
+same way; a single-server facade declares `single`, so a server that
+reports a `multi:` name still works there and R41's domains keep the kinds
+apart.
+
+The per-source approvals mode (R49) rides `PolicyContext.toolApprovals`,
+resolved at wrap time from the view's members to one entry per qualified
+tool whose box has a mode — the policy engine never re-derives a box by
+splitting a name, so a server's dotted tool name can only take its own
+box's mode. The policy fields every deciding surface takes (`policy`,
+`approvals`, `toolApprovals`) are one `PolicyOptions` type.
+
+Wrapping is fail-closed (R47): configuration mistakes — including a missing
+`blob.key` and an `McpServer` already attached to a transport — are
+`validate` errors before anything connects; once sources are connected,
+any throw closes every connection Projection opened, and caller-owned
+`Client`s stay open (after a failed wrap and after `close()`). The R48
+total is counted before the per-box dedupe, so repeated names cannot slip
+a server past it.
+
+Interim gaps, until the follow-up PRs:
+
+- code mode is off: it defaults off, `projections.codeMode: true` fails the
+  wrap, `projections.catalog: false` fails it too (the catalog is the only
+  projection served), and `describe_tool` returns no types (its `types`
+  argument says so) — R45 typegen, `discover_apis` and the workflow prompts
+  still print the single-server identity (listed under `TODO(R45)` in
+  `multi/facade.ts`);
+- `optional: true` is unsupported (fails the wrap; `optional: false` is
+  accepted), and `introspectTimeoutMs` is not built (R47);
+- `catalog.globalSearch: false` is unsupported, and there are no
+  `search_<alias>` tools or box overviews yet (R43); the instructions carry
+  a minimal shelf (alias, host description, tool count) without the R44
+  fallback to the server's first sentence.
+
+Alternative rejected: running `wrapMcpServer`'s pipeline once per box and
+dispatching on the alias in front of N single-server facades — N blob
+identities and key domains to reconcile, and policy, search and the
+did-you-mean hint would each need a cross-facade layer anyway.
+
 ## D17 — Approvals mode: `every-write` or `destructive-only` (2026-10-29)
 
 History: a flag to skip the approval on non-destructive writes was floated
@@ -701,8 +764,9 @@ any context whose `approvals` is not one of the two modes, so even an old
 overrides map naming a tool `approvals` fails closed. Annotation hints are
 read with own-property semantics, like overrides. Direct library users of
 `executeMachine` / `generateToolTypes` validate the option with the exported
-`assertApprovalsMode`. The per-source mode of a multi-server facade will be
-an optional field of the same context.
+`assertApprovalsMode`. The per-source mode of a multi-server facade is an
+optional field of the same context, `toolApprovals`, resolved per qualified
+tool (D16, implementation addendum).
 
 The mode is deliberately not bound into blobs: it only ever relaxes `ask` to
 `auto`, a pending entry always needs an accepted verdict to run, and `deny`

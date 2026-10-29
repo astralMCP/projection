@@ -35,11 +35,15 @@ export {
   type SanitizedSchema,
 } from './schema-safety.js';
 export {
+  searchBoxes,
   searchTools,
   summarizeTool,
   tokenize,
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
+  type BoxedSearchPage,
+  type BoxedToolSummary,
+  type SearchBoxesOptions,
   type SearchToolsArgs,
   type SearchToolsOptions,
   type SearchToolsPage,

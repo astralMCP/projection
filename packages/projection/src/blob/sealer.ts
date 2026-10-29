@@ -38,8 +38,11 @@
  *   encrypted under a distinct derived key, so the 96-bit random GCM nonce
  *   can never repeat *under the same key* even across horizontally scaled
  *   instances sealing concurrently (nonce-reuse would be catastrophic for
- *   GCM). Fixed info string `@astral-mcp/projection/blob/v1` domain-separates the
- *   derivation.
+ *   GCM). A fixed info string domain-separates the derivation:
+ *   `@astral-mcp/projection/blob/v1` for single-server facades and
+ *   `@astral-mcp/projection/blob/v1/multi` for multi-server facades (R41,
+ *   D16), so a blob never authenticates on the other facade kind under the
+ *   same key, whatever the server identity strings say.
  * - **deflateRaw** compression (R23), not brotli: brotli's default quality
  *   is far too slow for the seal+verify+rehydrate p95 < 100 ms budget
  *   (PRD §10), and at speed-comparable quality settings its ratio edge on
@@ -88,7 +91,16 @@ const KEY_BYTES = 32;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
-const HKDF_INFO = '@astral-mcp/projection/blob/v1';
+/**
+ * HKDF info strings per key domain (R41). A single-server identity is
+ * server-reported and may spell a multi-server one, so the identity check
+ * alone cannot keep the two facade kinds apart; deriving their keys in
+ * disjoint domains does.
+ */
+const HKDF_INFO: Readonly<Record<BlobKeyDomain, string>> = {
+  single: '@astral-mcp/projection/blob/v1',
+  multi: '@astral-mcp/projection/blob/v1/multi',
+};
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 // ---------------------------------------------------------------------------
@@ -140,9 +152,15 @@ function assertConfigKeys(config: BlobSealerConfig): void {
   }
 }
 
-/** Derive the actual AES key from developer IKM via HKDF-SHA256 (R19). */
-function deriveKey(ikm: Uint8Array, salt: Buffer): Buffer {
-  return Buffer.from(hkdfSync('sha256', ikm, salt, HKDF_INFO, KEY_BYTES));
+/**
+ * Which facade kind a blob belongs to (R41): `single` for `wrapMcpServer`,
+ * `multi` for `wrapMcpServers`. Selects the HKDF info string; nothing else.
+ */
+export type BlobKeyDomain = 'single' | 'multi';
+
+/** Derive the actual AES key from developer IKM via HKDF-SHA256 (R19, R41). */
+function deriveKey(ikm: Uint8Array, salt: Buffer, domain: BlobKeyDomain): Buffer {
+  return Buffer.from(hkdfSync('sha256', ikm, salt, HKDF_INFO[domain], KEY_BYTES));
 }
 
 // ---------------------------------------------------------------------------
@@ -204,8 +222,8 @@ function parseEnvelope(blob: string): ParsedEnvelope {
   };
 }
 
-function decryptWith(envelope: ParsedEnvelope, ikm: Uint8Array): Buffer {
-  const key = deriveKey(ikm, envelope.salt);
+function decryptWith(envelope: ParsedEnvelope, ikm: Uint8Array, domain: BlobKeyDomain): Buffer {
+  const key = deriveKey(ikm, envelope.salt, domain);
   const decipher = createDecipheriv('aes-256-gcm', key, envelope.iv);
   decipher.setAAD(envelope.aad);
   decipher.setAuthTag(envelope.tag);
@@ -213,11 +231,15 @@ function decryptWith(envelope: ParsedEnvelope, ikm: Uint8Array): Buffer {
 }
 
 /** Try the current key, then each previous key (R22 rotation grace). */
-function decryptWithAnyKey(envelope: ParsedEnvelope, config: BlobSealerConfig): Buffer {
+function decryptWithAnyKey(
+  envelope: ParsedEnvelope,
+  config: BlobSealerConfig,
+  domain: BlobKeyDomain,
+): Buffer {
   const candidates = [config.key, ...(config.previousKeys ?? [])];
   for (const ikm of candidates) {
     try {
-      return decryptWith(envelope, ikm);
+      return decryptWith(envelope, ikm, domain);
     } catch {
       // Auth failure under this key; try the next. Never leak which key or
       // why — the message below is uniform for all authentication failures.
@@ -381,16 +403,21 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
  * JSON → deflateRaw → AES-256-GCM under an HKDF-SHA256 per-blob derived key,
  * with the envelope header as AAD. Throws ProjectionError phase `terminal` if
  * the sealed envelope exceeds `maxBlobBytes` (default 128 KB) or the config
- * keys are malformed.
+ * keys are malformed. `domain` selects the facade kind's key domain (R41);
+ * it defaults to `single`, the only domain before multi-server facades.
  */
-export function sealBlob(payload: BlobPayload, config: BlobSealerConfig): string {
+export function sealBlob(
+  payload: BlobPayload,
+  config: BlobSealerConfig,
+  domain: BlobKeyDomain = 'single',
+): string {
   assertKey(config.key, 'key');
   const compressed = deflateRawSync(Buffer.from(JSON.stringify(payload), 'utf8'), { level: 9 });
   const salt = randomBytes(SALT_BYTES);
   const iv = randomBytes(IV_BYTES);
   const saltPart = salt.toString('base64url');
   const ivPart = iv.toString('base64url');
-  const cipher = createCipheriv('aes-256-gcm', deriveKey(config.key, salt), iv);
+  const cipher = createCipheriv('aes-256-gcm', deriveKey(config.key, salt, domain), iv);
   cipher.setAAD(buildAad(saltPart, ivPart));
   const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final()]);
   const tag = cipher.getAuthTag();
@@ -426,6 +453,11 @@ export interface OpenBlobOptions {
   /** Identity of the wrapped server handling the retry (R30). */
   serverIdentity: string;
   config: BlobSealerConfig;
+  /**
+   * Key domain of the facade opening the blob (R41). Default `single`. A
+   * blob sealed in the other domain fails authentication.
+   */
+  domain?: BlobKeyDomain | undefined;
   /** Clock override for testability, Unix ms. Default `Date.now()`. */
   now?: number | undefined;
 }
@@ -462,7 +494,7 @@ export function openBlob(blob: string, options: OpenBlobOptions): BlobPayload {
 
   // (1) Parse + decrypt/authenticate.
   const envelope = parseEnvelope(blob);
-  const compressed = decryptWithAnyKey(envelope, options.config);
+  const compressed = decryptWithAnyKey(envelope, options.config, options.domain ?? 'single');
   let payload: unknown;
   try {
     // Decompression cap (defense-in-depth): bound the inflate output
