@@ -492,6 +492,35 @@ function fileContentsFor(args: FakeArgs): unknown {
   );
 }
 
+/**
+ * acme/widgets' tree as `get_repository_tree` lists it: the root entries,
+ * plus the `src` files when `recursive`; `path_filter` keeps the entries
+ * whose path starts with it (leading `./` or `/` ignored), as the real
+ * server's prefix filter does.
+ */
+function repositoryTreeFor(args: FakeArgs): unknown {
+  if (!isRepo(args, HARD_REPO)) return { ok: true };
+  const entries = [
+    ...HARD_ROOT_FILES.map((entry) => ({ path: entry.name, type: entry.type })),
+    ...(args['recursive'] === true
+      ? HARD_SRC_FILES.map((name) => ({ path: `src/${name}`, type: 'file' as const }))
+      : []),
+  ];
+  const filter = (str(args['path_filter']) ?? '').trim().replace(/^(\.\/|\/)+/, '');
+  return { sha: 'deadbeef', tree: entries.filter((entry) => entry.path.startsWith(filter)) };
+}
+
+/**
+ * A comment needs a `body` or a `reaction` (the schema requires neither;
+ * the real server rejects the call without one).
+ */
+function addIssueCommentFor(args: FakeArgs): unknown {
+  if (args['body'] === undefined && args['reaction'] === undefined) {
+    return fakeError('missing required parameter: body (or reaction)');
+  }
+  return { ok: true };
+}
+
 function createBranchFor(args: FakeArgs): unknown {
   const from = lower(args['from_branch']).replace(/^refs\/heads\//, '');
   if (isRepo(args, HARD_REPO) && from !== '' && !HARD_BRANCHES.includes(from)) {
@@ -673,10 +702,8 @@ export const GITHUB_FAKE_ANSWERS: Readonly<Record<string, FakeAnswer>> = {
       : { ok: true },
   create_branch: createBranchFor,
   get_file_contents: fileContentsFor,
-  get_repository_tree: (args) =>
-    isRepo(args, HARD_REPO)
-      ? { sha: 'deadbeef', tree: HARD_ROOT_FILES.map((e) => ({ path: e.name, type: e.type })) }
-      : { ok: true },
+  get_repository_tree: repositoryTreeFor,
+  add_issue_comment: addIssueCommentFor,
   list_starred_repositories: () =>
     USER_STARRED.map((fullName) => ({
       full_name: fullName,

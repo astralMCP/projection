@@ -20,7 +20,7 @@ export function githubWorld(options: WorldOptions = {}): ServerWorld {
     instructions: fake.instructions,
     calls: fake.calls,
     facts: {},
-    directSystemPrompt: GITHUB_DIRECT_SYSTEM_PROMPT,
+    hostSystemPrompt: GITHUB_DIRECT_SYSTEM_PROMPT,
     close: async () => {},
   };
 }

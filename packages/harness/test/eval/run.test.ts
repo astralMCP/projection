@@ -18,6 +18,7 @@ import {
   hostToolName,
   modeApplies,
   GITHUB_CATALOG,
+  GITHUB_DIRECT_SYSTEM_PROMPT,
   HOST_TOOL_NAME_MAX,
   HOST_TOOL_NAME_PATTERN,
   MODEL_PRESETS,
@@ -142,6 +143,52 @@ describe('tool-choice eval plumbing (offline)', () => {
     });
   });
 
+  it('records the transcript as the model saw it, and the served model', () => {
+    for (const record of records) {
+      expect(record.servedModel).toBe('scripted');
+      const transcript = record.transcript;
+      expect(transcript?.system).toBe(
+        String(
+          seen.find((p) => toolNames(p.tools).includes('call_tool') === (record.mode !== 'direct'))
+            ?.system,
+        ),
+      );
+      const messages = transcript?.messages ?? [];
+      expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+      expect(typeof messages[0]?.content).toBe('string');
+      const blocks = (at: number): { type: string; name?: string; content?: string }[] => {
+        const content = messages[at]?.content;
+        return Array.isArray(content) ? content : [];
+      };
+      const call = blocks(1)[0];
+      expect(call?.type).toBe('tool_use');
+      expect(call?.name).toBe(record.toolUses[0]?.name);
+      const result = blocks(2)[0];
+      expect(result?.type).toBe('tool_result');
+      expect(typeof result?.content).toBe('string');
+      expect(messages[3]?.content).toEqual([{ type: 'text', text: 'Done.' }]);
+    }
+    // The result text in the transcript is exactly what the model was sent.
+    const sent = seen.flatMap((p) => {
+      const last = p.messages.at(-1);
+      return Array.isArray(last?.content)
+        ? last.content.flatMap((b) => (b.type === 'tool_result' ? [b.content] : []))
+        : [];
+    });
+    const recorded = records.flatMap((r) =>
+      (r.transcript?.messages ?? []).flatMap((m) =>
+        Array.isArray(m.content)
+          ? m.content.flatMap((b) =>
+              b.type === 'tool_result' ? [(b as { content: string }).content] : [],
+            )
+          : [],
+      ),
+    );
+    // (Each request's params share the episode's growing messages array, so
+    // the same result shows up once per request: compare the distinct texts.)
+    expect(recorded.toSorted()).toEqual([...new Set(sent.map(String))].toSorted());
+  });
+
   it('offers the model the right tool surface and system prompt per mode', () => {
     const directRequest = seen.find((p) => toolNames(p.tools).includes('get_me'));
     const projectionRequest = seen.find((p) => toolNames(p.tools).includes('call_tool'));
@@ -160,9 +207,8 @@ describe('tool-choice eval plumbing (offline)', () => {
       'search_tools',
     ]);
     expect(String(projectionRequest?.system)).toContain('Tool selection guidance');
-    expect(String(projectionRequest?.system)).not.toContain(
-      'You operate GitHub through the tools provided.',
-    );
+    // The host's framing comes first in every mode; then the facade's instructions.
+    expect(String(projectionRequest?.system).startsWith(GITHUB_DIRECT_SYSTEM_PROMPT)).toBe(true);
 
     // The request shape: streaming params with the cache marker and no forced tool_choice.
     expect(directRequest?.cache_control).toEqual({ type: 'ephemeral' });
@@ -824,5 +870,124 @@ describe('tool-choice eval plumbing (offline)', () => {
     expect(formatToolChoiceReport(records)).not.toContain('search_github');
     // Single-server records carry no box breakdown.
     expect(records.every((r) => r.projection?.searchBoxes === undefined)).toBe(true);
+  });
+
+  it('summarizes each tier on its own episodes: turns, tokens, cost, discovery, box routing', () => {
+    const base = records.find((r) => r.mode === 'projection') as EpisodeRecord;
+    const multi = (
+      success: boolean,
+      boxes: NonNullable<EpisodeRecord['boxes']>,
+      apiTurns: number,
+    ): EpisodeRecord => ({
+      ...base,
+      mode: 'projection',
+      task: 'global-who-is-grace',
+      tier: 'multi',
+      world: 'multi',
+      success,
+      apiTurns,
+      budgetTurns: apiTurns - 1,
+      boxes,
+      projection: {
+        route: 'call_tool',
+        searchTools: boxes.usedGlobalSearch ? 1 : 0,
+        describeTool: 2,
+        discoverApis: 0,
+        searchBoxes: { fs: 0, github: 0, mongo: 1 },
+        approvals: 0,
+      },
+    });
+    const routed = [
+      multi(
+        true,
+        { needed: ['mongo'], usedGlobalSearch: true, firstCallRightBox: true, wrongBoxCalls: 0 },
+        6,
+      ),
+      multi(
+        false,
+        { needed: ['mongo'], usedGlobalSearch: true, firstCallRightBox: false, wrongBoxCalls: 2 },
+        10,
+      ),
+      multi(
+        true,
+        { needed: ['mongo'], usedGlobalSearch: false, firstCallRightBox: true, wrongBoxCalls: 1 },
+        8,
+      ),
+    ];
+    const summary = summarizeToolChoice([base, ...routed]);
+    const tier = summary.tiers.find((t) => t.tier === 'multi' && t.mode === 'projection');
+    // Only the multi episodes: the basic-tier record's 2 turns do not mix in.
+    expect(tier).toMatchObject({
+      scored: 3,
+      successes: 2,
+      meanTurns: 8,
+      meanBudgetTurns: 7,
+      meanSearchTools: 2 / 3,
+      meanDescribeTool: 2,
+      meanSearchBoxes: { fs: 0, github: 0, mongo: 1 },
+      routing: {
+        scored: 3,
+        usedGlobalSearch: 2,
+        successWithGlobalSearch: 1,
+        firstCallRightBox: 2,
+        withDetour: 2,
+        meanWrongBoxCalls: 1,
+      },
+    });
+    expect(tier?.meanInputTokens).toBe(base.usage.inputTokens + base.usage.cacheReadInputTokens);
+    expect(tier?.estimatedUsd).toBe(0);
+    const basicTier = summary.tiers.find((t) => t.tier === 'basic' && t.mode === 'projection');
+    expect(basicTier?.meanTurns).toBe(2);
+    expect(basicTier?.routing).toBeUndefined();
+
+    const report = formatToolChoiceReport([base, ...routed]);
+    const block = report.slice(report.indexOf('multi tier'));
+    expect(block).toMatch(/global search \(ok\)\s+1st call right box\s+detours \(mean calls\)/);
+    expect(block).toMatch(
+      /scripted\/projection\s+2\/3\s+67%.*search_tools 0\.7, search_fs 0\.0, search_github 0\.0, search_mongo 1\.0, describe 2\.0, discover 0\.0\s+2\/3 \(1 ok\)\s+2\/3\s+2\/3 \(1\.0\)/,
+    );
+    expect(report).toMatch(/^basic tier\s+success/m);
+  });
+
+  it('runs episodes interleaved by run and task, and returns them in plan order', async () => {
+    const started: string[] = [];
+    const quick: ModelCaller = async (params) => {
+      const prompt = String(params.messages[0]?.content);
+      const mode = toolNames(params.tools).includes('call_tool') ? 'projection' : 'direct';
+      started.push(`${prompt.includes('username') ? 'who' : 'search'}/${mode}`);
+      return message([{ type: 'text', text: 'Done.' }], 'end_turn');
+    };
+    const indices: number[] = [];
+    const plan = await runToolChoiceEval({
+      models: [preset],
+      modes: ['direct', 'projection'],
+      tasks: resolveTasks('who-am-i,search-repos'),
+      runs: 2,
+      caller: quick,
+      onEpisode: (_record, index) => indices.push(index),
+    });
+    // Ran: run 0 of each task in each mode, then run 1.
+    expect(started).toEqual([
+      'who/direct',
+      'who/projection',
+      'search/direct',
+      'search/projection',
+      'who/direct',
+      'who/projection',
+      'search/direct',
+      'search/projection',
+    ]);
+    // Returned in model -> mode -> task -> run order, each at its index.
+    expect(plan.map((r) => `${r.mode} ${r.task} ${r.run}`)).toEqual([
+      'direct who-am-i 0',
+      'direct who-am-i 1',
+      'direct search-repos 0',
+      'direct search-repos 1',
+      'projection who-am-i 0',
+      'projection who-am-i 1',
+      'projection search-repos 0',
+      'projection search-repos 1',
+    ]);
+    expect(indices).toEqual([0, 4, 2, 6, 1, 5, 3, 7]);
   });
 });

@@ -19,6 +19,10 @@
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
+ *   PROJ_EVAL_BOX_DESCRIPTIONS=1  multi tier, Projection modes: give the boxes host descriptions (default off)
+ *
+ * Decision runs (the globalSearch default, prompt changes) use
+ * PROJ_EVAL_TIERS=multi, so no other tier's episodes mix into the numbers.
  *
  *   PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-choice.live.test.ts
  *
@@ -74,6 +78,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
+    const boxDescriptions = process.env['PROJ_EVAL_BOX_DESCRIPTIONS'] === '1';
     // No knob yet: the defaults, recorded in the results file so a run from
     // before the action-turn budget is distinguishable from one after it.
     const maxTurns = DEFAULT_MAX_TURNS;
@@ -89,14 +94,16 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         runs,
         maxTurns,
         maxTotalTurns,
+        boxDescriptions,
+        hostFraming: true,
       },
     );
     // eslint-disable-next-line no-console
     console.info(`results file: ${results.path} (rewritten after every episode)`);
 
-    // Completion order, not plan order: a durable partial file matters more
-    // than ordering, and the final write below is in plan order anyway.
-    const completed: EpisodeRecord[] = [];
+    // Each record in its plan slot: the partial file is in plan order too
+    // (the writer skips the slots still running).
+    const slots: EpisodeRecord[] = [];
     const records = await runToolChoiceEval({
       models,
       modes,
@@ -105,11 +112,12 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       maxTurns,
       maxTotalTurns,
       concurrency,
-      onEpisode: (record) => {
+      boxDescriptions,
+      onEpisode: (record, index) => {
         // eslint-disable-next-line no-console -- progress while a long run goes
         console.info(formatEpisodeLine(record));
-        completed.push(record);
-        results.write(completed);
+        slots[index] = record;
+        results.write(slots);
       },
     });
 

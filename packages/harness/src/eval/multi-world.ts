@@ -39,8 +39,20 @@ export const MULTI_BOXES: readonly { alias: BoxAlias; world: ServerWorld['name']
   { alias: 'mongo', world: 'mongodb' },
 ];
 
+/** The multi world's host framing (every mode's system prompt starts with it). */
 export const MULTI_DIRECT_SYSTEM_PROMPT =
   "You operate the user's GitHub account, project files and MongoDB deployment through the tools provided. Complete the user's task, then stop.";
+
+/**
+ * Host-written box descriptions, passed to `wrapMcpServers` only when the
+ * `boxDescriptions` variant is on (PROJ_EVAL_BOX_DESCRIPTIONS=1); by
+ * default the boxes carry none.
+ */
+export const MULTI_BOX_DESCRIPTIONS: Readonly<Record<BoxAlias, string>> = {
+  github: 'GitHub: issues, PRs and repos for acme/widgets',
+  fs: "The user's project files",
+  mongo: 'The shop MongoDB deployment',
+};
 
 /** `<alias>.<name>`: how the multi world records (and Projection names) a box's tool. */
 export function qualifiedName(alias: string, name: string): string {
@@ -104,7 +116,7 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
     instructions: undefined,
     calls,
     facts: Object.assign({}, ...boxes.map((box) => box.world.facts)),
-    directSystemPrompt: MULTI_DIRECT_SYSTEM_PROMPT,
+    hostSystemPrompt: MULTI_DIRECT_SYSTEM_PROMPT,
     close,
   };
 }

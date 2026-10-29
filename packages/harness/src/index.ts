@@ -125,6 +125,9 @@ export {
   type ModelCaller,
   type ModelPreset,
   type ToolUseRecord,
+  type Transcript,
+  type TranscriptBlock,
+  type TranscriptMessage,
 } from './eval/agent.js';
 export {
   promptFor,
@@ -143,7 +146,16 @@ export {
 } from './eval/tasks.js';
 export { FILESYSTEM_TASKS } from './eval/filesystem-tasks.js';
 export { MONGODB_TASKS } from './eval/mongodb-tasks.js';
-export { MULTI_TASKS, unbox, unboxCall } from './eval/multi-tasks.js';
+export {
+  boxOf,
+  isBoxWrite,
+  shippedCounts,
+  taskBoxes,
+  unbox,
+  unboxCall,
+  wrongShippedComment,
+  MULTI_TASKS,
+} from './eval/multi-tasks.js';
 export {
   githubWorld,
   openWorld,
@@ -162,6 +174,7 @@ export {
 export {
   openMultiWorld,
   qualifiedName,
+  MULTI_BOX_DESCRIPTIONS,
   MULTI_BOXES,
   MULTI_DIRECT_SYSTEM_PROMPT,
 } from './eval/multi-world.js';
@@ -221,8 +234,10 @@ export {
   PROJECTION_DISCOVERY_TOOLS,
   type EvalMode,
   type ModeSession,
+  type SessionOptions,
 } from './eval/modes.js';
 export {
+  boxRouting,
   createResultsWriter,
   estimateUsd,
   formatEpisodeLine,
@@ -231,8 +246,10 @@ export {
   summarizeToolChoice,
   writeToolChoiceResults,
   MODEL_PRICES,
+  type BoxRouting,
   type CellSummary,
   type EpisodeRecord,
+  type RoutingSummary,
   type ProjectionRoute,
   type ProjectionUse,
   type ResultsMeta,

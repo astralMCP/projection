@@ -62,10 +62,12 @@ interface WorldBase {
   readonly calls: SideEffect[];
   readonly facts: WorldFacts;
   /**
-   * The one-line host framing direct mode puts before the upstream's
-   * instructions. Projection mode uses the facade's instructions instead.
+   * The one-line host framing every mode's system prompt starts with (a
+   * real host has its own system prompt whatever it connects): direct mode
+   * follows it with the upstream's instructions, the Projection modes with
+   * the facade's.
    */
-  directSystemPrompt: string;
+  hostSystemPrompt: string;
   /** Tear the episode's upstream down (kill the child, remove the sandbox). */
   close(): Promise<void>;
 }

@@ -149,7 +149,7 @@ export async function openFilesystemWorld(
       instructions: proxy.instructions,
       calls: proxy.calls,
       facts: { root },
-      directSystemPrompt: FILESYSTEM_DIRECT_SYSTEM_PROMPT,
+      hostSystemPrompt: FILESYSTEM_DIRECT_SYSTEM_PROMPT,
       close,
     };
   } catch (err) {

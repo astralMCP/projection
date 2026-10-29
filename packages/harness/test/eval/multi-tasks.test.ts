@@ -1,20 +1,23 @@
 /**
  * Multi-tier predicates, offline (no servers): each task fires on its
  * golden calls and variants, stays quiet on nothing, on the right tools
- * with empty arguments, and on every plausible wrong sequence; a call to
- * the wrong box is forbidden where the task says so; text-only verifies
- * accept the right answer and reject the wrong one. The goldens' fidelity
- * against the real boxes, and every world-reading verify, are checked in
- * multi-world.test.ts.
+ * with empty arguments, and on every plausible wrong sequence; a write
+ * into the wrong box is forbidden where the task says so (a read of it is
+ * a detour, not a failure); text-only verifies accept the right answer and
+ * reject the wrong one. The goldens' fidelity against the real boxes, and
+ * every world-reading verify, are checked in multi-world.test.ts.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
   FILESYSTEM_TASKS,
   HARD_TASKS,
+  isBoxWrite,
   MONGODB_TASKS,
   MULTI_TASKS,
   promptFor,
+  shippedCounts,
+  taskBoxes,
   unbox,
   unboxCall,
   worldOf,
@@ -37,14 +40,20 @@ const forbidden = (t: EvalTask, calls: SideEffect[]): boolean =>
   t.forbid !== undefined && calls.some((c) => (t.forbid as NonNullable<EvalTask['forbid']>)(c));
 
 describe('multi tasks', () => {
-  it('has 13 tasks in the multi tier: 6 cross-box, 4 box-choice, 3 controls, each with a golden', () => {
-    expect(MULTI_TASKS).toHaveLength(13);
+  it('has 17 tasks in the multi tier: 6 cross-box, 4 box-choice, 4 global, 3 controls, each with a golden', () => {
+    expect(MULTI_TASKS).toHaveLength(17);
     expect(MULTI_TASKS.every((t) => t.tier === 'multi')).toBe(true);
     expect(worldOf('multi')).toBe('multi');
     expect(Object.keys(GOLDEN).toSorted()).toEqual(MULTI_TASKS.map((t) => t.name).toSorted());
     const names = MULTI_TASKS.map((t) => t.name);
     expect(names.filter((n) => n.startsWith('cross-'))).toHaveLength(6);
     expect(names.filter((n) => n.startsWith('box-'))).toHaveLength(4);
+    expect(names.filter((n) => n.startsWith('global-'))).toEqual([
+      'global-version-branch',
+      'global-who-is-grace',
+      'global-csv-released',
+      'global-last-log-entry',
+    ]);
     expect(names.filter((n) => n.startsWith('ctl-'))).toEqual([
       'ctl-comment-newest-open-bug',
       'ctl-fs-largest-log',
@@ -127,33 +136,64 @@ describe('multi tasks', () => {
     });
   }
 
-  it('box choice: the wrong box is forbidden even when the right box was also used', () => {
+  it('box choice: a read of the wrong box is a detour; a write into it fails, in both directions', () => {
     const readme = {
       tool: 'github.get_file_contents',
       args: { owner: 'acme', repo: 'widgets', path: 'readme.md' },
     };
     const localReadme = { tool: 'fs.read_text_file', args: { path: '/p/README.md' } };
-    expect(forbidden(task('box-readme-fs'), [localReadme, readme])).toBe(true);
-    expect(forbidden(task('box-readme-github'), [localReadme, readme])).toBe(true);
-    expect(forbidden(task('box-readme-fs'), [localReadme])).toBe(false);
-    expect(forbidden(task('box-readme-github'), [readme])).toBe(false);
-    // Looking up where the project is, or other fs reads, is not the wrong box's readme.
-    expect(
-      forbidden(task('box-readme-github'), [
-        { tool: 'fs.list_allowed_directories', args: {} },
-        { tool: 'fs.read_text_file', args: { path: '/p/package.json' } },
-      ]),
-    ).toBe(false);
-    const src = {
-      tool: 'github.get_file_contents',
-      args: { owner: 'acme', repo: 'widgets', path: 'src' },
+    const githubWrite = {
+      tool: 'github.create_or_update_file',
+      args: { owner: 'acme', repo: 'widgets', path: 'readme.md', content: 'x', message: 'm' },
     };
-    const localSrc = { tool: 'fs.list_directory', args: { path: '/p/src' } };
-    expect(forbidden(task('box-src-fs'), [src])).toBe(true);
-    expect(forbidden(task('box-src-github'), [localSrc])).toBe(true);
+    const fsWrite = { tool: 'fs.write_file', args: { path: '/p/README.md', content: 'x' } };
+    for (const name of ['box-readme-fs', 'box-src-fs']) {
+      expect(forbidden(task(name), [readme, localReadme]), name).toBe(false);
+      expect(forbidden(task(name), [githubWrite]), name).toBe(true);
+      // A write into the right box is not a box-choice failure.
+      expect(forbidden(task(name), [fsWrite]), name).toBe(false);
+    }
+    for (const name of ['box-readme-github', 'box-src-github']) {
+      expect(forbidden(task(name), [localReadme, readme]), name).toBe(false);
+      expect(forbidden(task(name), [fsWrite]), name).toBe(true);
+      expect(forbidden(task(name), [githubWrite]), name).toBe(false);
+    }
+    // A dry-run edit is a read; a read-only GitHub tool is not a write.
+    expect(isBoxWrite({ tool: 'fs.edit_file', args: { path: '/p/a', dryRun: true } })).toBe(false);
+    expect(isBoxWrite({ tool: 'fs.edit_file', args: { path: '/p/a' } })).toBe(true);
+    expect(isBoxWrite(readme)).toBe(false);
+    expect(isBoxWrite({ tool: 'mongo.insert-many', args: {} })).toBe(true);
+    expect(isBoxWrite({ tool: 'mongo.find', args: {} })).toBe(false);
+    expect(isBoxWrite({ tool: 'add_issue_comment', args: {} })).toBe(false);
+    // The answer must carry the right box's content and none of the other's.
+    const verify = (name: string, finalText: string) =>
+      task(name).verify?.({ calls: [], finalText, facts: {} });
+    expect(verify('box-readme-fs', 'A small demo project.')).toBe(true);
+    expect(verify('box-readme-fs', 'A small demo project. (GitHub: Small, sturdy widgets.)')).toBe(
+      false,
+    );
+    expect(verify('box-readme-github', 'Small, sturdy widgets.')).toBe(true);
     expect(
-      forbidden(task('box-src-github'), [{ tool: 'fs.list_allowed_directories', args: {} }]),
+      verify('box-readme-github', 'Small, sturdy widgets. Locally: A small demo project.'),
     ).toBe(false);
+  });
+
+  it('global tasks: no tool name or box in the prompt; the boxes needed come from the steps', () => {
+    const globals = MULTI_TASKS.filter((t) => t.name.startsWith('global-'));
+    for (const t of globals) {
+      const prompt = promptFor(t, { root: '/home/me/project' });
+      expect(prompt, t.name).not.toMatch(/github|mongo|database|project folder|my project at/i);
+      // Any write fails a question.
+      expect(t.forbid?.({ tool: 'fs.write_file', args: { path: '/p/x', content: '' } })).toBe(true);
+      expect(t.forbid?.({ tool: 'github.get_me', args: {} })).toBe(false);
+    }
+    expect(Object.fromEntries(globals.map((t) => [t.name, taskBoxes(t)]))).toEqual({
+      'global-version-branch': ['fs', 'github'],
+      'global-who-is-grace': ['mongo'],
+      'global-csv-released': ['fs'],
+      'global-last-log-entry': ['fs'],
+    });
+    expect(taskBoxes(task('cross-shipped-to-comment'))).toEqual(['mongo', 'github']);
   });
 
   it('cross-box: the write must come after the read that justified it, across boxes', () => {
@@ -180,9 +220,47 @@ describe('multi tasks', () => {
         args: { owner: 'acme', repo: 'widgets', issue_number: 23, body },
       },
     ];
-    expect(t.expect(say('4'))).toBe(true);
-    expect(t.expect(say('There are 4 shipped orders.'))).toBe(true);
-    expect(t.expect(say('There are 14 shipped orders.'))).toBe(false);
-    expect(t.expect(say('Shipped as of 2026-10-29: four'))).toBe(false);
+    const passes = (body: string): boolean => scores(t, say(body));
+    expect(passes('4')).toBe(true);
+    expect(passes('There are 4 shipped orders.')).toBe(true);
+    expect(passes('There are 4 shipped orders (out of 12).')).toBe(true);
+    expect(passes('Shipped orders: **4** as of 2026-10-29')).toBe(true);
+    expect(passes('Re #23: 4/12 orders shipped')).toBe(true);
+    // "four" as a word counts.
+    expect(passes('Four orders have shipped.')).toBe(true);
+    expect(passes('four')).toBe(true);
+    expect(passes('Shipped as of 2026-10-29: four')).toBe(true);
+    // A number next to "shipped" that is not 4 fails, even with a 4 elsewhere.
+    expect(passes('shipped: 3, delivered: 4')).toBe(false);
+    expect(passes('0 shipped orders found across 4 statuses')).toBe(false);
+    expect(passes('There are 14 shipped orders.')).toBe(false);
+    expect(passes('A-1004 shipped')).toBe(false);
+    expect(passes('fourteen')).toBe(false);
+    // ... and is forbidden, not merely unmatched.
+    expect(forbidden(t, say('shipped: 3, delivered: 4'))).toBe(true);
+    expect(forbidden(t, say('Four orders have shipped.'))).toBe(false);
+    expect(shippedCounts('Shipped orders: **4**; 2 delivered')).toEqual([4]);
+    expect(shippedCounts('Four orders have shipped, three were delivered')).toEqual([4]);
+    expect(shippedCounts('| shipped | 3 |')).toEqual([3]);
+  });
+
+  it('cross-changelog-to-issue: a release issue with the wrong body is forbidden', () => {
+    const t = task('cross-changelog-to-issue');
+    const issue = (body: string): SideEffect => ({
+      tool: 'github.issue_write',
+      args: { method: 'create', owner: 'acme', repo: 'widgets', title: 'Release 1.2.1', body },
+    });
+    expect(forbidden(t, [issue('- Add CSV export')])).toBe(false);
+    expect(forbidden(t, [issue('TBD')])).toBe(true);
+    expect(forbidden(t, [issue('- Add CSV export\n- Initial public release')])).toBe(true);
+    // Another title in the right repo is not this rule's business.
+    expect(
+      forbidden(t, [
+        {
+          tool: 'github.issue_write',
+          args: { method: 'create', owner: 'acme', repo: 'widgets', title: 'Other', body: '' },
+        },
+      ]),
+    ).toBe(false);
   });
 });

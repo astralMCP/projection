@@ -409,7 +409,7 @@ export async function openMongodbWorld(
       instructions: proxy.instructions,
       calls: proxy.calls,
       facts: { mongoUri: uri },
-      directSystemPrompt: MONGODB_DIRECT_SYSTEM_PROMPT,
+      hostSystemPrompt: MONGODB_DIRECT_SYSTEM_PROMPT,
       close,
     };
   } catch (err) {

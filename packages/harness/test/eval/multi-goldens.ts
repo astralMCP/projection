@@ -83,6 +83,30 @@ const appendGrace = fs('edit_file', {
   edits: [{ oldText: '- ship v1.2', newText: '- ship v1.2\n- grace@example.com' }],
 });
 
+const readReadme = fs('read_text_file', { path: at('README.md') });
+const githubReadme = github('get_file_contents', { ...ACME, path: 'readme.md' });
+const githubSrc = github('get_file_contents', { ...ACME, path: 'src' });
+const listSrc = fs('list_directory', { path: at('src') });
+/** A write into the GitHub box (not read-only): what box choice forbids from the fs side. */
+const githubWrite = github('create_or_update_file', {
+  ...ACME,
+  path: 'readme.md',
+  content: '# widgets\n',
+  message: 'Update readme',
+  branch: 'master',
+});
+const fsWrite = (relative: string): SideEffect =>
+  fs('write_file', { path: at(relative), content: 'overwritten\n' });
+const findGraceOrders = mongo('find', {
+  ...shop('orders'),
+  filter: { customerEmail: 'grace@example.com' },
+});
+const findGraceByEmail = mongo('find', {
+  ...shop('customers'),
+  filter: { email: 'grace@example.com' },
+});
+const tailAppLog = fs('read_text_file', { path: at('logs/app.log'), tail: 1 });
+
 const fsControl = FS_GOLDEN['fs-largest-log'] as FsGolden;
 const dbControl = DB_GOLDEN['db-count-shipped'] as DbGolden;
 
@@ -98,6 +122,13 @@ export const GOLDEN: Record<string, Golden> = {
       [readChangelog, releaseIssue('- Add CSV export', { owner: 'vibdev', repo: 'toolbox' })],
       // Two issues.
       [readChangelog, releaseIssue('- Add CSV export'), releaseIssue('- Add CSV export')],
+      // A wrong body first, corrected after: the wrong issue is public.
+      [
+        readChangelog,
+        releaseIssue('## 1.1.0\n\n- Initial public release'),
+        releaseIssue('- Add CSV export'),
+      ],
+      [readChangelog, releaseIssue(''), releaseIssue('- Add CSV export')],
     ],
   },
   'cross-shipped-to-comment': {
@@ -110,12 +141,16 @@ export const GOLDEN: Record<string, Golden> = {
         }),
         comment(23, 'Shipped orders: 4'),
       ],
+      [countShipped, comment(23, 'Four orders have shipped.')],
     ],
     wrong: [
       [countShipped, comment(23, '12 orders')],
       // A wrong number posted first, then corrected (observed live).
       [countShipped, comment(23, 'There are 0 shipped orders.'), comment(23, 'There are 4.')],
       [countShipped, comment(17, '4 orders have shipped.')],
+      // A 4 in the comment, but not the shipped count.
+      [countShipped, comment(23, 'shipped: 3, delivered: 4')],
+      [countShipped, comment(23, '0 shipped orders found across 4 statuses')],
       [comment(23, '4'), countShipped],
       [mongo('count', { ...shop('orders') }), comment(23, '4')],
     ],
@@ -176,59 +211,133 @@ export const GOLDEN: Record<string, Golden> = {
     ],
   },
   'box-readme-fs': {
-    calls: [fs('list_allowed_directories', {}), fs('read_text_file', { path: at('README.md') })],
+    calls: [fs('list_allowed_directories', {}), readReadme],
+    // A look at the wrong box first is a detour, not a failure.
+    variants: [[githubReadme, readReadme]],
     answer: '# Widgets\n\nA small demo project.\n\nCurrent version: 1.2.0',
     wrongAnswer: '# widgets\n\nSmall, sturdy widgets.',
     wrong: [
-      [github('get_file_contents', { ...ACME, path: 'readme.md' })],
-      [
-        github('get_file_contents', { ...ACME, path: 'readme.md' }),
-        fs('read_text_file', { path: at('README.md') }),
-      ],
+      [githubReadme],
+      // A write into the wrong box fails the episode.
+      [readReadme, githubWrite],
     ],
   },
   'box-readme-github': {
-    calls: [github('get_file_contents', { ...ACME, path: 'readme.md' })],
+    calls: [githubReadme],
     variants: [
-      [
-        github('get_file_contents', { ...ACME, path: '/' }),
-        github('get_file_contents', { ...ACME, path: 'readme.md' }),
-      ],
+      [github('get_file_contents', { ...ACME, path: '/' }), githubReadme],
+      [readReadme, githubReadme],
     ],
     answer: '# widgets\n\nSmall, sturdy widgets.',
-    wrongAnswer: '# Widgets\n\nA small demo project.',
+    wrongAnswer:
+      '# widgets\n\nSmall, sturdy widgets. (Your local copy says: A small demo project.)',
     wrong: [
-      [fs('read_text_file', { path: at('README.md') })],
-      [
-        fs('read_text_file', { path: at('README.md') }),
-        github('get_file_contents', { ...ACME, path: 'readme.md' }),
-      ],
+      [readReadme],
       [github('get_file_contents', { ...ACME, path: 'README.md' })],
+      [githubReadme, fsWrite('README.md')],
     ],
   },
   'box-src-fs': {
-    calls: [fs('list_directory', { path: at('src') })],
-    variants: [[fs('directory_tree', { path: at('src') })]],
+    calls: [listSrc],
+    variants: [
+      [fs('directory_tree', { path: at('src') })],
+      // The whole project's tree shows src.
+      [fs('directory_tree', { path: GOLDEN_ROOT })],
+      [githubSrc, listSrc],
+    ],
     answer: 'index.js, util.js and the legacy/ folder',
     wrongAnswer: 'auth.ts, fetch.ts, index.ts',
-    wrong: [
-      [github('get_file_contents', { ...ACME, path: 'src' })],
-      [
-        github('get_file_contents', { ...ACME, path: 'src' }),
-        fs('list_directory', { path: at('src') }),
-      ],
-    ],
+    wrong: [[githubSrc], [fs('directory_tree', { path: at('logs') })], [listSrc, githubWrite]],
   },
   'box-src-github': {
-    calls: [github('get_file_contents', { ...ACME, path: 'src' })],
+    calls: [githubSrc],
+    variants: [
+      [github('get_repository_tree', { ...ACME, recursive: true, path_filter: 'src' })],
+      [listSrc, githubSrc],
+    ],
     answer: 'auth.ts, fetch.ts, index.ts',
     wrongAnswer: 'index.js, util.js',
     wrong: [
-      [fs('list_directory', { path: at('src') })],
+      [listSrc],
+      // Not recursive: the root tree shows only the src entry.
+      [github('get_repository_tree', { ...ACME, path_filter: 'src' })],
+      [githubSrc, fsWrite('src/index.js')],
+    ],
+  },
+  'global-version-branch': {
+    calls: [readPackage, github('list_branches', { ...ACME, page: 2 })],
+    variants: [[readReadme, github('list_branches', { ...ACME, perPage: 100 })]],
+    answer:
+      'The project is on version 1.2.0. acme/widgets has a release/1.2 branch for that line (and release/1.3).',
+    wrongAnswer: 'The project is on 1.2.0, and there is no release/1.2.0 branch.',
+    wrong: [
+      // Page 1 (three branches) has no release branch.
+      [readPackage, github('list_branches', ACME)],
+      [github('list_branches', { ...ACME, page: 2 })],
+      [readPackage, github('list_branches', { ...ACME, page: 2 }), branch('release/1.2.0')],
+    ],
+  },
+  'global-who-is-grace': {
+    calls: [findGraceByEmail, findGraceOrders],
+    variants: [
       [
-        fs('list_directory', { path: at('src') }),
-        github('get_file_contents', { ...ACME, path: 'src' }),
+        mongo('aggregate', {
+          ...shop('customers'),
+          pipeline: [
+            { $match: { email: 'grace@example.com' } },
+            {
+              $lookup: {
+                from: 'orders',
+                localField: 'email',
+                foreignField: 'customerEmail',
+                as: 'orders',
+              },
+            },
+          ],
+        }),
       ],
+    ],
+    answer:
+      'grace@example.com is Grace Lin, a silver-tier customer in Austin. Her order A-1007 is pending.',
+    wrongAnswer: 'That is Grace Lin; her order has shipped.',
+    wrong: [
+      [findGraceByEmail],
+      [findGraceOrders],
+      [
+        findGraceByEmail,
+        findGraceOrders,
+        mongo('update-many', {
+          ...shop('orders'),
+          filter: { orderId: 'A-1007' },
+          update: { $set: { status: 'shipped' } },
+        }),
+      ],
+    ],
+  },
+  'global-csv-released': {
+    calls: [readChangelog],
+    variants: [[github('search_issues', { query: 'repo:acme/widgets CSV export' }), readChangelog]],
+    answer: 'No. CSV export is listed under "Unreleased" in CHANGELOG.md in your project.',
+    wrongAnswer: 'Yes, according to the CHANGELOG it shipped in 1.1.0.',
+    wrong: [
+      [github('search_issues', { query: 'repo:acme/widgets CSV export' })],
+      [readChangelog, fs('edit_file', { path: at('CHANGELOG.md'), edits: [] })],
+    ],
+  },
+  'global-last-log-entry': {
+    calls: [tailAppLog],
+    variants: [
+      [
+        mongo('find', { ...shop('audit_log'), sort: { at: -1 }, limit: 1 }),
+        fs('search_files', { path: GOLDEN_ROOT, pattern: '**/app.log' }),
+        tailAppLog,
+      ],
+    ],
+    answer: 'The last entry in logs/app.log is request id=1399.',
+    wrongAnswer: 'The last entry is request id=1000.',
+    wrong: [
+      [mongo('find', { ...shop('audit_log'), sort: { at: -1 }, limit: 1 })],
+      [fs('get_file_info', { path: at('logs/app.log') })],
     ],
   },
   'ctl-comment-newest-open-bug': {

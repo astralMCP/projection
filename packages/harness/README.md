@@ -85,6 +85,11 @@ do, never how, and score the recorded upstream calls — plus, where effects
 are real, a `verify` of the end state (the file really moved; the answer
 names the right file). In projection mode a scripted approve-all client
 auto-fulfils every approval round trip, so the model only sees results.
+Every mode's system prompt starts with the same one-line host framing
+("You operate the user's … through the tools provided. Complete the user's
+task, then stop."), as a real host has its own system prompt whatever it
+connects to; direct mode follows it with the server's `instructions`, the
+Projection modes with the facade's.
 
 Tasks come in five tiers. The **basic** tier (15 tasks against
 `modelcontextprotocol/servers`) is one or two obvious calls each; current
@@ -157,7 +162,7 @@ forwards each result's `structuredContent` along with its content blocks, so
 Projection sees what it would in production and its `call_tool` renders the
 structured result rather than an escaped content array.
 
-The **multi** tier (13 tasks) runs against all three at once: the **multi
+The **multi** tier (17 tasks) runs against all three at once: the **multi
 world** (`openMultiWorld`) opens the GitHub fake, the filesystem world and
 the MongoDB world together as boxes under the aliases `github`, `fs` and
 `mongo`, records every call once in the order it ran as
@@ -166,10 +171,12 @@ from `fs.read_text_file`, and order a write in one box after the read in
 another), merges the facts (`root`, `mongoUri`) and closes all three on
 teardown. It has three modes:
 
-- **direct** — every tool of every box as a native tool named
-  `<alias>__<name>`, the way multi-server hosts present MCP tools today, with
-  the framing and then every box's own `instructions` under a heading naming
-  its alias in the system prompt (`hostToolName` keeps names within the
+- **direct** — the **flat list baseline**: every tool of every box inlined
+  as a native tool named `<alias>__<name>` (Claude Code's
+  `mcp__<server>__<tool>` naming), with the framing and then every box's own
+  `instructions` under a heading naming its alias in the system prompt. Real
+  hosts may defer a tool set this large behind their own tool search rather
+  than inline it; this baseline does not (`hostToolName` keeps names within the
   Messages API's `^[a-zA-Z0-9_-]{1,64}$`, replacing other characters and
   truncating with a hash suffix; no current name needs either — the longest,
   `github__manage_repository_notification_subscription`, is 51 characters);
@@ -178,6 +185,12 @@ teardown. It has three modes:
   `search_github`, `search_fs` and `search_mongo`;
 - **projection-boxes** — the same with `catalog: { globalSearch: false }`, so
   only the per-box search tools remain.
+
+The boxes carry no host `description` by default; `PROJ_EVAL_BOX_DESCRIPTIONS=1`
+passes one per box to `wrapMcpServers` (`MULTI_BOX_DESCRIPTIONS`: "GitHub:
+issues, PRs and repos for acme/widgets", "The user's project files", "The
+shop MongoDB deployment"), and the results file records which was used
+(`boxDescriptions`).
 
 `projection-boxes` runs on the multi tier only: a single-server facade has no
 boxes, so the runner never plans it for the other tiers (`modeApplies`), and
@@ -190,18 +203,35 @@ largest log file's name becomes an `audit_log` document; the package
 version becomes a `release/1.2.0` branch; the four open PR titles — paged
 three at a time — become `notes/prs.txt`; Grace Lin's email becomes a todo
 line), each scored on the write following the read that justified it and
-carrying the value read; four **box-choice** tasks where two boxes have a
-similarly named tool (the project's README vs `acme/widgets`' readme; the
-project's `src` folder vs the repository's), with the wrong box's tool
-forbidden; and three **single-box controls** copied verbatim from the
-GitHub, filesystem and MongoDB tiers (`ctl-*`), so a drop on the multi tier
-can be split between routing across boxes and the task itself. The report
-breaks Projection's discovery out by search tool: `search_tools` per episode
-and, for multi-world episodes, each `search_<alias>`. What it decides: how
-much a multi-server host's flat tool list costs against Projection's boxes,
-and — `projection` against `projection-boxes` — whether the global search
-earns its place, which settles the `catalog.globalSearch` default (PRD R43,
-§13). The approvals-mode comparison §13 also asks for is not run yet.
+carrying the value read (a release issue with the wrong body, or a comment
+on #23 with any number next to "shipped" other than 4 — "4" or "four" — is
+forbidden even when a corrected one follows); four **box-choice** tasks
+where two boxes have a similarly named tool (the project's README vs
+`acme/widgets`' readme; the project's `src` folder vs the repository's —
+a listing of `src`, the project's whole `directory_tree`, or the
+repository's recursive `get_repository_tree` all count), scored the same in
+both directions: the right box read, an answer with the right box's content
+and none of the other's, and no write into the wrong box — a read of the
+wrong box is a detour, not a failure; four **global** tasks whose prompts do
+not say which box holds the answer (the project's version and whether
+`acme/widgets` has a release branch for it — 1.2.0 and `release/1.2`; who
+grace@example.com is and her order's status — Grace Lin, pending; whether
+CSV export is released — no, it is under Unreleased in the changelog; the
+last request id in `app.log` — 1399), graded on the answer and on having
+consulted the boxes that hold it, with any write forbidden; and three
+**single-box controls** copied verbatim from the GitHub, filesystem and
+MongoDB tiers (`ctl-*`), so a drop on the multi tier can be split between
+routing across boxes and the task itself. The boxes a task needs are the
+aliases its steps name; every multi-tier record carries its box routing
+(`boxes`: whether the global `search_tools` was used, whether the first
+upstream call went to a needed box, and how many calls went to a box the
+task does not need). What it decides: how much a flat tool list costs
+against Projection's boxes, and — `projection` against `projection-boxes` —
+whether the global search earns its place, which settles the
+`catalog.globalSearch` default (PRD R43, §13). **Decision runs use
+`PROJ_EVAL_TIERS=multi`**, so no other tier's episodes mix into the cell
+totals; the report's per-tier blocks break each tier out on its own anyway.
+The approvals-mode comparison §13 also asks for is not run yet.
 
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
@@ -215,13 +245,25 @@ the default), `PROJ_EVAL_TIERS`
 (`basic,hard,filesystem,mongodb,multi`, the default; `mongodb` and `multi` need
 `pnpm run setup:mongodb`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
-`PROJ_EVAL_CONCURRENCY` (default 4). The report (success %, tool-correct %,
-turns, upstream calls, tokens, cache-read share, estimated cost, turn-capped
-and harness-error counts, a per-tier summary, a per-task table grouped by
-tier, and Projection's route split with its discovery calls per search tool) is printed, and the records are written
-to `eval-results/<timestamp>.json`
-(gitignored), rewritten after every episode so a timeout or crash keeps the
-partial results. An episode that spends its turn budget (12 by default) or
+`PROJ_EVAL_CONCURRENCY` (default 4), `PROJ_EVAL_BOX_DESCRIPTIONS=1` (multi
+tier: host box descriptions; default off). The report (success %,
+tool-correct %, turns, upstream calls, tokens, cache-read share, estimated
+cost, turn-capped and harness-error counts, a per-tier summary, a block per
+tier with that tier's own success, turns — total and counted — tokens, cost
+and discovery calls, plus on the multi tier the global-search use and
+success, first-call-to-the-right-box and detour counts, a per-task table
+grouped by tier, and Projection's route split with its discovery calls per
+search tool) is printed, and the records are written to
+`eval-results/<timestamp>.json` (gitignored), rewritten after every episode
+so a timeout or crash keeps the partial results. Episodes run interleaved —
+run 0 of every task in every model × mode cell, then run 1 — so a run cut
+short has the same sample in every cell; records stay in model → mode →
+task → run order. Each record keeps the episode's full `transcript` (the
+system prompt, every assistant turn's text, tool-use and thinking blocks —
+thinking signatures dropped — and every tool result's text exactly as the
+model saw it; images were already one-line placeholders) and the
+`servedModel` the API reported, for reading episodes without re-running
+them. An episode that spends its turn budget (12 by default) or
 reaches the absolute ceiling (twice the budget) is scored on the upstream
 calls it made (and flagged `turnCapped`); refusals, `max_tokens`, API errors
 and harness exceptions are harness errors, excluded from the success

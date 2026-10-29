@@ -1,11 +1,13 @@
 /**
- * The multi tier: 13 tasks against the multi world (multi-world.ts) — the
+ * The multi tier: 17 tasks against the multi world (multi-world.ts) — the
  * GitHub fake, the real filesystem server and the real MongoDB server as
  * three boxes of one episode (`github`, `fs`, `mongo`). The world records
  * every call as `<alias>.<name>`, so the predicates here see which box a
- * call went to and in what order across boxes.
+ * call went to and in what order across boxes. The boxes a task needs are
+ * the aliases its `steps` name ({@link taskBoxes}); a call into any other
+ * box is a detour — a statistic (run.ts), never by itself a failure.
  *
- * Three kinds of task:
+ * Four kinds of task:
  *
  * - **Cross-box** (6): one box's output feeds another — the changelog's
  *   Unreleased entries become a GitHub issue; a shipped-order count becomes
@@ -17,9 +19,20 @@
  *   PRs of acme/widgets — paged three at a time — and grace@example.com).
  * - **Box choice** (4): two boxes have a similarly named tool — the
  *   project's README (filesystem) vs acme/widgets' readme (GitHub's
- *   `get_file_contents`), the project's `src` folder vs acme/widgets' —
- *   and a call to the wrong box's tool is forbidden. The project prompts
- *   give no path: the filesystem box's allowed directory is the project.
+ *   `get_file_contents`), the project's `src` folder vs acme/widgets'.
+ *   Success is the right box's read, an answer with the right box's content
+ *   and none of the other's, and no write into the wrong box; a read of the
+ *   wrong box is a detour, not a failure. The same rule holds in both
+ *   directions. The project prompts give no path: the filesystem box's
+ *   allowed directory is the project.
+ * - **Global** (4): a question whose prompt does not say which box holds
+ *   the answer — the project's version and whether acme/widgets has a
+ *   release branch for it (fs, then github), who grace@example.com is and
+ *   the status of her order (mongo), whether CSV export is released yet
+ *   (the project's changelog), the last request id in app.log (fs). Where
+ *   a model looks first is what a global search can help with. Graded on
+ *   the answer (`verify`) and on having consulted the boxes that hold it;
+ *   any write fails (the prompts ask questions).
  * - **Single-box controls** (3): one task per box copied verbatim from its
  *   single-server tier (prompt, predicates, verify), so a drop in the multi
  *   tier can be split between routing across boxes and the task itself.
@@ -40,7 +53,13 @@ import {
   root,
 } from './filesystem-tasks.js';
 import { FIXTURE_TODO } from './filesystem-world.js';
-import { HARD_BRANCHES, HARD_PULLS, HARD_REPO } from './github-fake.js';
+import {
+  branchesListed,
+  GITHUB_CATALOG,
+  HARD_BRANCHES,
+  HARD_PULLS,
+  HARD_REPO,
+} from './github-fake.js';
 import { HARD_TASKS } from './github-tasks.js';
 import {
   branchName,
@@ -63,7 +82,7 @@ import {
 } from './mongodb-tasks.js';
 import { SHOP_DB, withMongodb } from './mongodb-world.js';
 import { qualifiedName } from './multi-world.js';
-import { containsText, sameText, str, type EvalTask, type TaskKind } from './task-core.js';
+import { containsText, sameText, type EvalTask, type TaskKind } from './task-core.js';
 import type { BoxAlias } from './world.js';
 
 /** The bare call, when `call` went to box `alias`. */
@@ -87,6 +106,71 @@ export function unbox(calls: SideEffect[], alias: BoxAlias): { calls: SideEffect
   });
   return { calls: boxed, at };
 }
+
+/** The box a qualified call (or step name) belongs to, if it names one. */
+export function boxOf(qualified: string): BoxAlias | undefined {
+  const alias = qualified.split('.', 1)[0];
+  return alias === 'github' || alias === 'fs' || alias === 'mongo' ? alias : undefined;
+}
+
+/** The boxes a multi-tier task needs: the aliases its step groups name. */
+export function taskBoxes(task: Pick<EvalTask, 'steps'>): BoxAlias[] {
+  const boxes = new Set<BoxAlias>();
+  for (const name of task.steps.flat()) {
+    const alias = boxOf(name);
+    if (alias !== undefined) boxes.add(alias);
+  }
+  return [...boxes];
+}
+
+/** GitHub tools that are not annotated read-only. */
+const GITHUB_WRITES: ReadonlySet<string> = new Set(
+  GITHUB_CATALOG.tools.filter((t) => t.annotations?.readOnlyHint !== true).map((t) => t.name),
+);
+/** The filesystem server's tools that change the tree. */
+const FS_WRITES: ReadonlySet<string> = new Set([
+  'write_file',
+  'edit_file',
+  'move_file',
+  'create_directory',
+]);
+/** The MongoDB server's tools that change the deployment. */
+const MONGO_WRITES: ReadonlySet<string> = new Set([
+  'insert-many',
+  'update-many',
+  'delete-many',
+  'drop-collection',
+  'drop-database',
+  'rename-collection',
+  'create-collection',
+  'create-index',
+  'drop-index',
+]);
+
+/**
+ * A qualified call that changes its box's world: a GitHub tool not
+ * annotated read-only, a filesystem write (a `dryRun` edit is a read), a
+ * MongoDB write.
+ */
+export function isBoxWrite(call: SideEffect): boolean {
+  const alias = boxOf(call.tool);
+  if (alias === undefined) return false;
+  const bare = call.tool.slice(alias.length + 1);
+  switch (alias) {
+    case 'github':
+      return GITHUB_WRITES.has(bare);
+    case 'fs':
+      return FS_WRITES.has(bare) && !(bare === 'edit_file' && call.args['dryRun'] === true);
+    case 'mongo':
+      return MONGO_WRITES.has(bare);
+  }
+}
+
+/** A write into a box other than `right` (box-choice tasks forbid exactly these). */
+const writesOutside =
+  (right: BoxAlias) =>
+  (call: SideEffect): boolean =>
+    isBoxWrite(call) && boxOf(call.tool) !== right;
 
 /** `names` in box `alias`, qualified (a task's step group). */
 function inBox(alias: BoxAlias, names: readonly string[]): string[] {
@@ -146,24 +230,89 @@ const sizesLogs = ([call]: SideEffect[]): boolean =>
 const isIssueCreate = (call: SideEffect): boolean =>
   call.tool === 'issue_write' && sameText(call.args['method'], 'create');
 
-/** The fs tools that list a directory (flat or as a tree) or search the tree. */
-const FS_LISTINGS: ReadonlySet<string> = new Set([
-  ...FLAT_LISTINGS,
-  'directory_tree',
-  'search_files',
-]);
+/** Fixture directories (and `src/legacy`): a listing of one is not of the project root. */
+const FIXTURE_DIRS = ['src', 'legacy', 'notes', 'config', 'logs', 'assets', 'tmp'];
 
-/** A call that reads or lists the GitHub repository's contents. */
-const GITHUB_CONTENT_TOOLS: ReadonlySet<string> = new Set([
-  'get_file_contents',
-  'get_repository_tree',
-]);
+/**
+ * The path names the project root: `.` or empty (relative to the allowed
+ * directory), or an absolute path that does not end in one of the fixture's
+ * directories. The root itself is a per-episode temp directory a predicate
+ * cannot see; a listing of some other directory outside it is refused by
+ * the server, and the answer's `verify` catches what it would miss.
+ */
+function isProjectRoot(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const path = value.trim().replace(/\/+$/, '');
+  if (path === '' || path === '.') return true;
+  const last = path.split('/').at(-1) ?? '';
+  return path.startsWith('/') && path !== '' && !FIXTURE_DIRS.includes(last);
+}
 
 const CHANGELOG_ENTRY = 'Add CSV export';
+const RELEASED_ENTRY = 'Initial public release';
 const RELEASE_TITLE = 'Release 1.2.1';
 const SHIPPED = 4;
 const RELEASE_BRANCH = 'release/1.2.0';
 const GRACE_EMAIL = 'grace@example.com';
+/** acme/widgets' existing release branch for the project's 1.2.x line. */
+const EXISTING_RELEASE_BRANCH = 'release/1.2';
+/** The last line of logs/app.log is request id=1399 (400 lines from 1000). */
+const LAST_APP_LOG_ID = 1399;
+
+const NUMBER_WORDS: Readonly<Record<string, number>> = {
+  zero: 0,
+  no: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+const COUNT = `(\\d+(?:\\.\\d+)?|${Object.keys(NUMBER_WORDS).join('|')})`;
+
+/**
+ * The numbers a comment puts next to "shipped", in the mongodb tier's
+ * `statusCount` style but extracting the number: "shipped: 3",
+ * "Shipped orders: **4**", "| shipped | 4 |", "4 shipped", "Four orders
+ * have shipped" (up to two words between, on one line). After "shipped"
+ * only spaces and table or emphasis punctuation may separate the number —
+ * "shipped, three were delivered" is a list, not a count. A number that is the denominator of a
+ * fraction ("4/12 orders shipped") or part of an identifier ("A-1004") is
+ * not a count.
+ */
+export function shippedCounts(body: string): number[] {
+  const after = new RegExp(
+    `shipped(?:[ \\t]+orders?)?[ \\t:=*_()|\\u2013\\u2014-]{0,6}(?<![\\w/])${COUNT}(?![\\w/])`,
+    'gi',
+  );
+  const before = new RegExp(`(?<![\\w/.-])${COUNT}[ \\t]+(?:[a-z]+[ \\t]+){0,2}shipped`, 'gi');
+  const value = (token: string): number => NUMBER_WORDS[token.toLowerCase()] ?? Number(token);
+  return [...body.matchAll(after), ...body.matchAll(before)].map((m) => value(m[1] as string));
+}
+
+/** The comment states 4, as a number or as the word "four". */
+function statesShipped(body: string): boolean {
+  return number(SHIPPED).test(body) || /\bfour\b/i.test(body);
+}
+
+/**
+ * A comment on #23 that states a wrong count: no 4 anywhere, or a number
+ * next to "shipped" that is not 4 ("shipped: 3, delivered: 4", "0 shipped
+ * orders found across 4 statuses").
+ */
+export function wrongShippedComment(body: string): boolean {
+  return !statesShipped(body) || shippedCounts(body).some((n) => n !== SHIPPED);
+}
+
+/** Whether `text` names acme/widgets' release/1.2 branch (not a release/1.2.0 or 1.20). */
+const RELEASE_BRANCH_NAMED = /release\/1\.2(?!\.?\d)/i;
 
 /**
  * A copy of a single-server task as a multi-tier control: the same prompt,
@@ -216,14 +365,27 @@ export const MULTI_TASKS: readonly EvalTask[] = [
         inRepo(call.args, HARD) &&
         sameText(call.args['title'], RELEASE_TITLE) &&
         containsText(call.args['body'], CHANGELOG_ENTRY) &&
-        !containsText(call.args['body'], 'Initial public release')
+        !containsText(call.args['body'], RELEASED_ENTRY)
           ? [github.at[i] as number]
           : [],
       );
       return read >= 0 && creates.length === 1 && (creates[0] as number) > read;
     },
+    // An issue elsewhere, or the release issue with the wrong body (no
+    // Unreleased entry, or the released section copied in) — even when a
+    // corrected one follows: the wrong one is public.
     forbid: (call) =>
       inBoxCall(call, 'github', (c) => isIssueCreate(c) && !inRepo(c.args, HARD)) ||
+      inBoxCall(
+        call,
+        'github',
+        (c) =>
+          isIssueCreate(c) &&
+          inRepo(c.args, HARD) &&
+          sameText(c.args['title'], RELEASE_TITLE) &&
+          (!containsText(c.args['body'], CHANGELOG_ENTRY) ||
+            containsText(c.args['body'], RELEASED_ENTRY)),
+      ) ||
       inBoxCall(
         call,
         'fs',
@@ -231,7 +393,8 @@ export const MULTI_TASKS: readonly EvalTask[] = [
       ),
   },
   // --- Cross-box: mongo -> github. 4 orders are shipped; the comment on
-  // #23 must state the number.
+  // #23 must state the number ("4" or "four"), and no other number next to
+  // "shipped".
   {
     name: 'cross-shipped-to-comment',
     tier: 'multi',
@@ -250,12 +413,13 @@ export const MULTI_TASKS: readonly EvalTask[] = [
           groupsBy(single, 'orders', 'status'),
       );
       const github = unbox(calls, 'github');
-      const comment = commented(github.calls, 23, (body) => number(SHIPPED).test(body), HARD);
+      const comment = commented(github.calls, 23, (body) => !wrongShippedComment(body), HARD);
       return counted >= 0 && comment >= 0 && (github.at[comment] as number) > counted;
     },
     // A comment elsewhere, or one on #23 that states a wrong number (a
     // first attempt that posted "0" before the corrected "4" is still a
-    // wrong number in public), fails the episode.
+    // wrong number in public; so is "shipped: 3, delivered: 4"), fails the
+    // episode.
     forbid: (call) =>
       inBoxCall(
         call,
@@ -266,7 +430,7 @@ export const MULTI_TASKS: readonly EvalTask[] = [
             (targets(c.args, 23, HARD) &&
               typeof c.args['body'] === 'string' &&
               c.args['body'].trim() !== '' &&
-              !number(SHIPPED).test(c.args['body']))),
+              wrongShippedComment(c.args['body']))),
       ),
   },
   // --- Cross-box: fs -> mongo. app.log is the largest; its name goes into
@@ -401,7 +565,10 @@ export const MULTI_TASKS: readonly EvalTask[] = [
   },
 
   // --- Box choice: the project is the filesystem box's allowed directory
-  // (no path in the prompt); GitHub's get_file_contents is the wrong box.
+  // (no path in the prompt); acme/widgets is the GitHub box. Success: the
+  // right box read, the answer carries its content and not the other
+  // box's, and no write into the wrong box. A read of the wrong box is a
+  // detour (counted in run.ts), not a failure — in both directions.
   {
     name: 'box-readme-fs',
     tier: 'multi',
@@ -409,8 +576,9 @@ export const MULTI_TASKS: readonly EvalTask[] = [
     prompt: 'Show me the README in my project folder.',
     steps: [inBox('fs', FILE_READ_TOOLS)],
     expect: (calls) => any(calls, 'fs', (call) => readsFsFile('README.md')([call])),
-    forbid: (call) => inBoxCall(call, 'github', (c) => GITHUB_CONTENT_TOOLS.has(c.tool)),
-    verify: (context) => /small demo project/i.test(context.finalText),
+    forbid: writesOutside('fs'),
+    verify: (context) =>
+      /small demo project/i.test(context.finalText) && !/sturdy widgets/i.test(context.finalText),
   },
   {
     name: 'box-readme-github',
@@ -428,13 +596,9 @@ export const MULTI_TASKS: readonly EvalTask[] = [
           inRepo(call.args, HARD) &&
           repoPath(call.args['path']) === 'readme.md',
       ),
-    forbid: (call) =>
-      inBoxCall(
-        call,
-        'fs',
-        (c) => FILE_READ_TOOLS.includes(c.tool) && /readme/i.test(JSON.stringify(c.args)),
-      ),
-    verify: (context) => /sturdy widgets/i.test(context.finalText),
+    forbid: writesOutside('github'),
+    verify: (context) =>
+      /sturdy widgets/i.test(context.finalText) && !/small demo project/i.test(context.finalText),
   },
   {
     name: 'box-src-fs',
@@ -442,15 +606,17 @@ export const MULTI_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt: 'List the files in the src folder of my project.',
     steps: [inBox('fs', [...FLAT_LISTINGS, 'directory_tree'])],
+    // A listing of src, or the whole project's tree (which shows src).
     expect: (calls) =>
       any(
         calls,
         'fs',
         (call) =>
-          (FLAT_LISTINGS.includes(call.tool) || call.tool === 'directory_tree') &&
-          pathIs(call.args['path'], 'src'),
+          ((FLAT_LISTINGS.includes(call.tool) || call.tool === 'directory_tree') &&
+            pathIs(call.args['path'], 'src')) ||
+          (call.tool === 'directory_tree' && isProjectRoot(call.args['path'])),
       ),
-    forbid: (call) => inBoxCall(call, 'github', (c) => GITHUB_CONTENT_TOOLS.has(c.tool)),
+    forbid: writesOutside('fs'),
     verify: (context) =>
       ['index.js', 'util.js'].every((name) => context.finalText.includes(name)) &&
       !/fetch\.ts|auth\.ts/.test(context.finalText),
@@ -460,25 +626,102 @@ export const MULTI_TASKS: readonly EvalTask[] = [
     tier: 'multi',
     kind: 'single',
     prompt: `List the files in the src directory of the ${HARD_SLUG} repository on GitHub.`,
-    steps: [inBox('github', ['get_file_contents'])],
+    steps: [inBox('github', ['get_file_contents', 'get_repository_tree'])],
+    // The directory's contents, or the recursive tree (filtered to src, or
+    // whole — it lists src's files either way).
     expect: (calls) =>
+      any(calls, 'github', (call) => {
+        if (!inRepo(call.args, HARD)) return false;
+        if (call.tool === 'get_file_contents') {
+          return repoPath(call.args['path'])?.replace(/\/+$/, '') === 'src';
+        }
+        if (call.tool !== 'get_repository_tree' || call.args['recursive'] !== true) return false;
+        const filter = (repoPath(call.args['path_filter']) ?? '').replace(/\/+$/, '');
+        return filter === '' || filter === 'src';
+      }),
+    forbid: writesOutside('github'),
+    verify: (context) =>
+      ['auth.ts', 'fetch.ts', 'index.ts'].every((name) => context.finalText.includes(name)) &&
+      !/util\.js/.test(context.finalText),
+  },
+
+  // --- Global: the prompt does not say which box holds the answer. Any
+  // write fails (these are questions); reads anywhere are free.
+  {
+    name: 'global-version-branch',
+    tier: 'multi',
+    kind: CROSS,
+    prompt:
+      'What version is the widgets project on, and is there a release branch for that version?',
+    // The version is only in the project (acme/widgets' package.json is a
+    // 404); the branches are only on GitHub, release/1.2 on page 2.
+    steps: [inBox('fs', FILE_READ_TOOLS), inBox('github', ['list_branches'])],
+    expect: (calls) =>
+      any(
+        calls,
+        'fs',
+        (call) => readsFsFile('package.json')([call]) || readsFsFile('README.md')([call]),
+      ) &&
       any(
         calls,
         'github',
         (call) =>
-          call.tool === 'get_file_contents' &&
-          inRepo(call.args, HARD) &&
-          repoPath(call.args['path'])?.replace(/\/+$/, '') === 'src',
+          call.tool === 'list_branches' &&
+          branchesListed(call.args).includes(EXISTING_RELEASE_BRANCH),
       ),
-    forbid: (call) =>
-      inBoxCall(
-        call,
-        'fs',
-        (c) => FS_LISTINGS.has(c.tool) && (str(c.args['path']) ?? '').includes('src'),
-      ),
+    forbid: isBoxWrite,
     verify: (context) =>
-      ['auth.ts', 'fetch.ts', 'index.ts'].every((name) => context.finalText.includes(name)) &&
-      !/util\.js/.test(context.finalText),
+      /(^|[^\d.])1\.2\.0(?!\.?\d)/.test(context.finalText) &&
+      RELEASE_BRANCH_NAMED.test(context.finalText),
+  },
+  {
+    name: 'global-who-is-grace',
+    tier: 'multi',
+    kind: CROSS,
+    prompt: `Who is ${GRACE_EMAIL}, and what is the status of her order?`,
+    // Her name is in customers, her order (A-1007, pending) in orders.
+    steps: [inBox('mongo', ['find', 'aggregate', 'aggregate-db'])],
+    expect: (calls) => {
+      const mongo = unbox(calls, 'mongo').calls;
+      const joinsOrders = mongo.some(
+        (call) =>
+          call.tool === 'aggregate' &&
+          onCollection(call.args, 'customers') &&
+          /"from":"orders"/.test(JSON.stringify(call.args['pipeline'] ?? null)),
+      );
+      return reads(mongo, 'customers') && (reads(mongo, 'orders') || joinsOrders);
+    },
+    forbid: isBoxWrite,
+    verify: (context) =>
+      /grace lin/i.test(context.finalText) && /\bpending\b/i.test(context.finalText),
+  },
+  {
+    name: 'global-csv-released',
+    tier: 'multi',
+    kind: 'single',
+    prompt: 'Has the CSV export feature been released yet? Tell me where you found the answer.',
+    // Only the project's CHANGELOG.md mentions it, under Unreleased.
+    steps: [inBox('fs', FILE_READ_TOOLS)],
+    expect: (calls) => any(calls, 'fs', (call) => readsFsFile('CHANGELOG.md')([call])),
+    forbid: isBoxWrite,
+    verify: (context) =>
+      /changelog/i.test(context.finalText) &&
+      /unreleased|not (yet )?(been )?released|n['o]t (yet )?(been )?released|not yet/i.test(
+        context.finalText,
+      ) &&
+      !/^\W*yes\b/i.test(context.finalText),
+  },
+  {
+    name: 'global-last-log-entry',
+    tier: 'multi',
+    kind: 'single',
+    prompt: 'What is the request id of the last entry in app.log?',
+    // Only the project has an app.log (logs/app.log); the shop's audit_log
+    // collection is a decoy.
+    steps: [inBox('fs', FILE_READ_TOOLS)],
+    expect: (calls) => any(calls, 'fs', (call) => readsFsFile('logs/app.log')([call])),
+    forbid: isBoxWrite,
+    verify: (context) => number(LAST_APP_LOG_ID).test(context.finalText),
   },
 
   // --- Single-box controls, copied from the single-server tiers.

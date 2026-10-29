@@ -30,6 +30,7 @@ import {
   HOST_TOOL_NAME_MAX,
   HOST_TOOL_NAME_PATTERN,
   MONGODB_EXPECTED_TOOLS,
+  MULTI_BOX_DESCRIPTIONS,
   MULTI_DIRECT_SYSTEM_PROMPT,
   MULTI_INSTRUCTIONS_HEADER,
   MULTI_TASKS,
@@ -203,8 +204,14 @@ describe.skipIf(!installed)('multi world', () => {
             ['describe_tool', 'discover_apis', 'search_tools', ...boxSearches].toSorted(),
           );
           const system = session.runtime.system;
+          // The host's framing first, as in direct mode; then the facade's instructions.
+          expect(system.startsWith(`${MULTI_DIRECT_SYSTEM_PROMPT}\n\n`)).toBe(true);
           for (const alias of ['fs', 'github', 'mongo'])
             expect(system).toMatch(new RegExp(`^- ${alias}\\b`, 'm'));
+          // No host descriptions unless the variant asks for them.
+          for (const description of Object.values(MULTI_BOX_DESCRIPTIONS)) {
+            expect(system).not.toContain(description);
+          }
           if (mode === 'projection') expect(system).toContain('search_tools');
           else expect(system).not.toContain('search_tools');
           // A box search answers with that box's qualified names only.
@@ -220,6 +227,24 @@ describe.skipIf(!installed)('multi world', () => {
       }
     }
     expect(Object.keys(surfaces).toSorted()).toEqual(['projection', 'projection-boxes']);
+  }, 120_000);
+
+  it('the box-descriptions variant puts the host descriptions on the shelf', async () => {
+    const world = await openMulti();
+    try {
+      const session = await openSession('projection', world, { boxDescriptions: true });
+      try {
+        const system = session.runtime.system;
+        expect(system.startsWith(MULTI_DIRECT_SYSTEM_PROMPT)).toBe(true);
+        for (const description of Object.values(MULTI_BOX_DESCRIPTIONS)) {
+          expect(system).toContain(description);
+        }
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await world.close();
+    }
   }, 120_000);
 
   describe('golden fidelity: every golden runs clean through every mode and scores', () => {
@@ -362,6 +387,14 @@ describe.skipIf(!installed)('multi world', () => {
         expect(record.world).toBe('multi');
         expect(record.success, record.mode).toBe(true);
         expect(record.upstreamCalls.map((c) => c.tool)).toEqual(['mongo.find', 'fs.edit_file']);
+        expect(record.boxes).toEqual({
+          needed: ['mongo', 'fs'],
+          usedGlobalSearch: false,
+          firstCallRightBox: true,
+          wrongBoxCalls: 0,
+        });
+        expect(record.transcript?.system.startsWith(MULTI_DIRECT_SYSTEM_PROMPT)).toBe(true);
+        expect(record.servedModel).toBe('scripted');
       }
       const [direct, projection, boxes] = records;
       expect(direct?.projection).toBeUndefined();

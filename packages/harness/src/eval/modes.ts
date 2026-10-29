@@ -4,16 +4,21 @@
  * real server behind a recording proxy — see world.ts), so the recorded
  * upstream calls are directly comparable:
  *
+ * Every mode's system prompt starts with the world's one-line host framing
+ * (`hostSystemPrompt`, neutral about how the tools are reached): a real host
+ * has its own system prompt whatever it connects to, so only what follows
+ * it differs between modes.
+ *
  * - **direct**: the world's tools are the model's tools, verbatim
  *   (description + JSON Schema), executed over an in-memory MCP connection.
- *   The system prompt is the world's one-line host framing followed by the
- *   server's own `instructions`, as a real host would inject them.
+ *   The framing is followed by the server's own `instructions`, as a real
+ *   host would inject them.
  * - **projection**: the world is wrapped with `wrapMcpServer` (both
  *   projections on) and served through `createMcpHandler`; the model's tools
  *   are whatever the facade lists (`search_tools`, `describe_tool`,
- *   `call_tool`, `discover_apis`, `execute_machine`), and the system prompt
- *   is the facade's `instructions` (the server's own, then Projection's
- *   preamble — R29). A 2026-07-28 client with a scripted approve-all
+ *   `call_tool`, `discover_apis`, `execute_machine`), and the framing is
+ *   followed by the facade's `instructions` (the server's own, then
+ *   Projection's preamble — R29). A 2026-07-28 client with a scripted approve-all
  *   `elicitation/create` handler auto-fulfils every MRTR round trip inside
  *   one `callTool`, so the model sees only the final result. Approving
  *   everything is safe: the GitHub fake has no side effects and the real
@@ -21,11 +26,13 @@
  *
  * On the **multi** world (three boxes — see multi-world.ts) the modes are:
  *
- * - **direct**: every tool of every box as a native tool named
- *   `<alias>__<name>`, the way multi-server hosts present MCP tools today
- *   (Claude Code: `mcp__<server>__<tool>`), each routed to its box over its
- *   own in-memory connection. The system prompt is the multi framing, then
- *   every box's `instructions` under a heading naming its alias. Names stay
+ * - **direct**: the **flat list baseline** — every tool of every box inlined
+ *   as a native tool named `<alias>__<name>` (Claude Code's
+ *   `mcp__<server>__<tool>` naming), each routed to its box over its own
+ *   in-memory connection. Real hosts may defer a large tool set behind
+ *   their own tool search instead of inlining it; this baseline does not.
+ *   The system prompt is the multi framing, then every box's
+ *   `instructions` under a heading naming its alias. Names stay
  *   within the Messages API's tool-name rule (`^[a-zA-Z0-9_-]{1,64}$`):
  *   any other character becomes `_` and a longer name would be truncated
  *   with a hash suffix ({@link hostToolName}); none of the current boxes'
@@ -34,6 +41,10 @@
  *   options — both projections, the global `search_tools` on.
  * - **projection-boxes**: the same with `catalog: { globalSearch: false }`,
  *   so the only search tools are the per-box `search_<alias>` ones.
+ *
+ * Both Projection modes pass no box `description`s by default; the
+ * `boxDescriptions` session option (PROJ_EVAL_BOX_DESCRIPTIONS=1) passes
+ * {@link MULTI_BOX_DESCRIPTIONS} as the host's descriptions instead.
  *
  * `projection-boxes` exists only for the multi world (a single-server
  * facade has no boxes and no `catalog` option); the runner skips it for
@@ -49,6 +60,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createMcpHandler, InMemoryTransport, type McpServer } from '@modelcontextprotocol/server';
 import { MRTR_PROTOCOL_REVISION, wrapMcpServer, wrapMcpServers } from '@astral-mcp/projection';
 import type { AgentRuntime, AgentTool, AgentToolResult } from './agent.js';
+import { MULTI_BOX_DESCRIPTIONS } from './multi-world.js';
 import type { EvalWorld, MultiWorld, WorldName } from './world.js';
 
 export type EvalMode = 'direct' | 'projection' | 'projection-boxes';
@@ -103,6 +115,15 @@ export function hostToolName(alias: string, name: string): string {
   return `${safe.slice(0, HOST_TOOL_NAME_MAX - 9)}_${hash}`;
 }
 
+/** Options for opening a mode's session. */
+export interface SessionOptions {
+  /**
+   * Multi world, Projection modes: pass {@link MULTI_BOX_DESCRIPTIONS} to
+   * `wrapMcpServers` as the host's box descriptions. Default false.
+   */
+  boxDescriptions?: boolean;
+}
+
 /** The heading direct mode puts above the boxes' instructions, as Claude Code does. */
 export const MULTI_INSTRUCTIONS_HEADER =
   '# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:';
@@ -116,8 +137,8 @@ export function multiDirectSystemPrompt(world: MultiWorld): string {
     box.world.instructions !== undefined ? [`## ${box.alias}\n\n${box.world.instructions}`] : [],
   );
   return sections.length === 0
-    ? world.directSystemPrompt
-    : [world.directSystemPrompt, MULTI_INSTRUCTIONS_HEADER, ...sections].join('\n\n');
+    ? world.hostSystemPrompt
+    : [world.hostSystemPrompt, MULTI_INSTRUCTIONS_HEADER, ...sections].join('\n\n');
 }
 
 /**
@@ -218,8 +239,8 @@ export async function openDirectSession(world: EvalWorld): Promise<ModeSession> 
 
   const system =
     world.instructions !== undefined
-      ? `${world.directSystemPrompt}\n\n${world.instructions}`
-      : world.directSystemPrompt;
+      ? `${world.hostSystemPrompt}\n\n${world.instructions}`
+      : world.hostSystemPrompt;
   const tools: AgentTool[] = world.tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -286,7 +307,8 @@ async function connectFacade(
       description: tool.description ?? '',
       inputSchema: tool.inputSchema as Record<string, unknown>,
     }));
-    system = client.getInstructions() ?? facade.instructions;
+    // The host's framing first, as in direct mode; then what the facade says.
+    system = `${world.hostSystemPrompt}\n\n${client.getInstructions() ?? facade.instructions}`;
   } catch (err) {
     // Nobody else holds the facade: release it (and the half-open client)
     // rather than leak a wrapped server per failed episode.
@@ -316,25 +338,35 @@ async function connectFacade(
 }
 
 /** Projection: the facade's tools over the 2026-07-28 wire, approve-all. */
-export async function openProjectionSession(world: EvalWorld): Promise<ModeSession> {
-  if (world.name === 'multi') return openMultiProjectionSession(world, 'projection');
+export async function openProjectionSession(
+  world: EvalWorld,
+  options: SessionOptions = {},
+): Promise<ModeSession> {
+  if (world.name === 'multi') return openMultiProjectionSession(world, 'projection', options);
   const facade = await wrapMcpServer(world.server, { blob: { key: randomBytes(32) } });
   return connectFacade('projection', world, facade, () => PROJECTION_DISCOVERY_TOOLS);
 }
 
 /**
  * The multi world behind `wrapMcpServers`, one box per alias, default
- * options except `catalog.globalSearch: false` for `projection-boxes`.
- * Discovery turns are free as on a single-server facade, `search_<alias>`
- * included.
+ * options except `catalog.globalSearch: false` for `projection-boxes` (and
+ * the host's box descriptions when `options.boxDescriptions`). Discovery
+ * turns are free as on a single-server facade, `search_<alias>` included.
  */
 export async function openMultiProjectionSession(
   world: MultiWorld,
   mode: Exclude<EvalMode, 'direct'>,
+  options: SessionOptions = {},
 ): Promise<ModeSession> {
-  const sources: Record<string, McpServer> = Object.fromEntries(
-    world.boxes.map((box) => [box.alias, box.world.server]),
-  );
+  const sources: Record<string, McpServer | { source: McpServer; description: string }> =
+    Object.fromEntries(
+      world.boxes.map((box) => [
+        box.alias,
+        options.boxDescriptions === true
+          ? { source: box.world.server, description: MULTI_BOX_DESCRIPTIONS[box.alias] }
+          : box.world.server,
+      ]),
+    );
   const facade = await wrapMcpServers(sources, {
     blob: { key: randomBytes(32) },
     ...(mode === 'projection-boxes' ? { catalog: { globalSearch: false } } : {}),
@@ -401,18 +433,22 @@ export async function openMultiDirectSession(world: MultiWorld): Promise<ModeSes
   };
 }
 
-export function openSession(mode: EvalMode, world: EvalWorld): Promise<ModeSession> {
+export function openSession(
+  mode: EvalMode,
+  world: EvalWorld,
+  options: SessionOptions = {},
+): Promise<ModeSession> {
   switch (mode) {
     case 'direct':
       return openDirectSession(world);
     case 'projection':
-      return openProjectionSession(world);
+      return openProjectionSession(world, options);
     case 'projection-boxes':
       if (world.name !== 'multi') {
         return Promise.reject(
           new Error(`mode projection-boxes needs the multi world, not ${world.name}`),
         );
       }
-      return openMultiProjectionSession(world, mode);
+      return openMultiProjectionSession(world, mode, options);
   }
 }
