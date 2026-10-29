@@ -689,3 +689,141 @@ change for every existing facade, and it trusts third-party annotations by
 default; **per-tool `auto` lists only** — the integrator would have to
 enumerate every non-destructive write and keep the list current as servers
 change.
+
+## D18 — Upstream sign-in is just-in-time and bring-your-own (2026-10-29)
+
+Context. Remote MCP servers that need authorization are usually wired up
+today by pasting a token into an MCP client's configuration file, where it
+sits in plaintext, gets copied between machines and is never rotated. PRD
+§12.4 held per-user upstream OAuth as a stretch goal and had already
+decided two things: authorization is semantically an approval, so it
+belongs in an MRTR suspension; and credentials never enter the sandbox,
+the blob or any model-visible surface. The maintainer wants getting started
+to need nothing more than a URL, and wants Projection to ask for sign-in
+only when a request first needs it. GitHub's remote MCP server, the most
+common case, has no dynamic client registration, and its maintainers do not
+plan to add it (github/github-mcp-server#1404). Its authorization server
+does support the device flow: `https://github.com/login/oauth` advertises
+`device_authorization_endpoint`, checked 2026-10-29. A GitHub OAuth app
+allows the device flow without a client secret when "Enable Device Flow"
+is ticked, but its authorization-code exchange requires a secret even with
+PKCE.
+
+Decision (PRD §6.10, R50–R62):
+
+- **Sources by URL.** A source can be an `UpstreamSpec`, `{ url, oauth? }`,
+  in `wrapMcpServer`, in `wrapMcpServers` and as a `ServerSourceConfig.source`.
+  Projection then builds a Streamable HTTP transport (`https:` except on
+  loopback) and installs its own `OAuthClientProvider`. Pre-built `Client`s
+  keep integrator-owned auth, and their outputs stay byte-identical.
+- **Bring-your-own registration.** Projection ships no OAuth app and
+  recommends none. Client identity is resolved in the SDK `auth()` order:
+  configured `oauth.clientId` (with an optional, discouraged
+  `clientSecret`), then a CIMD URL when the server supports CIMD, then
+  dynamic registration. When none applies, the request ends in an `auth`
+  error that names what to configure.
+- **Flows.** The device flow (RFC 8628) is used whenever it is available,
+  from metadata or the `oauth.deviceAuthorizationEndpoint` override. The
+  device code is sealed in the sign-in blob, and each retry polls once.
+  Otherwise Projection uses authorization code + PKCE S256 with a loopback
+  redirect on `127.0.0.1`, carrying the verifier in a sealed `state`. Every
+  request carries RFC 8707 `resource`. Endpoint and scope overrides cover
+  incomplete metadata. Hosted redirect URIs are out of scope.
+- **Locked boxes.** A 401 at wrap time locks the box rather than failing
+  the wrap. The shelf shows it as `sign-in required`, and its
+  `search_<alias>` is still served. The first request that needs the box
+  suspends for sign-in. The retry introspects the box lazily on that
+  instance, and the original request proceeds. The tool list never
+  changes, and no list-changed notification is sent.
+- **The sign-in request.** It is a URL-mode elicitation (`Sign in to
+<alias> to continue`, `You'll be sent to <host>`). It falls back to a
+  form with an "I've signed in" confirmation, then to a normal
+  `sign_in_required` result whose link the model shows the user. The
+  request is carried by a new blob kind, `signin`, bound to the original
+  request and the facade identity, single-use, and expiring with the flow.
+  When the sign-in completes, the request continues and a write still asks
+  for approval. A decline is `sign_in_declined`, or `TOOL_DENIED` in a
+  machine. Failures get a new `auth` phase. A mid-workflow 401 re-locks the
+  box and suspends.
+- **Token residence.** Tokens live only in a `TokenStore`: by default the
+  macOS Keychain or the Linux Secret Service, otherwise an in-memory store
+  with a warning. The store is pluggable for hosted deployments. Refresh is
+  automatic, and `signOut` re-locks.
+- **Identity.** A URL source's identity is `url:<canonical url>`. It is
+  stable whether the box is locked or unlocked, and it cannot equal a
+  `name@version`, because a canonical URL has no `@`.
+- **Scope.** Phase 1 has one principal; §12.4 keeps per-user principals,
+  hosted redirects, Windows Credential Manager and secret references.
+
+Why the device flow first. It needs no redirect listener, no port, no
+client secret and no browser on the same machine. It is the only one of the
+two flows that works in a hosted deployment, and it is stateless across
+MRTR retries: everything needed to finish it rides sealed in
+`requestState`, so any instance can poll. For GitHub, the case that
+motivated this work, it is also the only flow that works without a secret.
+The authorization-code flow stays as the fallback for servers without a
+device endpoint, and it is local-only by construction.
+
+Why a new blob kind rather than a pending entry. `pending` is the S2
+approval map. If a sign-in were a pending entry, every approval path would
+need to know that one entry is not an approval, and a single missed check
+in `call_tool`'s exactly-one-`call` rule would execute a gated call on an
+`accept` meant for a sign-in. A separate kind, with R36's kind check
+extended to the origin tool, makes that confusion impossible. It also
+keeps sign-in and approval sequential: sign in first, then approve, never
+one prompt doing both.
+
+Why locked boxes. Failing the wrap on a 401 would make "start with nothing"
+impossible. Skipping the source, as `optional` does, would hide the box
+from the model, so it could never ask for it. A locked box keeps the
+facade's tool set fixed: hosts cache tool lists and models plan from them,
+and the 2026-07-28 wire has no session to send a list-changed notification
+on. The shelf tells the model the box exists and what it needs, and the
+box's own search tool is the natural place to trigger sign-in.
+
+Why the keychain over files. A token file in plaintext is the problem this
+work replaces, just moved to a different place. A file encrypted under the
+blob key would put the key that protects every blob next to every token it
+unlocks, and an integrator who shares the blob key across instances would
+be sharing tokens too. The OS credential store is per user, encrypted at
+rest, and already where users expect credentials to live. When it is
+unavailable, an in-memory store with a warning is honest about the cost:
+the user signs in again after a restart.
+
+Why a URL-based identity. A sign-in blob is minted while the box is locked,
+before Projection has seen the server's `name@version`. An identity that
+changed on unlock would make every first sign-in fail verification. The
+host-chosen URL is known at wrap time and stable. Trade-off: an upgrade of
+the server behind that URL no longer invalidates in-flight blobs. That is
+acceptable because blobs live for minutes, and a resumed call is validated
+against the catalog the instance holds when it resumes.
+
+Alternatives rejected:
+
+- **Projection-owned OAuth apps for popular providers** (a GitHub OAuth app
+  shipped with the library, for example). This would give the lowest
+  friction for those providers. But the maintainer does not want Projection
+  to be prescriptive about which servers it wraps, and a shipped client id
+  makes Projection the operator of an app that every user's token is issued
+  to.
+- **Failing the wrap on 401.** It contradicts the goal: a wrapper that
+  needs a token before it starts brings the token back into configuration.
+- **Static tokens with secret references as the primary path.** This is
+  less machinery, but it keeps the user minting, storing and rotating
+  long-lived tokens by hand. It stays available as integrator-owned
+  `Client` auth, and secret references stay in §12.4.
+- **A plaintext token file, or one encrypted under the blob key.** See the
+  keychain rationale above.
+
+Known gaps carried forward:
+
+- The authorization-code flow cannot tell when the browser is on another
+  machine.
+- In the no-elicitation fallback, the link passes through the model, which
+  brings the phishing and fixation risks R61 names. Fixation is accepted
+  for single-user phase 1.
+- The R12 round-trip cap bounds pending re-suspensions. A client that
+  retries the instant the user opens the link can exhaust it. Projection
+  then hands the flow to an in-process poller and returns
+  `sign_in_required`, rather than invalidating the code the user is
+  entering.
