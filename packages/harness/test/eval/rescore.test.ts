@@ -216,6 +216,18 @@ describe('rescoreRecords', () => {
     ]);
   });
 
+  it('keeps a context overflow a failure even when its calls and answer would pass', async () => {
+    const overflowed = record(
+      'answer',
+      [read],
+      { success: false, toolCorrect: true, forbidden: false },
+      { finalText: 'the right file', contextOverflow: true },
+    );
+    const result = await rescoreRecords([overflowed], { tasks: TASKS });
+    expect(result.records[0]?.success).toBe(false);
+    expect(result.changed).toHaveLength(0);
+  });
+
   it('defaults to the built-in tasks', async () => {
     const tree = '```\nsrc/\n├── index.js\n├── legacy/\n│   └── old.js\n└── util.js\n```';
     const { changed } = await rescoreRecords([

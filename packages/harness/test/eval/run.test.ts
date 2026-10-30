@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
+import { APIError } from '@anthropic-ai/sdk';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createResultsWriter,
@@ -275,6 +276,104 @@ describe('tool-choice eval plumbing (offline)', () => {
     const summary = summarizeToolChoice([record as EpisodeRecord]);
     expect(summary.cells[0]).toMatchObject({ scored: 0, successes: 0, harnessErrors: 1 });
     expect(formatToolChoiceReport([record as EpisodeRecord])).toContain('Harness errors');
+  });
+
+  describe('context overflow is a scored failure', () => {
+    /** Makes the right call on turn 1; turn 2 overflows as `overflow` says. */
+    const overflowingCaller =
+      (overflow: () => Anthropic.Message): ModelCaller =>
+      async (params) => {
+        const last = params.messages.at(-1);
+        if (Array.isArray(last?.content) && last.content.some((b) => b.type === 'tool_result')) {
+          return overflow();
+        }
+        return message([toolUse('tu_me', 'get_me', {})], 'tool_use');
+      };
+    const run = (caller: ModelCaller) =>
+      runToolChoiceEval({
+        models: [preset],
+        modes: ['direct'],
+        tasks: resolveTasks('who-am-i'),
+        runs: 1,
+        caller,
+      });
+
+    it(
+      'a 400 prompt-too-long ends the episode scored, as a failure',
+      { timeout: 60_000 },
+      async () => {
+        const [record] = await run(
+          overflowingCaller(() => {
+            throw APIError.generate(
+              400,
+              {
+                type: 'error',
+                error: {
+                  type: 'invalid_request_error',
+                  message: 'prompt is too long: 215000 tokens > 200000 maximum',
+                },
+              },
+              undefined,
+              new Headers(),
+            );
+          }),
+        );
+        expect(record?.contextOverflow).toBe(true);
+        expect(record?.harnessError).toBeUndefined();
+        expect(record?.infraFailure).toBeUndefined();
+        // The right call was made, and it is still a failure.
+        expect(record?.toolCorrect).toBe(true);
+        expect(record?.success).toBe(false);
+        expect(record?.stopReason).toBe('model_context_window_exceeded');
+        const summary = summarizeToolChoice([record as EpisodeRecord]);
+        expect(summary.cells[0]).toMatchObject({
+          scored: 1,
+          successes: 0,
+          harnessErrors: 0,
+          contextOverflows: 1,
+        });
+        expect(summary.tiers[0]).toMatchObject({ scored: 1, contextOverflows: 1 });
+        expect(summary.tasks[0]).toMatchObject({ scored: 1, contextOverflows: 1 });
+        const report = formatToolChoiceReport([record as EpisodeRecord]);
+        expect(report).toContain('ctx-overflow');
+        expect(report).not.toContain('Harness errors');
+        expect(formatEpisodeLine(record as EpisodeRecord)).toContain('context-overflow');
+      },
+    );
+
+    it('so does the model_context_window_exceeded stop reason', { timeout: 60_000 }, async () => {
+      const [record] = await run(
+        overflowingCaller(() =>
+          message(
+            [{ type: 'text', text: 'partial' }],
+            'model_context_window_exceeded' as Anthropic.StopReason,
+          ),
+        ),
+      );
+      expect(record?.contextOverflow).toBe(true);
+      expect(record?.harnessError).toBeUndefined();
+      expect(record?.success).toBe(false);
+      expect(summarizeToolChoice([record as EpisodeRecord]).cells[0]?.contextOverflows).toBe(1);
+    });
+
+    it('any other 400 is still an excluded API error', { timeout: 60_000 }, async () => {
+      const [record] = await run(
+        overflowingCaller(() => {
+          throw APIError.generate(
+            400,
+            { type: 'error', error: { type: 'invalid_request_error', message: 'tools.0: bad' } },
+            undefined,
+            new Headers(),
+          );
+        }),
+      );
+      expect(record?.contextOverflow).toBeUndefined();
+      expect(record?.harnessError).toMatch(/^api error: /);
+      expect(summarizeToolChoice([record as EpisodeRecord]).cells[0]).toMatchObject({
+        scored: 0,
+        contextOverflows: 0,
+      });
+    });
   });
 
   it(

@@ -103,7 +103,8 @@ async function rescoreOne(
   const forbid = task.forbid;
   const forbidden = forbid !== undefined && calls.some((call) => forbid(call));
   const toolCorrect = task.steps.every((group) => calls.some((call) => group.includes(call.tool)));
-  const expected = !forbidden && task.expect(calls);
+  // An episode that ran out of context window stays a failure.
+  const expected = record.contextOverflow !== true && !forbidden && task.expect(calls);
   let success = expected;
   let worldFailureKept = false;
   if (expected && task.verify !== undefined) {

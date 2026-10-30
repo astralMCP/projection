@@ -217,6 +217,12 @@ export interface EpisodeRecord {
    * after its retries: an infrastructure failure, not the model's.
    */
   infraFailure?: true;
+  /**
+   * Present when the episode ran out of context window (a prompt-too-long
+   * 400, or the `model_context_window_exceeded` stop reason), on either
+   * path. Scored, and never a success: no `harnessError`.
+   */
+  contextOverflow?: true;
 }
 
 export interface ToolChoiceEvalOptions {
@@ -383,9 +389,11 @@ async function scoreEpisode(
   const { model, mode, task, run } = planned;
   const upstreamCalls = world.calls.slice();
   const scored = episode.harnessError === undefined;
+  const overflowed = episode.contextOverflow === true;
   const forbid = task.forbid;
   const forbidden = forbid !== undefined && upstreamCalls.some((call) => forbid(call));
-  const expected = scored && !forbidden && task.expect(upstreamCalls);
+  // An episode that ran out of context window is a scored failure.
+  const expected = scored && !overflowed && !forbidden && task.expect(upstreamCalls);
   const success =
     expected && task.verify !== undefined
       ? await task.verify({
@@ -429,6 +437,7 @@ async function scoreEpisode(
     finalText: episode.finalText,
     transcript: episode.transcript,
     ...(episode.infraFailure === true ? { infraFailure: true as const } : {}),
+    ...(overflowed ? { contextOverflow: true as const } : {}),
   };
 }
 
@@ -702,6 +711,8 @@ export interface CellSummary {
   harnessErrors: number;
   /** Scored episodes that stopped at the turn cap. */
   turnCapped: number;
+  /** Scored episodes that ran out of context window (all failures). */
+  contextOverflows: number;
   meanTurns: number;
   /** Mean turns that consumed the budget. */
   meanBudgetTurns: number;
@@ -733,6 +744,8 @@ export interface TaskCellSummary {
   successes: number;
   scored: number;
   episodes: number;
+  /** Scored episodes that ran out of context window (all failures). */
+  contextOverflows: number;
 }
 
 /** Multi tier: how a cell's episodes moved between boxes ({@link BoxRouting}). */
@@ -765,6 +778,8 @@ export interface TierCellSummary {
   toolCorrect: number;
   /** Scored episodes that made a forbidden call. */
   forbidden: number;
+  /** Scored episodes that ran out of context window (all failures). */
+  contextOverflows: number;
   scored: number;
   episodes: number;
   /** Mean Messages API calls per episode. */
@@ -892,6 +907,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     toolCorrect: scored.filter((r) => r.toolCorrect).length,
     harnessErrors: records.length - scored.length,
     turnCapped: scored.filter((r) => r.turnCapped).length,
+    contextOverflows: scored.filter((r) => r.contextOverflow === true).length,
     meanTurns: spend.meanTurns,
     meanBudgetTurns: spend.meanBudgetTurns,
     meanUpstreamCalls: mean(records.map((r) => r.upstreamCalls.length)),
@@ -944,6 +960,7 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
       successes: scored.filter((r) => r.success).length,
       scored: scored.length,
       episodes: group.length,
+      contextOverflows: scored.filter((r) => r.contextOverflow === true).length,
     };
   });
   const tiers: TierCellSummary[] = [];
@@ -962,6 +979,7 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
         successes: scored.filter((r) => r.success).length,
         toolCorrect: scored.filter((r) => r.toolCorrect).length,
         forbidden: scored.filter((r) => r.forbidden).length,
+        contextOverflows: scored.filter((r) => r.contextOverflow === true).length,
         scored: scored.length,
         episodes: inTier.length,
         ...spendOf(inTier),
@@ -1034,6 +1052,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'est $',
       'std $',
       'turn-capped',
+      'ctx-overflow',
       'harness-err',
     ],
   ];
@@ -1052,6 +1071,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       cell.estimatedUsd.toFixed(4),
       usdOrDash(cell.standardUsd),
       cell.turnCapped.toString(),
+      cell.contextOverflows.toString(),
       cell.harnessErrors.toString(),
     ]);
   }
@@ -1089,6 +1109,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'success',
       'tool-ok',
       'forbidden',
+      'ctx-overflow',
       'turns',
       'counted',
       'in-tok',
@@ -1106,6 +1127,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
         `${cell.successes}/${cell.scored} ${pct(cell.successes, cell.scored)}`,
         `${cell.toolCorrect}/${cell.scored}`,
         cell.forbidden.toString(),
+        cell.contextOverflows.toString(),
         cell.meanTurns.toFixed(1),
         cell.meanBudgetTurns.toFixed(1),
         Math.round(cell.meanInputTokens).toString(),
@@ -1193,6 +1215,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'discount), comparable across modes and runs; - where not measured. ' +
       'The turn budget counts action turns (Projection discovery turns are free, up to an absolute ceiling of twice the budget); ' +
       'turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
+      'an episode that runs out of context window (ctx-overflow) is scored as a failure; ' +
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
   return lines.join('\n');
@@ -1222,13 +1245,15 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
   const verdict =
     record.harnessError !== undefined
       ? `ERR ${record.harnessError}`
-      : record.success
-        ? 'ok'
-        : record.forbidden
-          ? 'forbidden-call'
-          : record.toolCorrect
-            ? 'tool-ok/args-wrong'
-            : 'miss';
+      : record.contextOverflow === true
+        ? 'context-overflow'
+        : record.success
+          ? 'ok'
+          : record.forbidden
+            ? 'forbidden-call'
+            : record.toolCorrect
+              ? 'tool-ok/args-wrong'
+              : 'miss';
   const route = record.projection !== undefined ? ` via ${record.projection.route}` : '';
   const capped = record.turnCapped ? ' (turn-capped)' : '';
   const budget = record.budgetTurns !== record.apiTurns ? ` (${record.budgetTurns} counted)` : '';

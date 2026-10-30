@@ -177,6 +177,47 @@ export class InfraError extends Error {
   override name = 'InfraError';
 }
 
+/**
+ * Thrown by a {@link ModelCaller} when the request did not fit the model's
+ * context window — the batch runner's `invalid_request_error` result about
+ * prompt length. The interactive caller throws the SDK's 400 instead;
+ * {@link isContextOverflow} recognises both. Either way the episode ends as
+ * a scored failure (`contextOverflow`), never an API or infra exclusion:
+ * running out of context is the strategy's cost, not the harness's fault.
+ */
+export class ContextOverflowError extends Error {
+  override name = 'ContextOverflowError';
+}
+
+/**
+ * An API error message saying the prompt does not fit the context window
+ * ("prompt is too long: 215000 tokens > 200000 maximum", or one naming the
+ * context length or window).
+ */
+export function isContextOverflowMessage(text: string): boolean {
+  return /prompt is too long|input is too long|context (?:length|window)|maximum context|exceeds? (?:the )?(?:model'?s? )?(?:maximum )?context/i.test(
+    text,
+  );
+}
+
+/**
+ * Whether a thrown model-call error is a context overflow: a
+ * {@link ContextOverflowError}, or a 400 / `invalid_request_error` (the
+ * SDK's `BadRequestError`) whose message is about the prompt's length.
+ */
+export function isContextOverflow(err: unknown): boolean {
+  if (err instanceof ContextOverflowError) return true;
+  if (!(err instanceof Error)) return false;
+  const status = (err as { status?: unknown }).status;
+  const type = (err as { error?: { error?: { type?: unknown } } }).error?.error?.type;
+  const invalid =
+    status === 400 || type === 'invalid_request_error' || /invalid_request_error/.test(err.message);
+  return invalid && isContextOverflowMessage(err.message);
+}
+
+/** The stop reason the API gives when a response ran out of context window. */
+export const CONTEXT_WINDOW_STOP = 'model_context_window_exceeded';
+
 /** The tools as the Messages API takes them. */
 export function agentTools(runtime: Pick<AgentRuntime, 'tools'>): Anthropic.Tool[] {
   return runtime.tools.map((tool) => ({
@@ -328,8 +369,9 @@ export interface AgentEpisode {
   /**
    * Set when the episode did not end on the model's own `end_turn` for a
    * reason that is not the model's tool choice: a refusal, a `max_tokens`
-   * cut, a context-window overflow, or a thrown API error. Such episodes are
-   * reported separately and excluded from success rates.
+   * cut, or a thrown API error. Such episodes are reported separately and
+   * excluded from success rates. A context-window overflow is not one of
+   * them (see `contextOverflow`).
    */
   harnessError?: string;
   /**
@@ -337,6 +379,14 @@ export interface AgentEpisode {
    * {@link InfraError}: the infrastructure failed, not the model.
    */
   infraFailure?: true;
+  /**
+   * Set when the episode ran out of context window: a request rejected as
+   * too long (400 `invalid_request_error`, or {@link ContextOverflowError}
+   * from the batch runner) or a response that stopped with
+   * `model_context_window_exceeded`. Not a harness error: the episode is
+   * scored, and scored as a failure.
+   */
+  contextOverflow?: true;
 }
 
 export interface AgentEpisodeOptions {
@@ -420,6 +470,7 @@ export async function runAgentEpisode(
     messages: [{ role: 'user', content: prompt }],
   };
 
+  let contextOverflow = false;
   const finish = (harnessError?: string, turnCapped = false, infra = false): AgentEpisode => ({
     apiTurns,
     budgetTurns,
@@ -435,6 +486,7 @@ export async function runAgentEpisode(
     turnCapped,
     ...(harnessError !== undefined ? { harnessError } : {}),
     ...(infra ? { infraFailure: true as const } : {}),
+    ...(contextOverflow ? { contextOverflow: true as const } : {}),
   });
 
   while (budgetTurns < maxTurns && apiTurns < maxTotalTurns) {
@@ -445,6 +497,12 @@ export async function runAgentEpisode(
       );
     } catch (err) {
       if (err instanceof InfraError) return finish(`batch infra: ${err.message}`, false, true);
+      if (isContextOverflow(err)) {
+        // The conversation outgrew the window: a scored failure.
+        contextOverflow = true;
+        stopReason = CONTEXT_WINDOW_STOP;
+        return finish();
+      }
       return finish(`api error: ${errorMessage(err)}`);
     }
     apiTurns += 1;
@@ -531,7 +589,12 @@ export async function runAgentEpisode(
       return finish();
     }
 
-    // refusal, max_tokens, model_context_window_exceeded, or null.
+    if (message.stop_reason === CONTEXT_WINDOW_STOP) {
+      contextOverflow = true;
+      return finish();
+    }
+
+    // refusal, max_tokens, or null.
     return finish(`stop_reason ${String(message.stop_reason)}`);
   }
 
