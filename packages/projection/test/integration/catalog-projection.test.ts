@@ -10,9 +10,9 @@ import { InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
-  DEFAULT_CATALOG_PREAMBLE,
   DEFAULT_CODE_MODE_PREAMBLE,
-  DEFAULT_ROUTING_PREAMBLE,
+  INDEXED_CATALOG_PREAMBLE,
+  INDEXED_ROUTING_PREAMBLE,
   ProjectionError,
   wrapMcpServer,
   type ProjectionFacade,
@@ -20,6 +20,10 @@ import {
 } from '../../src/index.js';
 
 const KEY = new Uint8Array(32).fill(9);
+
+/** The tool index the three-tool server gets (catalog/tool-index.ts). */
+const TOOL_INDEX =
+  "Tools — call any of them directly with call_tool; call describe_tool only when you need a tool's arguments, and search_tools only when this list is not enough:\n- read_file, write_file, delete_file";
 
 function buildWrappedServer(): McpServer {
   const server = new McpServer(
@@ -92,7 +96,9 @@ describe('projections switch (R1, R32)', () => {
     ]);
     expect(facade?.projections).toEqual({ codeMode: true, catalog: true });
     expect(Object.isFrozen(facade?.projections)).toBe(true);
-    expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_ROUTING_PREAMBLE}`);
+    expect(facade?.instructions).toBe(
+      `A tiny file server.\n\n${INDEXED_ROUTING_PREAMBLE}\n\n${TOOL_INDEX}`,
+    );
   });
 
   it('code mode only: two tools and the code-mode preamble', async () => {
@@ -113,7 +119,7 @@ describe('projections switch (R1, R32)', () => {
       'execute_machine',
       'search_tools',
     ]);
-    expect(facade?.instructions).toContain(DEFAULT_ROUTING_PREAMBLE);
+    expect(facade?.instructions).toContain(INDEXED_ROUTING_PREAMBLE);
     expect(facade?.instructions).toContain('call_tool');
     expect(facade?.instructions).toContain('execute_machine');
     const { tools } = await c.listTools();
@@ -138,7 +144,7 @@ describe('projections switch (R1, R32)', () => {
     // call_tool deliberately carries no annotations (R35).
     const { tools } = await c.listTools();
     expect(tools.find((t) => t.name === 'call_tool')?.annotations).toBeUndefined();
-    expect(facade?.instructions).toContain(DEFAULT_CATALOG_PREAMBLE);
+    expect(facade?.instructions).toContain(INDEXED_CATALOG_PREAMBLE);
     expect(facade?.instructions).not.toContain('execute_machine');
     const { prompts } = await c.listPrompts();
     expect(prompts).toEqual([]);
@@ -149,7 +155,8 @@ describe('projections switch (R1, R32)', () => {
 
   it('a developer preamble replaces the whole R29 copy whichever projections are on', async () => {
     await connect({ projections: { catalog: true }, codeModePreamble: 'Custom copy.' });
-    expect(facade?.instructions).toBe('A tiny file server.\n\nCustom copy.');
+    // The tool index is not preamble copy: it is kept.
+    expect(facade?.instructions).toBe(`A tiny file server.\n\nCustom copy.\n\n${TOOL_INDEX}`);
   });
 
   it('disabling both projections is refused at wrap time as a terminal error', async () => {

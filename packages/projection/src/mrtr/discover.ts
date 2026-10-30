@@ -18,6 +18,7 @@ import {
 } from '../catalog/boxes.js';
 import { decidePolicy, policyContext } from '../policy/decision.js';
 import { inertIdentity } from '../text-safety.js';
+import { hasToolIndex, renderToolIndex } from '../catalog/tool-index.js';
 import { XSTATE_VERSION } from '../blob/index.js';
 import { dedupeTools, type PolicyOptions, type ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
@@ -362,8 +363,10 @@ export interface ProjectionSelection {
 
 /**
  * The wrapped server's `instructions`, followed by the preamble for the
- * projections in service (R29). The preamble is library copy the
- * integrating developer can replace wholesale.
+ * projections in service (R29), then — when the catalog projection is
+ * served and the server has at most `TOOL_INDEX_MAX_TOOLS` tools — the
+ * tool index, one line of every tool name. The preamble is library copy
+ * the integrating developer can replace wholesale; the index is kept.
  */
 export function buildInstructions(
   catalog: ServerCatalog,
@@ -371,8 +374,10 @@ export function buildInstructions(
   projections: ProjectionSelection = { codeMode: true, catalog: true },
 ): string {
   const wrapped = catalog.instructions?.trim();
-  const copy = preamble ?? defaultPreamble(projections);
-  return wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${copy}` : copy;
+  const toolIndex = projections.catalog && hasToolIndex(catalog);
+  const copy = preamble ?? defaultPreamble(projections, { toolIndex });
+  const index = toolIndex ? `\n\n${renderToolIndex(catalog)}` : '';
+  return `${wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${copy}` : copy}${index}`;
 }
 
 /**
@@ -391,9 +396,25 @@ export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a
 /** Preamble when both projections are on: the routing rule (R29). */
 export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
-/** The R29 preamble variant for a projection selection. */
-export function defaultPreamble(projections: ProjectionSelection): string {
-  if (projections.codeMode && projections.catalog) return DEFAULT_ROUTING_PREAMBLE;
-  if (projections.catalog) return DEFAULT_CATALOG_PREAMBLE;
+/** Preamble when only the catalog projection is on and the tool index follows (R29, R32). */
+export const INDEXED_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: every tool is listed below; call any of them with call_tool, reading each result before the next step. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+
+/** The routing preamble when the tool index follows (R29). */
+export const INDEXED_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call it with call_tool: every tool is listed below. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+
+/**
+ * The R29 preamble variant for a projection selection. `toolIndex`: the
+ * instructions carry the tool index, so the catalog copy sends the model
+ * straight to call_tool instead of to search_tools first.
+ */
+export function defaultPreamble(
+  projections: ProjectionSelection,
+  options: { toolIndex?: boolean } = {},
+): string {
+  const indexed = options.toolIndex === true;
+  if (projections.codeMode && projections.catalog) {
+    return indexed ? INDEXED_ROUTING_PREAMBLE : DEFAULT_ROUTING_PREAMBLE;
+  }
+  if (projections.catalog) return indexed ? INDEXED_CATALOG_PREAMBLE : DEFAULT_CATALOG_PREAMBLE;
   return DEFAULT_CODE_MODE_PREAMBLE;
 }

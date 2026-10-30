@@ -368,10 +368,13 @@ describe('instructions (R44)', () => {
       { fs: fsServer(log), github: { source: githubServer(log), description: 'Issues and PRs.' } },
       { blob: { key: KEY } },
     );
-    expect(facade.instructions).toContain('call search_tools to find a tool in any box');
+    // Seven tools: the tool index follows the shelf, so the copy sends the
+    // model straight to call_tool.
+    expect(facade.instructions).toContain('call each tool in the tool index below with call_tool');
+    expect(facade.instructions).not.toContain('call search_tools to find a tool');
     expect(facade.instructions).toContain('run it with execute_machine');
     expect(facade.instructions).toContain(
-      'then pass the full name to describe_tool, call_tool and toolCall:',
+      'tools are named <box>.<tool>; pass the full name to call_tool, describe_tool and toolCall:',
     );
     expect(facade.instructions).toContain(
       `- fs — "FS-SERVER-INSTRUCTIONS: read me first." (server's words) (3 tools)`,
