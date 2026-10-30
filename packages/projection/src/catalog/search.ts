@@ -12,9 +12,12 @@
  * matches when ANY word is a case-insensitive substring of its name, its
  * annotation title, or its full description. Each word scores +2 when it is
  * in the name and, independently, +1 when it is in the title or description
- * (a word in both scores 3); matches are ranked by score, ties in catalog
- * order, so a guessed name like `create_issue` finds `issue_write` instead
- * of nothing. A title hit counts like a description hit — it catches words
+ * (a word in both scores 3), times the word's weight — higher the fewer
+ * tools it occurs in (D22), so "branches" decides "get repository branches"
+ * rather than "get" and "repository". Matches are ranked by score; ties
+ * rank the tool whose name the query covers more of first, then keep
+ * catalog order. A guessed name like `create_issue` finds `issue_write`
+ * instead of nothing. A title hit counts like a description hit — it catches words
  * the description lacks — but never outweighs a name hit, so "pull request"
  * lists the `*pull_request*` tools before a tool whose title merely mentions
  * them. No regex is ever built from the query (S5: descriptions are hostile
@@ -214,7 +217,8 @@ export interface SearchBoxesOptions extends SearchToolsOptions {
  * scored per tool against its bare name, title and description; across
  * boxes a query token equal to an alias is an alias token (see
  * {@link scoreBoxedTools}), inside one box there is nothing for it to
- * select. Ties keep sorted alias order, then catalog order. Entries are
+ * select. Ties rank by name coverage, then sorted alias order, then
+ * catalog order. Entries are
  * `{ name, box, purpose, posture, destructive }` with `name` qualified;
  * `posture` is decided on the qualified entry, so it is the posture the gate
  * applies (R42). Cursors carry the issuing tool (`{ t, q, o }`) and are
@@ -470,48 +474,112 @@ function rankTools(tools: ToolCatalogEntry[], query: string): ToolCatalogEntry[]
 /** One matching tool with the D10 score that ranked it. */
 interface ScoredTool {
   entry: ToolCatalogEntry;
-  /** `2 × nameHits + (tokens in the title or description)`. */
+  /** Σ over tokens of `weight × (2 × in name + 1 × in title or description)`. */
   score: number;
   /** Tokens that are substrings of the name (`suggestTools` requires one). */
   nameHits: number;
+  /** Share of the name's characters the name-hit tokens spell (the tie-break). */
+  coverage: number;
+}
+
+/** Best first: higher score, then a name the query covers more of; else input order. */
+function byRank(
+  a: { score: number; coverage: number },
+  b: { score: number; coverage: number },
+): number {
+  return b.score - a.score || b.coverage - a.coverage;
 }
 
 /**
  * The tools a query matches, best first (D10): a token scores +2 in the
- * name and, independently, +1 in the title or description. The sort is
- * stable, so equal scores keep catalog order and paging stays deterministic
- * for a given query. A query with no token matches nothing.
+ * name and, independently, +1 in the title or description, times its
+ * weight ({@link tokenWeights}). Equal scores rank by name coverage
+ * ({@link nameCoverage}); the sort is stable, so full ties keep catalog
+ * order and paging stays deterministic for a given query. A query with no
+ * token matches nothing.
  */
 function scoreTools(tools: ToolCatalogEntry[], query: string): ScoredTool[] {
   // Deduplicated: a repeated word must not count twice.
-  const tokens = new Set(tokenize(query));
-  if (tokens.size === 0) return [];
+  const tokens = [...new Set(tokenize(query))];
+  if (tokens.length === 0) return [];
+  const hits = tools.map((entry) => hitsOf(entry, tokens));
+  const weights = tokenWeights(hits, tools.length);
   const scored: ScoredTool[] = [];
-  for (const entry of tools) {
-    const { score, nameHits } = scoreEntry(entry, tokens);
-    if (score > 0) scored.push({ entry, score, nameHits });
-  }
-  return scored.sort((a, b) => b.score - a.score);
+  tools.forEach((entry, i) => {
+    const { score, nameHits } = weighted(hits[i] ?? [], weights);
+    if (score > 0) {
+      scored.push({ entry, score, nameHits, coverage: nameCoverage(entry.name, tokens) });
+    }
+  });
+  return scored.sort(byRank);
 }
 
-/** One tool's D10 score for a set of tokens (shared by every ranking). */
-function scoreEntry(
-  entry: ToolCatalogEntry,
-  tokens: ReadonlySet<string>,
-): { score: number; nameHits: number } {
+/** Where one token occurs in one tool. */
+interface TokenHit {
+  name: boolean;
+  /** In the annotation title or the description. */
+  text: boolean;
+}
+
+/** Each token's occurrences in one tool (shared by every ranking). */
+function hitsOf(entry: ToolCatalogEntry, tokens: readonly string[]): TokenHit[] {
   const name = entry.name.toLowerCase();
   const title = (entry.annotations?.title ?? '').toLowerCase();
   const description = (entry.description ?? '').toLowerCase();
+  return tokens.map((token) => ({
+    name: name.includes(token),
+    text: title.includes(token) || description.includes(token),
+  }));
+}
+
+/**
+ * Each token's weight over the tools searched: `1 + ln(N / df)`, where `df`
+ * is how many of the `N` tools the token occurs in at all (an inverse
+ * document frequency). A word every tool has ("get", "the") weighs 1, as
+ * every word did before; a word few tools have ("branches") weighs more,
+ * so it decides the ranking instead of being outvoted by filler.
+ */
+function tokenWeights(hits: readonly TokenHit[][], n: number): number[] {
+  const width = hits[0]?.length ?? 0;
+  const weights: number[] = [];
+  for (let t = 0; t < width; t++) {
+    let df = 0;
+    for (const row of hits) if (row[t]?.name === true || row[t]?.text === true) df += 1;
+    weights.push(df === 0 ? 0 : 1 + Math.log(n / df));
+  }
+  return weights;
+}
+
+/**
+ * How much of `name` the tokens that occur in it spell, 0–1: `list_issues`
+ * is covered more by "list issues" than `list_issue_types` is. Ranks ties
+ * by how specifically the name matches rather than by catalog position.
+ */
+function nameCoverage(name: string, tokens: readonly string[]): number {
+  const lower = name.toLowerCase();
+  const letters = lower.replace(/[^\p{L}\p{M}\p{N}]+/gu, '').length;
+  if (letters === 0) return 0;
+  let covered = 0;
+  for (const token of tokens) if (lower.includes(token)) covered += token.length;
+  return Math.min(1, covered / letters);
+}
+
+/** One tool's D10 score from its token hits and the token weights. */
+function weighted(
+  hits: readonly TokenHit[],
+  weights: readonly number[],
+): { score: number; nameHits: number } {
   let nameHits = 0;
   let score = 0;
-  for (const token of tokens) {
-    // Additive: a token in both the name and the description scores 3.
-    if (name.includes(token)) {
+  hits.forEach((hit, t) => {
+    const weight = weights[t] ?? 0;
+    // Additive: a token in both the name and the description scores 3×.
+    if (hit.name) {
       nameHits += 1;
-      score += 2;
+      score += 2 * weight;
     }
-    if (title.includes(token) || description.includes(token)) score += 1;
-  }
+    if (hit.text) score += weight;
+  });
   return { score, nameHits };
 }
 
@@ -520,19 +588,24 @@ interface ScoredBoxedTool {
   member: BoxedTool;
   score: number;
   nameHits: number;
+  coverage: number;
 }
 
-/** Score an alias token adds to every tool of its box (R43). */
+/**
+ * What an alias token adds to every tool of its box (R43): a name hit of
+ * the query's heaviest text token (weight 1 when there is none).
+ */
 const ALIAS_TOKEN_SCORE = 2;
 
 /**
  * R43 ranking across boxes: D10 against each tool's BARE name, title and
  * description, except that a token equal to a wrapped alias (in `aliases`)
- * is an alias token — it adds 2 to every tool in that box and is matched
- * against no tool's text, so a server cannot outrank another box's tools for
- * that box's alias by writing the alias into its own text (S5). The sort is
- * stable over `members`, which arrive in sorted-alias-then-catalog order:
- * that is the tie-break.
+ * is an alias token — it adds a name hit's score to every tool in that box
+ * and is matched against no tool's text, so a server cannot outrank another
+ * box's tools for that box's alias by writing the alias into its own text
+ * (S5). Token weights are counted over the tools searched. Equal scores
+ * rank by name coverage; the sort is stable over `members`, which arrive in
+ * sorted-alias-then-catalog order: that is the last tie-break.
  */
 function scoreBoxedTools(
   members: readonly BoxedTool[],
@@ -543,15 +616,21 @@ function scoreBoxedTools(
   // under two characters, so a one-letter alias still boosts its box in a
   // multi-word query ("a files").
   const aliasTokens = new Set(splitWords(query).filter((word) => aliases.has(word)));
-  const textTokens = new Set(tokenize(query).filter((token) => !aliasTokens.has(token)));
-  if (aliasTokens.size === 0 && textTokens.size === 0) return [];
+  const textTokens = [...new Set(tokenize(query).filter((token) => !aliasTokens.has(token)))];
+  if (aliasTokens.size === 0 && textTokens.length === 0) return [];
+  const hits = members.map((member) => hitsOf(member.entry, textTokens));
+  const weights = tokenWeights(hits, members.length);
+  const aliasScore = ALIAS_TOKEN_SCORE * Math.max(1, ...weights);
   const scored: ScoredBoxedTool[] = [];
-  for (const member of members) {
-    const { score, nameHits } = scoreEntry(member.entry, textTokens);
-    const boost = aliasTokens.has(member.alias) ? ALIAS_TOKEN_SCORE : 0;
-    if (score + boost > 0) scored.push({ member, score: score + boost, nameHits });
-  }
-  return scored.sort((a, b) => b.score - a.score);
+  members.forEach((member, i) => {
+    const { score, nameHits } = weighted(hits[i] ?? [], weights);
+    const boost = aliasTokens.has(member.alias) ? aliasScore : 0;
+    if (score + boost > 0) {
+      const coverage = nameCoverage(member.entry.name, textTokens);
+      scored.push({ member, score: score + boost, nameHits, coverage });
+    }
+  });
+  return scored.sort(byRank);
 }
 
 function renderPage(

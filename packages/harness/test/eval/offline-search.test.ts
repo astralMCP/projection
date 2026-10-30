@@ -114,8 +114,8 @@ describe('offline search eval', () => {
   it('holds its retrieval floors on both splits', async () => {
     for (const split of ['train', 'test'] as const) {
       const m = summarize(await runSearchCases(casesOf(corpus, split)));
-      expect(m.recallAt5, split).toBeGreaterThanOrEqual(0.88);
-      expect(m.mrr, split).toBeGreaterThanOrEqual(0.77);
+      expect(m.recallAt5, split).toBeGreaterThanOrEqual(0.91);
+      expect(m.mrr, split).toBeGreaterThanOrEqual(0.81);
       // Cost guard: the mean first page stays under ~850 tokens (chars / 4).
       expect(m.pageTokens, split).toBeLessThan(850);
     }
@@ -125,7 +125,7 @@ describe('offline search eval', () => {
     const cases = casesOf(corpus, 'train');
     const scores = await searchInvariance(cases);
     const mean = scores.reduce((sum, s) => sum + s.score, 0) / scores.length;
-    expect(mean).toBeGreaterThanOrEqual(0.96);
+    expect(mean).toBeGreaterThanOrEqual(0.98);
     const describes = await describeInvariance(cases);
     for (const d of describes) {
       if (d.transform === 'shuffle' || d.transform === 'decoys') expect(d.score).toBe(1);

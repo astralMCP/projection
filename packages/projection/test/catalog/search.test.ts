@@ -389,9 +389,11 @@ describe('search_tools (R33)', () => {
     });
 
     it('never builds a regex from the query', () => {
+      // The words "issue" and "branch", ORed; "branch" occurs in fewer
+      // tools, so it weighs more and its one tool leads.
       expect(
         page(searchTools(github, { query: '(issue|branch)+' })).tools.map((t) => t.name),
-      ).toEqual(['list_issues', 'issue_write', 'create_branch']);
+      ).toEqual(['create_branch', 'list_issues', 'issue_write']);
     });
   });
 
