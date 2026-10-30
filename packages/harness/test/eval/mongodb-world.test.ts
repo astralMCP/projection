@@ -127,6 +127,27 @@ describe.skipIf(!installed)('mongodb world', () => {
     }
   }, 120_000);
 
+  it('mirrors the real output schemas: describe_tool through Projection shows them', async () => {
+    const world = await openWorld('mongodb');
+    try {
+      // The MongoDB server declares an output schema on every tool.
+      expect(world.tools.filter((t) => t.outputSchema !== undefined)).toHaveLength(21);
+      const session = await openProjectionSession(world);
+      try {
+        for (const name of ['find', 'count', 'drop-collection']) {
+          const described = await session.runtime.call('describe_tool', { name });
+          expect(described.isError, name).toBeUndefined();
+          expect(described.text, name).toContain('Output schema (JSON Schema):');
+          expect(described.text, name).not.toContain('Output schema: none declared');
+        }
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await world.close();
+    }
+  }, 120_000);
+
   it('forwards structuredContent: direct mode sees the content blocks, Projection renders the structured result', async () => {
     const world = await openWorld('mongodb');
     const find = {

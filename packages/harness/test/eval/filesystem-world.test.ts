@@ -12,10 +12,13 @@
 
 import { existsSync } from 'node:fs';
 import type Anthropic from '@anthropic-ai/sdk';
+import { Client } from '@modelcontextprotocol/client';
+import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { describe, expect, it } from 'vitest';
 import {
   FILESYSTEM_TASKS,
   openDirectSession,
+  openProjectionSession,
   openWorld,
   resolveModes,
   resolveTasks,
@@ -122,6 +125,51 @@ describe('filesystem world', () => {
     }
     expect(existsSync(world.facts.root ?? '')).toBe(false);
   }, 30_000);
+
+  it('mirrors the real output schemas: served verbatim, and describe_tool through Projection shows them', async () => {
+    const listed = await openWorld('filesystem');
+    try {
+      if (listed.name === 'multi') throw new Error('expected a single-server world');
+      // The reference server declares an output schema on every tool.
+      expect(listed.tools.filter((t) => t.outputSchema !== undefined)).toHaveLength(14);
+      const client = new Client({ name: 'proxy-listing', version: '0.0.0' }, { capabilities: {} });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await listed.server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        const served = new Map((await client.listTools()).tools.map((t) => [t.name, t]));
+        for (const tool of listed.tools) {
+          expect(served.get(tool.name)?.outputSchema, tool.name).toEqual(tool.outputSchema);
+        }
+      } finally {
+        await client.close();
+      }
+    } finally {
+      await listed.close();
+    }
+
+    const world = await openWorld('filesystem');
+    try {
+      const session = await openProjectionSession(world);
+      try {
+        const described = await session.runtime.call('describe_tool', { name: 'read_text_file' });
+        expect(described.isError).toBeUndefined();
+        expect(described.text).toContain('Output schema (JSON Schema):');
+        expect(described.text).not.toContain('Output schema: none declared');
+        // A structured result still conforms after the proxy validates it.
+        const read = await session.runtime.call('call_tool', {
+          name: 'read_text_file',
+          args: { path: `${world.facts.root}/notes/todo.txt` },
+        });
+        expect(read.isError).toBeUndefined();
+        expect(read.text).not.toMatch(/validation error/i);
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await world.close();
+    }
+  }, 60_000);
 
   it('runs a move into a new directory in both modes: the file moves, both calls are recorded, Projection asks once', async () => {
     const records = await runToolChoiceEval({

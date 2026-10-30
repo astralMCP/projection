@@ -5,14 +5,18 @@
 #
 # Phases (default: multi guard):
 #   multi   train + tracked: multi tier, projection + projection-boxes,
-#           haiku45 + sonnet-low, 3 reps (204 episodes)
+#           haiku45 + sonnet-low, 3 reps (204 episodes), with the host's box
+#           descriptions on (PROJ_EVAL_BOX_DESCRIPTIONS=1), as an integrator
+#           would configure the facade (harness-change-2.md)
 #   guard   held-out guard: basic,hard,filesystem,mongodb through projection,
 #           both models, 1 rep (120 episodes)
 #   direct  reference only: multi tier, direct mode, both models, 3 reps
 #
 # Each phase is one invocation of the live tool-choice test (the test's own
 # 30-minute timeout covers a phase: ~10 min measured for multi). The raw
-# harness JSON is copied to <variant>/raw/<phase>.json; a phase whose raw file
+# harness JSON is copied to <variant>/raw/<phase>.json and must record the
+# phase's harness flags (boxDescriptions as set below; outputSchemas true, the
+# recording proxy mirroring the real servers' output schemas); a phase whose raw file
 # already holds every planned episode is skipped, so a re-run resumes at phase
 # granularity. Then export.mjs writes results.jsonl / errors.jsonl / traces /
 # summary.json.
@@ -71,7 +75,7 @@ fi
 phase_env() {
   local base="PROJ_LIVE_EVAL=1 PROJ_EVAL_MODELS=haiku45,sonnet-low PROJ_EVAL_CONCURRENCY=4"
   case "$1" in
-    multi) echo "$base PROJ_EVAL_TIERS=multi PROJ_EVAL_MODES=projection,projection-boxes PROJ_EVAL_RUNS=3" ;;
+    multi) echo "$base PROJ_EVAL_TIERS=multi PROJ_EVAL_MODES=projection,projection-boxes PROJ_EVAL_RUNS=3 PROJ_EVAL_BOX_DESCRIPTIONS=1" ;;
     guard) echo "$base PROJ_EVAL_TIERS=basic,hard,filesystem,mongodb PROJ_EVAL_MODES=projection PROJ_EVAL_RUNS=1" ;;
     direct) echo "$base PROJ_EVAL_TIERS=multi PROJ_EVAL_MODES=direct PROJ_EVAL_RUNS=3" ;;
     *) echo "unknown phase $1" >&2; return 1 ;;
@@ -123,6 +127,17 @@ process.stdout.write(hits[0] ?? "");' "$RESULTS_DIR" "$MARK")"
   if [[ -z "$RESULTS" || ! -f "$RESULTS" ]]; then
     echo "phase $PHASE: no results file (vitest exit $STATUS); see $LOG" >&2
     tail -30 "$LOG" >&2
+    exit 1
+  fi
+  # The results must say they ran under this phase's harness flags; a mismatch is
+  # not adopted as the phase's raw file.
+  WANT_BOXES=false
+  if [[ "$ENVS" == *"PROJ_EVAL_BOX_DESCRIPTIONS=1"* ]]; then WANT_BOXES=true; fi
+  FLAGS="$(node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+process.stdout.write(`${r.boxDescriptions === true} ${r.outputSchemas === true}`);' "$RESULTS")"
+  if [[ "$FLAGS" != "$WANT_BOXES true" ]]; then
+    echo "phase $PHASE: results flags (boxDescriptions outputSchemas) are '$FLAGS', expected '$WANT_BOXES true'" >&2
     exit 1
   fi
   cp "$RESULTS" "$RAW"

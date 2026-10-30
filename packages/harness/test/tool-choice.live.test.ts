@@ -95,6 +95,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         maxTurns,
         maxTotalTurns,
         boxDescriptions,
+        outputSchemas: true,
         hostFraming: true,
       },
     );

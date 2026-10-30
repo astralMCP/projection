@@ -1029,6 +1029,12 @@ export interface ResultsMeta {
    */
   boxDescriptions?: boolean;
   /**
+   * Whether the recording proxy mirrors the real servers' output schemas
+   * (true since it does; absent in older files, whose filesystem and MongoDB
+   * tools reached Projection with no output schema).
+   */
+  outputSchemas?: boolean;
+  /**
    * Whether every mode's system prompt starts with the world's host framing
    * (true since the framing was added to the Projection modes; absent in
    * older files, whose Projection prompts had none).

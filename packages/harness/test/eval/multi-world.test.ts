@@ -425,6 +425,56 @@ describe.skipIf(!installed)('multi world', () => {
     },
   );
 
+  it("describe_tool on the multi facade shows the real servers' output schemas; the GitHub fake declares none", async () => {
+    const world = await openMulti();
+    try {
+      const session = await openSession('projection', world);
+      try {
+        for (const name of ['fs.read_text_file', 'mongo.count']) {
+          const described = await session.runtime.call('describe_tool', { name });
+          expect(described.isError, name).toBeUndefined();
+          expect(described.text, name).toContain('Output schema (JSON Schema):');
+        }
+        const github = await session.runtime.call('describe_tool', { name: 'github.get_me' });
+        expect(github.isError).toBeUndefined();
+        expect(github.text).toContain('Output schema: none declared');
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await world.close();
+    }
+  }, 120_000);
+
+  it(
+    'passes boxDescriptions from runToolChoiceEval through to wrapMcpServers',
+    { timeout: 120_000 },
+    async () => {
+      const caller: ModelCaller = async () =>
+        message([{ type: 'text', text: 'Done.' }], 'end_turn');
+      for (const boxDescriptions of [true, false]) {
+        const records = await runToolChoiceEval({
+          models: [preset],
+          modes: ['projection', 'projection-boxes'],
+          tasks: resolveTasks('box-src-github'),
+          runs: 1,
+          caller,
+          boxDescriptions,
+        });
+        expect(records.map((r) => r.mode)).toEqual(['projection', 'projection-boxes']);
+        for (const record of records) {
+          const system = record.transcript?.system ?? '';
+          expect(system.startsWith(MULTI_DIRECT_SYSTEM_PROMPT)).toBe(true);
+          for (const description of Object.values(MULTI_BOX_DESCRIPTIONS)) {
+            expect(system.includes(description), `${record.mode} ${description}`).toBe(
+              boxDescriptions,
+            );
+          }
+        }
+      }
+    },
+  );
+
   it('runs projection-boxes on the multi tier only', { timeout: 120_000 }, async () => {
     const caller: ModelCaller = async () => message([{ type: 'text', text: 'Done.' }], 'end_turn');
     const records = await runToolChoiceEval({

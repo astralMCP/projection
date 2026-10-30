@@ -36,6 +36,12 @@ export interface WorldTool {
   title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /**
+   * The output JSON Schema the upstream declares, when it declares one. The
+   * recording proxy re-registers it; direct mode never shows it to the model
+   * (the Messages API tool definition has no output schema).
+   */
+  outputSchema?: Record<string, unknown>;
   annotations?: {
     title?: string;
     readOnlyHint?: boolean;

@@ -80,10 +80,14 @@ answering from a small canned world. The filesystem world is the _real_
 filesystem reference server (`@modelcontextprotocol/server-filesystem`, a
 pinned devDependency) spawned over stdio on a throwaway fixture tree, behind
 a recording proxy (`createRecordingProxy`) that re-registers its tools
-verbatim and forwards every call. Tasks (`TOOL_CHOICE_TASKS`) say what to
-do, never how, and score the recorded upstream calls — plus, where effects
-are real, a `verify` of the end state (the file really moved; the answer
-names the right file). In projection mode a scripted approve-all client
+verbatim, output schemas included, and forwards every call. The GitHub fake
+registers no output schemas: its canned answers are JSON text that does not
+conform to GitHub's real output schemas, so its tools show "none declared"
+through Projection while the filesystem and MongoDB tools show theirs.
+Tasks (`TOOL_CHOICE_TASKS`) say what to do, never how, and score the
+recorded upstream calls — plus, where effects are real, a `verify` of the
+end state (the file really moved; the answer names the right file). In
+projection mode a scripted approve-all client
 auto-fulfils every approval round trip, so the model only sees results.
 Every mode's system prompt starts with the same one-line host framing
 ("You operate the user's … through the tools provided. Complete the user's
@@ -158,9 +162,14 @@ The server is spawned with a minimal environment (never the inherited
 Atlas tools), tools that reach outside the deployment (`connect`, `export`,
 the knowledge-base search, the Atlas categories) are disabled, and the world
 asserts the listed tools are exactly the expected 21. The recording proxy
-forwards each result's `structuredContent` along with its content blocks, so
-Projection sees what it would in production and its `call_tool` renders the
-structured result rather than an escaped content array.
+mirrors each tool's declared output schema (all 21 declare one, as do all
+14 filesystem tools) and forwards each result's `structuredContent` along
+with its content blocks, so Projection sees what it would in production:
+`describe_tool` shows the output schema, and `call_tool` renders the
+structured result rather than an escaped content array. The proxy's SDK
+validates each forwarded result against the mirrored schema; both servers'
+results conform, and the worlds' golden-fidelity tests fail on any error
+result.
 
 The **multi** tier (17 tasks) runs against all three at once: the **multi
 world** (`openMultiWorld`) opens the GitHub fake, the filesystem world and

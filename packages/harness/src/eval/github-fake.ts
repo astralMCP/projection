@@ -19,9 +19,13 @@
  * target on page 2, first attempts that fail with an `isError` result until
  * the arguments are corrected, and lookups that make a write unnecessary.
  *
- * Output schemas are kept in the fixture for reference but not registered:
- * the SDK validates `structuredContent` against a declared output schema,
- * and the canned answers make no attempt to satisfy GitHub's.
+ * No output schemas are registered, unlike the recording proxy in front of
+ * the real filesystem and MongoDB servers, which mirrors theirs. The SDK
+ * validates `structuredContent` against a declared output schema, and the
+ * canned answers (JSON text, no `structuredContent`) do not conform to
+ * GitHub's real output schemas. The dumped fixture has room for them
+ * (`outputSchema`) but records none, so the GitHub box reaches Projection
+ * with "none declared" on every tool.
  */
 
 import { fromJsonSchema, McpServer, type JsonSchemaType } from '@modelcontextprotocol/server';

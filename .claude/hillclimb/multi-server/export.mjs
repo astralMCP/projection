@@ -159,7 +159,8 @@ function exportVariant(variantDir) {
       records: raw.records.length,
       maxTurns: raw.maxTurns,
       maxTotalTurns: raw.maxTotalTurns,
-      boxDescriptions: raw.boxDescriptions,
+      boxDescriptions: raw.boxDescriptions === true,
+      outputSchemas: raw.outputSchemas === true,
     };
     for (const r of raw.records) {
       const id = promptId(r.task, r.model, r.mode);
