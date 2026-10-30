@@ -276,13 +276,6 @@ export interface MultiPreambleOptions {
 }
 
 /**
- * Multi-server only (R44): an unnamed-box lookup that finds nothing in one
- * box is not an answer until the other boxes that could hold it are checked.
- */
-const LOOK_ELSEWHERE_SENTENCE =
-  'When the user does not say which box holds the answer and a lookup in one box finds nothing, look in the other boxes that could hold it before answering that it is not there.';
-
-/**
  * The multi-server preamble (R29, R44, R45), one variant per projection
  * selection as the single-server `defaultPreamble`: the routing rule when
  * both projections are on, naming the search tools the facade serves (R43)
@@ -300,9 +293,9 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const listing = `${find}; without a query, a box's search lists the box and leads with its own guidance.`;
   const steps = `${listing} Then call describe_tool to see a tool's arguments and call_tool to run it.`;
   if (!projections.codeMode) {
-    return `This server fronts several toolboxes, each wrapping another server. Call ${steps} ${LOOK_ELSEWHERE_SENTENCE} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+    return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
   }
-  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call ${listing} Then call describe_tool to see a tool's arguments and call_tool for each step, reading each result before the next. ${LOOK_ELSEWHERE_SENTENCE} Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call ${listing} Then call describe_tool to see a tool's arguments and call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 }
 
 /**

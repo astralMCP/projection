@@ -1,84 +1,55 @@
 # Projection multi-server hill-climb: status
 
-| round | change                                                                 | gating haiku45 (tasks all reps / episodes) | gating sonnet-low     | boxes haiku45         | boxes sonnet-low      | guard haiku45 | guard sonnet-low | haiku execute_machine eps (pass), gating · boxes | $/run | spend  |
-| ----- | ---------------------------------------------------------------------- | ------------------------------------------ | --------------------- | --------------------- | --------------------- | ------------- | ---------------- | ------------------------------------------------ | ----- | ------ |
-| 0     | baseline (origin/main e05fd03)                                         | 10/17 · 37/51 (72.5%)                      | 15/17 · 49/51 (96.1%) | 9/17 · 34/51 (66.7%)  | 15/17 · 48/51 (94.1%) | 55/60 (91.7%) | 59/60 (98.3%)    | 8/51 (3) · 9/51 (2)                              | $6.51 | $7.66  |
-| 1     | v1: shelf tool-name samples + look-before-asking rule (reverted)       | 9/17 · 37/51 (72.5%)                       | 16/17 · 50/51 (98.0%) | 12/17 · 39/51 (76.5%) | 15/17 · 49/51 (96.1%) | 53/60 (88.3%) | 59/60 (98.3%)    | 5/51 (1) · 6/51 (3)                              | $6.36 | $14.02 |
-| 2     | v2: truthful result-shape copy (describe_tool, contract rule 8)        | 11/17 · 38/51 (74.5%)                      | 15/17 · 49/51 (96.1%) | 12/17 · 42/51 (82.4%) | 15/17 · 48/51 (94.1%) | 59/60 (98.3%) | 59/60 (98.3%)    | 9/51 (3) · 10/51 (5)                             | $6.48 | $20.50 |
-| 3     | v3: short chains to call_tool; machines for loops/branching (not best) | 12/17 · 42/51 (82.4%)                      | 14/17 · 48/51 (94.1%) | 11/17 · 38/51 (74.5%) | 16/17 · 50/51 (98.0%) | 53/60 (88.3%) | 59/60 (98.3%)    | 3/51 (1) · 4/51 (1)                              | $6.56 | $27.06 |
+Rounds 0–3 (baseline, v1–v3) ran under the old harness: the recording proxy
+dropped output schemas and the multi tier had no host box descriptions.
+Harness change 2 (`harness-change-2.md`) landed before v4, so v4 is the
+re-baseline and the earlier rounds are not directly comparable to it. Their
+numbers stay in `_state.json.rounds`. Under the old harness the best was v2
+(gating pooled 87/102, guard 118/120).
 
-Gating pooled (task-cells passing every rep / episodes): baseline 25/34,
-86/102 (84.3%); v1 25/34, 87/102 (85.3%); v2 26/34, 87/102 (85.3%); v3 26/34, 90/102 (88.2%).
-Best: round 2 (v2), by one task-cell and one episode over baseline, inside
-the ±6.1-pt pooled noise floor, with the guard up. v3 is not best: its
-gating gain is inside noise and its guard haiku drop against v2 is outside
-the paired floor. "haiku execute_machine
-eps" counts multi-tier episodes whose `meta.route` is `execute_machine` or
-`both`; sonnet-low used no machine in any round (0/102 of its episodes each). Spend
-includes $1.15 of pre-baseline checks (`_preflight/`). Direct reference
-not run (pending the ~$14 / ~$4.6 / ~$3.7 decision recorded at baseline).
+| round | change                                                                    | gating haiku45 (tasks all reps · episodes) | gating sonnet-low | boxes haiku45 | boxes sonnet-low | guard haiku45 | guard sonnet-low | round $ | cumulative $ |
+| ----- | ------------------------------------------------------------------------- | ------------------------------------------ | ----------------- | ------------- | ---------------- | ------------- | ---------------- | ------- | ------------ |
+| 4     | v4: v3 routing copy on multi facades only (re-baseline, harness change 2) | 16/17 · 48/51                              | 15/17 · 47/51     | 16/17 · 48/51 | 15/17 · 47/51    | 58/60         | 59/60            | $6.59   | $33.65       |
+| 5     | v5: look in the other boxes before answering not-found (probe only)       | not run                                    | not run           | not run       | not run          | not run       | not run          | $0.67   | $34.32       |
 
-**Noise floor** (paired-by-task 95% half-width, 17 tasks x 3 reps): haiku45
-±9-11 pts, sonnet-low ±7.7, pooled gating ±6.1-6.7. One task going 0/3 to
-3/3 in one cell is ~5.9 pts. Guard (60 x 1 rep): haiku45 ±9.9, sonnet-low
-±4.6.
+v5 probe (`global-csv-released` + `global-last-log-entry`, gating mode, 5
+reps): csv haiku 1/5, sonnet 1/5 (v4 0/3 each); last-log haiku 5/5, sonnet
+5/5 (v4 3/3, 2/3).
 
-## Re-baseline at v4 (harness change 2)
-
-Rounds 0–3 ran under the old harness (recording proxy dropped output
-schemas; no host box descriptions on the multi tier). Harness change 2
-(`harness-change-2.md`) landed before v4, so **v4 is the post-harness-change
-reference and rounds 0–3 are not directly comparable to it**.
-
-| round | change                                                  | gating haiku45 | gating sonnet-low | boxes haiku45 | boxes sonnet-low | guard haiku45 | guard sonnet-low | spend  |
-| ----- | ------------------------------------------------------- | -------------- | ----------------- | ------------- | ---------------- | ------------- | ---------------- | ------ |
-| 4     | v4: v3 routing copy on multi facades only (re-baseline) | 16/17 · 48/51  | 15/17 · 47/51     | 16/17 · 48/51 | 15/17 · 47/51    | 58/60         | 59/60            | $33.65 |
-
-Gating pooled 31/34 task-cells, 95/102 (93.1%). Noise floors (stats.mjs):
-haiku ±0.0 paired (crude ±14.0), sonnet-low ±5.4, pooled ±2.7; guard haiku
-±6.4, sonnet-low ±4.6. Best: v4.
-
-v4 categorization (`v4/categorization.md`): `global-csv-released` failed
-12/12 because the host box descriptions steer the first turn to GitHub only
-(no episode read `CHANGELOG.md`); this is a harness-config shift inside the
-re-baseline, with no grader error. The two `global-last-log-entry`
-sonnet-low misses are variance (same path and rate as v3).
+Gating pooled at v4: 31/34 task-cells, 95/102 (93.1%). Noise floors
+(stats.mjs, v4): sonnet-low ±5.4 paired, haiku ±0.0 paired (crude ±14.0),
+pooled ±2.7; guard haiku ±6.4, sonnet-low ±4.6. One task 0/3→3/3 in one
+cell is about 5.9 pts. **Best: v4.**
 
 ## Story so far
 
-v2 remains best. v3 is the first round whose mechanism visibly engaged, but
-it fails the guard hold against v2. The earlier failures split into haiku
-writing `execute_machine` code against results it had never seen
-(`cross-shipped-to-comment` 0/18 over three rounds, all machines) and
-unnamed-box prompts (`global-*`). v1 (shelf samples) and v2 (truthful
-result-shape copy at describe time) each moved the gating target by one
-episode, and v2 never reached the machine author. v3 moved the routing
-decision instead: the preamble, `execute_machine` and `call_tool` copy now
-send a short lookup-then-act chain to successive `call_tool` calls and
-keep machines for loops, branching over results, many steps or a saved
-workflow. This rested on 67/67 haiku cross-box `call_tool`-only episodes
-passing over three rounds, against 15/41 for machine episodes. Haiku's
-machine use fell by two-thirds (gating 9→3, boxes 10→4, guard 7→2), and
-`cross-shipped-to-comment` got its first pass ever (gating rep 0, via
-`call_tool`). The other five shipped episodes still went straight to a
-machine and failed, so haiku follows the new routing only some of the time.
-Gating haiku rose 38→42/51 (+7.8, inside ±10.9), with `global-csv-released`
-0/3→2/3, `cross-largest-log-to-audit` 2/3→3/3 and shipped 0/3→1/3. Sonnet-low
-went 49→48 (`global-last-log-entry` 3/3→2/3). Pooled gating is 90/102
-(+2.9 over v2, inside ±7.2), task-cells tied at 26/34. Tracked haiku boxes
-fell 42→38 (−7.8, inside ±9.4). Four of its failures were turn-capped
-`global-*` episodes hunting through GitHub with `call_tool`, and two were
-`ctl-fs-largest-log` answers that listed the sizes after "Answer with just
-the file name". The guard is the problem: haiku 59→53/60, 0 up / 6 down
-against v2 (−10.0, paired ±7.7; sign test p≈0.03). Three of those six tasks
-had failed in earlier rounds; `read-lowercase-readme`,
-`upsert-issue-exists` and `db-orders-per-status` failed for the first time
-in four rounds. Against baseline (55/60) and v1 (53/60) the guard is within
-noise, so v2's 59/60 may have been a high draw. One rep cannot separate
-that from a real single-server cost of the new routing copy. Sonnet's guard
-was flat at 59/60. The v3 code stays on the branch (commit 911d64d) pending
-a decision. A guard-only re-rep of v2 and v3 (two more reps each, about
-$9) would settle whether the haiku guard drop is real. If it is, the copy
-could be scoped to multi-server facades only.
+v4 re-baselined the flow under harness change 2. Gating went to 31/34
+task-cells, and the remaining failures are `global-csv-released` (0/3 in all
+four cells) and one `global-last-log-entry` miss per sonnet cell. The v4
+categorization found no grader error. The host box descriptions send the
+first turn to GitHub (its description names the repo and "issues, PRs"),
+and no episode looked in `fs`, where `CHANGELOG.md` holds the answer. The
+last-log misses are variance at v3's rate. v5 tested one multi-server-only
+preamble sentence: when the user doesn't name the box and a lookup finds
+nothing, look in the other boxes that could hold the answer before saying
+it isn't there. The single-server surface stayed byte-identical. A 20-episode
+probe ($0.67) showed a behaviour change without an outcome change. csv
+episodes reaching `fs` rose from 2/12 to 9/10, but csv passed only 1/5 for
+each model, under the pre-set bar of 3/5. The full round was therefore not
+run and the source was reverted to v4. Sonnet now goes to `fs` but makes a
+single non-recursive `fs.search_files` (`"CHANGELOG"` from `.`), gets "No
+matches found" and stops, the same shape as the v4 last-log misses. Haiku
+spends its turns hunting GitHub first and was turn-capped in 3/5. The
+binding constraint is now how the model recovers from one failed glob search
+in the second box, not whether it looks there.
+
+## Failing train cases (best = v4)
+
+- `global-csv-released.haiku45.projection` 0/3
+- `global-csv-released.sonnet-low.projection` 0/3
+- `global-csv-released.haiku45.projection-boxes` 0/3
+- `global-csv-released.sonnet-low.projection-boxes` 0/3
+- `global-last-log-entry.sonnet-low.projection` 2/3
+- `global-last-log-entry.sonnet-low.projection-boxes` 2/3
 
 Report: `report.html` (lite). Runner: `.claude/hillclimb/multi-server/run-round.sh <variant>`.

@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 4,
+  "current_round": 5,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -429,6 +429,45 @@
       "kept": true,
       "decision": "re-baseline (best). Not comparable to rounds 0-3 (harness change 2).",
       "categorization": "v4/categorization.md: 14 remaining failures. global-csv-released 12/12 fail in both modes and models: the host box descriptions steer the first turn to GitHub only (v3 5/6 sonnet opened search_fs, v4 0/6); no episode read CHANGELOG.md. Harness-config shift, not a grader error (0 grader disagreements) and not a Projection copy regression. global-last-log-entry sonnet-low 2 misses (gating rep0, boxes rep0): variance, same path and rate as v3."
+    },
+    {
+      "round": 5,
+      "variant": "v5",
+      "change": "multi preamble (catalog on): look in the other boxes before answering that it is not there, when the user does not name the box",
+      "commit": "5db5e5d",
+      "probe": {
+        "file": "v5/probe/2026-10-30T03-29-01.764Z.json",
+        "mode": "projection",
+        "box_descriptions": true,
+        "reps": 5,
+        "episodes": 20,
+        "spend_usd": 0.67,
+        "results": {
+          "global-csv-released": {
+            "haiku45": "1/5 (3 turn-capped)",
+            "sonnet-low": "1/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v4": {
+          "global-csv-released": {
+            "haiku45": "0/3",
+            "sonnet-low": "0/3"
+          },
+          "global-last-log-entry": {
+            "haiku45": "3/3",
+            "sonnet-low": "2/3"
+          }
+        }
+      },
+      "full_round_run": false,
+      "kept": false,
+      "reverted": true,
+      "decision": "probe: no effect (csv <=1/5 both models), full round not run, source reverted to v4. Mechanism engaged (csv episodes reaching fs 9/10 vs v4 2/12) but sonnet stops after one non-recursive fs.search_files miss and haiku turn-caps on GitHub first.",
+      "cumulative_spend_usd": 34.32
     }
   ],
   "rebaseline": "v4",
@@ -495,5 +534,10 @@
     },
     "noise_note": "Paired floors from stats.mjs v4 (one round only, so ±0.0 for haiku means no within-round task variance to pair; use the crude ±14.0 or the old-harness ±9-11 as the practical floor for haiku). One task 0/3->3/3 in one cell is ~5.9 pts.",
     "spend_usd": 6.59
-  }
+  },
+  "spend_notes": [
+    "export.mjs spend sums cost_usd over variant results.jsonl files only; probes outside the round layout are added here by hand.",
+    "v5 probe (v5/probe/, 20 episodes): $0.67 (exact, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 = $34.32."
+  ],
+  "cumulative_spend_usd": 34.32
 }
