@@ -44,6 +44,7 @@ import {
 } from '../catalog/boxes.js';
 import { callTool, describeTool, searchBoxes, type CallToolArgs } from '../catalog/index.js';
 import { searchToolsPhrase } from '../catalog/search.js';
+import { hasBoxedToolIndex, renderBoxedToolIndex } from '../catalog/tool-index.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
@@ -283,6 +284,12 @@ export interface MultiPreambleOptions {
   projections: Readonly<ProjectionSelection>;
   /** Whether the global `search_tools` is served (R43). */
   globalSearch: boolean;
+  /**
+   * Whether the instructions carry the tool index (every tool by qualified
+   * name, see `catalog/tool-index.ts`): the catalog copy then sends the
+   * model straight to call_tool instead of to a search first.
+   */
+  toolIndex?: boolean;
 }
 
 /**
@@ -293,6 +300,7 @@ export interface MultiPreambleOptions {
  */
 export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const { projections, globalSearch } = options;
+  if (projections.catalog && options.toolIndex === true) return indexedMultiPreamble(projections);
   if (!projections.catalog) {
     return `This server fronts several toolboxes, each wrapping another server, and runs in code mode: instead of calling their tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you, across boxes when the task needs it. Call discover_apis first for every box's tool types, the authoring contract, worked examples and each box's own guidance. Tools that change something may pause the machine ${APPROVAL_SENTENCE_TAIL}`;
   }
@@ -309,6 +317,20 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
 }
 
 /**
+ * The multi-server preamble when the instructions carry the tool index: no
+ * search step — the model calls a listed tool by its full name, and the
+ * index header says when describe_tool and the search tools are worth a
+ * turn.
+ */
+function indexedMultiPreamble(projections: Readonly<ProjectionSelection>): string {
+  const head = 'This server fronts several toolboxes, each wrapping another server';
+  if (!projections.codeMode) {
+    return `${head}. Call any tool in the tool index below with call_tool by its full name, reading each result before the next step. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+  }
+  return `${head}, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call each tool in the tool index below with call_tool by its full name, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+}
+
+/**
  * The shelf header (R44) of a catalog-only facade. It carries the
  * qualified-name rule and names the per-box search tools, so a preamble
  * override cannot drop either.
@@ -320,9 +342,14 @@ export const SHELF_HEADER =
  * The shelf header for a projection selection (R44, R45): the
  * qualified-name rule, worded for the tools that take a qualified name.
  */
-export function shelfHeader(projections: Readonly<ProjectionSelection>): string {
+export function shelfHeader(projections: Readonly<ProjectionSelection>, toolIndex = false): string {
   if (!projections.catalog) {
     return 'Toolboxes — tools are named <box>.<tool>; pass the full name to toolCall in a machine:';
+  }
+  if (toolIndex) {
+    return projections.codeMode
+      ? 'Toolboxes — tools are named <box>.<tool>; pass the full name to call_tool, describe_tool and toolCall:'
+      : 'Toolboxes — tools are named <box>.<tool>; pass the full name to call_tool and describe_tool:';
   }
   if (!projections.codeMode) return SHELF_HEADER;
   return 'Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:';
@@ -334,29 +361,45 @@ export function shelfHeader(projections: Readonly<ProjectionSelection>): string 
  * where the about is the host's description, else the server's first
  * sentence quoted and attributed, else nothing (see `boxAbout`). The wrapped
  * servers' full instructions are not in the system prompt: each is its
- * box's overview. `preamble` (`codeModePreamble`) replaces Projection's
- * copy; the shelf, header included, is always kept.
+ * box's overview. When the catalog projection is served and the facade has
+ * at most `MULTI_TOOL_INDEX_MAX_TOOLS` tools, the tool index follows the
+ * shelf: every tool by qualified name, one line per box. `preamble`
+ * (`codeModePreamble`) replaces Projection's copy; the shelf, header
+ * included, and the index are always kept.
  */
 export function buildMultiInstructions(
   view: BoxedCatalog,
   projections: Readonly<ProjectionSelection>,
   preamble?: string,
 ): string {
-  const lines = [shelfHeader(projections)];
+  const toolIndex = projections.catalog && hasBoxedToolIndex(view);
+  const lines = [shelfHeader(projections, toolIndex)];
   for (const [alias, box] of view.boxes) {
     const about = boxAbout(box);
     const tools = toolCount(view.counts.get(alias) ?? 0);
     lines.push(about !== undefined ? `- ${alias} — ${about} (${tools})` : `- ${alias} (${tools})`);
   }
-  const copy = preamble ?? defaultMultiPreamble({ projections, globalSearch: view.globalSearch });
-  return `${copy}\n\n${lines.join('\n')}`;
+  const copy =
+    preamble ?? defaultMultiPreamble({ projections, globalSearch: view.globalSearch, toolIndex });
+  // The index follows the shelf and, like it, survives a preamble override.
+  const index = toolIndex ? `\n\n${renderBoxedToolIndex(view, searchToolsPhrase(view))}` : '';
+  return `${copy}\n\n${lines.join('\n')}${index}`;
 }
 
 const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more); a word that is a box's name boosts that box's tools. Each entry gives the tool's qualified name (<box>.<tool>), its box, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool.`;
 
+/** describe_tool when the instructions carry the tool index. */
+const DESCRIBE_TOOL_INDEXED_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this only when you need a tool's arguments before call_tool.`;
+
 const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. Chains of a few calls are best done as successive call_tool calls, reading each result before the next.`;
+
+/** call_tool when the instructions carry the tool index. */
+const CALL_TOOL_INDEXED_DESCRIPTION = CALL_TOOL_DESCRIPTION.replace(
+  "Call describe_tool first to see the tool's arguments.",
+  "Call describe_tool first only when you need the tool's arguments.",
+);
 
 /** The catalog tools point at execute_machine only when code mode is served (R29). */
 const DESCRIBE_TOOL_TYPES_POINTER = ` Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
@@ -403,10 +446,17 @@ function codeModeCopy(
  * about (host description, else the server's attributed first sentence),
  * its tool count, then how the search works.
  */
-function boxSearchCopy(view: BoxedCatalog, alias: string, box: ToolBox): SearchToolCopy {
+function boxSearchCopy(
+  view: BoxedCatalog,
+  alias: string,
+  box: ToolBox,
+  toolIndex: boolean,
+): SearchToolCopy {
   const about = boxAbout(box);
   const head = [
-    `Search the ${alias} toolbox.`,
+    toolIndex
+      ? `Search the ${alias} toolbox, when the tool index in the instructions is not enough.`
+      : `Search the ${alias} toolbox.`,
     ...(about !== undefined ? [about] : []),
     `(${toolCount(view.counts.get(alias) ?? 0)})`,
   ].join(' ');
@@ -435,20 +485,35 @@ function catalogToolCopy(
   view: BoxedCatalog,
   projections: Readonly<ProjectionSelection>,
 ): CatalogToolCopy {
+  const toolIndex = hasBoxedToolIndex(view);
+  const describe = toolIndex ? DESCRIBE_TOOL_INDEXED_DESCRIPTION : DESCRIBE_TOOL_DESCRIPTION;
+  const call = toolIndex ? CALL_TOOL_INDEXED_DESCRIPTION : CALL_TOOL_DESCRIPTION;
+  const globalSearch: SearchToolCopy = toolIndex
+    ? {
+        ...GLOBAL_SEARCH_COPY,
+        description: `For when the tool index in the instructions is not enough. ${GLOBAL_SEARCH_COPY.description}`,
+      }
+    : GLOBAL_SEARCH_COPY;
+  let toolName: string;
+  if (toolIndex) {
+    toolName =
+      'Qualified tool name (<box>.<tool>) as listed in the tool index or by a search tool.';
+  } else if (view.globalSearch) {
+    toolName =
+      'Qualified tool name (<box>.<tool>) as listed by search_tools or a search_<box> tool.';
+  } else {
+    toolName = 'Qualified tool name (<box>.<tool>) as listed by the search_<box> tool of its box.';
+  }
   return {
     searches: [
-      ...[...view.boxes].map(([alias, box]) => boxSearchCopy(view, alias, box)),
-      ...(view.globalSearch ? [GLOBAL_SEARCH_COPY] : []),
+      ...[...view.boxes].map(([alias, box]) => boxSearchCopy(view, alias, box, toolIndex)),
+      ...(view.globalSearch ? [globalSearch] : []),
     ],
     describeDescription: projections.codeMode
-      ? `${DESCRIBE_TOOL_DESCRIPTION}${DESCRIBE_TOOL_TYPES_POINTER}`
-      : DESCRIBE_TOOL_DESCRIPTION,
-    callDescription: projections.codeMode
-      ? `${CALL_TOOL_DESCRIPTION}${CALL_TOOL_CODE_MODE_POINTER}`
-      : CALL_TOOL_DESCRIPTION,
-    toolName: view.globalSearch
-      ? 'Qualified tool name (<box>.<tool>) as listed by search_tools or a search_<box> tool.'
-      : 'Qualified tool name (<box>.<tool>) as listed by the search_<box> tool of its box.',
+      ? `${describe}${DESCRIBE_TOOL_TYPES_POINTER}`
+      : describe,
+    callDescription: projections.codeMode ? `${call}${CALL_TOOL_CODE_MODE_POINTER}` : call,
+    toolName,
     describeTypes:
       'Also return the generated TypeScript for this tool: its member of tools.<box> and its type aliases (for authoring a machine).',
   };

@@ -39,6 +39,7 @@ import {
   type UpstreamSpec,
 } from './auth/index.js';
 import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
+import { hasToolIndex } from './catalog/tool-index.js';
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
@@ -172,6 +173,28 @@ const CATALOG_TOOL_COPY: CatalogToolCopy = {
   callDescription: CALL_TOOL_DESCRIPTION,
   toolName: 'Tool name as listed by search_tools.',
   describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
+};
+
+/**
+ * The catalog copy when the instructions carry the tool index: call_tool
+ * first, describe_tool only for arguments, search_tools only when the
+ * index is not enough.
+ */
+const INDEXED_CATALOG_TOOL_COPY: CatalogToolCopy = {
+  ...CATALOG_TOOL_COPY,
+  searches: CATALOG_TOOL_COPY.searches.map((search) => ({
+    ...search,
+    description: `For when the tool list in the instructions is not enough. ${search.description}`,
+  })),
+  describeDescription: DESCRIBE_TOOL_DESCRIPTION.replace(
+    'Call this before call_tool.',
+    "Call this only when you need a tool's arguments before call_tool.",
+  ),
+  callDescription: CALL_TOOL_DESCRIPTION.replace(
+    "Call describe_tool first to see the tool's arguments.",
+    "Call describe_tool first only when you need the tool's arguments.",
+  ),
+  toolName: 'Tool name as listed in the instructions or by search_tools.',
 };
 
 /**
@@ -382,7 +405,10 @@ class Facade implements ProjectionFacade {
       };
       registerCodeModeTools(server, era, this, copy, this.catalog);
     }
-    if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
+    if (this.projections.catalog) {
+      const copy = hasToolIndex(this.catalog) ? INDEXED_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY;
+      registerCatalogTools(server, era, this, copy);
+    }
     registerResources(server, this.resources);
   }
 

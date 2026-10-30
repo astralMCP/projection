@@ -49,6 +49,12 @@ export {
   type SearchToolsPage,
   type ToolSummary,
 } from './search.js';
+export {
+  hasToolIndex,
+  renderToolIndex,
+  MULTI_TOOL_INDEX_MAX_TOOLS,
+  TOOL_INDEX_MAX_TOOLS,
+} from './tool-index.js';
 // The posture vocabulary (R33) belongs to the policy engine; re-exported
 // here because `search_tools` and `describe_tool` results are typed with it.
 export { postureOf, type ToolPosture } from '../policy/index.js';

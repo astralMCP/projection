@@ -223,8 +223,9 @@ describe('facade options', () => {
       { fs: fsServer([]) },
       { ...options, projections: { codeMode: false } },
     );
+    // The facade has a tool index, so the shelf header drops the search step.
     expect(catalogOnly.instructions).toContain(
-      'then pass the full name to describe_tool and call_tool:',
+      'tools are named <box>.<tool>; pass the full name to call_tool and describe_tool:',
     );
     await catalogOnly.close();
 
