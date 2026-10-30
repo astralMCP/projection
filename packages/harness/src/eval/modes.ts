@@ -122,7 +122,16 @@ export interface SessionOptions {
    * `wrapMcpServers` as the host's box descriptions. Default false.
    */
   boxDescriptions?: boolean;
+  /**
+   * Projection modes: a line appended to the session's system prompt, after
+   * the facade's instructions (PROJ_EVAL_FORCE_CODE_MODE=1 sets it to
+   * {@link FORCE_CODE_MODE_LINE}). The task prompt is unchanged.
+   */
+  systemSuffix?: string;
 }
+
+/** The system-prompt line PROJ_EVAL_FORCE_CODE_MODE=1 appends (Projection modes only). */
+export const FORCE_CODE_MODE_LINE = 'Use code mode (discover_apis, execute_machine) for this task.';
 
 /** The heading direct mode puts above the boxes' instructions, as Claude Code does. */
 export const MULTI_INSTRUCTIONS_HEADER =
@@ -162,6 +171,11 @@ export interface ModeSession {
   world: EvalWorld;
   /** Approval prompts answered (projection only; always 0 for direct). */
   readonly approvals: number;
+  /**
+   * MRTR retries sent (projection only): one per approval round trip, however
+   * many approvals it carried. Absent for direct.
+   */
+  readonly roundTrips?: number;
   /**
    * Tools whose turns are free under the eval's turn budget: Projection's
    * discovery surface, which direct mode has inline. Empty for direct.
@@ -281,9 +295,10 @@ async function connectFacade(
   world: EvalWorld,
   facade: FacadeLike,
   budgetFree: (tools: AgentTool[]) => ReadonlySet<string>,
+  systemSuffix?: string,
 ): Promise<ModeSession> {
   const handler = createMcpHandler(facade.serverFactory);
-  const state = { approvals: 0 };
+  const state = { approvals: 0, roundTrips: 0 };
 
   const client = new Client(CLIENT_INFO, {
     capabilities: { elicitation: {} },
@@ -298,7 +313,13 @@ async function connectFacade(
   try {
     await client.connect(
       new StreamableHTTPClientTransport(PROJECTION_ENDPOINT, {
-        fetch: (url, init) => handler.fetch(new Request(url, init)),
+        fetch: (url, init) => {
+          // A retry carries the answers to the previous round's input requests.
+          if (typeof init?.body === 'string' && init.body.includes('"inputResponses"')) {
+            state.roundTrips += 1;
+          }
+          return handler.fetch(new Request(url, init));
+        },
       }),
     );
     const listed = await client.listTools();
@@ -309,6 +330,7 @@ async function connectFacade(
     }));
     // The host's framing first, as in direct mode; then what the facade says.
     system = `${world.hostSystemPrompt}\n\n${client.getInstructions() ?? facade.instructions}`;
+    if (systemSuffix !== undefined) system = `${system}\n\n${systemSuffix}`;
   } catch (err) {
     // Nobody else holds the facade: release it (and the half-open client)
     // rather than leak a wrapped server per failed episode.
@@ -322,6 +344,9 @@ async function connectFacade(
     world,
     get approvals() {
       return state.approvals;
+    },
+    get roundTrips() {
+      return state.roundTrips;
     },
     budgetFreeTools: budgetFree(tools),
     runtime: {
@@ -344,7 +369,13 @@ export async function openProjectionSession(
 ): Promise<ModeSession> {
   if (world.name === 'multi') return openMultiProjectionSession(world, 'projection', options);
   const facade = await wrapMcpServer(world.server, { blob: { key: randomBytes(32) } });
-  return connectFacade('projection', world, facade, () => PROJECTION_DISCOVERY_TOOLS);
+  return connectFacade(
+    'projection',
+    world,
+    facade,
+    () => PROJECTION_DISCOVERY_TOOLS,
+    options.systemSuffix,
+  );
 }
 
 /**
@@ -380,6 +411,7 @@ export async function openMultiProjectionSession(
         ...PROJECTION_DISCOVERY_TOOLS,
         ...tools.filter((tool) => tool.name.startsWith('search_')).map((tool) => tool.name),
       ]),
+    options.systemSuffix,
   );
 }
 

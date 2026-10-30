@@ -20,6 +20,7 @@
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
  *   PROJ_EVAL_BOX_DESCRIPTIONS=1  multi tier, Projection modes: give the boxes host descriptions (default off)
+ *   PROJ_EVAL_FORCE_CODE_MODE=1   Projection modes: append FORCE_CODE_MODE_LINE to the system prompt (default off)
  *
  * Decision runs (the globalSearch default, prompt changes) use
  * PROJ_EVAL_TIERS=multi, so no other tier's episodes mix into the numbers.
@@ -39,6 +40,7 @@ import {
   createResultsWriter,
   DEFAULT_MAX_TOTAL_TURNS,
   DEFAULT_MAX_TURNS,
+  FORCE_CODE_MODE_LINE,
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
@@ -82,6 +84,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
     const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
     const boxDescriptions = process.env['PROJ_EVAL_BOX_DESCRIPTIONS'] === '1';
+    const systemSuffix =
+      process.env['PROJ_EVAL_FORCE_CODE_MODE'] === '1' ? FORCE_CODE_MODE_LINE : undefined;
     // No knob yet: the defaults, recorded in the results file so a run from
     // before the action-turn budget is distinguishable from one after it.
     // A task with its own budget (the multi-hard tier: 2N + 10) uses that
@@ -105,6 +109,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         boxDescriptions,
         outputSchemas: true,
         hostFraming: true,
+        ...(systemSuffix !== undefined ? { systemSuffix } : {}),
       },
     );
     // eslint-disable-next-line no-console
@@ -122,6 +127,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       maxTotalTurns,
       concurrency,
       boxDescriptions,
+      ...(systemSuffix !== undefined ? { systemSuffix } : {}),
       onEpisode: (record, index) => {
         // eslint-disable-next-line no-console -- progress while a long run goes
         console.info(formatEpisodeLine(record));
