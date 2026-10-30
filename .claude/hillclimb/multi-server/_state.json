@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 5,
+  "current_round": 6,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -468,6 +468,60 @@
       "reverted": true,
       "decision": "probe: no effect (csv <=1/5 both models), full round not run, source reverted to v4. Mechanism engaged (csv episodes reaching fs 9/10 vs v4 2/12) but sonnet stops after one non-recursive fs.search_files miss and haiku turn-caps on GitHub first.",
       "cumulative_spend_usd": 34.32
+    },
+    {
+      "round": 6,
+      "variant": "v6",
+      "change": "multi preamble (catalog on): a lookup that finds nothing is weak evidence; before concluding absence, browse or list instead of matching a name, broaden the query, or check another box",
+      "commit": "a6c6903",
+      "probe": {
+        "file": "v6/probe/2026-10-30T03-39-58.533Z.json",
+        "mode": "projection",
+        "box_descriptions": true,
+        "reps": 5,
+        "episodes": 20,
+        "spend_usd": 0.85,
+        "results": {
+          "global-csv-released": {
+            "haiku45": "0/5 (5 turn-capped)",
+            "sonnet-low": "2/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v5_probe": {
+          "global-csv-released": {
+            "haiku45": "1/5",
+            "sonnet-low": "1/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v4": {
+          "global-csv-released": {
+            "haiku45": "0/3",
+            "sonnet-low": "0/3"
+          },
+          "global-last-log-entry": {
+            "haiku45": "3/3",
+            "sonnet-low": "2/3"
+          }
+        },
+        "after_decisive_empty_lookup": {
+          "varied_and_found": 12,
+          "stopped_concluded_absence": 3,
+          "repeated_to_turn_cap": 5
+        }
+      },
+      "full_round_run": false,
+      "kept": false,
+      "reverted": true,
+      "decision": "probe only — superseded by v7 (just-in-time empty-result hints). Coordinator ruled out the full round before the probe result was known; the probe would not have cleared the bar anyway (csv haiku 0/5, sonnet 2/5; pooled 2/10 = v5). Source reverted to v4. csv misses stop at three different empty signals (box never visited, non-recursive glob miss, search_<box> 'No tools matching' read as a data miss); haiku 5/5 turn-capped hunting GitHub.",
+      "cumulative_spend_usd": 35.17
     }
   ],
   "rebaseline": "v4",
@@ -537,7 +591,8 @@
   },
   "spend_notes": [
     "export.mjs spend sums cost_usd over variant results.jsonl files only; probes outside the round layout are added here by hand.",
-    "v5 probe (v5/probe/, 20 episodes): $0.67 (exact, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 = $34.32."
+    "v5 probe (v5/probe/, 20 episodes): $0.67 (exact, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 = $34.32.",
+    "v6 probe (v6/probe/, 20 episodes): $0.85 (exact $0.8483, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5 probe) + $0.85 = $35.17."
   ],
-  "cumulative_spend_usd": 34.32
+  "cumulative_spend_usd": 35.17
 }

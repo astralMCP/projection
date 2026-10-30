@@ -11,10 +11,17 @@ numbers stay in `_state.json.rounds`. Under the old harness the best was v2
 | ----- | ------------------------------------------------------------------------- | ------------------------------------------ | ----------------- | ------------- | ---------------- | ------------- | ---------------- | ------- | ------------ |
 | 4     | v4: v3 routing copy on multi facades only (re-baseline, harness change 2) | 16/17 · 48/51                              | 15/17 · 47/51     | 16/17 · 48/51 | 15/17 · 47/51    | 58/60         | 59/60            | $6.59   | $33.65       |
 | 5     | v5: look in the other boxes before answering not-found (probe only)       | not run                                    | not run           | not run       | not run          | not run       | not run          | $0.67   | $34.32       |
+| 6     | v6: empty lookups are weak evidence; vary the strategy (probe only)       | not run                                    | not run           | not run       | not run          | not run       | not run          | $0.85   | $35.17       |
 
-v5 probe (`global-csv-released` + `global-last-log-entry`, gating mode, 5
-reps): csv haiku 1/5, sonnet 1/5 (v4 0/3 each); last-log haiku 5/5, sonnet
-5/5 (v4 3/3, 2/3).
+Probes (`global-csv-released` + `global-last-log-entry`, gating mode, box
+descriptions on, 5 reps):
+
+| task     | model      | v4 round | v5 probe | v6 probe |
+| -------- | ---------- | -------- | -------- | -------- |
+| csv      | haiku45    | 0/3      | 1/5      | 0/5      |
+| csv      | sonnet-low | 0/3      | 1/5      | 2/5      |
+| last-log | haiku45    | 3/3      | 5/5      | 5/5      |
+| last-log | sonnet-low | 2/3      | 5/5      | 5/5      |
 
 Gating pooled at v4: 31/34 task-cells, 95/102 (93.1%). Noise floors
 (stats.mjs, v4): sonnet-low ±5.4 paired, haiku ±0.0 paired (crude ±14.0),
@@ -42,6 +49,25 @@ matches found" and stops, the same shape as the v4 last-log misses. Haiku
 spends its turns hunting GitHub first and was turn-capped in 3/5. The
 binding constraint is now how the model recovers from one failed glob search
 in the second box, not whether it looks there.
+
+v6 generalized that into one rule, with no server or tool named: a lookup
+that finds nothing is weak evidence, so before concluding absence, browse or
+list instead of matching a name, broaden the query, or check another box.
+The single-server surface stayed byte-identical. The coordinator decided
+before the probe that v6 would be probe-only, superseded by v7. The probe
+($0.85) would not have cleared the bar anyway: csv haiku 0/5 (5/5
+turn-capped), sonnet 2/5, pooled 2/10 as in v5. last-log held at 10/10. At
+each episode's decisive empty lookup, 12 of 20 varied strategy and found
+the answer (all 10 last-log, recovering exactly as in v5, plus 2 csv
+sonnet). 3 stopped and concluded absence (csv sonnet), and 5 repeated
+GitHub lookups to the turn cap (csv haiku). The three sonnet misses stopped
+at three different empty signals: one never left GitHub, one ran a
+non-recursive `search_files "CHANGELOG"`, and one read a `search_fs` "No
+tools matching" (a tool-name search) as a data miss. Haiku spends 3-4 turns
+per episode on that same tool-name-search misreading. A preamble rule read
+once is not in view when the empty result arrives, so v7 moves the hint onto
+the empty result itself (just-in-time empty-result hints). The source is
+reverted to v4.
 
 ## Failing train cases (best = v4)
 

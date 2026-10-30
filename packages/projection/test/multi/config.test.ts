@@ -218,7 +218,6 @@ describe('facade options', () => {
     );
     expect(codeOnly.projections).toEqual({ codeMode: true, catalog: false });
     expect(codeOnly.instructions).toContain('pass the full name to toolCall in a machine:');
-    expect(codeOnly.instructions).not.toContain('weak evidence');
     await codeOnly.close();
     const catalogOnly = await wrapMcpServers(
       { fs: fsServer([]) },
@@ -226,9 +225,6 @@ describe('facade options', () => {
     );
     expect(catalogOnly.instructions).toContain(
       'then pass the full name to describe_tool and call_tool:',
-    );
-    expect(catalogOnly.instructions).toContain(
-      'call_tool to run it. A lookup that finds nothing is weak evidence: before concluding that something is not there, try a different way to find it — browse or list instead of matching a name, broaden the query, or check another box that could hold it — and only then say it was not found. Tools that change something may pause',
     );
     await catalogOnly.close();
 
