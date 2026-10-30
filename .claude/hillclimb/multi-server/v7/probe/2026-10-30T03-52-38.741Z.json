@@ -1,20 +1,10 @@
 {
   "generatedAt": "2026-10-30T03:52:38.741Z",
   "updatedAt": "2026-10-30T03:53:48.681Z",
-  "models": [
-    "haiku45",
-    "sonnet-low"
-  ],
-  "modes": [
-    "projection"
-  ],
-  "tiers": [
-    "multi"
-  ],
-  "tasks": [
-    "global-csv-released",
-    "global-last-log-entry"
-  ],
+  "models": ["haiku45", "sonnet-low"],
+  "modes": ["projection"],
+  "tiers": ["multi"],
+  "tasks": ["global-csv-released", "global-last-log-entry"],
   "runs": 5,
   "maxTurns": 12,
   "maxTotalTurns": 24,
@@ -476,9 +466,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 9
@@ -1191,11 +1179,7 @@
             "args": {
               "path": ".",
               "pattern": "**/*",
-              "excludePatterns": [
-                "node_modules",
-                ".git",
-                ".next"
-              ]
+              "excludePatterns": ["node_modules", ".git", ".next"]
             }
           },
           "isError": false
@@ -1280,11 +1264,7 @@
           "args": {
             "path": ".",
             "pattern": "**/*",
-            "excludePatterns": [
-              "node_modules",
-              ".git",
-              ".next"
-            ]
+            "excludePatterns": ["node_modules", ".git", ".next"]
           }
         },
         {
@@ -1313,9 +1293,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 6
@@ -1778,11 +1756,7 @@
                   "args": {
                     "path": ".",
                     "pattern": "**/*",
-                    "excludePatterns": [
-                      "node_modules",
-                      ".git",
-                      ".next"
-                    ]
+                    "excludePatterns": ["node_modules", ".git", ".next"]
                   }
                 }
               }
@@ -2187,9 +2161,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 10
@@ -3118,9 +3090,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 7
@@ -3953,11 +3923,7 @@
             "args": {
               "owner": "acme",
               "repo": "widgets",
-              "fields": [
-                "tag_name",
-                "name",
-                "published_at"
-              ]
+              "fields": ["tag_name", "name", "published_at"]
             }
           },
           "isError": false
@@ -4012,11 +3978,7 @@
           "args": {
             "owner": "acme",
             "repo": "widgets",
-            "fields": [
-              "tag_name",
-              "name",
-              "published_at"
-            ]
+            "fields": ["tag_name", "name", "published_at"]
           }
         }
       ],
@@ -4033,9 +3995,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 3
@@ -4496,11 +4456,7 @@
                   "args": {
                     "owner": "acme",
                     "repo": "widgets",
-                    "fields": [
-                      "tag_name",
-                      "name",
-                      "published_at"
-                    ]
+                    "fields": ["tag_name", "name", "published_at"]
                   }
                 }
               }
@@ -4633,9 +4589,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -4908,9 +4862,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -5231,9 +5183,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -5609,9 +5559,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -5895,9 +5843,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -6178,9 +6124,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 3
@@ -6470,9 +6414,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 5
@@ -6771,9 +6713,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 3
@@ -7025,9 +6965,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 3
@@ -7315,9 +7253,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": false,
         "wrongBoxCalls": 5
@@ -7625,9 +7561,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -7902,9 +7836,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -8179,9 +8111,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -8456,9 +8386,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
@@ -8733,9 +8661,7 @@
         "approvals": 0
       },
       "boxes": {
-        "needed": [
-          "fs"
-        ],
+        "needed": ["fs"],
         "usedGlobalSearch": false,
         "firstCallRightBox": true,
         "wrongBoxCalls": 0
