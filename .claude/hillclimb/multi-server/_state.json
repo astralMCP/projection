@@ -285,9 +285,10 @@
     }
   },
   "harness_paths": [
-    ".claude/hillclimb/multi-server/run-round.sh",
     ".claude/hillclimb/multi-server/export.mjs",
+    ".claude/hillclimb/multi-server/run-round.sh",
     ".claude/hillclimb/multi-server/scope.ts",
+    ".claude/hillclimb/multi-server/stats.mjs",
     "packages/harness/src/eval/agent.ts",
     "packages/harness/src/eval/batch.ts",
     "packages/harness/src/eval/cost.ts",
@@ -311,6 +312,9 @@
     "packages/harness/src/eval/task-core.ts",
     "packages/harness/src/eval/tasks.ts",
     "packages/harness/src/eval/world.ts",
+    "packages/harness/src/index.ts",
+    "packages/harness/src/types.ts",
+    "packages/harness/test/fixtures/github-catalog.json",
     "packages/harness/test/tool-choice.live.test.ts"
   ],
   "budget_usd": 50,
