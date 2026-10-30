@@ -172,7 +172,9 @@ describe('search_<alias> (R43)', () => {
     // Inside one box an alias is an ordinary word: "fs" matches no github text.
     const none = f.searchTools({ query: 'fs' }, 'github');
     expect(structured(none)['total']).toBe(0);
-    expect(text(none).split('\n')[0]).toBe('No tools matching "fs" in the github box.');
+    expect(text(none).split('\n')[0]).toBe(
+      'No tools match "fs" in the github box. This searches tool names and descriptions, not the github box\'s data — to look for data, call one of its read tools: github.get_issue.',
+    );
   });
 
   it('pages a box with cursors bound to its own search tool', async () => {

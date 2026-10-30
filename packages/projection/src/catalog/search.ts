@@ -37,6 +37,7 @@ import {
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
 import { boxOverview, renderOverviewBlock, toolCount } from './box-guidance.js';
+import { searchMissHint } from './empty-hint.js';
 import {
   boxSearchTool,
   isBoxedCatalog,
@@ -119,7 +120,14 @@ export function searchTools(
     (entry) => summarizeTool(entry, context),
   );
   return {
-    content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
+    content: [
+      {
+        type: 'text',
+        text: renderPage(catalog, page, query, offset, queryTruncated, () =>
+          searchMissHint(catalog, context),
+        ),
+      },
+    ],
     structuredContent: { ...page },
   };
 }
@@ -273,7 +281,11 @@ export function searchBoxes(
     scopeLabel = `in boxes ${[...aliases].join(', ')}`;
   }
   const where = box !== undefined ? `in the ${box} box` : 'in any box';
-  lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel));
+  lines.push(
+    ...renderEntries(result, query, offset, tool, where, scopeLabel, () =>
+      searchMissHint(catalog, context, box),
+    ),
+  );
   lines.push(
     '',
     'Tool names are qualified as <box>.<tool>. Call describe_tool with a name before calling a tool whose arguments you have not seen.',
@@ -560,6 +572,7 @@ function renderPage(
   query: string,
   offset: number,
   queryTruncated: boolean,
+  missHint: () => string,
 ): string {
   const lines: string[] = [];
   if (queryTruncated) {
@@ -573,6 +586,7 @@ function renderPage(
       'search_tools',
       `on server ${inertIdentity(catalog.identity)}`,
       `server ${inertIdentity(catalog.identity)}`,
+      missHint,
     ),
   );
   lines.push(
@@ -584,8 +598,10 @@ function renderPage(
 
 /**
  * The page body every search tool shares: the header, one line per tool,
- * and the next-cursor pointer. `where` ends the empty-page line; `scopeLabel`
- * is the parenthesized scope of the header, when there is one.
+ * and the next-cursor pointer. `where` ends the empty-page line, which then
+ * carries `missHint` — what the search looked at and which read tools look
+ * at data instead (just-in-time, see `empty-hint.ts`); `scopeLabel` is the
+ * parenthesized scope of the header, when there is one.
  */
 function renderEntries(
   page: { tools: ToolSummary[]; total: number; nextCursor?: string },
@@ -593,13 +609,15 @@ function renderEntries(
   offset: number,
   tool: string,
   where: string,
-  scopeLabel?: string,
+  scopeLabel: string | undefined,
+  missHint: () => string,
 ): string[] {
   const lines: string[] = [];
-  const scope =
-    query.length > 0 ? ` matching ${JSON.stringify(neutralizeControlChars(query))}` : '';
+  const quotedQuery = JSON.stringify(neutralizeControlChars(query));
+  const scope = query.length > 0 ? ` matching ${quotedQuery}` : '';
   if (page.tools.length === 0) {
-    lines.push(`No tools${scope} ${where}.`);
+    const lead = query.length > 0 ? `No tools match ${quotedQuery}` : 'No tools';
+    lines.push(`${lead} ${where}. ${missHint()}`);
   } else {
     const label = scopeLabel !== undefined ? ` (${scopeLabel})` : '';
     lines.push(
