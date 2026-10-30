@@ -116,6 +116,56 @@ export function anthropicCaller(client: Anthropic = new Anthropic()): ModelCalle
 }
 
 /**
+ * Counts a request's static prefix in tokens: the tool definitions (with the
+ * API's tool-use preamble) plus the system prompt. Rejects when it cannot.
+ */
+export type PrefixCounter = (
+  model: string,
+  system: string,
+  tools: Anthropic.Tool[],
+) => Promise<number>;
+
+/** The one-message probe both counts share, so it cancels out. */
+const PREFIX_PROBE: Anthropic.MessageParam[] = [{ role: 'user', content: '.' }];
+
+/**
+ * The live counter: the token-counting endpoint (free, no model call), as
+ * `count(system + tools + probe) - count(probe)`. The probe-only count is
+ * taken once per model; a failed one is forgotten so the next call retries.
+ */
+export function anthropicPrefixCounter(client: Anthropic = new Anthropic()): PrefixCounter {
+  const baselines = new Map<string, Promise<number>>();
+  const count = (params: Anthropic.MessageCountTokensParams): Promise<number> =>
+    client.messages.countTokens(params).then((r) => r.input_tokens);
+  return async (model, system, tools) => {
+    let baseline = baselines.get(model);
+    if (baseline === undefined) {
+      baseline = count({ model, messages: PREFIX_PROBE });
+      baselines.set(model, baseline);
+      baseline.catch(() => baselines.delete(model));
+    }
+    const [full, probe] = await Promise.all([
+      count({ model, system, tools, messages: PREFIX_PROBE }),
+      baseline,
+    ]);
+    return Math.max(0, full - probe);
+  };
+}
+
+/** Characters per token assumed for the task prompt by {@link estimatePrefixTokens}. */
+export const PROMPT_CHARS_PER_TOKEN = 4;
+
+/**
+ * The static prefix when it was not counted: turn 1's whole prompt, as the
+ * API billed it (uncached + cache read + cache write), less the task prompt
+ * at {@link PROMPT_CHARS_PER_TOKEN} characters a token. Off by the error in
+ * that one estimate (tens of tokens on a few-hundred-character prompt).
+ */
+export function estimatePrefixTokens(firstTurnPromptTokens: number, prompt: string): number {
+  return Math.max(0, firstTurnPromptTokens - Math.ceil(prompt.length / PROMPT_CHARS_PER_TOKEN));
+}
+
+/**
  * Thrown by a {@link ModelCaller} when the request could not be served for a
  * reason that is neither the model's nor the harness's — the batch runner's
  * per-request `errored` / `expired` results, after its retries. The episode
@@ -173,6 +223,28 @@ export interface EpisodeUsage {
   cacheCreationInputTokens: number;
 }
 
+/** One Messages API call's usage as the response reported it, and the static prefix it carried. */
+export interface TurnUsage {
+  /** Uncached input tokens. */
+  inputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  outputTokens: number;
+  /**
+   * Tokens in the request's static prefix: the tool definitions (with the
+   * API's tool-use preamble) plus the system prompt. How it was obtained is
+   * the episode's `prefixSource`.
+   */
+  prefixTokens: number;
+}
+
+/**
+ * `count_tokens`: the token-counting endpoint, once per distinct prefix per
+ * run ({@link anthropicPrefixCounter}). `estimate`: not counted (no counter,
+ * or the count failed), so {@link estimatePrefixTokens} from turn 1.
+ */
+export type PrefixSource = 'count_tokens' | 'estimate';
+
 /**
  * One content block of the recorded transcript, as the model produced or
  * saw it: text, a tool call, its thinking (text only — the signature is
@@ -191,6 +263,8 @@ export interface TranscriptMessage {
   role: 'user' | 'assistant';
   /** A string for the task prompt; blocks for everything after it. */
   content: string | TranscriptBlock[];
+  /** Assistant messages: the usage of the call that produced it. */
+  usage?: TurnUsage;
 }
 
 /** What the model saw and said in one episode, in order. */
@@ -227,7 +301,12 @@ export interface AgentEpisode {
   budgetTurns: number;
   /** Every `tool_use` block the model emitted, in order. */
   toolUses: ToolUseRecord[];
+  /** Totals over every turn. */
   usage: EpisodeUsage;
+  /** Per Messages API call, in order (one per `apiTurns`). */
+  turns: TurnUsage[];
+  /** How `turns[].prefixTokens` was obtained; absent when no call completed. */
+  prefixSource?: PrefixSource;
   wallMs: number;
   /** The last stop_reason seen, if any call completed. */
   stopReason?: string;
@@ -285,6 +364,12 @@ export interface AgentEpisodeOptions {
    */
   maxTotalTurns?: number;
   maxTokens?: number;
+  /**
+   * The static prefix (tools + system) in tokens, counted by the caller
+   * ({@link PrefixCounter}). Absent: estimated from turn 1
+   * ({@link estimatePrefixTokens}).
+   */
+  prefixTokens?: number;
 }
 
 export const DEFAULT_MAX_TURNS = 12;
@@ -322,6 +407,9 @@ export async function runAgentEpisode(
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
   };
+  const turns: TurnUsage[] = [];
+  let prefixTokens = options.prefixTokens;
+  const prefixSource: PrefixSource = prefixTokens === undefined ? 'estimate' : 'count_tokens';
   let apiTurns = 0;
   let budgetTurns = 0;
   let stopReason: string | undefined;
@@ -337,6 +425,8 @@ export async function runAgentEpisode(
     budgetTurns,
     toolUses,
     usage,
+    turns,
+    ...(turns.length > 0 ? { prefixSource } : {}),
     wallMs: Math.round(performance.now() - started),
     ...(stopReason !== undefined ? { stopReason } : {}),
     finalText,
@@ -359,11 +449,27 @@ export async function runAgentEpisode(
     }
     apiTurns += 1;
     servedModel = message.model;
-    transcript.messages.push({ role: 'assistant', content: message.content.map(transcriptBlock) });
-    usage.inputTokens += message.usage.input_tokens;
+    const turnInput = message.usage.input_tokens;
+    const turnRead = message.usage.cache_read_input_tokens ?? 0;
+    const turnWrite = message.usage.cache_creation_input_tokens ?? 0;
+    prefixTokens ??= estimatePrefixTokens(turnInput + turnRead + turnWrite, prompt);
+    const turn: TurnUsage = {
+      inputTokens: turnInput,
+      cacheCreationInputTokens: turnWrite,
+      cacheReadInputTokens: turnRead,
+      outputTokens: message.usage.output_tokens,
+      prefixTokens,
+    };
+    turns.push(turn);
+    transcript.messages.push({
+      role: 'assistant',
+      content: message.content.map(transcriptBlock),
+      usage: turn,
+    });
+    usage.inputTokens += turnInput;
     usage.outputTokens += message.usage.output_tokens;
-    usage.cacheReadInputTokens += message.usage.cache_read_input_tokens ?? 0;
-    usage.cacheCreationInputTokens += message.usage.cache_creation_input_tokens ?? 0;
+    usage.cacheReadInputTokens += turnRead;
+    usage.cacheCreationInputTokens += turnWrite;
     stopReason = message.stop_reason ?? undefined;
     finalText = message.content
       .flatMap((block) => (block.type === 'text' ? [block.text] : []))

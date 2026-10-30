@@ -111,7 +111,9 @@ export {
 export {
   agentTools,
   anthropicCaller,
+  anthropicPrefixCounter,
   buildTurnRequest,
+  estimatePrefixTokens,
   InfraError,
   resolveModelPresets,
   runAgentEpisode,
@@ -119,6 +121,7 @@ export {
   DEFAULT_MAX_TURNS,
   DEFAULT_MODEL_PRESETS,
   MODEL_PRESETS,
+  PROMPT_CHARS_PER_TOKEN,
   type AgentEpisode,
   type AgentEpisodeOptions,
   type AgentRuntime,
@@ -127,10 +130,13 @@ export {
   type EpisodeUsage,
   type ModelCaller,
   type ModelPreset,
+  type PrefixCounter,
+  type PrefixSource,
   type ToolUseRecord,
   type Transcript,
   type TranscriptBlock,
   type TranscriptMessage,
+  type TurnUsage,
 } from './eval/agent.js';
 export {
   BATCH_MAX_ATTEMPTS,

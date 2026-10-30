@@ -48,19 +48,25 @@
  * price. `concurrency` is then replaced by the batch `width`.
  */
 
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SideEffect } from '../types.js';
 import {
+  agentTools,
   anthropicCaller,
   type Transcript,
   resolveModelPresets,
   runAgentEpisode,
   type AgentEpisode,
+  type AgentRuntime,
   type EpisodeUsage,
   type ModelCaller,
   type ModelPreset,
+  type PrefixCounter,
+  type PrefixSource,
   type ToolUseRecord,
+  type TurnUsage,
 } from './agent.js';
 import {
   EVAL_MODES,
@@ -176,7 +182,15 @@ export interface EpisodeRecord {
   projection?: ProjectionUse;
   /** Multi tier only: how the episode moved between boxes. */
   boxes?: BoxRouting;
+  /** Totals over every turn. */
   usage: EpisodeUsage;
+  /**
+   * Per Messages API call: usage and the static prefix size. Absent in
+   * results files from before it was recorded.
+   */
+  turns?: TurnUsage[];
+  /** How `turns[].prefixTokens` was obtained (absent when no call completed). */
+  prefixSource?: PrefixSource;
   wallMs: number;
   stopReason?: string;
   finalText: string;
@@ -228,6 +242,12 @@ export interface ToolChoiceEvalOptions {
    * (PROJ_EVAL_BATCH=1). `caller` and `concurrency` are then ignored.
    */
   batch?: BatchEvalOptions;
+  /**
+   * Counts each episode's static prefix (tools + system), once per distinct
+   * prefix per run (the live test: `anthropicPrefixCounter`). Absent,
+   * or when a count fails: estimated from turn 1 (`prefixSource: 'estimate'`).
+   */
+  countPrefix?: PrefixCounter;
 }
 
 export interface BatchEvalOptions {
@@ -297,6 +317,29 @@ interface Slot extends PlannedEpisode {
   taskAt: number;
 }
 
+/** A run's prefix counts, keyed by model, system and tools; `undefined` when a count failed. */
+type PrefixCounts = Map<string, Promise<number | undefined>>;
+
+/** The episode's static prefix, counted once per distinct prefix per run (undefined: not counted). */
+function countedPrefix(
+  counter: PrefixCounter | undefined,
+  counts: PrefixCounts,
+  model: ModelPreset,
+  runtime: AgentRuntime,
+): Promise<number | undefined> {
+  if (counter === undefined) return Promise.resolve(undefined);
+  const tools = agentTools(runtime);
+  const key = createHash('sha256')
+    .update(JSON.stringify([model.model, runtime.system, tools]))
+    .digest('hex');
+  let counted = counts.get(key);
+  if (counted === undefined) {
+    counted = counter(model.model, runtime.system, tools).catch(() => undefined);
+    counts.set(key, counted);
+  }
+  return counted;
+}
+
 const EMPTY_USAGE: Readonly<EpisodeUsage> = {
   inputTokens: 0,
   outputTokens: 0,
@@ -361,6 +404,8 @@ async function scoreEpisode(
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
     usage: episode.usage,
+    turns: episode.turns,
+    ...(episode.prefixSource !== undefined ? { prefixSource: episode.prefixSource } : {}),
     wallMs: episode.wallMs,
     ...(episode.stopReason !== undefined ? { stopReason: episode.stopReason } : {}),
     finalText: episode.finalText,
@@ -411,6 +456,8 @@ function harnessFailureRecord(
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
     usage: episode?.usage ?? { ...EMPTY_USAGE },
+    turns: episode?.turns ?? [],
+    ...(episode?.prefixSource !== undefined ? { prefixSource: episode.prefixSource } : {}),
     wallMs: episode?.wallMs ?? Math.round(performance.now() - startedAt),
     ...(episode?.stopReason !== undefined ? { stopReason: episode.stopReason } : {}),
     finalText: episode?.finalText ?? '',
@@ -427,6 +474,7 @@ async function runPlanned(
   planned: PlannedEpisode,
   caller: ModelCaller,
   options: ToolChoiceEvalOptions,
+  prefixCounts: PrefixCounts,
   afterAgent?: () => void,
 ): Promise<EpisodeRecord> {
   const { model, mode, task } = planned;
@@ -446,6 +494,12 @@ async function runPlanned(
         options.boxDescriptions === true ? { boxDescriptions: true } : {},
       );
       try {
+        const prefixTokens = await countedPrefix(
+          options.countPrefix,
+          prefixCounts,
+          model,
+          session.runtime,
+        );
         episode = await runAgentEpisode(
           caller,
           model,
@@ -457,6 +511,7 @@ async function runPlanned(
               ? { maxTotalTurns: options.maxTotalTurns }
               : {}),
             budgetFreeTools: session.budgetFreeTools,
+            ...(prefixTokens !== undefined ? { prefixTokens } : {}),
           },
         );
       } finally {
@@ -525,6 +580,7 @@ export async function runToolChoiceEval(
           ...(batch.onTick !== undefined ? { onTick: batch.onTick } : {}),
         });
 
+  const prefixCounts: PrefixCounts = new Map();
   const records: EpisodeRecord[] = [];
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -534,7 +590,7 @@ export async function runToolChoiceEval(
       if (slot === undefined) return;
       let record: EpisodeRecord;
       if (batcher === undefined) {
-        record = await runPlanned(slot, caller as ModelCaller, options);
+        record = await runPlanned(slot, caller as ModelCaller, options, prefixCounts);
       } else {
         // Enter the lockstep before the world opens, so no tick runs without
         // this episode's first request; leave it however the episode ends
@@ -543,7 +599,10 @@ export async function runToolChoiceEval(
         try {
           // Leave as soon as the loop is over: closing the world and scoring
           // must not hold up everyone else's next tick.
-          record = { ...(await runPlanned(slot, lane.caller, options, lane.done)), batch: true };
+          record = {
+            ...(await runPlanned(slot, lane.caller, options, prefixCounts, lane.done)),
+            batch: true,
+          };
         } finally {
           lane.done();
         }

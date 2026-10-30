@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
 import {
+  anthropicPrefixCounter,
   createResultsWriter,
   DEFAULT_MAX_TOTAL_TURNS,
   DEFAULT_MAX_TURNS,
@@ -131,6 +132,9 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         maxTotalTurns,
         concurrency,
         boxDescriptions,
+        // Static prefix (tools + system) via the free token-counting endpoint,
+        // once per distinct prefix; a failed count falls back to an estimate.
+        countPrefix: anthropicPrefixCounter(new Anthropic()),
         ...(batchMode
           ? {
               batch: {
