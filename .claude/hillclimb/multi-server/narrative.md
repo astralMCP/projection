@@ -12,16 +12,17 @@ numbers stay in `_state.json.rounds`. Under the old harness the best was v2
 | 4     | v4: v3 routing copy on multi facades only (re-baseline, harness change 2) | 16/17 · 48/51                              | 15/17 · 47/51     | 16/17 · 48/51 | 15/17 · 47/51    | 58/60         | 59/60            | $6.59   | $33.65       |
 | 5     | v5: look in the other boxes before answering not-found (probe only)       | not run                                    | not run           | not run       | not run          | not run       | not run          | $0.67   | $34.32       |
 | 6     | v6: empty lookups are weak evidence; vary the strategy (probe only)       | not run                                    | not run           | not run       | not run          | not run       | not run          | $0.85   | $35.17       |
+| 7     | v7: just-in-time hints on empty results and search misses (probe only)    | not run                                    | not run           | not run       | not run          | not run       | not run          | $0.63   | $35.80       |
 
 Probes (`global-csv-released` + `global-last-log-entry`, gating mode, box
 descriptions on, 5 reps):
 
-| task     | model      | v4 round | v5 probe | v6 probe |
-| -------- | ---------- | -------- | -------- | -------- |
-| csv      | haiku45    | 0/3      | 1/5      | 0/5      |
-| csv      | sonnet-low | 0/3      | 1/5      | 2/5      |
-| last-log | haiku45    | 3/3      | 5/5      | 5/5      |
-| last-log | sonnet-low | 2/3      | 5/5      | 5/5      |
+| task     | model      | v4 round | v5 probe | v6 probe | v7 probe |
+| -------- | ---------- | -------- | -------- | -------- | -------- |
+| csv      | haiku45    | 0/3      | 1/5      | 0/5      | 2/5      |
+| csv      | sonnet-low | 0/3      | 1/5      | 2/5      | 0/5      |
+| last-log | haiku45    | 3/3      | 5/5      | 5/5      | 5/5      |
+| last-log | sonnet-low | 2/3      | 5/5      | 5/5      | 5/5      |
 
 Gating pooled at v4: 31/34 task-cells, 95/102 (93.1%). Noise floors
 (stats.mjs, v4): sonnet-low ±5.4 paired, haiku ±0.0 paired (crude ±14.0),
@@ -68,6 +69,31 @@ per episode on that same tool-name-search misreading. A preamble rule read
 once is not in view when the empty result arrives, so v7 moves the hint onto
 the empty result itself (just-in-time empty-result hints). The source is
 reverted to v4.
+
+v7 tried exactly that, as a behaviour change in the library (catalog
+projection, single- and multi-server). A search tool that matches no tools
+now says it searched tool names and descriptions, not data, and names read
+tools, browsing first. A read-only `call_tool` whose result is empty, or
+whose upstream error reads as not-found, gets one appended line naming
+other read tools and the other boxes. It is built on v4 (no preamble
+sentence). The probe ($0.63) did not clear the bar: csv haiku 2/5 (3/5
+turn-capped), sonnet 0/5, pooled 2/10 as in v5 and v6. last-log held at
+10/10. Every episode saw a hint (37 empty-result, 16 search-miss), and
+detection fired on no non-empty result.
+
+Sonnet read "or look in another box that could hold it: fs, mongo" on the
+decisive empty GitHub result in 10/10 cases and answered "no evidence
+either way" from GitHub anyway. It followed none of its 5 search-miss
+hints: it re-searched tool names instead of calling the named tools.
+Haiku's tool-name-search misses halved, from about 3.8 to 2.0 per csv
+episode. Both haiku passes reached `fs`, and one capped run reached
+`CHANGELOG.md` one turn before the cap. But haiku still spends most of its
+turns in GitHub. On the real GitHub catalog the browsing-first order named
+generic tools (`actions_list`, `get_repository_tree`, …). On last-log the
+hints match the recovery the models already make. So a hint in a tool
+result moves haiku a little and sonnet not at all: sonnet's stop decision
+follows the host's box description, not the tool output. The full round
+was not run, the guard was not measured, and the source is reverted to v4.
 
 ## Failing train cases (best = v4)
 

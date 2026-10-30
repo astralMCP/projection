@@ -83,12 +83,7 @@ describe('search_tools (R33)', () => {
     ]);
     const none = searchTools(CATALOG, { query: 'nothing-matches' });
     expect(page(none)).toEqual({ tools: [], total: 0 });
-    expect(text(none)).toContain('No tools match "nothing-matches"');
-    // Just-in-time: the miss says what was searched and names the read
-    // tools, browsing first (empty-hint.ts).
-    expect(text(none)).toContain(
-      ". This searches tool names and descriptions, not the server's data — to look for data, call one of its read tools: list_dir, read_file.",
-    );
+    expect(text(none)).toContain('No tools matching "nothing-matches"');
   });
 
   it('pages with an opaque cursor bound to the query', () => {
@@ -309,7 +304,7 @@ describe('search_tools (R33)', () => {
     it('a whitespace-only query matches nothing, unlike an empty one', () => {
       const blank = searchTools(github, { query: '   ' });
       expect(page(blank)).toEqual({ tools: [], total: 0 });
-      expect(text(blank)).toContain('No tools match "   "');
+      expect(text(blank)).toContain('No tools matching "   "');
       expect(page(searchTools(github, { query: '\t\n' })).total).toBe(0);
     });
 

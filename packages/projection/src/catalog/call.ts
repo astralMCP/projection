@@ -53,7 +53,6 @@ import {
 } from '../types.js';
 import { approvalSubject, blobKeyDomain, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
-import { emptyResultHint, isEmptyValue, isNotFoundError } from './empty-hint.js';
 import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
 
@@ -123,9 +122,7 @@ export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<
 
     switch (decidePolicy(entry, policyContext(deps))) {
       case 'auto':
-        // Runs without approval: a read tool, so an empty result earns a
-        // just-in-time pointer to other ways to look (empty-hint.ts).
-        return await execute(entry.name, toolArgs, deps, caps, { hintOnEmpty: true });
+        return await execute(entry.name, toolArgs, deps, caps);
       case 'deny':
         return denied(entry);
       case 'ask':
@@ -286,7 +283,6 @@ async function execute(
   toolArgs: Record<string, unknown>,
   deps: CallToolDeps,
   caps: ResourceCaps,
-  options: { hintOnEmpty?: boolean } = {},
 ): Promise<CallToolResult> {
   // A multi-server facade routes the qualified name to its box (R40).
   const target = routeCall(deps.catalog, name);
@@ -302,28 +298,16 @@ async function execute(
       logs: [],
     });
   }
-  // The just-in-time line for an empty read (library copy, catalog names
-  // only); computed lazily, only when the result is empty.
-  const emptyHint = (): string | undefined =>
-    options.hintOnEmpty === true
-      ? emptyResultHint(deps.catalog, policyContext(deps), name)
-      : undefined;
   if (!result.ok) {
     // R25 `upstream`: the wrapped tool failed. Its message is S5 text headed
     // straight for the model — inert and bounded; the hint is library copy.
-    const failed = errorResult({
+    return errorResult({
       phase: 'upstream',
       message: neutralizeControlChars(capLength(result.error.message, MAX_UPSTREAM_MESSAGE_CHARS)),
       diagnostics: [],
       hint: 'The wrapped server rejected this call. Check the arguments against describe_tool and try again, or report the error to the user.',
       logs: [],
     });
-    // A not-found from a read tool: the line goes in its own text block, so
-    // the structured error's JSON text stays parseable and untouched.
-    const line = isNotFoundError(result.error.message) ? emptyHint() : undefined;
-    return line === undefined
-      ? failed
-      : { ...failed, content: [...failed.content, { type: 'text', text: line }] };
   }
 
   // R12 `maxResultBytes`: the same cap a machine's final result is held to,
@@ -333,9 +317,7 @@ async function execute(
   const json = jsonText(result.result);
   const outputBytes = json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
   if (json === undefined || outputBytes <= caps.maxResultBytes) {
-    const done = outcome({ status: 'ok', tool: name, output: result.result });
-    const line = isEmptyValue(result.result) ? emptyHint() : undefined;
-    return line === undefined ? done : appendLine(done, line);
+    return outcome({ status: 'ok', tool: name, output: result.result });
   }
   return outcome({
     status: 'ok',
@@ -353,15 +335,6 @@ function jsonText(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-/** Append one line to a result's text; `structuredContent` is left as it is. */
-function appendLine(result: CallToolResult, line: string): CallToolResult {
-  const [first, ...rest] = result.content;
-  if (first === undefined || first.type !== 'text') {
-    return { ...result, content: [...result.content, { type: 'text', text: line }] };
-  }
-  return { ...result, content: [{ ...first, text: `${first.text}\n\n${line}` }, ...rest] };
 }
 
 function denied(entry: ToolCatalogEntry): CallToolResult {

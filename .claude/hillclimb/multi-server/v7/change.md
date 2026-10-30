@@ -1,5 +1,9 @@
 # v7: just-in-time hints on empty results and tool-search misses
 
+**Status: probe only.** csv cleared the 3/5 bar for neither model (haiku
+2/5, sonnet 0/5), so the full round was not run. The source is reverted to
+v4, and `change.patch` keeps the diff (commit `e09cb80`).
+
 A behaviour change, not a copy change: Projection now annotates empty results
 where the model reads them. This applies to single-server and multi-server
 facades alike, so the guard (single-server tiers) measures its single-server
@@ -158,3 +162,117 @@ The no-match assertions changed in `test/catalog/search.test.ts` and
   positive (e.g. `read-lowercase-readme`, `db-which-db-has-daily`). The risk
   is a false-positive hint distracting a model after a legitimately empty
   answer (`db-count-shipped` with a real count of 0 is not in the guard).
+
+## Probe
+
+Probe file: `v7/probe/2026-10-30T03-52-38.741Z.json`. Tasks
+`global-csv-released` and `global-last-log-entry`, `projection` mode, box
+descriptions on, both models, 5 reps: 20 episodes, $0.63 (export.mjs
+`costUsd` pricing).
+
+| task                    | model      | v7 probe | v6 probe | v5 probe | v4 round | turn-capped (v7 / v6) |
+| ----------------------- | ---------- | -------- | -------- | -------- | -------- | --------------------- |
+| `global-csv-released`   | haiku45    | 2/5      | 0/5      | 1/5      | 0/3      | 3/5 / 5/5             |
+| `global-csv-released`   | sonnet-low | 0/5      | 2/5      | 1/5      | 0/3      | 0/5 / 0/5             |
+| `global-last-log-entry` | haiku45    | 5/5      | 5/5      | 5/5      | 3/3      | 0/5 / 0/5             |
+| `global-last-log-entry` | sonnet-low | 5/5      | 5/5      | 5/5      | 2/3      | 0/5 / 0/5             |
+
+csv pooled is 2/10, the same as v5 and v6. The bar (csv ≥3/5 for either
+model, last-log not regressing) is not met. last-log holds at 10/10. v7 has
+no preamble sentence: it sits on the v4 source, while v5 and v6 each added
+one.
+
+### Hints: how often they appeared and were followed
+
+"Followed" means the model's next call (`call_tool` / `describe_tool` target,
+or a `search_<box>`) was one of the tools the hint named. For the
+other-box clause, it means the next call went to one of the named boxes.
+
+| cell            | search-miss hints (episodes) | followed | empty-result hints (episodes) | next call: named tool, same box | next call: named other box |
+| --------------- | ---------------------------- | -------- | ----------------------------- | ------------------------------- | -------------------------- |
+| csv haiku45     | 10 (5/5)                     | 3        | 12 (5/5)                      | 1                               | 1                          |
+| csv sonnet-low  | 5 (5/5)                      | 0        | 10 (5/5)                      | 0                               | 0                          |
+| last-log haiku  | 1 (1/5)                      | 1        | 5 (4/5)                       | 4                               | 0                          |
+| last-log sonnet | 0                            | 0        | 10 (5/5)                      | 5                               | 0                          |
+
+Every episode saw at least one hint (20/20). The probe produced 37
+empty-result hints and 16 search-miss hints. No hint fired on a non-empty
+result, and none fired on the 10 validation errors.
+
+| result                              | count | source                                                          |
+| ----------------------------------- | ----- | --------------------------------------------------------------- |
+| `{"total_count":0,"items":[]}`      | 14    | GitHub `search_issues` / `search_pull_requests`                 |
+| `{ "content": "No matches found" }` | 9     | fs `search_files`                                               |
+| `{ "content": "" }`                 | 1     | fs `read_file` returning no content                             |
+| upstream `ENOENT`                   | 9     | `app.log` read at the wrong path                                |
+| upstream `404 Not Found`            | 4     | GitHub `issue_read` / `pull_request_read` / `get_file_contents` |
+
+Two of the 404s (`issue #42`, `pull request #9`) concern items that exist
+and were called with arguments the fake rejected. Those hints were
+technically right by the rule but not helpful.
+
+`{"ok":true}` (the GitHub fake's reply for `list_releases` /
+`list_commits` / `search_code`) stayed unhinted, which is correct: it is
+neutral, not empty.
+
+### What happened
+
+- **csv sonnet (0/5): the hints were read and ignored.** All 5 episodes ran
+  the same 5-6 turn path:
+  1. `search_github "CSV export"` returned a miss with the hint.
+  2. The model re-searched tool names
+     (`"search issues pull requests releases"`). It treated the hint as
+     "search for tools that look at data", not "call these tools".
+  3. It ran `search_pull_requests` and `search_issues` in parallel, both
+     empty, and both hints ended "or look in another box that could hold
+     it: fs, mongo".
+  4. In 10/10 of those hints sonnet answered instead ("I found no evidence
+     either way … I searched the acme/widgets GitHub repo"), without
+     visiting `fs` and without mentioning the other boxes.
+
+  v5/v6 reached `fs` more often, from a preamble sentence that v7 lacks. For
+  sonnet, a pointer in a tool result carries less weight than a rule in the
+  system prompt.
+
+- **csv haiku (2/5, 3 capped).**
+  - _Search misses:_ the miss hint cut haiku's tool-name-search misses from
+    about 3.8 per episode (v6: 4,4,4,4,3) to 2.0 (2,2,1,3,2). Haiku still
+    spent most of its turns in GitHub: list/search/read issues and PRs,
+    `pull_request_read` 404s, and `get_repository_tree`.
+  - _The two passes_ reached `fs` via `search_fs` → `fs.search_files`. One
+    used a `**/*` glob, then read CHANGELOG. The other got two empty globs
+    with hints, then broadened to `**/*.md`, then read.
+  - _Capped runs:_ run3 followed the `search_files` empty hint to
+    `fs.list_directory`, saw `CHANGELOG.md`, and hit the cap on the very next
+    turn. That was the turn cap, not a give-up. run0 and run2 never left
+    GitHub.
+  - _GitHub hint lists:_ for the real GitHub catalog, the browsing-first
+    order produced `actions_list, get_repository_tree, list_branches,
+list_code_scanning_alerts, list_commits`. Those are generic, low-value
+    names (catalog order inside the "list" group), and haiku did not pick
+    them up.
+- **last-log (10/10).** Recovery after `ENOENT` matches v5/v6:
+  - Haiku went straight to `list_directory .` → `logs` (4/4 hinted
+    episodes), which the hint names first.
+  - Sonnet's next call was `search_files` (not named in the hint). The
+    `search_files` empty hint then led to `directory_tree` (named, 5/5),
+    the same path as v6.
+
+  The hint agrees with the recovery the models already make, so it neither
+  helps nor hurts here.
+
+### Read
+
+Just-in-time hints change _what the model reads_. They do not change _where
+sonnet decides to stop_. Sonnet gets the "another box" pointer on the
+decisive empty result in every episode and still answers from the one box
+the host description pointed at. Haiku benefits from the miss hint (fewer
+wasted tool-name searches, 2/5 vs 0/5 in v6), but the turn budget still runs
+out in GitHub. The useful pieces are:
+
+- the miss hint, which halves haiku's tool-name-search misses;
+- the detection, which was exact on every shape seen.
+
+These could be kept as a library improvement on their own merits, but this
+probe does not show them moving the gating target. The guard (single-server)
+was not measured.
