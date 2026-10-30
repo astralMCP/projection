@@ -24,6 +24,7 @@
  *                          episode in lockstep (src/eval/batch.ts); PROJ_EVAL_CONCURRENCY is then ignored
  *   PROJ_EVAL_BATCH_WIDTH  batch mode: episodes live (world open) at once (default 24: a multi world
  *                          holds ~400 MB of mongod + server processes)
+ *   PROJ_EVAL_FORCE_CODE_MODE=1   Projection modes: append FORCE_CODE_MODE_LINE to the system prompt (default off)
  *
  * Decision runs (the globalSearch default, prompt changes) use
  * PROJ_EVAL_TIERS=multi, so no other tier's episodes mix into the numbers.
@@ -45,6 +46,7 @@ import {
   createResultsWriter,
   DEFAULT_MAX_TOTAL_TURNS,
   DEFAULT_MAX_TURNS,
+  FORCE_CODE_MODE_LINE,
   formatEpisodeLine,
   formatToolChoiceReport,
   loadNearestDotEnv,
@@ -97,6 +99,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
       const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
       const boxDescriptions = process.env['PROJ_EVAL_BOX_DESCRIPTIONS'] === '1';
+      const systemSuffix =
+        process.env['PROJ_EVAL_FORCE_CODE_MODE'] === '1' ? FORCE_CODE_MODE_LINE : undefined;
       const batchWidth = positiveInt(process.env['PROJ_EVAL_BATCH_WIDTH'], DEFAULT_BATCH_WIDTH);
       const batchTicks: BatchTick[] = [];
       // No knob yet: the defaults, recorded in the results file so a run from
@@ -122,6 +126,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
           boxDescriptions,
           outputSchemas: true,
           hostFraming: true,
+          ...(systemSuffix !== undefined ? { systemSuffix } : {}),
           ...(batchMode ? { batch: true, batchWidth, batchTicks } : {}),
         },
       );
@@ -140,6 +145,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         maxTotalTurns,
         concurrency,
         boxDescriptions,
+        ...(systemSuffix !== undefined ? { systemSuffix } : {}),
         // Static prefix (tools + system) via the free token-counting endpoint,
         // once per distinct prefix; a failed count falls back to an estimate.
         countPrefix: anthropicPrefixCounter(new Anthropic()),

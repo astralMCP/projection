@@ -105,8 +105,10 @@ export interface ProjectionUse {
    * (`search_github` → `github`). `searchTools` counts the global search.
    */
   searchBoxes?: Record<string, number>;
-  /** Approval prompts auto-accepted (MRTR round trips). */
+  /** Approval prompts auto-accepted (one per gated call). */
   approvals: number;
+  /** MRTR retries sent: approval round trips, each carrying one or more approvals. */
+  roundTrips?: number;
 }
 
 /** How a multi-world episode moved between boxes. */
@@ -262,6 +264,11 @@ export interface ToolChoiceEvalOptions {
    */
   boxDescriptions?: boolean;
   /**
+   * Projection modes: a line appended to the system prompt
+   * (PROJ_EVAL_FORCE_CODE_MODE=1). Default none.
+   */
+  systemSuffix?: string;
+  /**
    * Called as each episode finishes (in completion order) with its record
    * and its index in the returned, plan-ordered array.
    */
@@ -309,6 +316,7 @@ function summarizeProjectionUse(
   toolUses: ToolUseRecord[],
   approvals: number,
   world: EvalWorld,
+  roundTrips?: number,
 ): ProjectionUse {
   const count = (name: string): number => toolUses.filter((t) => t.name === name).length;
   const callTool = count('call_tool') > 0;
@@ -328,6 +336,7 @@ function summarizeProjectionUse(
         }
       : {}),
     approvals,
+    ...(roundTrips !== undefined ? { roundTrips } : {}),
   };
 }
 
@@ -390,6 +399,7 @@ async function scoreEpisode(
   world: EvalWorld,
   approvals: number,
   episode: AgentEpisode,
+  roundTrips?: number,
 ): Promise<EpisodeRecord> {
   const { model, mode, task, run } = planned;
   const upstreamCalls = world.calls.slice();
@@ -431,7 +441,7 @@ async function scoreEpisode(
     toolUses: episode.toolUses,
     upstreamCalls,
     ...(isProjectionMode(mode)
-      ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world) }
+      ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world, roundTrips) }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
     usage: episode.usage,
@@ -484,7 +494,14 @@ function harnessFailureRecord(
     toolUses,
     upstreamCalls,
     ...(isProjectionMode(mode) && session !== undefined
-      ? { projection: summarizeProjectionUse(toolUses, session.approvals, session.world) }
+      ? {
+          projection: summarizeProjectionUse(
+            toolUses,
+            session.approvals,
+            session.world,
+            session.roundTrips,
+          ),
+        }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
     usage: episode?.usage ?? { ...EMPTY_USAGE },
@@ -537,11 +554,10 @@ async function runPlanned(
       ...worldOptionsOf(task.tier),
     });
     try {
-      session = await openSession(
-        mode,
-        world,
-        options.boxDescriptions === true ? { boxDescriptions: true } : {},
-      );
+      session = await openSession(mode, world, {
+        ...(options.boxDescriptions === true ? { boxDescriptions: true } : {}),
+        ...(options.systemSuffix !== undefined ? { systemSuffix: options.systemSuffix } : {}),
+      });
       try {
         const prefixTokens = await countedPrefix(
           options.countPrefix,
@@ -567,7 +583,7 @@ async function runPlanned(
         await session.close().catch(() => {});
       }
       // Score while the world is still up: `verify` reads its end state.
-      return await scoreEpisode(planned, world, session.approvals, episode);
+      return await scoreEpisode(planned, world, session.approvals, episode, session.roundTrips);
     } finally {
       await world.close().catch(() => {});
     }
@@ -1288,6 +1304,11 @@ export interface ResultsMeta {
    * older files, whose Projection prompts had none).
    */
   hostFraming?: boolean;
+  /**
+   * The line appended to the Projection modes' system prompts
+   * (PROJ_EVAL_FORCE_CODE_MODE=1); absent when none was.
+   */
+  systemSuffix?: string;
   modes?: EvalMode[];
   tiers?: TaskTier[];
   tasks?: string[];
