@@ -290,11 +290,12 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const find = globalSearch
     ? "search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
     : "a box's search_<box> tool to look inside that box";
-  const steps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it.`;
+  const listing = `${find}; without a query, a box's search lists the box and leads with its own guidance.`;
+  const steps = `${listing} Then call describe_tool to see a tool's arguments and call_tool to run it.`;
   if (!projections.codeMode) {
     return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
   }
-  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call ${steps} For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call ${listing} Then call describe_tool to see a tool's arguments and call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 }
 
 /**
@@ -345,25 +346,41 @@ const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool.`;
 
-const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool.`;
+const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. Chains of a few calls are best done as successive call_tool calls, reading each result before the next.`;
 
 /** The catalog tools point at execute_machine only when code mode is served (R29). */
 const DESCRIBE_TOOL_TYPES_POINTER = ` Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
-const CALL_TOOL_CODE_MODE_POINTER = ` For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
+const CALL_TOOL_CODE_MODE_POINTER = ` For loops or branching over results, many steps, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
-const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.
-
-Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+const EXECUTE_MACHINE_BODY = `Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
 
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
 
 const DISCOVER_APIS_DESCRIPTION = `Return the tool type definitions of every toolbox (tools.<box>.<tool>), the machine authoring contract, worked examples and each box's guidance. Call this before authoring a machine for execute_machine.`;
 
-const CODE_MODE_COPY = {
-  executeMachine: EXECUTE_MACHINE_DESCRIPTION,
-  discoverApis: DISCOVER_APIS_DESCRIPTION,
-};
+/** execute_machine when it is the only way to run a tool (code mode only). */
+const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.\n\n${EXECUTE_MACHINE_BODY}`;
+
+/**
+ * execute_machine beside the catalog (R29): leads with when a machine is
+ * worth it and sends short lookup-then-act chains to call_tool, where the
+ * model reads each result before the next step.
+ */
+const EXECUTE_MACHINE_ROUTED_DESCRIPTION = `Run a multi-step workflow — loops, branching over results, many steps, or one worth saving — as an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes. For a short lookup-then-act chain, use call_tool for each step instead.\n\n${EXECUTE_MACHINE_BODY}`;
+
+/** The code-mode tool copy for a projection selection (R29). */
+function codeModeCopy(projections: Readonly<ProjectionSelection>): {
+  executeMachine: string;
+  discoverApis: string;
+} {
+  return {
+    executeMachine: projections.catalog
+      ? EXECUTE_MACHINE_ROUTED_DESCRIPTION
+      : EXECUTE_MACHINE_DESCRIPTION,
+    discoverApis: DISCOVER_APIS_DESCRIPTION,
+  };
+}
 
 /**
  * The `search_<alias>` copy (R43): `Search the <alias> toolbox.`, the box's
@@ -562,7 +579,7 @@ class MultiFacade implements MultiProjectionFacade {
     const era = options?.era;
     if (this.projections.codeMode) {
       // The workflow prompts name the boxes by alias (R39): they read the view.
-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.deps.view);
+      registerCodeModeTools(server, era, this, codeModeCopy(this.projections), this.deps.view);
     }
     if (this.projections.catalog) {
       registerCatalogTools(server, era, this, this.copy);

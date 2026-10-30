@@ -99,6 +99,9 @@ describe('projections switch (R1, R32)', () => {
     const c = await connect({ projections: { catalog: false } });
     expect(await toolNames(c)).toEqual(['discover_apis', 'execute_machine']);
     expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_CODE_MODE_PREAMBLE}`);
+    // No call_tool to route to: execute_machine keeps its plain description.
+    const { tools } = await c.listTools();
+    expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain('call_tool');
   });
 
   it('with both projections on, both surfaces are served and the routing preamble applies (R29)', async () => {
@@ -115,6 +118,14 @@ describe('projections switch (R1, R32)', () => {
     expect(facade?.instructions).toContain('execute_machine');
     // The catalog tools are reads: annotated so hosts never prompt for them.
     const { tools } = await c.listTools();
+    // Short lookup-then-act chains route to call_tool; machines are for loops,
+    // branching over results, many steps or a saved workflow.
+    expect(tools.find((t) => t.name === 'execute_machine')?.description).toContain(
+      'For a short lookup-then-act chain, use call_tool for each step instead.',
+    );
+    expect(tools.find((t) => t.name === 'call_tool')?.description).toContain(
+      'successive call_tool calls, reading each result before the next',
+    );
     for (const name of ['search_tools', 'describe_tool']) {
       expect(tools.find((t) => t.name === name)?.annotations?.readOnlyHint).toBe(true);
     }

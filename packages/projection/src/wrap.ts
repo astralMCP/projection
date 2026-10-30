@@ -136,9 +136,7 @@ export interface ProjectionFacade {
   close(): Promise<void>;
 }
 
-const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates this server's tools.
-
-Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools'. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+const EXECUTE_MACHINE_BODY = `Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools'. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
 
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
 
@@ -146,7 +144,7 @@ const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, t
 
 const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more), so a guessed name like create_issue or a phrase like "comment on a pull request" works. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
 
-const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
+const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. Chains of a few calls are best done as successive call_tool calls, reading each result before the next. For loops or branching over results, many steps, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
 const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
@@ -165,8 +163,23 @@ const CATALOG_TOOL_COPY: CatalogToolCopy = {
   describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
 };
 
+/** execute_machine when it is the only way to run a tool (code mode only). */
+const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates this server's tools.\n\n${EXECUTE_MACHINE_BODY}`;
+
+/**
+ * execute_machine beside the catalog (R29): leads with when a machine is
+ * worth it and sends short lookup-then-act chains to call_tool, where the
+ * model reads each result before the next step.
+ */
+const EXECUTE_MACHINE_ROUTED_DESCRIPTION = `Run a multi-step workflow — loops, branching over results, many steps, or one worth saving — as an LLM-authored XState v5 state machine that orchestrates this server's tools. For a short lookup-then-act chain, use call_tool for each step instead.\n\n${EXECUTE_MACHINE_BODY}`;
+
 const CODE_MODE_COPY = {
   executeMachine: EXECUTE_MACHINE_DESCRIPTION,
+  discoverApis: DISCOVER_APIS_DESCRIPTION,
+};
+
+const ROUTED_CODE_MODE_COPY = {
+  executeMachine: EXECUTE_MACHINE_ROUTED_DESCRIPTION,
   discoverApis: DISCOVER_APIS_DESCRIPTION,
 };
 
@@ -363,7 +376,13 @@ class Facade implements ProjectionFacade {
   registerOn(server: McpServer, options?: RegisterOptions): void {
     const era = options?.era;
     if (this.projections.codeMode) {
-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.catalog);
+      registerCodeModeTools(
+        server,
+        era,
+        this,
+        this.projections.catalog ? ROUTED_CODE_MODE_COPY : CODE_MODE_COPY,
+        this.catalog,
+      );
     }
     if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
     registerResources(server, this.resources);

@@ -580,6 +580,14 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
     for (const surface of surfaces) expect(JSON.stringify(surface)).not.toContain('search_tools');
   });
 
+  it('keeps the plain execute_machine description when no call_tool is served', async () => {
+    const c = await connectModern(await wrap({ projections: { catalog: false } }));
+    const { tools } = await c.listTools();
+    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).not.toContain(
+      'call_tool',
+    );
+  });
+
   it('keeps the list inline at the threshold, and with the catalog projection off', async () => {
     expect(textOf((await wrap({ catalogInlineThreshold: 7 })).discoverApis())).toContain(
       '- fs.read_file',
