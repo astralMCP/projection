@@ -17,12 +17,19 @@
  * Facts merge: `root` (the filesystem box's directory) and `mongoUri` (the
  * deployment), so prompts and `verify` read them as in the single-server
  * tiers. `close` tears down all three.
+ *
+ * `variant: 'hard'` (the `multi-hard` tier) opens the same three boxes with
+ * more data: extra project files, extra shop documents and a much larger
+ * acme/widgets (multi-hard-fixtures.ts, multi-hard-github.ts). Without it
+ * every box holds exactly its base fixture.
  */
 
 import type { SideEffect } from '../types.js';
 import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
+import { HARD_FILESYSTEM_FILES, hardMongoSeed } from './multi-hard-fixtures.js';
+import { HARD_GITHUB_ANSWERS } from './multi-hard-github.js';
 import type {
   BoxAlias,
   MultiWorld,
@@ -73,6 +80,7 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
       options.onCall?.(qualified);
     };
 
+  const hard = options.variant === 'hard';
   const opened = await Promise.allSettled(
     MULTI_BOXES.map(({ alias, world }): Promise<ServerWorld> => {
       const onCall = recorder(alias);
@@ -82,12 +90,16 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
             githubWorld({
               onCall,
               ...(options.instructions === false ? { instructions: false } : {}),
+              ...(hard ? { answers: { ...HARD_GITHUB_ANSWERS } } : {}),
             }),
           );
         case 'filesystem':
-          return openFilesystemWorld({ onCall });
+          return openFilesystemWorld({
+            onCall,
+            ...(hard ? { extraFiles: HARD_FILESYSTEM_FILES } : {}),
+          });
         case 'mongodb':
-          return openMongodbWorld({ onCall });
+          return openMongodbWorld({ onCall, ...(hard ? { extraShop: hardMongoSeed() } : {}) });
       }
     }),
   );

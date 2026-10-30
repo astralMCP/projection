@@ -118,6 +118,12 @@ export interface WorldOptions {
    * one ordered log across its boxes.
    */
   onCall?: (call: SideEffect) => void;
+  /**
+   * multi only: `'hard'` opens the boxes with the `multi-hard` tier's
+   * additional fixture data (multi-hard-fixtures.ts, multi-hard-github.ts).
+   * Absent: the base fixtures, exactly as every other tier sees them.
+   */
+  variant?: 'hard';
 }
 
 /** A fresh world for one episode. */

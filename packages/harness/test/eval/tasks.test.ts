@@ -11,11 +11,13 @@ import {
   FILESYSTEM_TASKS,
   HARD_TASKS,
   MONGODB_TASKS,
+  MULTI_HARD_TASKS,
   MULTI_TASKS,
   promptFor,
   resolveTasks,
   resolveTiers,
   TOOL_CHOICE_TASKS,
+  worldOf,
   type EvalTask,
   type SideEffect,
 } from '../../src/index.js';
@@ -310,6 +312,7 @@ describe('tool-choice tasks', () => {
       ...FILESYSTEM_TASKS,
       ...MONGODB_TASKS,
       ...MULTI_TASKS,
+      ...MULTI_HARD_TASKS,
     ]);
     expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);
@@ -328,9 +331,9 @@ describe('tool-choice tasks', () => {
       const toolNames = new Set(
         TOOL_CHOICE_TASKS.filter((o) => o.tier === t.tier)
           .flatMap((o) => o.steps.flat())
-          .map((name) => (t.tier === 'multi' ? name.replace(/^[a-z]+\./, '') : name)),
+          .map((name) => (worldOf(t.tier) === 'multi' ? name.replace(/^[a-z]+\./, '') : name)),
       );
-      if (t.tier === 'multi') {
+      if (worldOf(t.tier) === 'multi') {
         // Every box's tools, not only the ones some step names.
         for (const name of ['find', 'count', 'aggregate', 'explain', 'search_files']) {
           toolNames.add(name);

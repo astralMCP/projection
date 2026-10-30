@@ -10,18 +10,44 @@
  */
 
 import type { SideEffect } from '../types.js';
-import type { WorldFacts, WorldName } from './world.js';
+import type { WorldFacts, WorldName, WorldOptions } from './world.js';
 
-export type TaskKind = 'single' | 'multi';
+/**
+ * `single` / `multi`: one tool call or several (the original tiers). The
+ * `multi-hard` tier tags each task with its family instead: `bulk-read`
+ * (one answer over N ≥ 25 items), `bulk-write` (8–20 approved writes),
+ * `chain` (five or more dependent hops across boxes), `pagination` (the
+ * answer hides past a default page or result cap), `branching` (a per-item
+ * choice between two different writes).
+ */
+export type TaskKind =
+  'single' | 'multi' | 'bulk-read' | 'bulk-write' | 'chain' | 'pagination' | 'branching';
 
 /**
  * Tiers: `basic` and `hard` run against the offline GitHub fake;
  * `filesystem` against the real filesystem reference server; `mongodb`
  * against the real MongoDB MCP server on a throwaway deployment; `multi`
- * against all three at once, each a box under an alias (multi-world.ts).
+ * against all three at once, each a box under an alias (multi-world.ts);
+ * `multi-hard` against the same three boxes with much more data in them
+ * (multi-hard-tasks.ts) — opt-in only, never part of the default matrix.
  */
-export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi';
-export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard', 'filesystem', 'mongodb', 'multi'];
+export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard';
+export const TASK_TIERS: readonly TaskTier[] = [
+  'basic',
+  'hard',
+  'filesystem',
+  'mongodb',
+  'multi',
+  'multi-hard',
+];
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`. */
+export const DEFAULT_TIERS: readonly TaskTier[] = [
+  'basic',
+  'hard',
+  'filesystem',
+  'mongodb',
+  'multi',
+];
 
 /** The world each tier's tasks run in. */
 export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
@@ -30,10 +56,16 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   filesystem: 'filesystem',
   mongodb: 'mongodb',
   multi: 'multi',
+  'multi-hard': 'multi',
 };
 
 export function worldOf(tier: TaskTier): WorldName {
   return TIER_WORLDS[tier];
+}
+
+/** World options a tier needs beyond its world's name: `multi-hard` opens the hard variant. */
+export function worldOptionsOf(tier: TaskTier): Pick<WorldOptions, 'variant'> {
+  return tier === 'multi-hard' ? { variant: 'hard' } : {};
 }
 
 /** What `verify` sees once the episode is over and before the world is torn down. */
@@ -84,6 +116,19 @@ export interface EvalTask {
    * the recorded verdict for such tasks instead of re-running `verify`.
    */
   needsWorld?: boolean;
+  /**
+   * The task's own turn budget (action turns, as `maxTurns`), overriding
+   * the run's; its absolute ceiling is then twice this. The `multi-hard`
+   * tier sets 2N + 10, so a strategy that spends one turn per item can
+   * finish.
+   */
+  maxTurns?: number;
+  /**
+   * `multi-hard`: the number of items the task iterates over (records to
+   * total, writes to make, hops to follow, pages to read, checks to
+   * branch on) — what its {@link maxTurns} is derived from.
+   */
+  n?: number;
 }
 
 /** The prompt text for one episode. */

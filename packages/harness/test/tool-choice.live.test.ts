@@ -15,7 +15,7 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
- *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi (default all)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard (default all but the opt-in multi-hard)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
@@ -70,7 +70,10 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
     // Fail before spending anything: without the vendored server every
     // mongodb (and multi) episode would be a harness error, not a measurement.
-    if ((tiers.includes('mongodb') || tiers.includes('multi')) && !mongodbServerInstalled()) {
+    if (
+      tiers.some((tier) => worldOf(tier) === 'mongodb' || worldOf(tier) === 'multi') &&
+      !mongodbServerInstalled()
+    ) {
       throw new Error(
         'the mongodb or multi tier is selected but the MongoDB MCP server is not installed; run `pnpm run setup:mongodb` in packages/harness, or set PROJ_EVAL_TIERS to exclude mongodb and multi',
       );
@@ -81,6 +84,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
     const boxDescriptions = process.env['PROJ_EVAL_BOX_DESCRIPTIONS'] === '1';
     // No knob yet: the defaults, recorded in the results file so a run from
     // before the action-turn budget is distinguishable from one after it.
+    // A task with its own budget (the multi-hard tier: 2N + 10) uses that
+    // instead; the per-task budgets are recorded too.
     const maxTurns = DEFAULT_MAX_TURNS;
     const maxTotalTurns = DEFAULT_MAX_TOTAL_TURNS;
 
@@ -94,6 +99,9 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         runs,
         maxTurns,
         maxTotalTurns,
+        taskMaxTurns: Object.fromEntries(
+          tasks.flatMap((t) => (t.maxTurns !== undefined ? [[t.name, t.maxTurns]] : [])),
+        ),
         boxDescriptions,
         outputSchemas: true,
         hostFraming: true,
