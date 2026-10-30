@@ -7,10 +7,13 @@ import { describe, expect, it } from 'vitest';
 import {
   estimateUsd,
   formatToolChoiceReport,
+  rateFor,
   MIN_CACHEABLE_TOKENS,
+  MODEL_PRICES,
   standardCost,
   summarizeToolChoice,
   type EpisodeRecord,
+  type ModelPrice,
   type TurnUsage,
 } from '../../src/index.js';
 
@@ -209,6 +212,70 @@ function record(over: Partial<EpisodeRecord>): EpisodeRecord {
     ...over,
   };
 }
+
+describe('Haiku 5.5 long-context pricing', () => {
+  // A turn with a real cache split: 2,000 uncached, `read` read, 0 written.
+  const split = (read: number, output: number): TurnUsage => ({
+    inputTokens: 2_000,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: 0,
+    outputTokens: output,
+    prefixTokens: 1_000,
+  });
+
+  it('has a long-context card only for Haiku 5.5, above 100K prompt tokens', () => {
+    expect(MODEL_PRICES['claude-haiku-5-5']?.longContext).toEqual({
+      aboveTokens: 100_000,
+      input: 0.5,
+      output: 2.5,
+    });
+    expect(MODEL_PRICES['claude-haiku-4-5']?.longContext).toBeUndefined();
+    expect(MODEL_PRICES['claude-sonnet-5-5']?.longContext).toBeUndefined();
+    const haiku = MODEL_PRICES['claude-haiku-5-5'] as ModelPrice;
+    // 100K exactly is still the base card; one token more is not.
+    expect(rateFor(haiku, 100_000)).toMatchObject({ input: 0.1, output: 0.5 });
+    expect(rateFor(haiku, 100_001)).toMatchObject({ input: 0.5, output: 2.5 });
+  });
+
+  it('estimateUsd prices each turn on the card its own prompt selects', () => {
+    // Turn 1: 52K prompt (base card); turn 2: 150K prompt (long card).
+    const turns = [split(50_000, 200), split(148_000, 300)];
+    const usage = {
+      inputTokens: 4_000,
+      cacheReadInputTokens: 198_000,
+      cacheCreationInputTokens: 0,
+      outputTokens: 500,
+    };
+    const expected =
+      usd(2_000 + 50_000 * 0.1, 0.1) +
+      usd(200, 0.5) +
+      usd(2_000 + 148_000 * 0.1, 0.5) +
+      usd(300, 2.5);
+    expect(estimateUsd('claude-haiku-5-5', usage, false, turns)).toBeCloseTo(expected, 15);
+    expect(estimateUsd('claude-haiku-5-5', usage, true, turns)).toBeCloseTo(expected / 2, 15);
+    // Without per-turn usage there is no prompt size to choose by: base card.
+    expect(estimateUsd('claude-haiku-5-5', usage)).toBeCloseTo(
+      usd(4_000 + 198_000 * 0.1, 0.1) + usd(500, 0.5),
+      15,
+    );
+    // Other models: one card whatever the size.
+    expect(estimateUsd('claude-sonnet-5-5', usage, false, turns)).toBeCloseTo(
+      estimateUsd('claude-sonnet-5-5', usage),
+      15,
+    );
+  });
+
+  it('standardCost bills a turn over 100K at the long card', () => {
+    // Prefix 1,000 warm; turn 1 writes to 60K; turn 2 grows to 160K.
+    const turns = [turn(60_000, 100, 1_000), turn(160_000, 100, 1_000)];
+    const expected =
+      usd(1_000 * 0.1 + 59_000 * 1.25, 0.1) +
+      usd(100, 0.5) +
+      usd(60_000 * 0.1 + 100_000 * 1.25, 0.5) +
+      usd(100, 2.5);
+    expect(standardCost(turns, 'claude-haiku-5-5')).toBeCloseTo(expected, 15);
+  });
+});
 
 describe('standard cost in summaries', () => {
   it('sums standard and actual cost per cell, tier and run', () => {

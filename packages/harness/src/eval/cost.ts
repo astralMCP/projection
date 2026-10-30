@@ -13,12 +13,47 @@
 
 import type { EpisodeUsage, TurnUsage } from './agent.js';
 
-/** USD per million tokens, Anthropic list prices. */
-export const MODEL_PRICES: Readonly<Record<string, { input: number; output: number }>> = {
-  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
+/** A rate card: USD per million input and output tokens. */
+export interface RateCard {
+  input: number;
+  output: number;
+}
+
+/**
+ * A model's list price. `longContext`: the rate card a request is billed on
+ * when its prompt (uncached + cache read + cache write) is over
+ * `aboveTokens` — the whole request, input and output, at that card.
+ */
+export interface ModelPrice extends RateCard {
+  longContext?: RateCard & { aboveTokens: number };
+}
+
+/**
+ * USD per million tokens, Anthropic list prices (the claude-api skill's
+ * models reference). Haiku 5.5 has two rate cards chosen per request by
+ * prompt length: $0.10 / $0.50 for a prompt of 100K tokens or fewer, $0.50
+ * / $2.50 above that. Haiku 4.5 and Sonnet 5.5 bill one card at any length.
+ */
+export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
+  'claude-haiku-5-5': {
+    input: 0.1,
+    output: 0.5,
+    longContext: { aboveTokens: 100_000, input: 0.5, output: 2.5 },
+  },
   'claude-haiku-4-5': { input: 1, output: 5 },
   'claude-sonnet-5-5': { input: 2, output: 10 },
 };
+
+/** The rate card one request with `promptTokens` of prompt is billed on. */
+export function rateFor(price: ModelPrice, promptTokens: number): RateCard {
+  const long = price.longContext;
+  return long !== undefined && promptTokens > long.aboveTokens ? long : price;
+}
+
+/** A turn's whole prompt: uncached + cache read + cache write. */
+function promptOf(turn: TurnUsage): number {
+  return turn.inputTokens + turn.cacheReadInputTokens + turn.cacheCreationInputTokens;
+}
 
 /** A cache read costs this share of the input price (every model in {@link MODEL_PRICES}). */
 export const CACHE_READ_FACTOR = 0.1;
@@ -40,19 +75,36 @@ export const MIN_CACHEABLE_TOKENS: Readonly<Record<string, number>> = {
   'claude-sonnet-5-5': 512,
 };
 
-/**
- * The eval's actual spend. Cache reads at 10% of input, cache writes at
- * 125%; unknown models cost 0. `batch`: the episode ran through the Message
- * Batches API (the whole sum at {@link BATCH_PRICE_FACTOR}).
- */
-export function estimateUsd(modelId: string, usage: EpisodeUsage, batch = false): number {
-  const price = MODEL_PRICES[modelId];
-  if (price === undefined) return 0;
+/** USD for usage billed at one rate card. */
+function usdAt(rate: RateCard, usage: EpisodeUsage): number {
   const input =
     usage.inputTokens +
     usage.cacheReadInputTokens * CACHE_READ_FACTOR +
     usage.cacheCreationInputTokens * CACHE_WRITE_FACTOR;
-  const usd = (input * price.input + usage.outputTokens * price.output) / 1_000_000;
+  return (input * rate.input + usage.outputTokens * rate.output) / 1_000_000;
+}
+
+/**
+ * The eval's actual spend. Cache reads at 10% of input, cache writes at
+ * 125%; unknown models cost 0. `turns` (the episode's per-call usage, which
+ * sums to `usage`): each call is priced on the rate card its own prompt
+ * selects ({@link rateFor}), so a Haiku 5.5 call over 100K tokens costs
+ * the long-context rate; without them, `usage` at the base card. `batch`:
+ * the episode ran through the Message Batches API (the whole sum at
+ * {@link BATCH_PRICE_FACTOR}).
+ */
+export function estimateUsd(
+  modelId: string,
+  usage: EpisodeUsage,
+  batch = false,
+  turns?: readonly TurnUsage[],
+): number {
+  const price = MODEL_PRICES[modelId];
+  if (price === undefined) return 0;
+  const usd =
+    turns !== undefined && turns.length > 0
+      ? turns.reduce((sum, turn) => sum + usdAt(rateFor(price, promptOf(turn)), turn), 0)
+      : usdAt(price, usage);
   return batch ? usd * BATCH_PRICE_FACTOR : usd;
 }
 
@@ -74,6 +126,8 @@ export function estimateUsd(modelId: string, usage: EpisodeUsage, batch = false)
  *   P_t >= M, writes the rest once at the cache-write price; if P_t < M
  *   nothing is written and the rest is uncached input.
  * - Output tokens at the output price. No batch discount.
+ * - Each turn at the rate card P_t selects ({@link rateFor}): a Haiku 5.5
+ *   turn whose prompt is over 100K tokens is billed at $0.50 / $2.50.
  *
  * So when S < M (Haiku 4.5 under 4096 tokens) the prefix is uncached until
  * the conversation's span reaches M, then written with it and read after.
@@ -83,10 +137,10 @@ export function standardCost(turns: readonly TurnUsage[], model: string): number
   const minimum = MIN_CACHEABLE_TOKENS[model];
   if (price === undefined || minimum === undefined) return 0;
   let cached = 0;
-  let input = 0;
-  let output = 0;
+  let usd = 0;
   for (const turn of turns) {
-    const prompt = turn.inputTokens + turn.cacheReadInputTokens + turn.cacheCreationInputTokens;
+    const prompt = promptOf(turn);
+    const rate = rateFor(price, prompt);
     const prefix = Math.min(Math.max(0, turn.prefixTokens), prompt);
     const warm = prefix >= minimum ? prefix : 0;
     const read = Math.min(prompt, Math.max(warm, cached));
@@ -96,8 +150,8 @@ export function standardCost(turns: readonly TurnUsage[], model: string): number
       cached = prompt;
     }
     const uncached = prompt - read - write;
-    input += read * CACHE_READ_FACTOR + write * CACHE_WRITE_FACTOR + uncached;
-    output += turn.outputTokens;
+    const input = read * CACHE_READ_FACTOR + write * CACHE_WRITE_FACTOR + uncached;
+    usd += (input * rate.input + turn.outputTokens * rate.output) / 1_000_000;
   }
-  return (input * price.input + output * price.output) / 1_000_000;
+  return usd;
 }

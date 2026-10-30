@@ -666,7 +666,7 @@ export async function runToolChoiceEval(
 
 /** The eval's actual spend on a record: list price, halved for a batch episode. */
 function recordEstimatedUsd(record: EpisodeRecord): number {
-  return estimateUsd(record.modelId, record.usage, record.batch === true);
+  return estimateUsd(record.modelId, record.usage, record.batch === true, record.turns);
 }
 
 /**
@@ -1206,7 +1206,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
   }
 
   lines.push(
-    'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
+    'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50 ($0.50/$2.50 for a call whose prompt is over 100K tokens), Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
       (records.some((r) => r.batch === true)
         ? 'Episodes run through the Message Batches API are billed at 50% of that. '
         : '') +

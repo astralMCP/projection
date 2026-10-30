@@ -315,9 +315,12 @@ export {
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
   estimateUsd,
+  rateFor,
   MIN_CACHEABLE_TOKENS,
   MODEL_PRICES,
   standardCost,
+  type ModelPrice,
+  type RateCard,
 } from './eval/cost.js';
 export {
   boxRouting,
