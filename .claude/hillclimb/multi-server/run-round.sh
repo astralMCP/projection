@@ -25,9 +25,12 @@
 #   - harness integrity: sha256 over _state.json.harness_paths + pnpm-lock.yaml
 #     must equal _state.json.harness_sha (exit 2 otherwise). Only the user
 #     passes --approve-harness, which records the current hash.
-#   - scope: the resolved episode count must equal the approved plan
-#     (_state.json.phases.<phase>.episodes; exit 4), and spend so far plus the
-#     phase estimate must stay under _state.json.budget_usd (exit 3).
+#   - scope: every cell x tier needs a cost basis - observed, a pilot, the
+#     phase's prior, or (multi-hard) $1/episode at list price (exit 5
+#     otherwise: run a pilot); the resolved episode count must equal the
+#     approved plan (_state.json.phases.<phase>.episodes; exit 4), and spend
+#     so far plus the phase estimate must stay under _state.json.budget_usd
+#     (exit 3).
 set -euo pipefail
 
 FLOW="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

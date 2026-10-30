@@ -65,7 +65,13 @@ rep. The baseline values are in `narrative.md`.
 ## Perf
 
 `cost_usd` is derived per row from the served `model` x `usage` with
-`_state.json.prices` (cache reads 0.1x input, cache writes 1.25x input).
+`_state.json.prices` (cache reads 0.1x input, cache writes 1.25x input),
+each call on the rate card its prompt selects: Haiku 5.5 bills a call whose
+prompt is over 100K tokens at $0.50/$2.50 (`long_context`); no other model
+here has a long-context rate.
 `latency_s` is the episode's wall clock (`wallMs`), including tool execution
 and any SDK retries (the Anthropic SDK retries 429/5xx twice with jittered
-backoff; retries are not counted per row).
+backoff; retries are not counted per row). On a batch row (`batch: true`,
+PROJ_EVAL_BATCH=1) it spans the episode's lockstep ticks, batch queueing and
+polling included (minutes per turn), so batch latency is **not comparable**
+with interactive latency, and a latency comparison must not mix the two.

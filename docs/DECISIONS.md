@@ -1310,3 +1310,32 @@ much more data in all three boxes.
   then first number) or a final `ANSWER:` line. Writes are graded on the
   exact recorded set or the real end state, and any write outside the set
   is forbidden.
+
+## D21 — Eval failure classes, batch hygiene and cost bases for `multi-hard` (2026-10-30)
+
+Review of the batch runner and the `multi-hard` tier (D20) settled how the
+harness classifies and prices what that tier provokes.
+
+- **Running out of context is a scored failure.** A 400
+  `invalid_request_error` about prompt length, or the
+  `model_context_window_exceeded` stop reason, ends the episode with
+  `contextOverflow` and no harness error, on the interactive and batch paths
+  alike. One-call-per-item strategies pile up tool results; dropping those
+  episodes as API errors would hide exactly the cost the tier measures.
+  Summaries count overflows per cell, tier and task.
+- **The batch runner never retries an invalid request and never calls it
+  infra.** The same request fails the same way. A batch it created and then
+  lost (polls past the limit, a results read that throws) is canceled and
+  its id logged for reconciliation. Each tick records cache reads and writes
+  so the 5-minute TTL lapsing between ticks is visible; the TTL stays.
+- **The hard world's search errors on what it does not implement.** Issue
+  and PR search there parses date ranges, `-label:`, `no:label` and
+  `no:assignee`; any other qualifier is a 422-style error, never silently
+  ignored (which returned plausible but wrong lists). The base fake is
+  unchanged, so no existing tier moves.
+- **Cost is per call and per tier.** Haiku 5.5 bills a call over 100K
+  prompt tokens at its long-context card. The hill-climb scope gate keys
+  observed costs by tier and refuses a tier with no observation, pilot or
+  prior, except `multi-hard`, which takes a conservative $1/episode at list
+  price. Batch `latency_s` spans lockstep ticks and is not comparable with
+  interactive latency.

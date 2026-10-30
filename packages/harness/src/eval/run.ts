@@ -194,6 +194,11 @@ export interface EpisodeRecord {
   turns?: TurnUsage[];
   /** How `turns[].prefixTokens` was obtained (absent when no call completed). */
   prefixSource?: PrefixSource;
+  /**
+   * The episode's wall clock. On a batch episode (`batch`) it spans its
+   * lockstep ticks, batch queueing and polling included, so it is not
+   * comparable with an interactive episode's.
+   */
   wallMs: number;
   stopReason?: string;
   finalText: string;

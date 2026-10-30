@@ -275,6 +275,15 @@
     }
   ],
   "prices": {
+    "claude-haiku-5-5": {
+      "in": 0.1,
+      "out": 0.5,
+      "long_context": {
+        "above_tokens": 100000,
+        "in": 0.5,
+        "out": 2.5
+      }
+    },
     "claude-haiku-4-5": {
       "in": 1,
       "out": 5

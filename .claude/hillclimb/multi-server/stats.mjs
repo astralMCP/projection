@@ -19,6 +19,9 @@
 // standard cost (harness errors included) over the passes: warm static
 // prefix, conversation cached incrementally, no batch discount, so they
 // compare across modes and runs. "not measured" when a row has none.
+// Latency is the median latency_s: on batch rows (PROJ_EVAL_BATCH=1) that
+// spans lockstep ticks, queueing and polling included, so it is not
+// comparable with an interactive variant's.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';

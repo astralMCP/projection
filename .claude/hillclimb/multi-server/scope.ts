@@ -22,11 +22,22 @@ const tasks = resolveTasks(process.env['PROJ_EVAL_TASKS'], tiers);
 const runsRaw = Number(process.env['PROJ_EVAL_RUNS']);
 const runs = Number.isInteger(runsRaw) && runsRaw > 0 ? runsRaw : 3;
 
-const cells: { model: string; modelId: string; mode: string; tasks: number }[] = [];
+// Each cell's task count, and its split by tier (export.mjs estimates cost per tier).
+const cells: {
+  model: string;
+  modelId: string;
+  mode: string;
+  tasks: number;
+  tiers: Record<string, number>;
+}[] = [];
 for (const m of models) {
   for (const mode of modes) {
-    const n = tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length;
-    if (n > 0) cells.push({ model: m.name, modelId: m.model, mode, tasks: n });
+    const applies = tasks.filter((t) => modeApplies(mode, worldOf(t.tier)));
+    const byTier: Record<string, number> = {};
+    for (const t of applies) byTier[t.tier] = (byTier[t.tier] ?? 0) + 1;
+    if (applies.length > 0) {
+      cells.push({ model: m.name, modelId: m.model, mode, tasks: applies.length, tiers: byTier });
+    }
   }
 }
 const episodes = cells.reduce((s, c) => s + c.tasks * runs, 0);
