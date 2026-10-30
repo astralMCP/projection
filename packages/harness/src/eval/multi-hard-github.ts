@@ -12,11 +12,18 @@
  * 26–84 items long). Writes stay stateless, as in the base fake: an issue
  * update echoes the issue with the update applied (labels replaced, as on
  * GitHub), so a model can see what it did, but nothing persists between
- * calls.
+ * calls — except that each created issue gets the next number above every
+ * existing issue and PR ({@link hardGithubAnswers} is per world).
+ *
+ * Issue and PR search parse GitHub's qualifiers ({@link parseHardQuery}):
+ * `created:`/`updated:` ranges, `-label:`, `no:label`, `no:assignee` and
+ * the rest a model needs here; any other qualifier is a 422-style error
+ * rather than silently ignored. The base fake's search is unchanged.
  */
 
 import {
   fakeError,
+  FakeError,
   GITHUB_FAKE_ANSWERS,
   HARD_BRANCHES,
   HARD_DEFAULT_BRANCH,
@@ -245,9 +252,12 @@ const NEW_ISSUES: readonly HardIssue[] = (() => {
           : labelRoll < 0.6
             ? ['documentation', 'needs-triage']
             : [];
-    const updated = open
+    const touched = open
       ? daysAfter('2026-07-02T09:00:00Z', rand() * 110)
       : daysAfter(created, 5 + rand() * 20);
+    // An open issue created after its drawn update (#97, #99, #104) is
+    // updated a few days after creation instead: never before it.
+    const updated = touched < created ? daysAfter(created, 2 + (n % 5)) : touched;
     const body =
       spec.kind === 'plain' && n % 3 === 0
         ? 'Profiling points at src/db/pool.ts.'
@@ -679,12 +689,6 @@ function scopedToHardRepo(args: FakeArgs): boolean {
   return isHardRepo(args) || query.includes(`${HARD_REPO.owner}/${HARD_REPO.repo}`);
 }
 
-function qualifiers(query: string, name: string): string[] {
-  return [...query.matchAll(new RegExp(`(?:^|\\s)${name}:("[^"]*"|\\S+)`, 'gi'))].map((m) =>
-    (m[1] ?? '').replace(/^"|"$/g, '').toLowerCase(),
-  );
-}
-
 /** Keep only `fields` (when given) of each item. */
 function pick(item: Record<string, unknown>, fields: unknown): Record<string, unknown> {
   if (!Array.isArray(fields) || fields.length === 0) return item;
@@ -797,34 +801,274 @@ function listIssues(args: FakeArgs): unknown {
   };
 }
 
-function searchIssues(args: FakeArgs): unknown {
-  const query = str(args['query']) ?? '';
-  const state = [...qualifiers(query, 'is'), ...qualifiers(query, 'state')].find(
-    (v) => v === 'open' || v === 'closed',
-  );
-  const labels = qualifiers(query, 'label');
-  const assignee = qualifiers(query, 'assignee')[0];
-  const author = qualifiers(query, 'author')[0];
-  const terms = queryTerms(query);
-  let issues = HARD_WORLD_ISSUES.filter(
-    (issue) =>
-      (state === undefined || issue.state === state) &&
-      labels.every((label) => issue.labels.includes(label)) &&
-      (assignee === undefined || issue.assignees.includes(assignee.replace(/^@/, ''))) &&
-      (author === undefined || issue.user === author.replace(/^@/, '')) &&
-      textMatches(`${issue.title} ${issue.body}`, terms),
-  );
-  const sort = lower(args['sort']);
-  if (sort === 'created' || sort === 'updated') {
-    const key = sort === 'created' ? 'created_at' : 'updated_at';
-    issues = issues.toSorted((a, b) => b[key].localeCompare(a[key]));
+// ---------------------------------------------------------------------------
+// Search queries (hard world only: the base fake's search is unchanged)
+
+/** One issue or PR as the hard world's search filters it. */
+interface Searchable {
+  kind: 'issue' | 'pr';
+  state: 'open' | 'closed';
+  title: string;
+  body: string;
+  labels: readonly string[];
+  assignees: readonly string[];
+  author: string;
+  head?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function issueSearchable(issue: HardIssue): Searchable {
+  return {
+    kind: 'issue',
+    state: issue.state,
+    title: issue.title,
+    body: issue.body,
+    labels: issue.labels,
+    assignees: issue.assignees,
+    author: issue.user,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+  };
+}
+
+function pullSearchable(pull: HardPull): Searchable {
+  return {
+    kind: 'pr',
+    state: pull.state,
+    title: pull.title,
+    body: '',
+    labels: [],
+    assignees: [],
+    author: pull.author,
+    head: pull.head,
+    created_at: pull.created_at,
+    updated_at: pull.created_at,
+  };
+}
+
+/** A parsed hard-world search query: its qualifiers as filters, plus the free text. */
+interface HardQuery {
+  filters: ((item: Searchable) => boolean)[];
+  terms: string[];
+  /** Where the free text must match (`in:`); both when unset. */
+  textIn: Set<'title' | 'body'>;
+  sort?: { key: 'created_at' | 'updated_at'; asc: boolean };
+}
+
+const DAY_MS = 86_400_000;
+
+const at = (iso: string): number => Date.parse(iso);
+
+/**
+ * A date qualifier operand as a half-open interval [start, end) in ms: a
+ * date covers its whole UTC day, a date-time just that instant. Undefined
+ * when it is neither.
+ */
+function dateSpan(value: string): { start: number; end: number } | undefined {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const start = Date.parse(`${value}T00:00:00Z`);
+    return Number.isNaN(start) ? undefined : { start, end: start + DAY_MS };
   }
-  if (lower(args['order']) === 'asc') issues = issues.toReversed();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.test(value)) {
+    const start = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`);
+    return Number.isNaN(start) ? undefined : { start, end: start + 1 };
+  }
+  return undefined;
+}
+
+/**
+ * GitHub's date qualifier syntax (`created:`, `updated:`) as a predicate on
+ * an ISO timestamp: `<D`, `<=D`, `>D`, `>=D`, `D..D` (either side `*`), or
+ * an exact `D`. A date compares by whole days (`<2026-07-01` is before that
+ * day, `>2026-07-01` after it, `2026-07-01` within it). Undefined when the
+ * operand does not parse.
+ */
+export function dateRange(spec: string): ((iso: string) => boolean) | undefined {
+  const range = /^(.*)\.\.(.*)$/.exec(spec);
+  if (range !== null) {
+    const [lo, hi] = [range[1] as string, range[2] as string];
+    const from = lo === '*' ? { start: -Infinity, end: -Infinity } : dateSpan(lo);
+    const to = hi === '*' ? { start: Infinity, end: Infinity } : dateSpan(hi);
+    if (from === undefined || to === undefined) return undefined;
+    return (iso) => at(iso) >= from.start && at(iso) < to.end;
+  }
+  const m = /^(<=|>=|<|>)?(.+)$/.exec(spec);
+  const span = m === null ? undefined : dateSpan(m[2] as string);
+  if (m === null || span === undefined) return undefined;
+  switch (m[1]) {
+    case '<':
+      return (iso) => at(iso) < span.start;
+    case '<=':
+      return (iso) => at(iso) < span.end;
+    case '>':
+      return (iso) => at(iso) >= span.end;
+    case '>=':
+      return (iso) => at(iso) >= span.start;
+    default:
+      return (iso) => at(iso) >= span.start && at(iso) < span.end;
+  }
+}
+
+/** A `name:value` qualifier (optionally negated), value unquoted. */
+const QUALIFIER = /(^|\s)(-?)([A-Za-z][\w-]*):("[^"]*"|\S*)/g;
+
+const invalid = (message: string): FakeError =>
+  fakeError(
+    `422 Validation Failed: ${message} (search query not supported by this repository's search).`,
+  );
+
+/**
+ * Parse a search query for `kind` (issue or PR search). Supported: `repo:`,
+ * `user:`, `org:`, `is:`/`state:` open|closed, `is:`/`type:` issue|pr,
+ * `in:` title|body, `label:` (comma = any of), `-label:`, `no:label`,
+ * `no:assignee`, `assignee:`, `author:`, `head:` (PRs), `created:` and
+ * `updated:` ranges, and `sort:` created|updated[-asc|-desc]. Anything
+ * else is a 422-style error, never silently ignored.
+ */
+export function parseHardQuery(query: string): HardQuery | FakeError {
+  const parsed: HardQuery = { filters: [], terms: [], textIn: new Set() };
+  const textIn = parsed.textIn;
+  for (const m of query.matchAll(QUALIFIER)) {
+    const negated = m[2] === '-';
+    const name = (m[3] as string).toLowerCase();
+    const raw = (m[4] as string).replace(/^"|"$/g, '');
+    const value = raw.toLowerCase();
+    const whole = `${m[2] ?? ''}${m[3] ?? ''}:${m[4] ?? ''}`;
+    if (value === '') return invalid(`"${whole}" has no value`);
+    if (negated && name !== 'label') return invalid(`"${whole}": only -label: may be negated`);
+    switch (name) {
+      case 'repo':
+      case 'user':
+      case 'org':
+        break;
+      case 'is':
+      case 'state':
+      case 'type':
+        if (value === 'open' || value === 'closed') {
+          if (name === 'type') return invalid(`"${whole}": type is issue or pr`);
+          parsed.filters.push((item) => item.state === value);
+        } else if (value === 'issue' || value === 'pr') {
+          if (name === 'state') return invalid(`"${whole}": state is open or closed`);
+          const kind = value === 'issue' ? 'issue' : 'pr';
+          parsed.filters.push((item) => item.kind === kind);
+        } else {
+          return invalid(`"${whole}" is not supported`);
+        }
+        break;
+      case 'in':
+        for (const field of value.split(',')) {
+          if (field !== 'title' && field !== 'body') return invalid(`"${whole}" is not supported`);
+          textIn.add(field);
+        }
+        break;
+      case 'label': {
+        const any = value.split(',').filter((l) => l !== '');
+        parsed.filters.push((item) => {
+          const has = any.some((label) => item.labels.includes(label));
+          return negated ? !has : has;
+        });
+        break;
+      }
+      case 'no':
+        if (value === 'label') parsed.filters.push((item) => item.labels.length === 0);
+        else if (value === 'assignee') parsed.filters.push((item) => item.assignees.length === 0);
+        else return invalid(`"${whole}" is not supported`);
+        break;
+      case 'assignee': {
+        const login = value.replace(/^@/, '');
+        parsed.filters.push((item) => item.assignees.includes(login));
+        break;
+      }
+      case 'author': {
+        const login = value.replace(/^@/, '');
+        parsed.filters.push((item) => item.author === login);
+        break;
+      }
+      case 'head':
+        parsed.filters.push((item) => item.head === value);
+        break;
+      case 'created':
+      case 'updated': {
+        const test = dateRange(raw.toUpperCase());
+        if (test === undefined) return invalid(`"${whole}" is not a date or date range`);
+        const key = name === 'created' ? 'created_at' : 'updated_at';
+        parsed.filters.push((item) => test(item[key]));
+        break;
+      }
+      case 'sort': {
+        const s = /^(created|updated)(?:-(asc|desc))?$/.exec(value);
+        if (s === null) return invalid(`"${whole}" is not supported`);
+        parsed.sort = {
+          key: s[1] === 'created' ? 'created_at' : 'updated_at',
+          asc: s[2] === 'asc',
+        };
+        break;
+      }
+      default:
+        return invalid(`unknown qualifier "${name}:"`);
+    }
+  }
+  parsed.terms = queryTerms(query.replace(QUALIFIER, ' '));
+  return parsed;
+}
+
+/** `items` matching `query`, sorted by its `sort:` or the call's `sort`/`order`. */
+function searchHard<T>(
+  items: readonly T[],
+  view: (item: T) => Searchable,
+  query: HardQuery,
+  args: FakeArgs,
+): T[] {
+  const text = (item: Searchable): string =>
+    query.textIn.size === 0
+      ? `${item.title} ${item.body}`
+      : [...query.textIn].map((field) => item[field]).join(' ');
+  let hits = items.filter((item) => {
+    const v = view(item);
+    return query.filters.every((f) => f(v)) && textMatches(text(v), query.terms);
+  });
+  const argSort = lower(args['sort']);
+  const sort =
+    query.sort ??
+    (argSort === 'created' || argSort === 'updated'
+      ? {
+          key: argSort === 'created' ? ('created_at' as const) : ('updated_at' as const),
+          asc: lower(args['order']) === 'asc',
+        }
+      : undefined);
+  if (sort !== undefined) {
+    hits = hits.toSorted((a, b) => view(b)[sort.key].localeCompare(view(a)[sort.key]));
+    if (sort.asc) hits = hits.toReversed();
+  } else if (lower(args['order']) === 'asc') {
+    hits = hits.toReversed();
+  }
+  return hits;
+}
+
+function searchIssues(args: FakeArgs): unknown {
+  const query = parseHardQuery(str(args['query']) ?? '');
+  if (query instanceof FakeError) return query;
+  // search_issues searches issues only (the real server adds is:issue).
+  const issues = searchHard(HARD_WORLD_ISSUES, issueSearchable, query, args);
   const page = paged(issues, args);
   return {
     total_count: page.total,
     incomplete_results: false,
     items: page.items.map((issue) => pick(issueView(issue), args['fields'])),
+  };
+}
+
+function searchPulls(args: FakeArgs): unknown {
+  const query = parseHardQuery(str(args['query']) ?? '');
+  if (query instanceof FakeError) return query;
+  // search_pull_requests searches PRs only (the real server adds is:pr).
+  const pulls = searchHard(HARD_WORLD_PULLS, pullSearchable, query, args);
+  const page = paged(pulls, args);
+  return {
+    total_count: page.total,
+    incomplete_results: false,
+    items: page.items.map((pull) => pick(pullView(pull), args['fields'])),
   };
 }
 
@@ -854,10 +1098,28 @@ function issueRead(args: FakeArgs): unknown {
   }
 }
 
-function issueWrite(args: FakeArgs): unknown {
-  if (lower(args['method']) === 'create') {
-    return (GITHUB_FAKE_ANSWERS['issue_write'] as (a: FakeArgs) => unknown)(args);
-  }
+/** The highest issue or PR number in the hard world: a created issue gets the next one. */
+export const HARD_MAX_NUMBER: number = Math.max(
+  ...HARD_WORLD_ISSUES.map((issue) => issue.number),
+  ...HARD_WORLD_PULLS.map((pull) => pull.number),
+);
+
+/** A created issue as GitHub answers it, numbered `n`. */
+function createdIssue(args: FakeArgs, n: number): Record<string, unknown> {
+  return {
+    number: n,
+    title: str(args['title']) ?? '',
+    state: 'open',
+    body: str(args['body']) ?? '',
+    labels: (Array.isArray(args['labels']) ? args['labels'] : []).map((name) => ({
+      name: String(name),
+    })),
+    html_url: `${ISSUE_URL}${n}`,
+  };
+}
+
+function issueWrite(args: FakeArgs, nextNumber: () => number): unknown {
+  if (lower(args['method']) === 'create') return createdIssue(args, nextNumber());
   const n = num(args['issue_number']);
   const issue = HARD_WORLD_ISSUES.find((i) => i.number === n);
   if (issue === undefined) return fakeError(`404 Not Found: issue #${String(n)}.`);
@@ -885,29 +1147,15 @@ function issueWrite(args: FakeArgs): unknown {
   });
 }
 
-function pullsFor(args: FakeArgs, query?: string): HardPull[] {
-  let state = lower(args['state']);
-  let author: string | undefined;
-  let terms: string[] = [];
-  if (query !== undefined) {
-    state =
-      [...qualifiers(query, 'is'), ...qualifiers(query, 'state')].find(
-        (v) => v === 'open' || v === 'closed',
-      ) ?? '';
-    author = qualifiers(query, 'author')[0];
-    terms = queryTerms(query);
-  } else if (state === '') {
-    state = 'open';
-  }
+function pullsFor(args: FakeArgs): HardPull[] {
+  const state = lower(args['state']) || 'open';
   const head = lower(args['head']).replace(/^[^:]*:/, '');
   const base = lower(args['base']);
   let pulls = HARD_WORLD_PULLS.filter(
     (pull) =>
-      (state === '' || state === 'all' || pull.state === state) &&
-      (author === undefined || pull.author === author) &&
+      (state === 'all' || pull.state === state) &&
       (head === '' || pull.head === head) &&
-      (base === '' || base === HARD_DEFAULT_BRANCH) &&
-      textMatches(pull.title, terms),
+      (base === '' || base === HARD_DEFAULT_BRANCH),
   );
   if (lower(args['direction']) === 'asc' || lower(args['order']) === 'asc') {
     pulls = pulls.toReversed();
@@ -1004,57 +1252,54 @@ function forHardRepo(
   };
 }
 
-/** The answer overrides the hard world's GitHub box is created with. */
-export const HARD_GITHUB_ANSWERS: Readonly<Record<string, FakeAnswer>> = {
-  list_issues: forHardRepo('list_issues', listIssues),
-  search_issues: forHardRepo('search_issues', searchIssues, scopedToHardRepo),
-  issue_read: forHardRepo('issue_read', issueRead),
-  issue_write: forHardRepo('issue_write', issueWrite),
-  list_label: forHardRepo('list_label', () => HARD_WORLD_LABELS.map((name) => ({ name }))),
-  get_label: forHardRepo('get_label', (args) => {
-    const name = lower(args['name']);
-    return HARD_WORLD_LABELS.includes(name)
-      ? { name, color: 'ededed' }
-      : fakeError(`404 Not Found: no label "${name}" in ${HARD_REPO.owner}/${HARD_REPO.repo}.`);
-  }),
-  list_pull_requests: forHardRepo('list_pull_requests', (args) => {
-    const page = paged(pullsFor(args), args);
-    return page.items.map((pull) => pick(pullView(pull), args['fields']));
-  }),
-  search_pull_requests: forHardRepo(
-    'search_pull_requests',
-    (args) => {
-      const page = paged(pullsFor({}, str(args['query']) ?? ''), args);
-      return {
-        total_count: page.total,
-        incomplete_results: false,
-        items: page.items.map((pull) => pick(pullView(pull), args['fields'])),
-      };
-    },
-    scopedToHardRepo,
-  ),
-  pull_request_read: forHardRepo('pull_request_read', pullRead),
-  list_branches: forHardRepo('list_branches', (args) =>
-    paged(HARD_WORLD_BRANCHES, args).items.map((name) => ({
-      name,
-      protected: name === HARD_DEFAULT_BRANCH,
-    })),
-  ),
-  list_releases: forHardRepo('list_releases', (args) =>
-    paged(
-      HARD_WORLD_RELEASES.map((release, i) => ({ release, i })),
-      args,
-    ).items.map(({ release, i }) => pick(releaseView(release, i), args['fields'])),
-  ),
-  get_release_by_tag: forHardRepo('get_release_by_tag', releaseByTag),
-  get_latest_release: forHardRepo('get_latest_release', () => {
-    const i = HARD_WORLD_RELEASES.findIndex((r) => !r.prerelease);
-    return releaseView(HARD_WORLD_RELEASES[i] as HardRelease, i);
-  }),
-  list_tags: forHardRepo('list_tags', (args) =>
-    paged(HARD_WORLD_RELEASES, args).items.map((release) => ({
-      name: release.tag_name,
-      commit: { sha: `c0ffee${release.tag_name.replace(/\W/g, '')}` },
-    })),
-  ),
-};
+/**
+ * The answer overrides the hard world's GitHub box is created with: fresh
+ * per world, so each world numbers the issues it creates from
+ * {@link HARD_MAX_NUMBER} + 1 on, every one unique.
+ */
+export function hardGithubAnswers(): Readonly<Record<string, FakeAnswer>> {
+  let created = HARD_MAX_NUMBER;
+  const nextNumber = (): number => (created += 1);
+  return {
+    list_issues: forHardRepo('list_issues', listIssues),
+    search_issues: forHardRepo('search_issues', searchIssues, scopedToHardRepo),
+    issue_read: forHardRepo('issue_read', issueRead),
+    issue_write: forHardRepo('issue_write', (args) => issueWrite(args, nextNumber)),
+    list_label: forHardRepo('list_label', () => HARD_WORLD_LABELS.map((name) => ({ name }))),
+    get_label: forHardRepo('get_label', (args) => {
+      const name = lower(args['name']);
+      return HARD_WORLD_LABELS.includes(name)
+        ? { name, color: 'ededed' }
+        : fakeError(`404 Not Found: no label "${name}" in ${HARD_REPO.owner}/${HARD_REPO.repo}.`);
+    }),
+    list_pull_requests: forHardRepo('list_pull_requests', (args) => {
+      const page = paged(pullsFor(args), args);
+      return page.items.map((pull) => pick(pullView(pull), args['fields']));
+    }),
+    search_pull_requests: forHardRepo('search_pull_requests', searchPulls, scopedToHardRepo),
+    pull_request_read: forHardRepo('pull_request_read', pullRead),
+    list_branches: forHardRepo('list_branches', (args) =>
+      paged(HARD_WORLD_BRANCHES, args).items.map((name) => ({
+        name,
+        protected: name === HARD_DEFAULT_BRANCH,
+      })),
+    ),
+    list_releases: forHardRepo('list_releases', (args) =>
+      paged(
+        HARD_WORLD_RELEASES.map((release, i) => ({ release, i })),
+        args,
+      ).items.map(({ release, i }) => pick(releaseView(release, i), args['fields'])),
+    ),
+    get_release_by_tag: forHardRepo('get_release_by_tag', releaseByTag),
+    get_latest_release: forHardRepo('get_latest_release', () => {
+      const i = HARD_WORLD_RELEASES.findIndex((r) => !r.prerelease);
+      return releaseView(HARD_WORLD_RELEASES[i] as HardRelease, i);
+    }),
+    list_tags: forHardRepo('list_tags', (args) =>
+      paged(HARD_WORLD_RELEASES, args).items.map((release) => ({
+        name: release.tag_name,
+        commit: { sha: `c0ffee${release.tag_name.replace(/\W/g, '')}` },
+      })),
+    ),
+  };
+}

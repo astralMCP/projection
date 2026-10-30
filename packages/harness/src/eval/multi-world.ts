@@ -29,7 +29,7 @@ import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
 import { HARD_FILESYSTEM_FILES, hardMongoSeed } from './multi-hard-fixtures.js';
-import { HARD_GITHUB_ANSWERS } from './multi-hard-github.js';
+import { hardGithubAnswers } from './multi-hard-github.js';
 import type {
   BoxAlias,
   MultiWorld,
@@ -90,7 +90,7 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
             githubWorld({
               onCall,
               ...(options.instructions === false ? { instructions: false } : {}),
-              ...(hard ? { answers: { ...HARD_GITHUB_ANSWERS } } : {}),
+              ...(hard ? { answers: { ...hardGithubAnswers() } } : {}),
             }),
           );
         case 'filesystem':

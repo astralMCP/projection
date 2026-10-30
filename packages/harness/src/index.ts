@@ -205,8 +205,11 @@ export {
   VIP_EMAILS,
 } from './eval/multi-hard-fixtures.js';
 export {
-  HARD_GITHUB_ANSWERS,
+  dateRange,
+  hardGithubAnswers,
+  parseHardQuery,
   HARD_GITHUB_PAGE_SIZE,
+  HARD_MAX_NUMBER,
   HARD_WORLD_BRANCHES,
   HARD_WORLD_ISSUES,
   HARD_WORLD_PULLS,
