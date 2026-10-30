@@ -16,7 +16,9 @@
     "lint": "oxlint",
     "test": "vitest run",
     "rescore": "unrun scripts/rescore.ts",
-    "setup:mongodb": "npm ci --prefix vendor/mongodb-mcp-server --no-audit --no-fund --ignore-scripts"
+    "setup:mongodb": "npm ci --prefix vendor/mongodb-mcp-server --no-audit --no-fund --ignore-scripts",
+    "eval:offline": "unrun scripts/offline-eval.ts",
+    "snapshot:catalogs": "unrun scripts/snapshot-catalogs.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
