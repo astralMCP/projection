@@ -1,189 +1,189 @@
-id	split	baseline	v1
-create-issue.haiku45.projection	test	1.000	1.000
-list-open-prs.haiku45.projection	test	1.000	1.000
-read-readme.haiku45.projection	test	1.000	1.000
-who-am-i.haiku45.projection	test	1.000	1.000
-search-repos.haiku45.projection	test	1.000	1.000
-trigger-workflow.haiku45.projection	test	1.000	1.000
-comment-on-pr.haiku45.projection	test	1.000	1.000
-star-repo.haiku45.projection	test	1.000	1.000
-list-notifications.haiku45.projection	test	1.000	1.000
-merge-pr-squash.haiku45.projection	test	1.000	1.000
-create-branch.haiku45.projection	test	1.000	1.000
-fork-repo.haiku45.projection	test	1.000	1.000
-find-issue-then-comment.haiku45.projection	test	1.000	1.000
-list-prs-then-merge.haiku45.projection	test	1.000	1.000
-me-then-star-dotfiles.haiku45.projection	test	1.000	1.000
-close-issue-not-planned.haiku45.projection	test	1.000	1.000
-label-issue-keep-existing.haiku45.projection	test	1.000	1.000
-reply-in-review-thread.haiku45.projection	test	1.000	1.000
-rerun-failed-jobs.haiku45.projection	test	1.000	1.000
-merge-alice-changelog-pr.haiku45.projection	test	0.000	1.000
-comment-newest-open-bug.haiku45.projection	test	0.000	1.000
-branch-from-latest-release-branch.haiku45.projection	test	1.000	1.000
-branch-off-main-or-default.haiku45.projection	test	1.000	1.000
-read-lowercase-readme.haiku45.projection	test	1.000	1.000
-upsert-issue-exists.haiku45.projection	test	1.000	1.000
-upsert-issue-missing.haiku45.projection	test	1.000	1.000
-star-unless-starred.haiku45.projection	test	1.000	1.000
-dependabot-summary-issue.haiku45.projection	test	1.000	1.000
-url-close-pr-with-comment.haiku45.projection	test	1.000	1.000
-url-request-changes.haiku45.projection	test	1.000	1.000
-fs-move-todo-into-archive.haiku45.projection	test	1.000	0.000
-fs-bump-version.haiku45.projection	test	1.000	1.000
-fs-largest-log.haiku45.projection	test	1.000	1.000
-fs-find-logs.haiku45.projection	test	1.000	1.000
-fs-append-todo.haiku45.projection	test	1.000	0.000
-fs-make-nested-dir.haiku45.projection	test	1.000	1.000
-fs-view-logo.haiku45.projection	test	1.000	1.000
-fs-which-debug.haiku45.projection	test	1.000	1.000
-fs-archive-tmp.haiku45.projection	test	1.000	0.000
-fs-readme-info.haiku45.projection	test	1.000	1.000
-fs-retitle-changelog-from-package.haiku45.projection	test	0.000	0.000
-fs-head-of-log.haiku45.projection	test	0.000	0.000
-fs-create-unless-exists.haiku45.projection	test	1.000	1.000
-fs-dry-run-colour.haiku45.projection	test	1.000	1.000
-fs-src-tree.haiku45.projection	test	1.000	0.000
-db-count-shipped.haiku45.projection	test	1.000	1.000
-db-list-collections.haiku45.projection	test	1.000	1.000
-db-schema-customers.haiku45.projection	test	1.000	1.000
-db-top3-expensive.haiku45.projection	test	1.000	1.000
-db-index-email.haiku45.projection	test	1.000	1.000
-db-cancel-stale-pending.haiku45.projection	test	0.000	1.000
-db-drop-tmp.haiku45.projection	test	1.000	1.000
-db-add-product.haiku45.projection	test	1.000	1.000
-db-rename-audit-log.haiku45.projection	test	1.000	1.000
-db-which-db-has-daily.haiku45.projection	test	1.000	1.000
-db-delete-cancelled.haiku45.projection	test	1.000	1.000
-db-add-customer-unless-exists.haiku45.projection	test	1.000	0.000
-db-gold-in-austin.haiku45.projection	test	1.000	1.000
-db-orders-per-status.haiku45.projection	test	1.000	1.000
-db-explain-email-lookup.haiku45.projection	test	1.000	1.000
-create-issue.sonnet-low.projection	test	1.000	1.000
-list-open-prs.sonnet-low.projection	test	1.000	1.000
-read-readme.sonnet-low.projection	test	1.000	1.000
-who-am-i.sonnet-low.projection	test	1.000	1.000
-search-repos.sonnet-low.projection	test	1.000	1.000
-trigger-workflow.sonnet-low.projection	test	1.000	1.000
-comment-on-pr.sonnet-low.projection	test	1.000	1.000
-star-repo.sonnet-low.projection	test	1.000	1.000
-list-notifications.sonnet-low.projection	test	1.000	1.000
-merge-pr-squash.sonnet-low.projection	test	1.000	1.000
-create-branch.sonnet-low.projection	test	1.000	1.000
-fork-repo.sonnet-low.projection	test	1.000	1.000
-find-issue-then-comment.sonnet-low.projection	test	1.000	1.000
-list-prs-then-merge.sonnet-low.projection	test	1.000	1.000
-me-then-star-dotfiles.sonnet-low.projection	test	1.000	1.000
-close-issue-not-planned.sonnet-low.projection	test	1.000	1.000
-label-issue-keep-existing.sonnet-low.projection	test	1.000	1.000
-reply-in-review-thread.sonnet-low.projection	test	1.000	1.000
-rerun-failed-jobs.sonnet-low.projection	test	1.000	1.000
-merge-alice-changelog-pr.sonnet-low.projection	test	1.000	1.000
-comment-newest-open-bug.sonnet-low.projection	test	1.000	1.000
-branch-from-latest-release-branch.sonnet-low.projection	test	1.000	1.000
-branch-off-main-or-default.sonnet-low.projection	test	1.000	1.000
-read-lowercase-readme.sonnet-low.projection	test	1.000	1.000
-upsert-issue-exists.sonnet-low.projection	test	1.000	1.000
-upsert-issue-missing.sonnet-low.projection	test	1.000	1.000
-star-unless-starred.sonnet-low.projection	test	1.000	1.000
-dependabot-summary-issue.sonnet-low.projection	test	1.000	1.000
-url-close-pr-with-comment.sonnet-low.projection	test	1.000	1.000
-url-request-changes.sonnet-low.projection	test	1.000	1.000
-fs-move-todo-into-archive.sonnet-low.projection	test	0.000	0.000
-fs-bump-version.sonnet-low.projection	test	1.000	1.000
-fs-largest-log.sonnet-low.projection	test	1.000	1.000
-fs-find-logs.sonnet-low.projection	test	1.000	1.000
-fs-append-todo.sonnet-low.projection	test	1.000	1.000
-fs-make-nested-dir.sonnet-low.projection	test	1.000	1.000
-fs-view-logo.sonnet-low.projection	test	1.000	1.000
-fs-which-debug.sonnet-low.projection	test	1.000	1.000
-fs-archive-tmp.sonnet-low.projection	test	1.000	1.000
-fs-readme-info.sonnet-low.projection	test	1.000	1.000
-fs-retitle-changelog-from-package.sonnet-low.projection	test	1.000	1.000
-fs-head-of-log.sonnet-low.projection	test	1.000	1.000
-fs-create-unless-exists.sonnet-low.projection	test	1.000	1.000
-fs-dry-run-colour.sonnet-low.projection	test	1.000	1.000
-fs-src-tree.sonnet-low.projection	test	1.000	1.000
-db-count-shipped.sonnet-low.projection	test	1.000	1.000
-db-list-collections.sonnet-low.projection	test	1.000	1.000
-db-schema-customers.sonnet-low.projection	test	1.000	1.000
-db-top3-expensive.sonnet-low.projection	test	1.000	1.000
-db-index-email.sonnet-low.projection	test	1.000	1.000
-db-cancel-stale-pending.sonnet-low.projection	test	1.000	1.000
-db-drop-tmp.sonnet-low.projection	test	1.000	1.000
-db-add-product.sonnet-low.projection	test	1.000	1.000
-db-rename-audit-log.sonnet-low.projection	test	1.000	1.000
-db-which-db-has-daily.sonnet-low.projection	test	1.000	1.000
-db-delete-cancelled.sonnet-low.projection	test	1.000	1.000
-db-add-customer-unless-exists.sonnet-low.projection	test	1.000	1.000
-db-gold-in-austin.sonnet-low.projection	test	1.000	1.000
-db-orders-per-status.sonnet-low.projection	test	1.000	1.000
-db-explain-email-lookup.sonnet-low.projection	test	1.000	1.000
-cross-changelog-to-issue.haiku45.projection	train	1.000	1.000
-cross-shipped-to-comment.haiku45.projection	train	0.000	0.000
-cross-largest-log-to-audit.haiku45.projection	train	1.000	1.000
-cross-version-to-branch.haiku45.projection	train	1.000	1.000
-cross-open-prs-to-notes.haiku45.projection	train	0.667	0.667
-cross-email-to-todo.haiku45.projection	train	0.667	1.000
-box-readme-fs.haiku45.projection	train	1.000	1.000
-box-readme-github.haiku45.projection	train	0.667	1.000
-box-src-fs.haiku45.projection	train	1.000	1.000
-box-src-github.haiku45.projection	train	1.000	0.667
-global-version-branch.haiku45.projection	train	0.333	0.000
-global-who-is-grace.haiku45.projection	train	0.000	0.333
-global-csv-released.haiku45.projection	train	0.000	0.333
-global-last-log-entry.haiku45.projection	train	1.000	0.667
-ctl-comment-newest-open-bug.haiku45.projection	train	1.000	1.000
-ctl-fs-largest-log.haiku45.projection	train	1.000	0.667
-ctl-db-count-shipped.haiku45.projection	train	1.000	1.000
-cross-changelog-to-issue.haiku45.projection-boxes	train	1.000	1.000
-cross-shipped-to-comment.haiku45.projection-boxes	train	0.000	0.000
-cross-largest-log-to-audit.haiku45.projection-boxes	train	1.000	1.000
-cross-version-to-branch.haiku45.projection-boxes	train	1.000	1.000
-cross-open-prs-to-notes.haiku45.projection-boxes	train	0.333	1.000
-cross-email-to-todo.haiku45.projection-boxes	train	0.667	1.000
-box-readme-fs.haiku45.projection-boxes	train	1.000	1.000
-box-readme-github.haiku45.projection-boxes	train	0.667	1.000
-box-src-fs.haiku45.projection-boxes	train	1.000	1.000
-box-src-github.haiku45.projection-boxes	train	0.667	1.000
-global-version-branch.haiku45.projection-boxes	train	0.000	0.000
-global-who-is-grace.haiku45.projection-boxes	train	0.000	0.333
-global-csv-released.haiku45.projection-boxes	train	0.000	0.000
-global-last-log-entry.haiku45.projection-boxes	train	1.000	1.000
-ctl-comment-newest-open-bug.haiku45.projection-boxes	train	1.000	1.000
-ctl-fs-largest-log.haiku45.projection-boxes	train	1.000	0.667
-ctl-db-count-shipped.haiku45.projection-boxes	train	1.000	1.000
-cross-changelog-to-issue.sonnet-low.projection	train	1.000	1.000
-cross-shipped-to-comment.sonnet-low.projection	train	1.000	1.000
-cross-largest-log-to-audit.sonnet-low.projection	train	1.000	1.000
-cross-version-to-branch.sonnet-low.projection	train	1.000	1.000
-cross-open-prs-to-notes.sonnet-low.projection	train	1.000	1.000
-cross-email-to-todo.sonnet-low.projection	train	1.000	1.000
-box-readme-fs.sonnet-low.projection	train	1.000	1.000
-box-readme-github.sonnet-low.projection	train	1.000	1.000
-box-src-fs.sonnet-low.projection	train	1.000	1.000
-box-src-github.sonnet-low.projection	train	1.000	1.000
-global-version-branch.sonnet-low.projection	train	0.667	1.000
-global-who-is-grace.sonnet-low.projection	train	1.000	1.000
-global-csv-released.sonnet-low.projection	train	0.667	0.667
-global-last-log-entry.sonnet-low.projection	train	1.000	1.000
-ctl-comment-newest-open-bug.sonnet-low.projection	train	1.000	1.000
-ctl-fs-largest-log.sonnet-low.projection	train	1.000	1.000
-ctl-db-count-shipped.sonnet-low.projection	train	1.000	1.000
-cross-changelog-to-issue.sonnet-low.projection-boxes	train	1.000	1.000
-cross-shipped-to-comment.sonnet-low.projection-boxes	train	1.000	1.000
-cross-largest-log-to-audit.sonnet-low.projection-boxes	train	1.000	1.000
-cross-version-to-branch.sonnet-low.projection-boxes	train	1.000	1.000
-cross-open-prs-to-notes.sonnet-low.projection-boxes	train	1.000	1.000
-cross-email-to-todo.sonnet-low.projection-boxes	train	1.000	1.000
-box-readme-fs.sonnet-low.projection-boxes	train	1.000	1.000
-box-readme-github.sonnet-low.projection-boxes	train	1.000	1.000
-box-src-fs.sonnet-low.projection-boxes	train	1.000	1.000
-box-src-github.sonnet-low.projection-boxes	train	1.000	1.000
-global-version-branch.sonnet-low.projection-boxes	train	0.667	0.667
-global-who-is-grace.sonnet-low.projection-boxes	train	1.000	1.000
-global-csv-released.sonnet-low.projection-boxes	train	0.333	0.667
-global-last-log-entry.sonnet-low.projection-boxes	train	1.000	1.000
-ctl-comment-newest-open-bug.sonnet-low.projection-boxes	train	1.000	1.000
-ctl-fs-largest-log.sonnet-low.projection-boxes	train	1.000	1.000
-ctl-db-count-shipped.sonnet-low.projection-boxes	train	1.000	1.000
+id	split	baseline	v1	v2
+create-issue.haiku45.projection	test	1.000	1.000	1.000
+list-open-prs.haiku45.projection	test	1.000	1.000	1.000
+read-readme.haiku45.projection	test	1.000	1.000	1.000
+who-am-i.haiku45.projection	test	1.000	1.000	1.000
+search-repos.haiku45.projection	test	1.000	1.000	1.000
+trigger-workflow.haiku45.projection	test	1.000	1.000	1.000
+comment-on-pr.haiku45.projection	test	1.000	1.000	1.000
+star-repo.haiku45.projection	test	1.000	1.000	1.000
+list-notifications.haiku45.projection	test	1.000	1.000	1.000
+merge-pr-squash.haiku45.projection	test	1.000	1.000	1.000
+create-branch.haiku45.projection	test	1.000	1.000	1.000
+fork-repo.haiku45.projection	test	1.000	1.000	1.000
+find-issue-then-comment.haiku45.projection	test	1.000	1.000	1.000
+list-prs-then-merge.haiku45.projection	test	1.000	1.000	1.000
+me-then-star-dotfiles.haiku45.projection	test	1.000	1.000	1.000
+close-issue-not-planned.haiku45.projection	test	1.000	1.000	1.000
+label-issue-keep-existing.haiku45.projection	test	1.000	1.000	1.000
+reply-in-review-thread.haiku45.projection	test	1.000	1.000	1.000
+rerun-failed-jobs.haiku45.projection	test	1.000	1.000	1.000
+merge-alice-changelog-pr.haiku45.projection	test	0.000	1.000	1.000
+comment-newest-open-bug.haiku45.projection	test	0.000	1.000	1.000
+branch-from-latest-release-branch.haiku45.projection	test	1.000	1.000	1.000
+branch-off-main-or-default.haiku45.projection	test	1.000	1.000	1.000
+read-lowercase-readme.haiku45.projection	test	1.000	1.000	1.000
+upsert-issue-exists.haiku45.projection	test	1.000	1.000	1.000
+upsert-issue-missing.haiku45.projection	test	1.000	1.000	1.000
+star-unless-starred.haiku45.projection	test	1.000	1.000	1.000
+dependabot-summary-issue.haiku45.projection	test	1.000	1.000	1.000
+url-close-pr-with-comment.haiku45.projection	test	1.000	1.000	1.000
+url-request-changes.haiku45.projection	test	1.000	1.000	1.000
+fs-move-todo-into-archive.haiku45.projection	test	1.000	0.000	1.000
+fs-bump-version.haiku45.projection	test	1.000	1.000	1.000
+fs-largest-log.haiku45.projection	test	1.000	1.000	1.000
+fs-find-logs.haiku45.projection	test	1.000	1.000	1.000
+fs-append-todo.haiku45.projection	test	1.000	0.000	1.000
+fs-make-nested-dir.haiku45.projection	test	1.000	1.000	1.000
+fs-view-logo.haiku45.projection	test	1.000	1.000	1.000
+fs-which-debug.haiku45.projection	test	1.000	1.000	0.000
+fs-archive-tmp.haiku45.projection	test	1.000	0.000	1.000
+fs-readme-info.haiku45.projection	test	1.000	1.000	1.000
+fs-retitle-changelog-from-package.haiku45.projection	test	0.000	0.000	1.000
+fs-head-of-log.haiku45.projection	test	0.000	0.000	1.000
+fs-create-unless-exists.haiku45.projection	test	1.000	1.000	1.000
+fs-dry-run-colour.haiku45.projection	test	1.000	1.000	1.000
+fs-src-tree.haiku45.projection	test	1.000	0.000	1.000
+db-count-shipped.haiku45.projection	test	1.000	1.000	1.000
+db-list-collections.haiku45.projection	test	1.000	1.000	1.000
+db-schema-customers.haiku45.projection	test	1.000	1.000	1.000
+db-top3-expensive.haiku45.projection	test	1.000	1.000	1.000
+db-index-email.haiku45.projection	test	1.000	1.000	1.000
+db-cancel-stale-pending.haiku45.projection	test	0.000	1.000	1.000
+db-drop-tmp.haiku45.projection	test	1.000	1.000	1.000
+db-add-product.haiku45.projection	test	1.000	1.000	1.000
+db-rename-audit-log.haiku45.projection	test	1.000	1.000	1.000
+db-which-db-has-daily.haiku45.projection	test	1.000	1.000	1.000
+db-delete-cancelled.haiku45.projection	test	1.000	1.000	1.000
+db-add-customer-unless-exists.haiku45.projection	test	1.000	0.000	1.000
+db-gold-in-austin.haiku45.projection	test	1.000	1.000	1.000
+db-orders-per-status.haiku45.projection	test	1.000	1.000	1.000
+db-explain-email-lookup.haiku45.projection	test	1.000	1.000	1.000
+create-issue.sonnet-low.projection	test	1.000	1.000	1.000
+list-open-prs.sonnet-low.projection	test	1.000	1.000	1.000
+read-readme.sonnet-low.projection	test	1.000	1.000	1.000
+who-am-i.sonnet-low.projection	test	1.000	1.000	1.000
+search-repos.sonnet-low.projection	test	1.000	1.000	1.000
+trigger-workflow.sonnet-low.projection	test	1.000	1.000	1.000
+comment-on-pr.sonnet-low.projection	test	1.000	1.000	1.000
+star-repo.sonnet-low.projection	test	1.000	1.000	1.000
+list-notifications.sonnet-low.projection	test	1.000	1.000	1.000
+merge-pr-squash.sonnet-low.projection	test	1.000	1.000	1.000
+create-branch.sonnet-low.projection	test	1.000	1.000	1.000
+fork-repo.sonnet-low.projection	test	1.000	1.000	1.000
+find-issue-then-comment.sonnet-low.projection	test	1.000	1.000	1.000
+list-prs-then-merge.sonnet-low.projection	test	1.000	1.000	1.000
+me-then-star-dotfiles.sonnet-low.projection	test	1.000	1.000	1.000
+close-issue-not-planned.sonnet-low.projection	test	1.000	1.000	1.000
+label-issue-keep-existing.sonnet-low.projection	test	1.000	1.000	1.000
+reply-in-review-thread.sonnet-low.projection	test	1.000	1.000	1.000
+rerun-failed-jobs.sonnet-low.projection	test	1.000	1.000	1.000
+merge-alice-changelog-pr.sonnet-low.projection	test	1.000	1.000	1.000
+comment-newest-open-bug.sonnet-low.projection	test	1.000	1.000	1.000
+branch-from-latest-release-branch.sonnet-low.projection	test	1.000	1.000	1.000
+branch-off-main-or-default.sonnet-low.projection	test	1.000	1.000	1.000
+read-lowercase-readme.sonnet-low.projection	test	1.000	1.000	1.000
+upsert-issue-exists.sonnet-low.projection	test	1.000	1.000	1.000
+upsert-issue-missing.sonnet-low.projection	test	1.000	1.000	1.000
+star-unless-starred.sonnet-low.projection	test	1.000	1.000	1.000
+dependabot-summary-issue.sonnet-low.projection	test	1.000	1.000	1.000
+url-close-pr-with-comment.sonnet-low.projection	test	1.000	1.000	1.000
+url-request-changes.sonnet-low.projection	test	1.000	1.000	1.000
+fs-move-todo-into-archive.sonnet-low.projection	test	0.000	0.000	0.000
+fs-bump-version.sonnet-low.projection	test	1.000	1.000	1.000
+fs-largest-log.sonnet-low.projection	test	1.000	1.000	1.000
+fs-find-logs.sonnet-low.projection	test	1.000	1.000	1.000
+fs-append-todo.sonnet-low.projection	test	1.000	1.000	1.000
+fs-make-nested-dir.sonnet-low.projection	test	1.000	1.000	1.000
+fs-view-logo.sonnet-low.projection	test	1.000	1.000	1.000
+fs-which-debug.sonnet-low.projection	test	1.000	1.000	1.000
+fs-archive-tmp.sonnet-low.projection	test	1.000	1.000	1.000
+fs-readme-info.sonnet-low.projection	test	1.000	1.000	1.000
+fs-retitle-changelog-from-package.sonnet-low.projection	test	1.000	1.000	1.000
+fs-head-of-log.sonnet-low.projection	test	1.000	1.000	1.000
+fs-create-unless-exists.sonnet-low.projection	test	1.000	1.000	1.000
+fs-dry-run-colour.sonnet-low.projection	test	1.000	1.000	1.000
+fs-src-tree.sonnet-low.projection	test	1.000	1.000	1.000
+db-count-shipped.sonnet-low.projection	test	1.000	1.000	1.000
+db-list-collections.sonnet-low.projection	test	1.000	1.000	1.000
+db-schema-customers.sonnet-low.projection	test	1.000	1.000	1.000
+db-top3-expensive.sonnet-low.projection	test	1.000	1.000	1.000
+db-index-email.sonnet-low.projection	test	1.000	1.000	1.000
+db-cancel-stale-pending.sonnet-low.projection	test	1.000	1.000	1.000
+db-drop-tmp.sonnet-low.projection	test	1.000	1.000	1.000
+db-add-product.sonnet-low.projection	test	1.000	1.000	1.000
+db-rename-audit-log.sonnet-low.projection	test	1.000	1.000	1.000
+db-which-db-has-daily.sonnet-low.projection	test	1.000	1.000	1.000
+db-delete-cancelled.sonnet-low.projection	test	1.000	1.000	1.000
+db-add-customer-unless-exists.sonnet-low.projection	test	1.000	1.000	1.000
+db-gold-in-austin.sonnet-low.projection	test	1.000	1.000	1.000
+db-orders-per-status.sonnet-low.projection	test	1.000	1.000	1.000
+db-explain-email-lookup.sonnet-low.projection	test	1.000	1.000	1.000
+cross-changelog-to-issue.haiku45.projection	train	1.000	1.000	1.000
+cross-shipped-to-comment.haiku45.projection	train	0.000	0.000	0.000
+cross-largest-log-to-audit.haiku45.projection	train	1.000	1.000	0.667
+cross-version-to-branch.haiku45.projection	train	1.000	1.000	1.000
+cross-open-prs-to-notes.haiku45.projection	train	0.667	0.667	0.667
+cross-email-to-todo.haiku45.projection	train	0.667	1.000	1.000
+box-readme-fs.haiku45.projection	train	1.000	1.000	1.000
+box-readme-github.haiku45.projection	train	0.667	1.000	1.000
+box-src-fs.haiku45.projection	train	1.000	1.000	1.000
+box-src-github.haiku45.projection	train	1.000	0.667	1.000
+global-version-branch.haiku45.projection	train	0.333	0.000	0.000
+global-who-is-grace.haiku45.projection	train	0.000	0.333	0.333
+global-csv-released.haiku45.projection	train	0.000	0.333	0.000
+global-last-log-entry.haiku45.projection	train	1.000	0.667	1.000
+ctl-comment-newest-open-bug.haiku45.projection	train	1.000	1.000	1.000
+ctl-fs-largest-log.haiku45.projection	train	1.000	0.667	1.000
+ctl-db-count-shipped.haiku45.projection	train	1.000	1.000	1.000
+cross-changelog-to-issue.haiku45.projection-boxes	train	1.000	1.000	1.000
+cross-shipped-to-comment.haiku45.projection-boxes	train	0.000	0.000	0.000
+cross-largest-log-to-audit.haiku45.projection-boxes	train	1.000	1.000	1.000
+cross-version-to-branch.haiku45.projection-boxes	train	1.000	1.000	1.000
+cross-open-prs-to-notes.haiku45.projection-boxes	train	0.333	1.000	1.000
+cross-email-to-todo.haiku45.projection-boxes	train	0.667	1.000	1.000
+box-readme-fs.haiku45.projection-boxes	train	1.000	1.000	1.000
+box-readme-github.haiku45.projection-boxes	train	0.667	1.000	1.000
+box-src-fs.haiku45.projection-boxes	train	1.000	1.000	1.000
+box-src-github.haiku45.projection-boxes	train	0.667	1.000	1.000
+global-version-branch.haiku45.projection-boxes	train	0.000	0.000	0.333
+global-who-is-grace.haiku45.projection-boxes	train	0.000	0.333	0.667
+global-csv-released.haiku45.projection-boxes	train	0.000	0.000	0.333
+global-last-log-entry.haiku45.projection-boxes	train	1.000	1.000	1.000
+ctl-comment-newest-open-bug.haiku45.projection-boxes	train	1.000	1.000	0.667
+ctl-fs-largest-log.haiku45.projection-boxes	train	1.000	0.667	1.000
+ctl-db-count-shipped.haiku45.projection-boxes	train	1.000	1.000	1.000
+cross-changelog-to-issue.sonnet-low.projection	train	1.000	1.000	1.000
+cross-shipped-to-comment.sonnet-low.projection	train	1.000	1.000	1.000
+cross-largest-log-to-audit.sonnet-low.projection	train	1.000	1.000	1.000
+cross-version-to-branch.sonnet-low.projection	train	1.000	1.000	1.000
+cross-open-prs-to-notes.sonnet-low.projection	train	1.000	1.000	1.000
+cross-email-to-todo.sonnet-low.projection	train	1.000	1.000	1.000
+box-readme-fs.sonnet-low.projection	train	1.000	1.000	1.000
+box-readme-github.sonnet-low.projection	train	1.000	1.000	1.000
+box-src-fs.sonnet-low.projection	train	1.000	1.000	1.000
+box-src-github.sonnet-low.projection	train	1.000	1.000	1.000
+global-version-branch.sonnet-low.projection	train	0.667	1.000	0.667
+global-who-is-grace.sonnet-low.projection	train	1.000	1.000	1.000
+global-csv-released.sonnet-low.projection	train	0.667	0.667	0.667
+global-last-log-entry.sonnet-low.projection	train	1.000	1.000	1.000
+ctl-comment-newest-open-bug.sonnet-low.projection	train	1.000	1.000	1.000
+ctl-fs-largest-log.sonnet-low.projection	train	1.000	1.000	1.000
+ctl-db-count-shipped.sonnet-low.projection	train	1.000	1.000	1.000
+cross-changelog-to-issue.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+cross-shipped-to-comment.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+cross-largest-log-to-audit.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+cross-version-to-branch.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+cross-open-prs-to-notes.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+cross-email-to-todo.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+box-readme-fs.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+box-readme-github.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+box-src-fs.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+box-src-github.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+global-version-branch.sonnet-low.projection-boxes	train	0.667	0.667	0.667
+global-who-is-grace.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+global-csv-released.sonnet-low.projection-boxes	train	0.333	0.667	0.333
+global-last-log-entry.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+ctl-comment-newest-open-bug.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+ctl-fs-largest-log.sonnet-low.projection-boxes	train	1.000	1.000	1.000
+ctl-db-count-shipped.sonnet-low.projection-boxes	train	1.000	1.000	1.000

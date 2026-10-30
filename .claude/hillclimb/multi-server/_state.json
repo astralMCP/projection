@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 1,
+  "current_round": 2,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -29,9 +29,10 @@
     }
   ],
   "best": {
-    "round": 0,
-    "train_gating_pass": 0.8431,
-    "guard_pass": 0.95
+    "round": 2,
+    "train_gating_pass": 0.8529,
+    "guard_pass": 0.9833,
+    "note": "beats baseline by 1 episode / 1 task-cell (within \u00b16.1 pts noise); guard up, no regression; kept as truthful library copy"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -341,6 +342,34 @@
       "cumulative_spend_usd": 14.02,
       "decision": "not best: +1.0 pt pooled gating (noise \u00b16.7), 25/34 task-cells fully passing as at baseline; guard haiku -3.3 pts within \u00b19.9",
       "kept": false
+    },
+    {
+      "round": 2,
+      "variant": "v2",
+      "change": "revert v1; truthful result-shape copy in describe_tool (undeclared output) and contract rule 8",
+      "commit": "db931df",
+      "train_gating_pass": 0.8529,
+      "gating_tasks_all_reps": {
+        "haiku45": "11/17",
+        "sonnet-low": "15/17"
+      },
+      "tracked_boxes_pass": {
+        "haiku45": 0.8235,
+        "sonnet-low": 0.9412
+      },
+      "guard_pass": {
+        "haiku45": 0.9833,
+        "sonnet-low": 0.9833
+      },
+      "guard_pass_pooled": 0.9833,
+      "haiku_machine_episodes": {
+        "projection": "9/51 (3 pass)",
+        "projection-boxes": "10/51 (5 pass)"
+      },
+      "spend_usd": 6.48,
+      "cumulative_spend_usd": 20.5,
+      "kept": true,
+      "decision": "best (tie-break): pooled gating 87/102 vs baseline 86/102 (+1.0 pt, noise \u00b16.1), task-cells 26/34 vs 25/34; guard haiku +6.7 (within \u00b19.9), sonnet flat. Target task cross-shipped-to-comment stayed 0/3 in both haiku cells: mechanism did not engage (6/6 episodes went straight to execute_machine, no call_tool peek)."
     }
   ]
 }
