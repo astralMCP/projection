@@ -41,6 +41,11 @@
  * ({@link BoxRouting}): which boxes the task needs, whether the global
  * search was used, whether the first upstream call went to a needed box,
  * and how many calls went elsewhere (detours — counted, never failed).
+ *
+ * With `batch` set (PROJ_EVAL_BATCH=1) the model calls go through the
+ * Message Batches API instead, every live episode in lockstep (see
+ * `batch.ts`): same requests, same records (plus `batch: true`), half the
+ * price. `concurrency` is then replaced by the batch `width`.
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -65,6 +70,7 @@ import {
   type EvalMode,
   type ModeSession,
 } from './modes.js';
+import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
 import { boxOf, taskBoxes } from './multi-tasks.js';
 import {
   promptFor,
@@ -176,6 +182,13 @@ export interface EpisodeRecord {
   finalText: string;
   /** The conversation as the model saw it (absent when the episode never started). */
   transcript?: Transcript;
+  /** Present when the model calls went through the Message Batches API (billed at 50%). */
+  batch?: true;
+  /**
+   * Present (with `harnessError`) when the batch runner gave up on a turn
+   * after its retries: an infrastructure failure, not the model's.
+   */
+  infraFailure?: true;
 }
 
 export interface ToolChoiceEvalOptions {
@@ -210,6 +223,31 @@ export interface ToolChoiceEvalOptions {
    * and its index in the returned, plan-ordered array.
    */
   onEpisode?: (record: EpisodeRecord, index: number) => void;
+  /**
+   * Run the model calls through the Message Batches API, in lockstep
+   * (PROJ_EVAL_BATCH=1). `caller` and `concurrency` are then ignored.
+   */
+  batch?: BatchEvalOptions;
+}
+
+export interface BatchEvalOptions {
+  /** `new Anthropic().messages.batches`, or a fake. */
+  client: BatchesClient;
+  /**
+   * Episodes live (world open, in the lockstep) at once; a finished one's
+   * slot goes to the next planned episode, which joins the next tick.
+   * Default: every planned episode.
+   */
+  width?: number;
+  /** First poll delay (default 10 s); doubles up to `pollMaxMs` (default 60 s). */
+  pollInitialMs?: number;
+  pollMaxMs?: number;
+  /** Batch submissions per request before the episode is an infra failure. Default 3. */
+  maxAttempts?: number;
+  /** Injected for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Called after every tick. */
+  onTick?: (tick: BatchTick) => void;
 }
 
 export const DEFAULT_RUNS = 3;
@@ -327,6 +365,7 @@ async function scoreEpisode(
     ...(episode.stopReason !== undefined ? { stopReason: episode.stopReason } : {}),
     finalText: episode.finalText,
     transcript: episode.transcript,
+    ...(episode.infraFailure === true ? { infraFailure: true as const } : {}),
   };
 }
 
@@ -379,11 +418,16 @@ function harnessFailureRecord(
   };
 }
 
-/** Run one planned episode; never throws — failures become records. */
+/**
+ * Run one planned episode; never throws — failures become records.
+ * `afterAgent` runs as soon as the agent loop is over (before the session
+ * and world close and the episode is scored), however the loop ended.
+ */
 async function runPlanned(
   planned: PlannedEpisode,
   caller: ModelCaller,
   options: ToolChoiceEvalOptions,
+  afterAgent?: () => void,
 ): Promise<EpisodeRecord> {
   const { model, mode, task } = planned;
   const startedAt = performance.now();
@@ -416,6 +460,7 @@ async function runPlanned(
           },
         );
       } finally {
+        afterAgent?.();
         // A close that fails must not discard an episode that ran, nor mask
         // the error that is already propagating.
         await session.close().catch(() => {});
@@ -445,8 +490,8 @@ export async function runToolChoiceEval(
   const modes = options.modes ?? [...EVAL_MODES];
   const tasks = options.tasks ?? [...TOOL_CHOICE_TASKS];
   const runs = options.runs ?? DEFAULT_RUNS;
-  const caller = options.caller ?? anthropicCaller();
-  const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
+  const batch = options.batch;
+  const caller = batch === undefined ? (options.caller ?? anthropicCaller()) : undefined;
 
   // Slots in result order (model → mode → task → run) ...
   const slots: Slot[] = [];
@@ -465,6 +510,21 @@ export async function runToolChoiceEval(
     (a, b) => a.run - b.run || a.taskAt - b.taskAt || a.modelAt - b.modelAt || a.modeAt - b.modeAt,
   );
 
+  // Batch mode: the lockstep width (default: every episode) replaces `concurrency`.
+  const width = batch === undefined ? (options.concurrency ?? 1) : (batch.width ?? order.length);
+  const concurrency = Math.max(1, Math.floor(width));
+  const batcher =
+    batch === undefined
+      ? undefined
+      : new LockstepBatcher({
+          client: batch.client,
+          ...(batch.pollInitialMs !== undefined ? { pollInitialMs: batch.pollInitialMs } : {}),
+          ...(batch.pollMaxMs !== undefined ? { pollMaxMs: batch.pollMaxMs } : {}),
+          ...(batch.maxAttempts !== undefined ? { maxAttempts: batch.maxAttempts } : {}),
+          ...(batch.sleep !== undefined ? { sleep: batch.sleep } : {}),
+          ...(batch.onTick !== undefined ? { onTick: batch.onTick } : {}),
+        });
+
   const records: EpisodeRecord[] = [];
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -472,7 +532,22 @@ export async function runToolChoiceEval(
       const slot = order[next];
       next += 1;
       if (slot === undefined) return;
-      const record = await runPlanned(slot, caller, options);
+      let record: EpisodeRecord;
+      if (batcher === undefined) {
+        record = await runPlanned(slot, caller as ModelCaller, options);
+      } else {
+        // Enter the lockstep before the world opens, so no tick runs without
+        // this episode's first request; leave it however the episode ends
+        // (`done` is idempotent).
+        const lane = batcher.register(`ep${String(slot.index).padStart(4, '0')}`);
+        try {
+          // Leave as soon as the loop is over: closing the world and scoring
+          // must not hold up everyone else's next tick.
+          record = { ...(await runPlanned(slot, lane.caller, options, lane.done)), batch: true };
+        } finally {
+          lane.done();
+        }
+      }
       records[slot.index] = record;
       try {
         options.onEpisode?.(record, slot.index);
@@ -495,13 +570,21 @@ export const MODEL_PRICES: Readonly<Record<string, { input: number; output: numb
   'claude-sonnet-5-5': { input: 2, output: 10 },
 };
 
-/** Cache reads at 10% of input, cache writes at 125%; unknown models cost 0. */
-export function estimateUsd(modelId: string, usage: EpisodeUsage): number {
+/** The Message Batches API bills every token (cache reads and writes included) at this share. */
+export const BATCH_PRICE_FACTOR = 0.5;
+
+/**
+ * Cache reads at 10% of input, cache writes at 125%; unknown models cost 0.
+ * `batch`: the episode ran through the Message Batches API (the whole sum at
+ * {@link BATCH_PRICE_FACTOR}).
+ */
+export function estimateUsd(modelId: string, usage: EpisodeUsage, batch = false): number {
   const price = MODEL_PRICES[modelId];
   if (price === undefined) return 0;
   const input =
     usage.inputTokens + usage.cacheReadInputTokens * 0.1 + usage.cacheCreationInputTokens * 1.25;
-  return (input * price.input + usage.outputTokens * price.output) / 1_000_000;
+  const usd = (input * price.input + usage.outputTokens * price.output) / 1_000_000;
+  return batch ? usd * BATCH_PRICE_FACTOR : usd;
 }
 
 export interface CellSummary {
@@ -628,7 +711,10 @@ function spendOf(records: EpisodeRecord[]): {
       ),
     ),
     meanOutputTokens: mean(records.map((r) => r.usage.outputTokens)),
-    estimatedUsd: records.reduce((a, r) => a + estimateUsd(r.modelId, r.usage), 0),
+    estimatedUsd: records.reduce(
+      (a, r) => a + estimateUsd(r.modelId, r.usage, r.batch === true),
+      0,
+    ),
   };
 }
 
@@ -978,6 +1064,9 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
 
   lines.push(
     'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
+      (records.some((r) => r.batch === true)
+        ? 'Episodes run through the Message Batches API are billed at 50% of that. '
+        : '') +
       'The turn budget counts action turns (Projection discovery turns are free, up to an absolute ceiling of twice the budget); ' +
       'turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
@@ -1048,6 +1137,12 @@ export interface ResultsMeta {
   maxTurns?: number;
   /** The absolute ceiling on Messages API calls per episode. */
   maxTotalTurns?: number;
+  /** The model calls went through the Message Batches API (PROJ_EVAL_BATCH=1). */
+  batch?: boolean;
+  /** Batch mode: episodes live in the lockstep at once. */
+  batchWidth?: number;
+  /** Batch mode: every lockstep tick so far, with its wall-clock time. */
+  batchTicks?: BatchTick[];
 }
 
 export interface ResultsWriter {

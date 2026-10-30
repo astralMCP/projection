@@ -107,8 +107,11 @@ for PHASE in "${PHASES[@]}"; do
   touch "$MARK"
   sleep 1
   echo "phase $PHASE: running $PLANNED episodes ($ENVS); log $LOG"
+  # PROJ_EVAL_BATCH=1 from the caller: run the phase through the Message Batches API.
+  BATCH_ENV=""
+  if [[ "${PROJ_EVAL_BATCH:-}" == "1" ]]; then BATCH_ENV="PROJ_EVAL_BATCH=1"; fi
   set +e
-  (cd "$REPO" && env -u PROJ_EVAL_TASKS -u PROJ_EVAL_BOX_DESCRIPTIONS $ENVS \
+  (cd "$REPO" && env -u PROJ_EVAL_TASKS -u PROJ_EVAL_BOX_DESCRIPTIONS -u PROJ_EVAL_BATCH $ENVS $BATCH_ENV \
     pnpm --filter @astral-mcp/harness exec vitest run test/tool-choice.live.test.ts) >"$LOG" 2>&1
   STATUS=$?
   set -e

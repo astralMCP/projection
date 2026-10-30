@@ -109,7 +109,10 @@ export {
   type GithubFakeOptions,
 } from './eval/github-fake.js';
 export {
+  agentTools,
   anthropicCaller,
+  buildTurnRequest,
+  InfraError,
   resolveModelPresets,
   runAgentEpisode,
   DEFAULT_MAX_TOTAL_TURNS,
@@ -129,6 +132,16 @@ export {
   type TranscriptBlock,
   type TranscriptMessage,
 } from './eval/agent.js';
+export {
+  BATCH_MAX_ATTEMPTS,
+  BATCH_POLL_INITIAL_MS,
+  BATCH_POLL_MAX_MS,
+  LockstepBatcher,
+  type BatchesClient,
+  type BatchTick,
+  type LockstepLane,
+  type LockstepOptions,
+} from './eval/batch.js';
 export {
   promptFor,
   resolveTasks,
@@ -240,12 +253,14 @@ export {
   boxRouting,
   createResultsWriter,
   estimateUsd,
+  BATCH_PRICE_FACTOR,
   formatEpisodeLine,
   formatToolChoiceReport,
   runToolChoiceEval,
   summarizeToolChoice,
   writeToolChoiceResults,
   MODEL_PRICES,
+  type BatchEvalOptions,
   type BoxRouting,
   type CellSummary,
   type EpisodeRecord,

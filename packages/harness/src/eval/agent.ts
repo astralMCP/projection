@@ -115,6 +115,51 @@ export function anthropicCaller(client: Anthropic = new Anthropic()): ModelCalle
   return (params) => client.messages.stream(params).finalMessage();
 }
 
+/**
+ * Thrown by a {@link ModelCaller} when the request could not be served for a
+ * reason that is neither the model's nor the harness's — the batch runner's
+ * per-request `errored` / `expired` results, after its retries. The episode
+ * ends with `infraFailure` set (and a `batch infra:` harness error), so it is
+ * excluded from success rates and told apart from a model failure. The
+ * interactive caller never throws it.
+ */
+export class InfraError extends Error {
+  override name = 'InfraError';
+}
+
+/** The tools as the Messages API takes them. */
+export function agentTools(runtime: Pick<AgentRuntime, 'tools'>): Anthropic.Tool[] {
+  return runtime.tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
+  }));
+}
+
+/**
+ * One turn's request, as both the interactive caller (streamed) and the
+ * batch runner (as a batch request's `params`) send it: the same object,
+ * built in one place, so the two paths cannot drift. Key order is part of
+ * the contract (it fixes the serialized bytes).
+ */
+export function buildTurnRequest(
+  preset: ModelPreset,
+  system: string,
+  tools: Anthropic.Tool[],
+  messages: Anthropic.MessageParam[],
+  maxTokens: number = DEFAULT_MAX_TOKENS,
+): Anthropic.MessageCreateParamsNonStreaming {
+  return {
+    model: preset.model,
+    max_tokens: maxTokens,
+    cache_control: { type: 'ephemeral' },
+    system,
+    tools,
+    messages,
+    ...preset.params,
+  };
+}
+
 export interface ToolUseRecord {
   name: string;
   input: Record<string, unknown>;
@@ -208,6 +253,11 @@ export interface AgentEpisode {
    * reported separately and excluded from success rates.
    */
   harnessError?: string;
+  /**
+   * Set (with `harnessError`) when the caller gave up with an
+   * {@link InfraError}: the infrastructure failed, not the model.
+   */
+  infraFailure?: true;
 }
 
 export interface AgentEpisodeOptions {
@@ -262,11 +312,7 @@ export async function runAgentEpisode(
   // A ceiling below the budget would make the budget unreachable.
   const maxTotalTurns = Math.max(maxTurns, options.maxTotalTurns ?? 2 * maxTurns);
   const free = options.budgetFreeTools ?? new Set<string>();
-  const tools: Anthropic.Tool[] = runtime.tools.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
-  }));
+  const tools = agentTools(runtime);
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
   const started = performance.now();
   const toolUses: ToolUseRecord[] = [];
@@ -286,7 +332,7 @@ export async function runAgentEpisode(
     messages: [{ role: 'user', content: prompt }],
   };
 
-  const finish = (harnessError?: string, turnCapped = false): AgentEpisode => ({
+  const finish = (harnessError?: string, turnCapped = false, infra = false): AgentEpisode => ({
     apiTurns,
     budgetTurns,
     toolUses,
@@ -298,21 +344,17 @@ export async function runAgentEpisode(
     transcript,
     turnCapped,
     ...(harnessError !== undefined ? { harnessError } : {}),
+    ...(infra ? { infraFailure: true as const } : {}),
   });
 
   while (budgetTurns < maxTurns && apiTurns < maxTotalTurns) {
     let message: Anthropic.Message;
     try {
-      message = await caller({
-        model: preset.model,
-        max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-        cache_control: { type: 'ephemeral' },
-        system: runtime.system,
-        tools,
-        messages,
-        ...preset.params,
-      });
+      message = await caller(
+        buildTurnRequest(preset, runtime.system, tools, messages, options.maxTokens),
+      );
     } catch (err) {
+      if (err instanceof InfraError) return finish(`batch infra: ${err.message}`, false, true);
       return finish(`api error: ${errorMessage(err)}`);
     }
     apiTurns += 1;
