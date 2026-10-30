@@ -121,7 +121,7 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
       'successive call_tool calls, reading each result before the next',
     );
     expect(c.getInstructions()).toContain(
-      'call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results',
+      'call_tool for each step, reading each result before the next. A lookup that finds nothing is weak evidence: before concluding that something is not there, try a different way to find it — browse or list instead of matching a name, broaden the query, or check another box that could hold it — and only then say it was not found. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results',
     );
     const prompts = await c.listPrompts();
     expect(prompts.prompts.map((prompt) => prompt.name).toSorted()).toEqual([
