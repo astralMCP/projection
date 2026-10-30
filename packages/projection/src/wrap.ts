@@ -73,7 +73,8 @@ import {
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
 import { assertApprovalsMode } from './policy/index.js';
-import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
+import { clampCaps, DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
+import { roundTripSentence } from './machine-host/index.js';
 
 export type { ProjectionsOptions, RegisterOptions, WrapOptions } from './facade/options.js';
 
@@ -136,11 +137,19 @@ export interface ProjectionFacade {
   close(): Promise<void>;
 }
 
-const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates this server's tools.
+/**
+ * The execute_machine description (R18): it states the facade's round-trip
+ * cap and how to stay inside it, so bulk writes fan out from one state.
+ */
+function executeMachineDescription(maxRoundTrips: number): string {
+  return `Run an LLM-authored XState v5 state machine that orchestrates this server's tools.
 
 Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools'. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
 
+${roundTripSentence(maxRoundTrips)}
+
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
+}
 
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
@@ -163,11 +172,6 @@ const CATALOG_TOOL_COPY: CatalogToolCopy = {
   callDescription: CALL_TOOL_DESCRIPTION,
   toolName: 'Tool name as listed by search_tools.',
   describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
-};
-
-const CODE_MODE_COPY = {
-  executeMachine: EXECUTE_MACHINE_DESCRIPTION,
-  discoverApis: DISCOVER_APIS_DESCRIPTION,
 };
 
 /**
@@ -219,7 +223,12 @@ export async function wrapMcpServer(
   const policySettings = freezePolicySettings({ policy: options.policy, approvals });
 
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
-  const resources = buildResources(catalog, dts);
+  const resources = buildResources(
+    catalog,
+    dts,
+    undefined,
+    clampCaps(options.caps ?? {}).maxRoundTrips,
+  );
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
   return new Facade({
@@ -266,9 +275,12 @@ class Facade implements ProjectionFacade {
   readonly serverFactory: McpServerFactory;
   readonly projections: Readonly<ProjectionSelection>;
   private readonly deps: FacadeDeps;
+  /** The approval round-trip cap (R18) the code-mode copy states. */
+  private readonly maxRoundTrips: number;
 
   constructor(deps: FacadeDeps) {
     this.deps = deps;
+    this.maxRoundTrips = clampCaps(deps.options.caps ?? {}).maxRoundTrips;
     this.catalog = deps.catalog;
     this.instructions = deps.instructions;
     this.dts = deps.dts;
@@ -321,6 +333,7 @@ class Facade implements ProjectionFacade {
     const { catalogInlineThreshold } = this.deps.options;
     return discoverApis(this.deps.catalog, this.deps.overview, {
       catalog: this.projections.catalog,
+      maxRoundTrips: this.maxRoundTrips,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
     });
   }
@@ -363,7 +376,11 @@ class Facade implements ProjectionFacade {
   registerOn(server: McpServer, options?: RegisterOptions): void {
     const era = options?.era;
     if (this.projections.codeMode) {
-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.catalog);
+      const copy = {
+        executeMachine: executeMachineDescription(this.maxRoundTrips),
+        discoverApis: DISCOVER_APIS_DESCRIPTION,
+      };
+      registerCodeModeTools(server, era, this, copy, this.catalog);
     }
     if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
     registerResources(server, this.resources);

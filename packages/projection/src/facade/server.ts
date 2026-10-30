@@ -332,6 +332,8 @@ const EXECUTE_MACHINE_INPUT_SCHEMA = z.object({
   lang: z
     .enum(['ts', 'js'])
     .optional()
-    .describe('Language of `code`. Defaults to TypeScript-compatible parsing.'),
+    .describe(
+      "Language of `code`: 'js' (the default) or 'ts'. Pass 'ts' when the code uses TypeScript syntax such as type annotations or `as` casts.",
+    ),
   input: z.unknown().optional().describe('Passed to the machine as its `input`.'),
 });

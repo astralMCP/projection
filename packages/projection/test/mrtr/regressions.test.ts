@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { fanOutExample } from '../../src/machine-host/index.js';
 import { executeMachine } from '../../src/mrtr/index.js';
 import type {
   CallToolResult,
@@ -130,6 +131,143 @@ describe('round-trip cap counts round trips exactly (R18)', () => {
     const error = retry.structuredContent as unknown as { phase: string; message: string };
     expect(error.phase).toBe('terminal');
     expect(error.message).toContain('round trips');
+    // The write approved in round trip 1 ran: the error says so, with its
+    // arguments, so the model does not repeat it.
+    expect(error.message).toContain('The 1 call approved before the limit already ran:');
+    expect(error.message).toContain('\n- write_file {"path":"/1"}');
+    expect((error as { hint?: string }).hint).toContain('Do not repeat the calls that already ran');
+  });
+
+  it('says nothing ran when the cap refuses the first suspension', async () => {
+    const caps = { maxRoundTrips: 1 };
+    const d = deps({ caps });
+    // Round trip 1 is a decline, so nothing has run when trip 2 is refused.
+    const first = await executeMachine({ code: TWO_WRITES }, d);
+    if (!isSuspended(first)) throw new Error('expected first suspension');
+    const retry = (await executeMachine(
+      { code: TWO_WRITES, requestState: sealedState(first), inputResponses: {} },
+      d,
+    )) as CallToolResult;
+    const error = retry.structuredContent as unknown as { phase: string; message: string };
+    expect(error.phase).toBe('terminal');
+    expect(error.message).toContain('No approved call had run yet.');
+  });
+});
+
+describe('an error after approved calls ran says they ran (R18, D22)', () => {
+  // Writes once, then waits in a state nothing ever answers.
+  const STUCK_AFTER_WRITE = `
+import { setup } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'stuck',
+  initial: 'writing',
+  states: {
+    writing: {
+      entry: toolCall('write_file', () => ({ path: '/x' }), { id: 'w' }),
+      on: { TOOL_RESULT: 'waiting', TOOL_DENIED: 'waiting' },
+    },
+    waiting: {},
+  },
+});
+`;
+
+  it('lists the approved write on the runtime error of the resume', async () => {
+    const d = deps();
+    const first = await executeMachine({ code: STUCK_AFTER_WRITE }, d);
+    if (!isSuspended(first)) throw new Error('expected a suspension');
+    const retry = (await approveAll(STUCK_AFTER_WRITE, first, d)) as CallToolResult;
+    expect(retry.isError).toBe(true);
+    const error = retry.structuredContent as unknown as {
+      phase: string;
+      message: string;
+      hint: string;
+    };
+    expect(error.phase).toBe('runtime');
+    expect(error.message).toContain('is stuck in state');
+    expect(error.message).toContain(
+      'The 1 call approved earlier in this workflow already ran:\n- write_file {"path":"/x"}',
+    );
+    expect(error.hint.startsWith('Do not repeat the calls that already ran.')).toBe(true);
+  });
+
+  it('adds nothing when the approval was declined', async () => {
+    const d = deps();
+    const first = await executeMachine({ code: STUCK_AFTER_WRITE }, d);
+    if (!isSuspended(first)) throw new Error('expected a suspension');
+    const retry = (await executeMachine(
+      { code: STUCK_AFTER_WRITE, requestState: sealedState(first), inputResponses: {} },
+      d,
+    )) as CallToolResult;
+    const error = retry.structuredContent as unknown as { message: string; hint: string };
+    expect(error.message).not.toContain('already ran');
+    expect(error.hint).not.toContain('Do not repeat');
+  });
+});
+
+describe('the fan-out example batches every write into one round trip (R15, R18)', () => {
+  it('suspends once with one request per item and completes on one retry', async () => {
+    const executor = new FakeExecutor();
+    // A cap of 1 proves the whole fan-out fits in a single round trip.
+    const d = deps({ executor, caps: { maxRoundTrips: 1 } });
+    const code = fanOutExample();
+    const input = { paths: ['/a', '/b', '/c', '/d', '/e', '/f', '/g', '/h', '/i', '/j'] };
+
+    const first = await executeMachine({ code, input }, d);
+    if (!isSuspended(first)) throw new Error('expected one suspension');
+    expect(requestKeys(first).toSorted()).toEqual(input.paths.map((_, i) => `w${i}`).toSorted());
+
+    const final = completed(
+      await executeMachine(
+        {
+          code,
+          input,
+          requestState: sealedState(first),
+          inputResponses: Object.fromEntries(requestKeys(first).map((key) => [key, ACCEPT])),
+        },
+        d,
+      ),
+    );
+    const output = structuredOf(final)['output'] as { written: string[]; skipped: string[] };
+    expect(output.written.toSorted()).toEqual(input.paths.map((_, i) => `w${i}`).toSorted());
+    expect(output.skipped).toEqual([]);
+    expect(executor.calls.map((call) => call.args['path']).toSorted()).toEqual(input.paths);
+  });
+
+  it('collects declines as skipped and finishes', async () => {
+    const d = deps();
+    const code = fanOutExample();
+    const input = { paths: ['/a', '/b', '/c'] };
+    const first = await executeMachine({ code, input }, d);
+    if (!isSuspended(first)) throw new Error('expected one suspension');
+    const final = completed(
+      await executeMachine(
+        { code, input, requestState: sealedState(first), inputResponses: { w1: ACCEPT } },
+        d,
+      ),
+    );
+    expect(structuredOf(final)['output']).toEqual({
+      written: ['w1'],
+      skipped: ['w0', 'w2'],
+      failed: [],
+    });
+    // The text the model reads says what ran, whatever the output holds.
+    const texts = final.content.flatMap((block) => (block.type === 'text' ? [block.text] : []));
+    expect(texts).toContain(
+      'Approvals in this workflow: approved and ran: write_file ×1; declined, did not run: write_file ×2.',
+    );
+  });
+
+  it('finishes at once on an empty list', async () => {
+    const final = completed(
+      await executeMachine({ code: fanOutExample(), input: { paths: [] } }, deps()),
+    );
+    expect(structuredOf(final)['output']).toEqual({ written: [], skipped: [], failed: [] });
+    // Nothing asked for approval: no summary line.
+    expect(final.content.some((b) => b.type === 'text' && b.text.startsWith('Approvals'))).toBe(
+      false,
+    );
   });
 });
 
