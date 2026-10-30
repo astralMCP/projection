@@ -1,21 +1,25 @@
 /**
  * Tool-choice tasks, every tier: the GitHub tiers (`basic`, `hard` —
  * github-tasks.ts), `filesystem` (filesystem-tasks.ts), `mongodb`
- * (mongodb-tasks.ts) and `multi` (multi-tasks.ts), plus the
+ * (mongodb-tasks.ts), `multi` (multi-tasks.ts) and the opt-in
+ * `multi-hard` (multi-hard-tasks.ts), plus the
  * PROJ_EVAL_TIERS / PROJ_EVAL_TASKS resolvers.
  */
 
 import { FILESYSTEM_TASKS } from './filesystem-tasks.js';
 import { BASIC_TASKS, HARD_TASKS } from './github-tasks.js';
 import { MONGODB_TASKS } from './mongodb-tasks.js';
+import { MULTI_HARD_TASKS } from './multi-hard-tasks.js';
 import { MULTI_TASKS } from './multi-tasks.js';
-import { TASK_TIERS, type EvalTask, type TaskTier } from './task-core.js';
+import { DEFAULT_TIERS, TASK_TIERS, type EvalTask, type TaskTier } from './task-core.js';
 
 export {
   promptFor,
+  DEFAULT_TIERS,
   TASK_TIERS,
   TIER_WORLDS,
   worldOf,
+  worldOptionsOf,
   type EvalTask,
   type TaskKind,
   type TaskTier,
@@ -29,11 +33,15 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
   ...FILESYSTEM_TASKS,
   ...MONGODB_TASKS,
   ...MULTI_TASKS,
+  ...MULTI_HARD_TASKS,
 ];
 
-/** Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names throw. */
+/**
+ * Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names
+ * throw. Unset selects {@link DEFAULT_TIERS} (`multi-hard` is opt-in).
+ */
 export function resolveTiers(spec: string | undefined): TaskTier[] {
-  if (spec === undefined || spec.trim() === '') return [...TASK_TIERS];
+  if (spec === undefined || spec.trim() === '') return [...DEFAULT_TIERS];
   return spec
     .split(',')
     .map((s) => s.trim())

@@ -3,8 +3,9 @@
  * client stands in for `client.messages.batches`. Covers the lockstep (one
  * batch per tick, episodes of different lengths dropping out), the
  * errored / expired / retry handling and the infra-failure record, polling
- * backoff, usage and the 50% cost, and that a batch request is byte for
- * byte the request the interactive path sends.
+ * backoff, usage and the 50% cost, that a batch request is byte for
+ * byte the request the interactive path sends, and that a task's own turn
+ * budget (multi-hard's `maxTurns`) holds in the lockstep.
  */
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -27,6 +28,7 @@ import {
   type BatchesClient,
   type BatchTick,
   type EpisodeRecord,
+  type EvalTask,
   type ModelCaller,
   type ModelPreset,
 } from '../../src/index.js';
@@ -362,6 +364,16 @@ function comparable(record: EpisodeRecord): Record<string, unknown> {
   return rest;
 }
 
+/** A model that never stops: get_me (direct) or search_tools (Projection). */
+function looping(params: Params): Anthropic.Message {
+  return toolNames(params.tools).includes('call_tool')
+    ? message(
+        [{ type: 'tool_use', id: 'tu_s', name: 'search_tools', input: { query: 'me' } }],
+        'tool_use',
+      )
+    : message([{ type: 'tool_use', id: 'tu_me', name: 'get_me', input: {} }], 'tool_use');
+}
+
 describe('runToolChoiceEval with batch (offline)', () => {
   const evalOptions = {
     models: [haiku, sonnet],
@@ -509,4 +521,52 @@ describe('runToolChoiceEval with batch (offline)', () => {
     expect(summary.cells[0]?.harnessErrors).toBe(1);
     expect(summary.cells[0]?.scored).toBe(1);
   });
+
+  it(
+    "holds a task's own turn budget in the lockstep, retries not charged",
+    { timeout: 60_000 },
+    async () => {
+      const [whoAmI, createIssue] = resolveTasks('who-am-i,create-issue') as [EvalTask, EvalTask];
+      // Its own budget of 2 (ceiling 4) against the run's 3 (ceiling 5).
+      const own: EvalTask = { ...whoAmI, maxTurns: 2 };
+      const budgeted = new FakeBatches(async (id, params) =>
+        // The capped direct episode's first turn fails once: a retry is not a turn.
+        id === 'ep0000-t01-a1' ? errored() : ok(looping(params)),
+      );
+      const records = await runToolChoiceEval({
+        models: [haiku],
+        modes: resolveModes('direct,projection'),
+        tasks: [own, createIssue],
+        runs: 1,
+        maxTurns: 3,
+        maxTotalTurns: 5,
+        batch: { client: budgeted, sleep: fakeSleep() },
+      });
+
+      // Plan order: direct own, direct create-issue, projection own, projection create-issue.
+      expect(records.map((r) => [r.mode, r.task, r.apiTurns, r.budgetTurns])).toEqual([
+        ['direct', 'who-am-i', 2, 2],
+        ['direct', 'create-issue', 3, 3],
+        // Discovery is free, so the ceiling (twice the budget) stops these.
+        ['projection', 'who-am-i', 4, 0],
+        ['projection', 'create-issue', 5, 0],
+      ]);
+      for (const record of records) {
+        expect(record.batch).toBe(true);
+        expect(record.turnCapped).toBe(true);
+        expect(record.harnessError).toBeUndefined();
+        expect(record.turns).toHaveLength(record.apiTurns);
+        expect(record.standardUsd).toBeGreaterThan(0);
+      }
+      // Each lane leaves the lockstep when its own budget is spent.
+      expect(budgeted.batches.map((b) => b.requests.length)).toEqual([4, 4, 4, 2, 1]);
+      const byLane = (lane: string): string[] =>
+        budgeted.batches.flatMap((b) =>
+          b.requests.flatMap((r) => (r.custom_id.startsWith(`${lane}-`) ? [r.custom_id] : [])),
+        );
+      expect(byLane('ep0000')).toEqual(['ep0000-t01-a1', 'ep0000-t01-a2', 'ep0000-t02-a1']);
+      expect(byLane('ep0002')).toHaveLength(4);
+      expect(byLane('ep0003')).toHaveLength(5);
+    },
+  );
 });

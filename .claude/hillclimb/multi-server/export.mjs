@@ -173,6 +173,7 @@ function exportVariant(variantDir) {
       records: raw.records.length,
       maxTurns: raw.maxTurns,
       maxTotalTurns: raw.maxTotalTurns,
+      taskMaxTurns: raw.taskMaxTurns,
       boxDescriptions: raw.boxDescriptions === true,
       outputSchemas: raw.outputSchemas === true,
       batch: raw.batch === true,

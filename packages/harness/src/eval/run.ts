@@ -80,10 +80,12 @@ import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js'
 import { estimateUsd, standardCost } from './cost.js';
 import { boxOf, taskBoxes } from './multi-tasks.js';
 import {
+  DEFAULT_TIERS,
   promptFor,
   TASK_TIERS,
   TOOL_CHOICE_TASKS,
   worldOf,
+  worldOptionsOf,
   type EvalTask,
   type TaskKind,
   type TaskTier,
@@ -119,13 +121,13 @@ export interface BoxRouting {
   wrongBoxCalls: number;
 }
 
-/** The box routing of an episode of `task` (multi tier only; undefined elsewhere). */
+/** The box routing of an episode of `task` (multi-world tiers only; undefined elsewhere). */
 export function boxRouting(
   task: Pick<EvalTask, 'tier' | 'steps'>,
   upstreamCalls: readonly SideEffect[],
   toolUses: readonly ToolUseRecord[],
 ): BoxRouting | undefined {
-  if (task.tier !== 'multi') return undefined;
+  if (worldOf(task.tier) !== 'multi') return undefined;
   const needed = taskBoxes(task);
   const isNeeded = (call: SideEffect): boolean => {
     const alias = boxOf(call.tool);
@@ -222,13 +224,17 @@ export interface ToolChoiceEvalOptions {
   models?: ModelPreset[];
   /** Default: every mode (`projection-boxes` runs on the multi tier only). */
   modes?: EvalMode[];
-  /** Default: every task. */
+  /** Default: every task of the default tiers (not the opt-in `multi-hard`). */
   tasks?: EvalTask[];
   /** Episodes per model × mode × task. Default 3. */
   runs?: number;
   /** Default: the live Anthropic API. Tests inject a script. */
   caller?: ModelCaller;
-  /** Turn budget per episode (turns that are not pure discovery). Default 12. */
+  /**
+   * Turn budget per episode (turns that are not pure discovery). Default
+   * 12. A task's own `maxTurns` overrides it (and its ceiling) for that
+   * task's episodes.
+   */
   maxTurns?: number;
   /** Absolute ceiling on Messages API calls per episode. Default: twice `maxTurns`. */
   maxTotalTurns?: number;
@@ -478,6 +484,23 @@ function harnessFailureRecord(
 }
 
 /**
+ * An episode's turn budget: the task's own (`maxTurns`, ceiling twice
+ * that) when it sets one, else the run's options.
+ */
+export function turnBudget(
+  task: Pick<EvalTask, 'maxTurns'>,
+  options: Pick<ToolChoiceEvalOptions, 'maxTurns' | 'maxTotalTurns'>,
+): { maxTurns?: number; maxTotalTurns?: number } {
+  if (task.maxTurns !== undefined) {
+    return { maxTurns: task.maxTurns, maxTotalTurns: 2 * task.maxTurns };
+  }
+  return {
+    ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+    ...(options.maxTotalTurns !== undefined ? { maxTotalTurns: options.maxTotalTurns } : {}),
+  };
+}
+
+/**
  * Run one planned episode; never throws — failures become records.
  * `afterAgent` runs as soon as the agent loop is over (before the session
  * and world close and the episode is scored), however the loop ended.
@@ -495,10 +518,10 @@ async function runPlanned(
   let session: ModeSession | undefined;
   let episode: AgentEpisode | undefined;
   try {
-    world = await openWorld(
-      worldOf(task.tier),
-      options.serverInstructions === false ? { instructions: false } : {},
-    );
+    world = await openWorld(worldOf(task.tier), {
+      ...(options.serverInstructions === false ? { instructions: false } : {}),
+      ...worldOptionsOf(task.tier),
+    });
     try {
       session = await openSession(
         mode,
@@ -518,10 +541,7 @@ async function runPlanned(
           session.runtime,
           promptFor(task, world.facts),
           {
-            ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-            ...(options.maxTotalTurns !== undefined
-              ? { maxTotalTurns: options.maxTotalTurns }
-              : {}),
+            ...turnBudget(task, options),
             budgetFreeTools: session.budgetFreeTools,
             ...(prefixTokens !== undefined ? { prefixTokens } : {}),
           },
@@ -555,7 +575,7 @@ export async function runToolChoiceEval(
 ): Promise<EpisodeRecord[]> {
   const models = options.models ?? resolveModelPresets(undefined);
   const modes = options.modes ?? [...EVAL_MODES];
-  const tasks = options.tasks ?? [...TOOL_CHOICE_TASKS];
+  const tasks = options.tasks ?? TOOL_CHOICE_TASKS.filter((t) => DEFAULT_TIERS.includes(t.tier));
   const runs = options.runs ?? DEFAULT_RUNS;
   const batch = options.batch;
   const caller = batch === undefined ? (options.caller ?? anthropicCaller()) : undefined;
@@ -1246,6 +1266,8 @@ export interface ResultsMeta {
   maxTurns?: number;
   /** The absolute ceiling on Messages API calls per episode. */
   maxTotalTurns?: number;
+  /** Tasks with their own turn budget (ceiling twice it), which overrides `maxTurns`. */
+  taskMaxTurns?: Record<string, number>;
   /** The model calls went through the Message Batches API (PROJ_EVAL_BATCH=1). */
   batch?: boolean;
   /** Batch mode: episodes live in the lockstep at once. */

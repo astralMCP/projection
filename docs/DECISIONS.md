@@ -1283,3 +1283,30 @@ comes after both.) Decisions made while building part A:
   projection off is a `validate` error". It exists because nothing would
   reach a locked box; with no locked boxes yet, a code-mode-only facade
   over a URL with a stored token works, so the rule lands with locked boxes.
+
+## D20 — An opt-in `multi-hard` eval tier with per-task turn budgets (2026-10-29)
+
+Every existing tool-choice tier saturated (direct, Projection and its
+variants all within a task or two of full marks), so they could no longer
+separate surfaces on completion or cost. `multi-hard` adds 12 tasks in five
+families (bulk read, bulk write, long chains, pagination, per-item
+branching) over the multi world opened as a `hard` variant, which carries
+much more data in all three boxes.
+
+- **The extra data is gated behind the variant.** Base fixtures and the
+  base GitHub fake answer exactly as before, so no existing task's outcome
+  can move. The variant only adds: extra files, extra shop documents, and
+  acme/widgets answers layered over the base fake's.
+- **Opt-in.** `multi-hard` is not in `DEFAULT_TIERS`, so an unset
+  `PROJ_EVAL_TIERS` (and the runner's default task set) runs what it always
+  ran.
+- **Per-task turn budgets.** A task may set `maxTurns`, and the runner then
+  uses it in place of the run's budget, with a ceiling of twice it. The
+  hard tier sets 2N + 10, where N is the number of per-item calls a
+  one-call-per-item strategy needs. That way a run's length measures
+  strategy, not an arbitrary cap. Results files record these budgets as
+  `taskMaxTurns`.
+- **Grading stays wording-free.** Answers are read from per-item lines (id,
+  then first number) or a final `ANSWER:` line. Writes are graded on the
+  exact recorded set or the real end state, and any write outside the set
+  is forbidden.

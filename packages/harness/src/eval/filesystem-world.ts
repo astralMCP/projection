@@ -85,9 +85,12 @@ export const FILESYSTEM_FIXTURE: Readonly<Record<string, string | Uint8Array>> =
   'tmp/draft.md': '# Draft\n',
 };
 
-/** Write the fixture tree under `root`. */
-export function writeFilesystemFixture(root: string): void {
-  for (const [relative, content] of Object.entries(FILESYSTEM_FIXTURE)) {
+/** Write the fixture tree under `root`, plus `extra` files (the multi-hard world's). */
+export function writeFilesystemFixture(
+  root: string,
+  extra: Readonly<Record<string, string | Uint8Array>> = {},
+): void {
+  for (const [relative, content] of Object.entries({ ...FILESYSTEM_FIXTURE, ...extra })) {
     const path = join(root, relative);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content);
@@ -112,7 +115,10 @@ export function filesystemServerEntry(): string {
  * server and removes the tree.
  */
 export async function openFilesystemWorld(
-  options: Pick<WorldOptions, 'onCall'> = {},
+  options: Pick<WorldOptions, 'onCall'> & {
+    /** Files written on top of the fixture (the multi-hard world's). */
+    extraFiles?: Readonly<Record<string, string | Uint8Array>>;
+  } = {},
 ): Promise<ServerWorld> {
   // A neutral prefix: the prompts carry this path, and a name like
   // "projection-eval" would tell the model what it is being measured for.
@@ -128,7 +134,7 @@ export async function openFilesystemWorld(
     // resolved paths against its allowed directories. Inside the try so a
     // fixture write that fails half-way still removes the directory.
     root = realpathSync(mkdtempSync(join(tmpdir(), 'widgets-')));
-    writeFilesystemFixture(root);
+    writeFilesystemFixture(root, options.extraFiles);
 
     const transport = new StdioClientTransport({
       command: process.execPath,

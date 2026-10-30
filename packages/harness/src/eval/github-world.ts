@@ -1,16 +1,22 @@
 /** The GitHub fake as a single-server world (re-exported from world.ts). */
 
-import { createGithubFake, type GithubFakeOptions } from './github-fake.js';
+import { createGithubFake, type FakeAnswer, type GithubFakeOptions } from './github-fake.js';
 import type { ServerWorld, WorldOptions } from './world.js';
 
 export const GITHUB_DIRECT_SYSTEM_PROMPT =
   "You operate GitHub through the tools provided. Complete the user's task, then stop.";
 
-/** The GitHub fake as a world. */
-export function githubWorld(options: WorldOptions = {}): ServerWorld {
+/**
+ * The GitHub fake as a world. `answers` (the multi-hard world's) are merged
+ * over the fake's canned answers.
+ */
+export function githubWorld(
+  options: WorldOptions & { answers?: Record<string, FakeAnswer> } = {},
+): ServerWorld {
   const fakeOptions: GithubFakeOptions = {
     ...(options.instructions === false ? { instructions: false as const } : {}),
     ...(options.onCall !== undefined ? { onCall: options.onCall } : {}),
+    ...(options.answers !== undefined ? { answers: options.answers } : {}),
   };
   const fake = createGithubFake(fakeOptions);
   return {
