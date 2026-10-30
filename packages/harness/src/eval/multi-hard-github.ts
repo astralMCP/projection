@@ -9,11 +9,14 @@
  *
  * Paged tools use GitHub's real default page size of 30 (the base fake
  * uses 3 to make page 2 matter for its four-item lists; here the lists are
- * 26–84 items long). Writes stay stateless, as in the base fake: an issue
- * update echoes the issue with the update applied (labels replaced, as on
- * GitHub), so a model can see what it did, but nothing persists between
- * calls — except that each created issue gets the next number above every
- * existing issue and PR ({@link hardGithubAnswers} is per world).
+ * 26–84 items long). Unlike the base fake (stateless), writes persist for
+ * the episode: issue creates and updates (labels replaced, as on GitHub),
+ * issue comments and PR reviews change the world's state, and later lists,
+ * searches and reads show them, so a model that checks its work sees it
+ * landed. The state is per world ({@link hardGithubAnswers}), so nothing
+ * is shared across episodes; created issues get the next number above
+ * every existing issue and PR. Graders read the recorded calls, not this
+ * state.
  *
  * Issue and PR search parse GitHub's qualifiers ({@link parseHardQuery}):
  * `created:`/`updated:` ranges, `-label:`, `no:label`, `no:assignee` and
@@ -723,7 +726,71 @@ function paged<T>(items: readonly T[], args: FakeArgs): Page<T> {
 const ISSUE_URL = `https://github.com/${HARD_REPO.owner}/${HARD_REPO.repo}/issues/`;
 const PULL_URL = `https://github.com/${HARD_REPO.owner}/${HARD_REPO.repo}/pull/`;
 
-function issueView(issue: HardIssue): Record<string, unknown> {
+/** A comment posted on an issue or PR during the episode. */
+interface HardComment {
+  id: number;
+  user: { login: string };
+  body: string;
+  created_at: string;
+  html_url: string;
+}
+
+/** A PR review submitted (or left pending) during the episode. */
+interface HardReview {
+  id: number;
+  user: { login: string };
+  state: 'PENDING' | 'COMMENTED' | 'APPROVED' | 'CHANGES_REQUESTED';
+  body: string;
+  /** Comments added to it while pending. */
+  comments: { path: string; body: string }[];
+  submitted_at: string | null;
+}
+
+/**
+ * One world's acme/widgets as its writes leave it: the seeded issues
+ * (copied, so updates never touch {@link HARD_WORLD_ISSUES}) plus the
+ * issues, comments and reviews written since. Created by
+ * {@link hardGithubAnswers} per world, so nothing is shared across
+ * episodes. Writes stamp a clock that starts after every seeded date.
+ */
+interface HardState {
+  issues: HardIssue[];
+  comments: Map<number, HardComment[]>;
+  reviews: Map<number, HardReview[]>;
+  /** The last issue number handed out. */
+  lastNumber: number;
+  /** The last comment / review id handed out. */
+  lastId: number;
+  /** Writes so far, for the write clock. */
+  writes: number;
+}
+
+/** The fake's login: whoever the token belongs to. */
+const WRITER = 'vibdev';
+/** The write clock: write k happens k minutes after this. */
+const WRITE_CLOCK_START = Date.parse('2026-10-29T12:00:00Z');
+
+function newState(): HardState {
+  return {
+    issues: HARD_WORLD_ISSUES.map((issue) => ({
+      ...issue,
+      labels: [...issue.labels],
+      assignees: [...issue.assignees],
+    })),
+    comments: new Map(),
+    reviews: new Map(),
+    lastNumber: HARD_MAX_NUMBER,
+    lastId: 900_000,
+    writes: 0,
+  };
+}
+
+function tick(st: HardState): string {
+  st.writes += 1;
+  return new Date(WRITE_CLOCK_START + st.writes * 60_000).toISOString();
+}
+
+function issueView(issue: HardIssue, st: HardState): Record<string, unknown> {
   return {
     number: issue.number,
     title: issue.title,
@@ -731,7 +798,10 @@ function issueView(issue: HardIssue): Record<string, unknown> {
     user: { login: issue.user },
     labels: issue.labels.map((name) => ({ name })),
     assignees: issue.assignees.map((login) => ({ login })),
-    comments: issue.number % 4,
+    // Seeded issues report a few earlier comments; this episode's add to them.
+    comments:
+      (issue.number <= HARD_MAX_NUMBER ? issue.number % 4 : 0) +
+      (st.comments.get(issue.number)?.length ?? 0),
     created_at: issue.created_at,
     updated_at: issue.updated_at,
     closed_at: issue.closed_at,
@@ -767,11 +837,11 @@ function offsetOf(cursor: unknown): number {
   return m === null ? 0 : Number(m[1]);
 }
 
-function listIssues(args: FakeArgs): unknown {
+function listIssues(st: HardState, args: FakeArgs): unknown {
   const state = lower(args['state']);
   const labels = Array.isArray(args['labels']) ? args['labels'].map(lower) : [];
   const since = str(args['since']);
-  let issues = HARD_WORLD_ISSUES.filter(
+  let issues = st.issues.filter(
     (issue) =>
       (state === '' || issue.state === state) &&
       labels.every((label) => issue.labels.includes(label)) &&
@@ -791,7 +861,7 @@ function listIssues(args: FakeArgs): unknown {
   const page = issues.slice(offset, offset + perPage);
   const hasNextPage = offset + perPage < issues.length;
   return {
-    issues: page.map((issue) => pick(issueView(issue), args['fields'])),
+    issues: page.map((issue) => pick(issueView(issue, st), args['fields'])),
     pageInfo: {
       hasNextPage,
       hasPreviousPage: offset > 0,
@@ -858,7 +928,7 @@ interface HardQuery {
 
 const DAY_MS = 86_400_000;
 
-const at = (iso: string): number => Date.parse(iso);
+const msOf = (iso: string): number => Date.parse(iso);
 
 /**
  * A date qualifier operand as a half-open interval [start, end) in ms: a
@@ -891,22 +961,22 @@ export function dateRange(spec: string): ((iso: string) => boolean) | undefined 
     const from = lo === '*' ? { start: -Infinity, end: -Infinity } : dateSpan(lo);
     const to = hi === '*' ? { start: Infinity, end: Infinity } : dateSpan(hi);
     if (from === undefined || to === undefined) return undefined;
-    return (iso) => at(iso) >= from.start && at(iso) < to.end;
+    return (iso) => msOf(iso) >= from.start && msOf(iso) < to.end;
   }
   const m = /^(<=|>=|<|>)?(.+)$/.exec(spec);
   const span = m === null ? undefined : dateSpan(m[2] as string);
   if (m === null || span === undefined) return undefined;
   switch (m[1]) {
     case '<':
-      return (iso) => at(iso) < span.start;
+      return (iso) => msOf(iso) < span.start;
     case '<=':
-      return (iso) => at(iso) < span.end;
+      return (iso) => msOf(iso) < span.end;
     case '>':
-      return (iso) => at(iso) >= span.end;
+      return (iso) => msOf(iso) >= span.end;
     case '>=':
-      return (iso) => at(iso) >= span.start;
+      return (iso) => msOf(iso) >= span.start;
     default:
-      return (iso) => at(iso) >= span.start && at(iso) < span.end;
+      return (iso) => msOf(iso) >= span.start && msOf(iso) < span.end;
   }
 }
 
@@ -1046,16 +1116,16 @@ function searchHard<T>(
   return hits;
 }
 
-function searchIssues(args: FakeArgs): unknown {
+function searchIssues(st: HardState, args: FakeArgs): unknown {
   const query = parseHardQuery(str(args['query']) ?? '');
   if (query instanceof FakeError) return query;
   // search_issues searches issues only (the real server adds is:issue).
-  const issues = searchHard(HARD_WORLD_ISSUES, issueSearchable, query, args);
+  const issues = searchHard(st.issues, issueSearchable, query, args);
   const page = paged(issues, args);
   return {
     total_count: page.total,
     incomplete_results: false,
-    items: page.items.map((issue) => pick(issueView(issue), args['fields'])),
+    items: page.items.map((issue) => pick(issueView(issue, st), args['fields'])),
   };
 }
 
@@ -1072,16 +1142,18 @@ function searchPulls(args: FakeArgs): unknown {
   };
 }
 
-function issueRead(args: FakeArgs): unknown {
+function issueRead(st: HardState, args: FakeArgs): unknown {
   const n = num(args['issue_number']);
-  const issue = HARD_WORLD_ISSUES.find((i) => i.number === n);
+  const issue = st.issues.find((i) => i.number === n);
   const method = lower(args['method']);
   if (issue === undefined) {
     const pull = HARD_WORLD_PULLS.find((p) => p.number === n);
     if (pull !== undefined) {
-      return method === 'get' || method === ''
-        ? { ...pullView(pull), pull_request: { url: `${PULL_URL}${pull.number}` } }
-        : [];
+      if (method === 'get' || method === '') {
+        return { ...pullView(pull), pull_request: { url: `${PULL_URL}${pull.number}` } };
+      }
+      // A PR's conversation comments are issue comments.
+      return method === 'get_comments' ? [...(st.comments.get(pull.number) ?? [])] : [];
     }
     return fakeError(`404 Not Found: issue #${String(n)}.`);
   }
@@ -1089,12 +1161,13 @@ function issueRead(args: FakeArgs): unknown {
     case 'get_labels':
       return issue.labels.map((name) => ({ name }));
     case 'get_comments':
+      return [...(st.comments.get(issue.number) ?? [])];
     case 'get_sub_issues':
       return [];
     case 'get_parent':
       return null;
     default:
-      return issueView(issue);
+      return issueView(issue, st);
   }
 }
 
@@ -1104,47 +1177,166 @@ export const HARD_MAX_NUMBER: number = Math.max(
   ...HARD_WORLD_PULLS.map((pull) => pull.number),
 );
 
-/** A created issue as GitHub answers it, numbered `n`. */
-function createdIssue(args: FakeArgs, n: number): Record<string, unknown> {
-  return {
-    number: n,
-    title: str(args['title']) ?? '',
-    state: 'open',
-    body: str(args['body']) ?? '',
-    labels: (Array.isArray(args['labels']) ? args['labels'] : []).map((name) => ({
-      name: String(name),
-    })),
-    html_url: `${ISSUE_URL}${n}`,
-  };
-}
-
-function issueWrite(args: FakeArgs, nextNumber: () => number): unknown {
-  if (lower(args['method']) === 'create') return createdIssue(args, nextNumber());
-  const n = num(args['issue_number']);
-  const issue = HARD_WORLD_ISSUES.find((i) => i.number === n);
-  if (issue === undefined) return fakeError(`404 Not Found: issue #${String(n)}.`);
-  const labels = Array.isArray(args['labels'])
-    ? args['labels'].map((l) => String(l))
-    : issue.labels;
-  for (const label of labels) {
+/** `labels` as names, or a 422 for one acme/widgets does not define. */
+function knownLabels(labels: unknown[]): string[] | FakeError {
+  const names = labels.map((l) => String(l));
+  for (const label of names) {
     if (!HARD_WORLD_LABELS.includes(label.toLowerCase())) {
       return fakeError(`422 Validation Failed: label "${label}" does not exist in acme/widgets.`);
     }
   }
-  return issueView({
-    ...issue,
-    labels,
-    title: str(args['title']) ?? issue.title,
-    state:
-      lower(args['state']) === 'closed'
-        ? 'closed'
-        : lower(args['state']) === 'open'
-          ? 'open'
-          : issue.state,
-    body: str(args['body']) ?? issue.body,
-    assignees: Array.isArray(args['assignees']) ? args['assignees'].map(String) : issue.assignees,
-    updated_at: '2026-10-29T12:00:00Z',
-  });
+  return names;
+}
+
+/**
+ * issue_write against the world's state: `create` adds an open issue with
+ * the next number; `update` changes the issue in place (labels replaced, as
+ * on GitHub). Later reads see either.
+ */
+function issueWrite(st: HardState, args: FakeArgs): unknown {
+  if (lower(args['method']) === 'create') {
+    const labels = knownLabels(Array.isArray(args['labels']) ? args['labels'] : []);
+    if (labels instanceof FakeError) return labels;
+    const at = tick(st);
+    st.lastNumber += 1;
+    const issue: HardIssue = {
+      number: st.lastNumber,
+      title: str(args['title']) ?? '',
+      state: 'open',
+      labels,
+      user: WRITER,
+      assignees: Array.isArray(args['assignees']) ? args['assignees'].map(String) : [],
+      created_at: at,
+      updated_at: at,
+      closed_at: null,
+      body: str(args['body']) ?? '',
+    };
+    st.issues.unshift(issue);
+    return issueView(issue, st);
+  }
+  const n = num(args['issue_number']);
+  const issue = st.issues.find((i) => i.number === n);
+  if (issue === undefined) return fakeError(`404 Not Found: issue #${String(n)}.`);
+  const labels = Array.isArray(args['labels']) ? knownLabels(args['labels']) : issue.labels;
+  if (labels instanceof FakeError) return labels;
+  const at = tick(st);
+  const state =
+    lower(args['state']) === 'closed'
+      ? 'closed'
+      : lower(args['state']) === 'open'
+        ? 'open'
+        : issue.state;
+  if (state !== issue.state) issue.closed_at = state === 'closed' ? at : null;
+  issue.labels = [...labels];
+  issue.title = str(args['title']) ?? issue.title;
+  issue.state = state;
+  issue.body = str(args['body']) ?? issue.body;
+  if (Array.isArray(args['assignees'])) issue.assignees = args['assignees'].map(String);
+  issue.updated_at = at;
+  return issueView(issue, st);
+}
+
+/** add_issue_comment: the comment lands on the issue or PR, and its reads show it. */
+function addIssueComment(st: HardState, args: FakeArgs): unknown {
+  const n = num(args['issue_number']);
+  const exists =
+    st.issues.some((i) => i.number === n) || HARD_WORLD_PULLS.some((p) => p.number === n);
+  if (n === undefined || !exists) return fakeError(`404 Not Found: issue #${String(n)}.`);
+  const body = str(args['body']);
+  if (body === undefined) return fakeError('missing required parameter: body');
+  const at = tick(st);
+  st.lastId += 1;
+  const comment: HardComment = {
+    id: st.lastId,
+    user: { login: WRITER },
+    body,
+    created_at: at,
+    html_url: `${ISSUE_URL}${n}#issuecomment-${st.lastId}`,
+  };
+  st.comments.set(n, [...(st.comments.get(n) ?? []), comment]);
+  const issue = st.issues.find((i) => i.number === n);
+  if (issue !== undefined) issue.updated_at = at;
+  return comment;
+}
+
+const REVIEW_STATES: Readonly<Record<string, HardReview['state']>> = {
+  COMMENT: 'COMMENTED',
+  APPROVE: 'APPROVED',
+  REQUEST_CHANGES: 'CHANGES_REQUESTED',
+};
+
+/** The PR's pending review by the writer, if any. */
+function pendingReview(st: HardState, n: number): HardReview | undefined {
+  return st.reviews.get(n)?.find((r) => r.state === 'PENDING');
+}
+
+/**
+ * pull_request_review_write: `create` with an event submits a review,
+ * without one leaves it pending; `submit_pending` submits the pending one
+ * with its event; `delete_pending` drops it. get_reviews shows the result.
+ */
+function reviewWrite(st: HardState, args: FakeArgs): unknown {
+  const n = num(args['pullNumber']);
+  if (n === undefined || !HARD_WORLD_PULLS.some((p) => p.number === n)) {
+    return fakeError(`404 Not Found: pull request #${String(n)}.`);
+  }
+  const method = lower(args['method']);
+  const event = (str(args['event']) ?? '').trim().toUpperCase();
+  const submitted = event === '' ? undefined : REVIEW_STATES[event];
+  if (event !== '' && submitted === undefined) {
+    return fakeError(`422 Validation Failed: unknown review event "${event}".`);
+  }
+  const reviews = st.reviews.get(n) ?? [];
+  switch (method) {
+    case 'create': {
+      if (pendingReview(st, n) !== undefined) {
+        return fakeError('422 Validation Failed: you already have a pending review on this PR.');
+      }
+      const at = tick(st);
+      st.lastId += 1;
+      const review: HardReview = {
+        id: st.lastId,
+        user: { login: WRITER },
+        state: submitted ?? 'PENDING',
+        body: str(args['body']) ?? '',
+        comments: [],
+        submitted_at: submitted === undefined ? null : at,
+      };
+      st.reviews.set(n, [...reviews, review]);
+      return review;
+    }
+    case 'submit_pending': {
+      const review = pendingReview(st, n);
+      if (review === undefined) return fakeError('404 Not Found: no pending review on this PR.');
+      if (submitted === undefined) return fakeError('missing required parameter: event');
+      review.state = submitted;
+      review.body = str(args['body']) ?? review.body;
+      review.submitted_at = tick(st);
+      return review;
+    }
+    case 'delete_pending': {
+      const review = pendingReview(st, n);
+      if (review === undefined) return fakeError('404 Not Found: no pending review on this PR.');
+      tick(st);
+      st.reviews.set(
+        n,
+        reviews.filter((r) => r !== review),
+      );
+      return { ok: true };
+    }
+    default:
+      return fakeError(`unknown method "${method}"`);
+  }
+}
+
+/** add_comment_to_pending_review: the comment joins the writer's pending review. */
+function addPendingComment(st: HardState, args: FakeArgs): unknown {
+  const n = num(args['pullNumber']);
+  const review = n === undefined ? undefined : pendingReview(st, n);
+  if (review === undefined) return fakeError('404 Not Found: no pending review on this PR.');
+  tick(st);
+  review.comments.push({ path: str(args['path']) ?? '', body: str(args['body']) ?? '' });
+  return { ok: true, review_id: review.id };
 }
 
 function pullsFor(args: FakeArgs): HardPull[] {
@@ -1163,7 +1355,7 @@ function pullsFor(args: FakeArgs): HardPull[] {
   return pulls;
 }
 
-function pullRead(args: FakeArgs): unknown {
+function pullRead(st: HardState, args: FakeArgs): unknown {
   const n = num(args['pullNumber']);
   const pull = HARD_WORLD_PULLS.find((p) => p.number === n);
   if (pull === undefined) return fakeError(`404 Not Found: pull request #${String(n)}.`);
@@ -1205,7 +1397,10 @@ function pullRead(args: FakeArgs): unknown {
         body: comment.body,
       }));
     case 'get_comments':
+      return [...(st.comments.get(pull.number) ?? [])];
     case 'get_reviews':
+      // Submitted reviews; a pending one is visible only to its author (the writer).
+      return [...(st.reviews.get(pull.number) ?? [])];
     case 'get_commits':
       return [];
     default:
@@ -1253,18 +1448,28 @@ function forHardRepo(
 }
 
 /**
- * The answer overrides the hard world's GitHub box is created with: fresh
- * per world, so each world numbers the issues it creates from
- * {@link HARD_MAX_NUMBER} + 1 on, every one unique.
+ * The answer overrides the hard world's GitHub box is created with, over
+ * fresh state per world (one world per episode): issue creates and
+ * updates, issue comments and PR reviews change that state, and every
+ * later list, search and read in the same world shows them. Created issues
+ * are numbered from {@link HARD_MAX_NUMBER} + 1 on, every one unique.
+ * Nothing is shared across worlds, and graders still read the recorded
+ * calls, never this state.
  */
 export function hardGithubAnswers(): Readonly<Record<string, FakeAnswer>> {
-  let created = HARD_MAX_NUMBER;
-  const nextNumber = (): number => (created += 1);
+  const st = newState();
   return {
-    list_issues: forHardRepo('list_issues', listIssues),
-    search_issues: forHardRepo('search_issues', searchIssues, scopedToHardRepo),
-    issue_read: forHardRepo('issue_read', issueRead),
-    issue_write: forHardRepo('issue_write', (args) => issueWrite(args, nextNumber)),
+    list_issues: forHardRepo('list_issues', (args) => listIssues(st, args)),
+    search_issues: forHardRepo('search_issues', (args) => searchIssues(st, args), scopedToHardRepo),
+    issue_read: forHardRepo('issue_read', (args) => issueRead(st, args)),
+    issue_write: forHardRepo('issue_write', (args) => issueWrite(st, args)),
+    add_issue_comment: forHardRepo('add_issue_comment', (args) => addIssueComment(st, args)),
+    pull_request_review_write: forHardRepo('pull_request_review_write', (args) =>
+      reviewWrite(st, args),
+    ),
+    add_comment_to_pending_review: forHardRepo('add_comment_to_pending_review', (args) =>
+      addPendingComment(st, args),
+    ),
     list_label: forHardRepo('list_label', () => HARD_WORLD_LABELS.map((name) => ({ name }))),
     get_label: forHardRepo('get_label', (args) => {
       const name = lower(args['name']);
@@ -1277,7 +1482,7 @@ export function hardGithubAnswers(): Readonly<Record<string, FakeAnswer>> {
       return page.items.map((pull) => pick(pullView(pull), args['fields']));
     }),
     search_pull_requests: forHardRepo('search_pull_requests', searchPulls, scopedToHardRepo),
-    pull_request_read: forHardRepo('pull_request_read', pullRead),
+    pull_request_read: forHardRepo('pull_request_read', (args) => pullRead(st, args)),
     list_branches: forHardRepo('list_branches', (args) =>
       paged(HARD_WORLD_BRANCHES, args).items.map((name) => ({
         name,

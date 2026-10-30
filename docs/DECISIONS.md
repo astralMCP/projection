@@ -1331,8 +1331,12 @@ harness classifies and prices what that tier provokes.
 - **The hard world's search errors on what it does not implement.** Issue
   and PR search there parses date ranges, `-label:`, `no:label` and
   `no:assignee`; any other qualifier is a 422-style error, never silently
-  ignored (which returned plausible but wrong lists). The base fake is
-  unchanged, so no existing tier moves.
+  ignored (which returned plausible but wrong lists). Its writes also
+  persist for the episode (issues, labels, comments, reviews show in later
+  reads), so a model that checks its work is not told it failed and does
+  not write again; the state is per world, and graders still read the
+  recorded calls. The base fake is unchanged (stateless, lenient search),
+  so no existing tier moves.
 - **Cost is per call and per tier.** Haiku 5.5 bills a call over 100K
   prompt tokens at its long-context card. The hill-climb scope gate keys
   observed costs by tier and refuses a tier with no observation, pilot or

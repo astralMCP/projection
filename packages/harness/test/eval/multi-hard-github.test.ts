@@ -214,3 +214,194 @@ describe('hard world issue creation', () => {
     expect(fresh.number).toBe(HARD_MAX_NUMBER + 1);
   });
 });
+
+describe('hard world writes show in later reads', () => {
+  type Answers = Readonly<Record<string, FakeAnswer>>;
+  const issues = (
+    answers: Answers,
+    query: string,
+  ): { number: number; labels: { name: string }[] }[] =>
+    (call(answers, 'search_issues', { query, perPage: 100 }) as { items: never[] }).items;
+
+  it('an issue update shows in get, list and search; the seed is untouched', () => {
+    const answers = hardGithubAnswers();
+    const n = Number(Object.keys(E.staleIssues)[0]);
+    const seeded = HARD_WORLD_ISSUES.find((i) => i.number === n);
+    const before = issues(answers, 'repo:acme/widgets is:open label:stale');
+    expect(before).toHaveLength(0);
+    call(answers, 'issue_write', {
+      ...ACME,
+      method: 'update',
+      issue_number: n,
+      labels: [...(seeded?.labels ?? []), 'stale'],
+    });
+    const got = call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
+      labels: { name: string }[];
+      updated_at: string;
+    };
+    expect(got.labels.map((l) => l.name)).toContain('stale');
+    expect(got.updated_at > '2026-10-29').toBe(true);
+    expect(issues(answers, 'repo:acme/widgets is:open label:stale').map((i) => i.number)).toEqual([
+      n,
+    ]);
+    // No longer stale by date either: updating it touched it.
+    expect(
+      issues(answers, 'repo:acme/widgets is:open updated:<2026-07-01').map((i) => i.number),
+    ).not.toContain(n);
+    const listed = call(answers, 'list_issues', {
+      ...ACME,
+      state: 'OPEN',
+      labels: ['stale'],
+    }) as { issues: { number: number }[] };
+    expect(listed.issues.map((i) => i.number)).toEqual([n]);
+    // The module's seed (what graders and expected values use) is unchanged.
+    expect(seeded?.labels).not.toContain('stale');
+    expect(HARD_WORLD_ISSUES.find((i) => i.number === n)?.labels).toEqual(seeded?.labels);
+  });
+
+  it('a created issue shows in get, list and search', () => {
+    const answers = hardGithubAnswers();
+    const made = call(answers, 'issue_write', {
+      ...ACME,
+      method: 'create',
+      title: 'Fix src/api/routes.ts',
+      body: 'From #139.',
+    }) as { number: number };
+    expect(made.number).toBe(HARD_MAX_NUMBER + 1);
+    const got = call(answers, 'issue_read', {
+      ...ACME,
+      method: 'get',
+      issue_number: made.number,
+    }) as { title: string; state: string };
+    expect(got).toMatchObject({ title: 'Fix src/api/routes.ts', state: 'open' });
+    expect(
+      issues(answers, 'repo:acme/widgets is:open in:title Fix src/api/routes.ts').map(
+        (i) => i.number,
+      ),
+    ).toContain(made.number);
+    const listed = call(answers, 'list_issues', { ...ACME, state: 'OPEN' }) as {
+      issues: { number: number }[];
+      totalCount: number;
+    };
+    expect(listed.issues[0]?.number).toBe(made.number);
+    expect(listed.totalCount).toBe(HARD_WORLD_ISSUES.filter((i) => i.state === 'open').length + 1);
+  });
+
+  it('comments and reviews show in the issue and PR reads', () => {
+    const answers = hardGithubAnswers();
+    call(answers, 'add_issue_comment', {
+      ...ACME,
+      issue_number: 113,
+      body: 'Please add a CHANGELOG entry.',
+    });
+    const onPr = call(answers, 'pull_request_read', {
+      ...ACME,
+      method: 'get_comments',
+      pullNumber: 113,
+    }) as { body: string }[];
+    expect(onPr.map((c) => c.body)).toEqual(['Please add a CHANGELOG entry.']);
+    const viaIssue = call(answers, 'issue_read', {
+      ...ACME,
+      method: 'get_comments',
+      issue_number: 113,
+    }) as { body: string }[];
+    expect(viaIssue).toHaveLength(1);
+
+    const n = Number(Object.keys(E.staleIssues)[0]);
+    const before = (
+      call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
+        comments: number;
+      }
+    ).comments;
+    call(answers, 'add_issue_comment', { ...ACME, issue_number: n, body: 'ping' });
+    const after = call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
+      comments: number;
+    };
+    expect(after.comments).toBe(before + 1);
+
+    // A pending review, a comment on it, then its submit.
+    call(answers, 'pull_request_review_write', { ...ACME, method: 'create', pullNumber: 116 });
+    call(answers, 'add_comment_to_pending_review', {
+      ...ACME,
+      pullNumber: 116,
+      path: 'src/export/csv.ts',
+      body: 'here',
+    });
+    let reviews = call(answers, 'pull_request_read', {
+      ...ACME,
+      method: 'get_reviews',
+      pullNumber: 116,
+    }) as { state: string; comments: unknown[] }[];
+    expect(reviews.map((r) => r.state)).toEqual(['PENDING']);
+    call(answers, 'pull_request_review_write', {
+      ...ACME,
+      method: 'submit_pending',
+      pullNumber: 116,
+      event: 'COMMENT',
+      body: 'Changelog?',
+    });
+    reviews = call(answers, 'pull_request_read', {
+      ...ACME,
+      method: 'get_reviews',
+      pullNumber: 116,
+    }) as { state: string; comments: unknown[] }[];
+    expect(reviews).toMatchObject([
+      { state: 'COMMENTED', body: 'Changelog?', comments: [{ body: 'here' }] },
+    ]);
+    call(answers, 'pull_request_review_write', {
+      ...ACME,
+      method: 'create',
+      pullNumber: 120,
+      event: 'APPROVE',
+    });
+    expect(
+      call(answers, 'pull_request_read', { ...ACME, method: 'get_reviews', pullNumber: 120 }),
+    ).toMatchObject([{ state: 'APPROVED' }]);
+    // Writes to a number that does not exist are 404s, as before.
+    expect(
+      call(answers, 'add_issue_comment', { ...ACME, issue_number: 999, body: 'x' }),
+    ).toBeInstanceOf(FakeError);
+  });
+
+  it('keeps state per world: a fresh world sees none of another’s writes', () => {
+    const first = hardGithubAnswers();
+    call(first, 'issue_write', { ...ACME, method: 'update', issue_number: 32, labels: ['stale'] });
+    call(first, 'add_issue_comment', { ...ACME, issue_number: 113, body: 'x' });
+    call(first, 'issue_write', { ...ACME, method: 'create', title: 'only in the first' });
+    const second = hardGithubAnswers();
+    expect(issues(second, 'repo:acme/widgets label:stale')).toHaveLength(0);
+    expect(
+      call(second, 'issue_read', { ...ACME, method: 'get', issue_number: HARD_MAX_NUMBER + 1 }),
+    ).toBeInstanceOf(FakeError);
+    expect(
+      call(second, 'pull_request_read', { ...ACME, method: 'get_comments', pullNumber: 113 }),
+    ).toEqual([]);
+  });
+
+  it('leaves the base fake stateless, exactly as before', () => {
+    const comment = GITHUB_FAKE_ANSWERS['add_issue_comment'];
+    if (typeof comment !== 'function') throw new Error('no base add_issue_comment');
+    expect(comment({ owner: 'octo', repo: 'other', issue_number: 1, body: 'x' })).toEqual({
+      ok: true,
+    });
+    expect(GITHUB_FAKE_ANSWERS['pull_request_review_write']).toBeUndefined();
+    // Outside acme/widgets the hard answers fall through to the base ones.
+    const answers = hardGithubAnswers();
+    expect(
+      call(answers, 'add_issue_comment', {
+        owner: 'octo',
+        repo: 'other',
+        issue_number: 1,
+        body: 'x',
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      call(answers, 'pull_request_review_write', {
+        owner: 'octo',
+        repo: 'other',
+        pullNumber: 1,
+        method: 'create',
+      }),
+    ).toEqual({ ok: true });
+  });
+});

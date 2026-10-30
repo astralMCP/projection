@@ -342,6 +342,28 @@ describe.skipIf(!installed)('multi-hard world', () => {
     }
   }, 120_000);
 
+  it('shows an episode its own writes, and no other episode', async () => {
+    const [first, second] = await Promise.all([openHard('hard'), openHard('hard')]);
+    try {
+      const [, , read, comments] = await replay(first, 'direct', [
+        gh('issue_write', { method: 'update', issue_number: 43, labels: ['bug', 'stale'] }),
+        gh('add_issue_comment', { issue_number: 139, body: 'src/cache/lru.ts is missing.' }),
+        gh('issue_read', { method: 'get', issue_number: 43 }),
+        gh('pull_request_read', { method: 'get_comments', pullNumber: 139 }),
+      ]);
+      expect(JSON.parse(read as string).labels).toEqual([{ name: 'bug' }, { name: 'stale' }]);
+      expect(JSON.parse(comments as string).map((c: { body: string }) => c.body)).toEqual([
+        'src/cache/lru.ts is missing.',
+      ]);
+      const [fresh] = await replay(second, 'direct', [
+        gh('issue_read', { method: 'get', issue_number: 43 }),
+      ]);
+      expect(JSON.parse(fresh as string).labels).toEqual([{ name: 'bug' }]);
+    } finally {
+      await Promise.all([first.close(), second.close()]);
+    }
+  }, 120_000);
+
   describe('every golden runs clean against the real boxes and scores', () => {
     for (const task of MULTI_HARD_TASKS) {
       const golden = GOLDEN[task.name] as HardGolden;
