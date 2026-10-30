@@ -23,6 +23,27 @@ not run (pending the ~$14 / ~$4.6 / ~$3.7 decision recorded at baseline).
 3/3 in one cell is ~5.9 pts. Guard (60 x 1 rep): haiku45 ±9.9, sonnet-low
 ±4.6.
 
+## Re-baseline at v4 (harness change 2)
+
+Rounds 0–3 ran under the old harness (recording proxy dropped output
+schemas; no host box descriptions on the multi tier). Harness change 2
+(`harness-change-2.md`) landed before v4, so **v4 is the post-harness-change
+reference and rounds 0–3 are not directly comparable to it**.
+
+| round | change                                                  | gating haiku45 | gating sonnet-low | boxes haiku45 | boxes sonnet-low | guard haiku45 | guard sonnet-low | spend  |
+| ----- | ------------------------------------------------------- | -------------- | ----------------- | ------------- | ---------------- | ------------- | ---------------- | ------ |
+| 4     | v4: v3 routing copy on multi facades only (re-baseline) | 16/17 · 48/51  | 15/17 · 47/51     | 16/17 · 48/51 | 15/17 · 47/51    | 58/60         | 59/60            | $33.65 |
+
+Gating pooled 31/34 task-cells, 95/102 (93.1%). Noise floors (stats.mjs):
+haiku ±0.0 paired (crude ±14.0), sonnet-low ±5.4, pooled ±2.7; guard haiku
+±6.4, sonnet-low ±4.6. Best: v4.
+
+v4 categorization (`v4/categorization.md`): `global-csv-released` failed
+12/12 because the host box descriptions steer the first turn to GitHub only
+(no episode read `CHANGELOG.md`); this is a harness-config shift inside the
+re-baseline, with no grader error. The two `global-last-log-entry`
+sonnet-low misses are variance (same path and rate as v3).
+
 ## Story so far
 
 v2 remains best. v3 is the first round whose mechanism visibly engaged, but

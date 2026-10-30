@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 3,
+  "current_round": 4,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -29,10 +29,11 @@
     }
   ],
   "best": {
-    "round": 2,
-    "train_gating_pass": 0.8529,
-    "guard_pass": 0.9833,
-    "note": "beats baseline by 1 episode / 1 task-cell (within ±6.1 pts noise); guard up, no regression; kept as truthful library copy"
+    "round": 4,
+    "variant": "v4",
+    "train_gating_pass": 0.9314,
+    "guard_pass": 0.975,
+    "note": "re-baseline under harness change 2; best by definition (first round on the new harness)"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -309,7 +310,7 @@
   },
   "runner": ".claude/hillclimb/multi-server/run-round.sh <variant>",
   "reference": "reference-direct/ (direct mode, multi tier, both models, 3 reps; context only, not a round)",
-  "harness_sha": "691061b30f8fc1316a6f707b0fc817a3ded2adc119ae84b514ad8160d9e9c2f4",
+  "harness_sha": "c7a5ded0b32f73094ac32f5c9746642615f83399fadf824138b002b3a52f0138",
   "baseline": {
     "gating_pass": 0.8431,
     "noise_floor_gating_pooled_pts": 6.7,
@@ -398,6 +399,101 @@
       "cumulative_spend_usd": 27.06,
       "kept": false,
       "decision": "not best: pooled gating 90/102 vs v2 87/102 (+2.9 pts, paired noise ±7.2), task-cells 26/34 tied; haiku gating +7.8 (±10.9), sonnet -2.0. Guard haiku 59/60 -> 53/60 (-10.0) is 0 up / 6 down vs v2, outside the paired ±7.7 floor (vs baseline -3.3 within ±9.3; vs v1 0.0), so the guard hold fails against the current best. Mechanism engaged: haiku machine episodes 9->3 gating, 10->4 boxes; cross-shipped-to-comment got its first pass ever (gating rep0, via call_tool), the 5 remaining failures still went to execute_machine. Tracked haiku boxes 42->38 (-7.8, ±9.4) with 4 turn-capped global-* call_tool episodes. Code left on the branch pending a guard re-rep decision."
+    },
+    {
+      "round": 4,
+      "variant": "v4",
+      "change": "v2 + v3 routing copy scoped to multi-server facades (single-server surface byte-identical to v2); run under harness change 2 (re-baseline)",
+      "commit": "ab8b9d4",
+      "harness_commit": "8a3eb8e",
+      "train_gating_pass": 0.9314,
+      "gating_tasks_all_reps": {
+        "haiku45": "16/17",
+        "sonnet-low": "15/17"
+      },
+      "gating_episodes": {
+        "haiku45": "48/51",
+        "sonnet-low": "47/51"
+      },
+      "tracked_boxes_pass": {
+        "haiku45": 0.9412,
+        "sonnet-low": 0.9216
+      },
+      "guard_pass": {
+        "haiku45": 0.9667,
+        "sonnet-low": 0.9833
+      },
+      "guard_pass_pooled": 0.975,
+      "spend_usd": 6.59,
+      "cumulative_spend_usd": 33.65,
+      "kept": true,
+      "decision": "re-baseline (best). Not comparable to rounds 0-3 (harness change 2).",
+      "categorization": "v4/categorization.md: 14 remaining failures. global-csv-released 12/12 fail in both modes and models: the host box descriptions steer the first turn to GitHub only (v3 5/6 sonnet opened search_fs, v4 0/6); no episode read CHANGELOG.md. Harness-config shift, not a grader error (0 grader disagreements) and not a Projection copy regression. global-last-log-entry sonnet-low 2 misses (gating rep0, boxes rep0): variance, same path and rate as v3."
     }
-  ]
+  ],
+  "rebaseline": "v4",
+  "rebaseline_note": "Harness change 2 (harness-change-2.md: output schemas through the recording proxy; host box descriptions on for the multi tier) landed before v4. v4 is the post-harness-change reference. Rounds 0-3 (baseline, v1-v3) ran under the old harness and are not directly comparable to v4 onward.",
+  "rebaseline_ref": {
+    "variant": "v4",
+    "harness_sha": "c7a5ded0b32f73094ac32f5c9746642615f83399fadf824138b002b3a52f0138",
+    "gating": {
+      "haiku45": {
+        "tasks_all_reps": "16/17",
+        "episodes": "48/51",
+        "pass": 0.9412,
+        "noise_floor_paired_pts": 0,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 2
+      },
+      "sonnet-low": {
+        "tasks_all_reps": "15/17",
+        "episodes": "47/51",
+        "pass": 0.9216,
+        "noise_floor_paired_pts": 5.4,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 0
+      },
+      "pooled": {
+        "task_cells": "31/34",
+        "episodes": "95/102",
+        "pass": 0.9314,
+        "noise_floor_paired_pts": 2.7,
+        "noise_floor_crude_pts": 9.9
+      }
+    },
+    "tracked_boxes": {
+      "haiku45": {
+        "tasks_all_reps": "16/17",
+        "episodes": "48/51",
+        "pass": 0.9412,
+        "noise_floor_paired_pts": 0,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 3
+      },
+      "sonnet-low": {
+        "tasks_all_reps": "15/17",
+        "episodes": "47/51",
+        "pass": 0.9216,
+        "noise_floor_paired_pts": 5.4,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 0
+      }
+    },
+    "guard": {
+      "haiku45": {
+        "episodes": "58/60",
+        "pass": 0.9667,
+        "noise_floor_paired_pts": 6.4,
+        "noise_floor_crude_pts": 12.9
+      },
+      "sonnet-low": {
+        "episodes": "59/60",
+        "pass": 0.9833,
+        "noise_floor_paired_pts": 4.6,
+        "noise_floor_crude_pts": 12.9
+      }
+    },
+    "noise_note": "Paired floors from stats.mjs v4 (one round only, so ±0.0 for haiku means no within-round task variance to pair; use the crude ±14.0 or the old-harness ±9-11 as the practical floor for haiku). One task 0/3->3/3 in one cell is ~5.9 pts.",
+    "spend_usd": 6.59
+  }
 }
