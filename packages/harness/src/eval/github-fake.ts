@@ -744,6 +744,25 @@ export interface GithubFakeOptions {
   instructions?: string | false;
   /** Called with every call as it is recorded (see `WorldOptions.onCall`). */
   onCall?: (call: SideEffect) => void;
+  /**
+   * What a tool without a canned answer returns. `'ok'` (default): `{ ok: true }`,
+   * whatever the tool. `'realistic'`: what the real server says about data it
+   * does not hold — a read-only `list_*` answers `[]`, a read-only `search_*`
+   * an empty result page, any other read-only tool a 404; writes keep
+   * `{ ok: true }`. An `{ ok: true }` read is a signal no real server sends: a
+   * model cannot tell "nothing there" from "the call failed".
+   */
+  unmodeled?: 'ok' | 'realistic';
+}
+
+/** The `'realistic'` answer of a tool without a canned one (see `GithubFakeOptions.unmodeled`). */
+export function unmodeledAnswer(tool: GithubCatalogTool): unknown {
+  if (tool.annotations?.readOnlyHint !== true) return { ok: true };
+  if (tool.name.startsWith('list_')) return [];
+  if (tool.name.startsWith('search_')) {
+    return { total_count: 0, incomplete_results: false, items: [] };
+  }
+  return fakeError('404 Not Found');
 }
 
 /** Resolve a canned answer for a call. */
@@ -791,7 +810,10 @@ export function createGithubFake(options: GithubFakeOptions = {}): GithubFake {
         const recorded = args ?? {};
         calls.push({ tool: tool.name, args: recorded });
         options.onCall?.({ tool: tool.name, args: recorded });
-        const answer = answerFor(answers, tool.name, recorded);
+        const answer =
+          options.unmodeled === 'realistic' && !Object.hasOwn(answers, tool.name)
+            ? unmodeledAnswer(tool)
+            : answerFor(answers, tool.name, recorded);
         if (answer instanceof FakeError) {
           return { isError: true, content: [{ type: 'text' as const, text: answer.message }] };
         }

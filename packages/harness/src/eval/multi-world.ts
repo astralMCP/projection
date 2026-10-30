@@ -89,6 +89,10 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
           return Promise.resolve(
             githubWorld({
               onCall,
+              // The boxes answer like real servers: an unmodeled GitHub read is
+              // an empty list or a 404, never a bare `{ ok: true }` (no real
+              // server sends one; a model cannot read it as "nothing there").
+              unmodeled: 'realistic',
               ...(options.instructions === false ? { instructions: false } : {}),
               ...(hard ? { answers: { ...hardGithubAnswers() } } : {}),
             }),

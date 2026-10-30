@@ -11,12 +11,16 @@ export const GITHUB_DIRECT_SYSTEM_PROMPT =
  * over the fake's canned answers.
  */
 export function githubWorld(
-  options: WorldOptions & { answers?: Record<string, FakeAnswer> } = {},
+  options: WorldOptions & {
+    answers?: Record<string, FakeAnswer>;
+    unmodeled?: GithubFakeOptions['unmodeled'];
+  } = {},
 ): ServerWorld {
   const fakeOptions: GithubFakeOptions = {
     ...(options.instructions === false ? { instructions: false as const } : {}),
     ...(options.onCall !== undefined ? { onCall: options.onCall } : {}),
     ...(options.answers !== undefined ? { answers: options.answers } : {}),
+    ...(options.unmodeled !== undefined ? { unmodeled: options.unmodeled } : {}),
   };
   const fake = createGithubFake(fakeOptions);
   return {
