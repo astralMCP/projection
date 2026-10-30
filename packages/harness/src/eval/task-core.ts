@@ -18,10 +18,26 @@ import type { WorldFacts, WorldName, WorldOptions } from './world.js';
  * (one answer over N ≥ 25 items), `bulk-write` (8–20 approved writes),
  * `chain` (five or more dependent hops across boxes), `pagination` (the
  * answer hides past a default page or result cap), `branching` (a per-item
- * choice between two different writes).
+ * choice between two different writes). The `workplace` tier adds
+ * `lookup` (one box, not named), `fan-out` (per-item gated writes),
+ * `idempotency` (part or all of the work is already done), `conflict`
+ * (two sources disagree; the prompt names the authority), `injection` (a
+ * data field carries an instruction) and `degradation` (one tool fails).
  */
 export type TaskKind =
-  'single' | 'multi' | 'bulk-read' | 'bulk-write' | 'chain' | 'pagination' | 'branching';
+  | 'single'
+  | 'multi'
+  | 'bulk-read'
+  | 'bulk-write'
+  | 'chain'
+  | 'pagination'
+  | 'branching'
+  | 'lookup'
+  | 'fan-out'
+  | 'idempotency'
+  | 'conflict'
+  | 'injection'
+  | 'degradation';
 
 /**
  * Tiers: `basic` and `hard` run against the offline GitHub fake;
@@ -29,9 +45,13 @@ export type TaskKind =
  * against the real MongoDB MCP server on a throwaway deployment; `multi`
  * against all three at once, each a box under an alias (multi-world.ts);
  * `multi-hard` against the same three boxes with much more data in them
- * (multi-hard-tasks.ts) — opt-in only, never part of the default matrix.
+ * (multi-hard-tasks.ts) — opt-in only, never part of the default matrix;
+ * `workplace` against five in-process fakes of other popular servers
+ * (workplace-world.ts, workplace-tasks.ts) — opt-in only, and held out:
+ * a hill-climb sees its aggregate scores, never its tasks or traces.
  */
-export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard';
+export type TaskTier =
+  'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard' | 'workplace';
 export const TASK_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -39,8 +59,9 @@ export const TASK_TIERS: readonly TaskTier[] = [
   'mongodb',
   'multi',
   'multi-hard',
+  'workplace',
 ];
-/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`. */
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard` and `workplace`. */
 export const DEFAULT_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -57,6 +78,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   mongodb: 'mongodb',
   multi: 'multi',
   'multi-hard': 'multi',
+  workplace: 'workplace',
 };
 
 export function worldOf(tier: TaskTier): WorldName {

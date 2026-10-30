@@ -31,7 +31,7 @@ import { openMongodbWorld } from './mongodb-world.js';
 import { HARD_FILESYSTEM_FILES, hardMongoSeed } from './multi-hard-fixtures.js';
 import { hardGithubAnswers } from './multi-hard-github.js';
 import type {
-  BoxAlias,
+  MultiBoxAlias,
   MultiWorld,
   ServerWorld,
   WorldBox,
@@ -40,7 +40,10 @@ import type {
 } from './world.js';
 
 /** The boxes, in shelf (alias) order, and the single-server world each wraps. */
-export const MULTI_BOXES: readonly { alias: BoxAlias; world: ServerWorld['name'] }[] = [
+export const MULTI_BOXES: readonly {
+  alias: MultiBoxAlias;
+  world: 'github' | 'filesystem' | 'mongodb';
+}[] = [
   { alias: 'fs', world: 'filesystem' },
   { alias: 'github', world: 'github' },
   { alias: 'mongo', world: 'mongodb' },
@@ -55,7 +58,7 @@ export const MULTI_DIRECT_SYSTEM_PROMPT =
  * `boxDescriptions` variant is on (PROJ_EVAL_BOX_DESCRIPTIONS=1); by
  * default the boxes carry none.
  */
-export const MULTI_BOX_DESCRIPTIONS: Readonly<Record<BoxAlias, string>> = {
+export const MULTI_BOX_DESCRIPTIONS: Readonly<Record<MultiBoxAlias, string>> = {
   github: 'GitHub: issues, PRs and repos for acme/widgets',
   fs: "The user's project files",
   mongo: 'The shop MongoDB deployment',
@@ -73,7 +76,7 @@ export function qualifiedName(alias: string, name: string): string {
 export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiWorld> {
   const calls: SideEffect[] = [];
   const recorder =
-    (alias: BoxAlias) =>
+    (alias: MultiBoxAlias) =>
     (call: SideEffect): void => {
       const qualified = { tool: qualifiedName(alias, call.tool), args: call.args };
       calls.push(qualified);
@@ -107,8 +110,13 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
   const failures: unknown[] = [];
   opened.forEach((result, i) => {
     const box = MULTI_BOXES[i] as (typeof MULTI_BOXES)[number];
-    if (result.status === 'fulfilled') boxes.push({ alias: box.alias, world: result.value });
-    else failures.push(result.reason);
+    if (result.status === 'fulfilled') {
+      boxes.push({
+        alias: box.alias,
+        world: result.value,
+        description: MULTI_BOX_DESCRIPTIONS[box.alias],
+      });
+    } else failures.push(result.reason);
   });
   const close = async (): Promise<void> => {
     await Promise.all(boxes.map((box) => box.world.close().catch(() => {})));

@@ -83,7 +83,8 @@ import {
 import { SHOP_DB, withMongodb } from './mongodb-world.js';
 import { qualifiedName } from './multi-world.js';
 import { containsText, sameText, type EvalTask, type TaskKind } from './task-core.js';
-import type { BoxAlias } from './world.js';
+import { WORKPLACE_WRITE_TOOLS } from './workplace-world.js';
+import { BOX_ALIASES, type BoxAlias } from './world.js';
 
 /** The bare call, when `call` went to box `alias`. */
 export function unboxCall(call: SideEffect, alias: BoxAlias): SideEffect | undefined {
@@ -110,7 +111,7 @@ export function unbox(calls: SideEffect[], alias: BoxAlias): { calls: SideEffect
 /** The box a qualified call (or step name) belongs to, if it names one. */
 export function boxOf(qualified: string): BoxAlias | undefined {
   const alias = qualified.split('.', 1)[0];
-  return alias === 'github' || alias === 'fs' || alias === 'mongo' ? alias : undefined;
+  return BOX_ALIASES.find((known) => known === alias);
 }
 
 /** The boxes a multi-tier task needs: the aliases its step groups name. */
@@ -150,7 +151,7 @@ const MONGO_WRITES: ReadonlySet<string> = new Set([
 /**
  * A qualified call that changes its box's world: a GitHub tool not
  * annotated read-only, a filesystem write (a `dryRun` edit is a read), a
- * MongoDB write.
+ * MongoDB write, a workplace box's write tool (WORKPLACE_WRITE_TOOLS).
  */
 export function isBoxWrite(call: SideEffect): boolean {
   const alias = boxOf(call.tool);
@@ -163,6 +164,8 @@ export function isBoxWrite(call: SideEffect): boolean {
       return FS_WRITES.has(bare) && !(bare === 'edit_file' && call.args['dryRun'] === true);
     case 'mongo':
       return MONGO_WRITES.has(bare);
+    default:
+      return WORKPLACE_WRITE_TOOLS[alias].includes(bare);
   }
 }
 

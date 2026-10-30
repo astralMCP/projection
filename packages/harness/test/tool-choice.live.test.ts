@@ -15,11 +15,13 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
- *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard (default all but the opt-in multi-hard)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace (default all but the opt-in
+ *                          multi-hard and workplace; workplace is the held-out world, in-process, no mongod)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
- *   PROJ_EVAL_BOX_DESCRIPTIONS=1  multi tier, Projection modes: give the boxes host descriptions (default off)
+ *   PROJ_EVAL_BOX_DESCRIPTIONS=1  boxed tiers (multi, multi-hard, workplace), Projection modes: give the boxes host
+ *                          descriptions (default off)
  *   PROJ_EVAL_BATCH=1      send the model calls through the Message Batches API (50% price), every live
  *                          episode in lockstep (src/eval/batch.ts); PROJ_EVAL_CONCURRENCY is then ignored
  *   PROJ_EVAL_BATCH_WIDTH  batch mode: episodes live (world open) at once (default 24: a multi world

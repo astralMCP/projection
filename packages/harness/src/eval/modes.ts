@@ -44,7 +44,7 @@
  *
  * Both Projection modes pass no box `description`s by default; the
  * `boxDescriptions` session option (PROJ_EVAL_BOX_DESCRIPTIONS=1) passes
- * {@link MULTI_BOX_DESCRIPTIONS} as the host's descriptions instead.
+ * each box's host description (MULTI_BOX_DESCRIPTIONS, WORKPLACE_BOX_DESCRIPTIONS) instead.
  *
  * `projection-boxes` exists only for the multi world (a single-server
  * facade has no boxes and no `catalog` option); the runner skips it for
@@ -60,8 +60,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createMcpHandler, InMemoryTransport, type McpServer } from '@modelcontextprotocol/server';
 import { MRTR_PROTOCOL_REVISION, wrapMcpServer, wrapMcpServers } from '@astral-mcp/projection';
 import type { AgentRuntime, AgentTool, AgentToolResult } from './agent.js';
-import { MULTI_BOX_DESCRIPTIONS } from './multi-world.js';
-import type { EvalWorld, MultiWorld, WorldName } from './world.js';
+import { isBoxedWorldName, type EvalWorld, type MultiWorld, type WorldName } from './world.js';
 
 export type EvalMode = 'direct' | 'projection' | 'projection-boxes';
 export const EVAL_MODES: readonly EvalMode[] = ['direct', 'projection', 'projection-boxes'];
@@ -88,7 +87,7 @@ export function resolveModes(spec: string | undefined): EvalMode[] {
  * always did.
  */
 export function modeApplies(mode: EvalMode, world: WorldName): boolean {
-  return mode !== 'projection-boxes' || world === 'multi';
+  return mode !== 'projection-boxes' || isBoxedWorldName(world);
 }
 
 /** Whether `mode` reaches the world through a Projection facade. */
@@ -118,7 +117,7 @@ export function hostToolName(alias: string, name: string): string {
 /** Options for opening a mode's session. */
 export interface SessionOptions {
   /**
-   * Multi world, Projection modes: pass {@link MULTI_BOX_DESCRIPTIONS} to
+   * Boxed worlds, Projection modes: pass each box's `description` to
    * `wrapMcpServers` as the host's box descriptions. Default false.
    */
   boxDescriptions?: boolean;
@@ -245,7 +244,7 @@ export function toolResultText(result: ToolCallResultView): AgentToolResult {
 
 /** Direct: the world's tools verbatim over an in-memory MCP connection. */
 export async function openDirectSession(world: EvalWorld): Promise<ModeSession> {
-  if (world.name === 'multi') return openMultiDirectSession(world);
+  if ('boxes' in world) return openMultiDirectSession(world);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client(CLIENT_INFO, { capabilities: {} });
   await world.server.connect(serverTransport);
@@ -367,7 +366,7 @@ export async function openProjectionSession(
   world: EvalWorld,
   options: SessionOptions = {},
 ): Promise<ModeSession> {
-  if (world.name === 'multi') return openMultiProjectionSession(world, 'projection', options);
+  if ('boxes' in world) return openMultiProjectionSession(world, 'projection', options);
   const facade = await wrapMcpServer(world.server, { blob: { key: randomBytes(32) } });
   return connectFacade(
     'projection',
@@ -393,8 +392,8 @@ export async function openMultiProjectionSession(
     Object.fromEntries(
       world.boxes.map((box) => [
         box.alias,
-        options.boxDescriptions === true
-          ? { source: box.world.server, description: MULTI_BOX_DESCRIPTIONS[box.alias] }
+        options.boxDescriptions === true && box.description !== undefined
+          ? { source: box.world.server, description: box.description }
           : box.world.server,
       ]),
     );
@@ -476,9 +475,9 @@ export function openSession(
     case 'projection':
       return openProjectionSession(world, options);
     case 'projection-boxes':
-      if (world.name !== 'multi') {
+      if (!('boxes' in world)) {
         return Promise.reject(
-          new Error(`mode projection-boxes needs the multi world, not ${world.name}`),
+          new Error(`mode projection-boxes needs a boxed world, not ${world.name}`),
         );
       }
       return openMultiProjectionSession(world, mode, options);

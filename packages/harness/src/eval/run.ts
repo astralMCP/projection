@@ -90,7 +90,13 @@ import {
   type TaskKind,
   type TaskTier,
 } from './tasks.js';
-import { openWorld, type BoxAlias, type EvalWorld, type WorldName } from './world.js';
+import {
+  isBoxedWorldName,
+  openWorld,
+  type BoxAlias,
+  type EvalWorld,
+  type WorldName,
+} from './world.js';
 
 export type ProjectionRoute = 'call_tool' | 'execute_machine' | 'both' | 'neither';
 
@@ -129,7 +135,7 @@ export function boxRouting(
   upstreamCalls: readonly SideEffect[],
   toolUses: readonly ToolUseRecord[],
 ): BoxRouting | undefined {
-  if (worldOf(task.tier) !== 'multi') return undefined;
+  if (!isBoxedWorldName(worldOf(task.tier))) return undefined;
   const needed = taskBoxes(task);
   const isNeeded = (call: SideEffect): boolean => {
     const alias = boxOf(call.tool);
@@ -328,7 +334,7 @@ function summarizeProjectionUse(
     searchTools: count('search_tools'),
     describeTool: count('describe_tool'),
     discoverApis: count('discover_apis'),
-    ...(world.name === 'multi'
+    ...('boxes' in world
       ? {
           searchBoxes: Object.fromEntries(
             world.boxes.map((box) => [box.alias, count(`search_${box.alias}`)]),
@@ -425,7 +431,7 @@ async function scoreEpisode(
     mode,
     task: task.name,
     tier: task.tier,
-    world: world.name,
+    world: worldOf(task.tier),
     kind: task.kind,
     run,
     success,

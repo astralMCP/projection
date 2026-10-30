@@ -2,7 +2,8 @@
  * Tool-choice tasks, every tier: the GitHub tiers (`basic`, `hard` —
  * github-tasks.ts), `filesystem` (filesystem-tasks.ts), `mongodb`
  * (mongodb-tasks.ts), `multi` (multi-tasks.ts) and the opt-in
- * `multi-hard` (multi-hard-tasks.ts), plus the
+ * `multi-hard` (multi-hard-tasks.ts) and the opt-in, held-out
+ * `workplace` (workplace-tasks.ts), plus the
  * PROJ_EVAL_TIERS / PROJ_EVAL_TASKS resolvers.
  */
 
@@ -11,6 +12,7 @@ import { BASIC_TASKS, HARD_TASKS } from './github-tasks.js';
 import { MONGODB_TASKS } from './mongodb-tasks.js';
 import { MULTI_HARD_TASKS } from './multi-hard-tasks.js';
 import { MULTI_TASKS } from './multi-tasks.js';
+import { WORKPLACE_TASKS } from './workplace-tasks.js';
 import { DEFAULT_TIERS, TASK_TIERS, type EvalTask, type TaskTier } from './task-core.js';
 
 export {
@@ -34,11 +36,12 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
   ...MONGODB_TASKS,
   ...MULTI_TASKS,
   ...MULTI_HARD_TASKS,
+  ...WORKPLACE_TASKS,
 ];
 
 /**
  * Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names
- * throw. Unset selects {@link DEFAULT_TIERS} (`multi-hard` is opt-in).
+ * throw. Unset selects {@link DEFAULT_TIERS} (`multi-hard` and `workplace` are opt-in).
  */
 export function resolveTiers(spec: string | undefined): TaskTier[] {
   if (spec === undefined || spec.trim() === '') return [...DEFAULT_TIERS];

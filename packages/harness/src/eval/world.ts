@@ -13,7 +13,10 @@
  * - **mongodb**: the official MongoDB MCP server on a seeded throwaway
  *   `mongod`, likewise behind a recording proxy (mongodb-world.ts);
  * - **multi**: all three at once, each a box under an alias (`github`,
- *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts).
+ *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts);
+ * - **workplace**: five in-process fakes of other popular servers (chat,
+ *   docs, errors, mail, tracker) as boxes, stateful per episode
+ *   (workplace-world.ts) — the opt-in `workplace` tier's world.
  *
  * Real-server effects land for real; tasks verify the end state (on disk,
  * in the database) as well as the recorded calls.
@@ -25,10 +28,20 @@ import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
 import { openMultiWorld } from './multi-world.js';
+import { openWorkplaceWorld, type WorkplaceState } from './workplace-world.js';
 
-export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi';
-/** The worlds that are one upstream server. */
-export type ServerWorldName = Exclude<WorldName, 'multi'>;
+export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace';
+/** The worlds made of several boxes. */
+export type BoxedWorldName = 'multi' | 'workplace';
+/** The workplace world's boxes (each a server world named by its alias). */
+export type WorkplaceBoxAlias = 'chat' | 'docs' | 'errors' | 'mail' | 'tracker';
+/** The worlds that are one upstream server (a workplace box is one too, though never opened alone). */
+export type ServerWorldName = Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias;
+
+/** Whether a world name is a boxed (multi-server) world. */
+export function isBoxedWorldName(name: WorldName): name is BoxedWorldName {
+  return name === 'multi' || name === 'workplace';
+}
 
 /** One tool as a world serves it (the model sees name, description, schema). */
 export interface WorldTool {
@@ -57,10 +70,13 @@ export interface WorldFacts {
   root?: string;
   /** mongodb: the episode's deployment, for `verify` to query through the driver. */
   mongoUri?: string;
+  /** workplace: every box's live state, for `verify` to read the end state. */
+  workplace?: WorkplaceState;
 }
 
 interface WorldBase {
-  name: WorldName;
+  /** A world's name; a workplace box (never opened alone) is named by its alias. */
+  name: WorldName | WorkplaceBoxAlias;
   readonly tools: readonly WorldTool[];
   /** The `instructions` the upstream advertises (undefined when none). */
   readonly instructions: string | undefined;
@@ -86,12 +102,26 @@ export interface ServerWorld extends WorldBase {
 }
 
 /** The aliases of the multi world's boxes. */
-export type BoxAlias = 'github' | 'fs' | 'mongo';
+export type MultiBoxAlias = 'github' | 'fs' | 'mongo';
+/** Any box alias, multi or workplace. */
+export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias;
+export const BOX_ALIASES: readonly BoxAlias[] = [
+  'github',
+  'fs',
+  'mongo',
+  'chat',
+  'docs',
+  'errors',
+  'mail',
+  'tracker',
+];
 
-/** One box of the multi world: a single-server world under its alias. */
+/** One box of a boxed world: a single-server world under its alias. */
 export interface WorldBox {
   alias: BoxAlias;
   world: ServerWorld;
+  /** The host's description of the box (passed to Projection only with PROJ_EVAL_BOX_DESCRIPTIONS=1). */
+  description?: string;
 }
 
 /**
@@ -101,7 +131,7 @@ export interface WorldBox {
  * undefined (each box keeps its own); `facts` merges the boxes' facts.
  */
 export interface MultiWorld extends WorldBase {
-  name: 'multi';
+  name: BoxedWorldName;
   readonly boxes: readonly WorldBox[];
 }
 
@@ -137,5 +167,7 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
       return openMongodbWorld(options);
     case 'multi':
       return openMultiWorld(options);
+    case 'workplace':
+      return Promise.resolve(openWorkplaceWorld(options));
   }
 }

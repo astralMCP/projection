@@ -129,7 +129,7 @@ describe('filesystem world', () => {
   it('mirrors the real output schemas: served verbatim, and describe_tool through Projection shows them', async () => {
     const listed = await openWorld('filesystem');
     try {
-      if (listed.name === 'multi') throw new Error('expected a single-server world');
+      if ('boxes' in listed) throw new Error('expected a single-server world');
       // The reference server declares an output schema on every tool.
       expect(listed.tools.filter((t) => t.outputSchema !== undefined)).toHaveLength(14);
       const client = new Client({ name: 'proxy-listing', version: '0.0.0' }, { capabilities: {} });
