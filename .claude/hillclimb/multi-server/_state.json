@@ -260,6 +260,11 @@
       "unit": "$"
     },
     {
+      "id": "standard_cost_usd",
+      "label": "Std cost",
+      "unit": "$"
+    },
+    {
       "id": "latency_s",
       "label": "Latency",
       "unit": "s"
@@ -324,7 +329,7 @@
       "sonnet-low": 4.6
     }
   },
-  "spend_note": "cumulative spend = node export.mjs spend <flow> (sum of cost_usd over every variant dir incl. _preflight)",
+  "spend_note": "cumulative spend = node export.mjs spend <flow> (sum of cost_usd over every variant dir incl. _preflight). cost_usd is the actual eval spend (list price, x0.5 for batch episodes); standard_cost_usd is the comparable host-cost metric (harness standardUsd), not spend.",
   "rounds": [
     {
       "round": 1,

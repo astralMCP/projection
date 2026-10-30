@@ -11,6 +11,14 @@
 // paired-by-task noise floor for the gating cells, served models, spend, and
 // with --failures every failing gating episode. --crosscheck compares the
 // recomputed cell counts with the harness's own summary in raw/*.json.
+//
+// Money: `$/episode` and `spend` are the actual eval spend (cost_usd, batch
+// discount included), `$/episode` over scored episodes and `spend` over
+// every billed one. `standard_cost_usd` is the mean standard host cost per
+// scored episode and `standard_cost_per_success` every billed episode's
+// standard cost (harness errors included) over the passes: warm static
+// prefix, conversation cached incrementally, no batch discount, so they
+// compare across modes and runs. "not measured" when a row has none.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -67,6 +75,10 @@ function cell(phase, mode, model) {
         : 1.96 * Math.sqrt((2 * pAll * (1 - pAll)) / rs.length);
   const spend = [...rs, ...es].reduce((s, r) => s + (r.cost_usd ?? 0), 0);
   const cost = rs.reduce((s, r) => s + (r.cost_usd ?? 0), 0);
+  const measured = [...rs, ...es].every((r) => typeof r.standard_cost_usd === 'number');
+  const std = (xs) => xs.reduce((s, r) => s + r.standard_cost_usd, 0);
+  const stdPerEp = measured && rs.length ? std(rs) / rs.length : null;
+  const stdPerSuccess = measured && passes > 0 ? std([...rs, ...es]) / passes : null;
   const lat = rs.map((r) => r.latency_s).sort((a, b) => a - b);
   return {
     mode,
@@ -81,6 +93,8 @@ function cell(phase, mode, model) {
     crude: rs.length ? 1 / Math.sqrt(rs.length) : 0,
     spend,
     perEp: rs.length ? cost / rs.length : 0,
+    stdPerEp,
+    stdPerSuccess,
     medLat: lat.length ? lat[lat.length >> 1] : 0,
     toolCalls: rs.length ? rs.reduce((s, r) => s + r.tool_calls, 0) / rs.length : 0,
     capped: rs.filter((r) => r.meta.turn_capped).length,
@@ -90,14 +104,15 @@ function cell(phase, mode, model) {
 
 const phases = new Set([...rows.map((r) => r.meta.phase), ...errors.map((e) => e.phase)]);
 const out = [];
+const usd = (x, places) => (x === null ? 'not measured' : `$${x.toFixed(places)}`);
 const line = (c, label) =>
-  `| ${label} | ${c.mode} | ${c.model} | ${c.full}/${c.n} | ${c.passes}/${c.scored} (${pct(c.passes, c.scored)}) | ${c.errors} | ${c.capped} | ±${(100 * c.pairedHalf).toFixed(1)} (crude ±${(100 * c.crude).toFixed(1)}) | $${c.perEp.toFixed(4)} | ${c.medLat.toFixed(1)}s | ${c.toolCalls.toFixed(1)} | $${c.spend.toFixed(2)} |`;
+  `| ${label} | ${c.mode} | ${c.model} | ${c.full}/${c.n} | ${c.passes}/${c.scored} (${pct(c.passes, c.scored)}) | ${c.errors} | ${c.capped} | ±${(100 * c.pairedHalf).toFixed(1)} (crude ±${(100 * c.crude).toFixed(1)}) | $${c.perEp.toFixed(4)} | ${usd(c.stdPerEp, 4)} | ${usd(c.stdPerSuccess, 4)} | ${c.medLat.toFixed(1)}s | ${c.toolCalls.toFixed(1)} | $${c.spend.toFixed(2)} |`;
 out.push(`## ${variant}`);
 out.push('');
 out.push(
-  '| role | mode | model | tasks all reps | episodes | harness err | turn-capped | noise floor (paired, 95%) | $/episode | median s | tool calls | spend |',
+  '| role | mode | model | tasks all reps | episodes | harness err | turn-capped | noise floor (paired, 95%) | $/episode | standard_cost_usd | standard_cost_per_success | median s | tool calls | spend |',
 );
-out.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
+out.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
 const gating = [];
 for (const phase of ['multi', 'direct']) {
   if (!phases.has(phase)) continue;
@@ -168,7 +183,7 @@ if (flags.includes('--crosscheck')) {
       const ok = mine.reduce((s, r) => s + r.grade.pass, 0);
       const flag = ok === c.successes && mine.length === c.scored ? 'ok' : 'MISMATCH';
       out.push(
-        `- ${phase} ${c.model}/${c.mode}: harness ${c.successes}/${c.scored} (est $${c.estimatedUsd.toFixed(2)}), rows ${ok}/${mine.length} -> ${flag}`,
+        `- ${phase} ${c.model}/${c.mode}: harness ${c.successes}/${c.scored} (est $${c.estimatedUsd.toFixed(2)}, std ${typeof c.standardUsd === 'number' ? `$${c.standardUsd.toFixed(2)}` : 'not measured'}), rows ${ok}/${mine.length} -> ${flag}`,
       );
     }
   }
