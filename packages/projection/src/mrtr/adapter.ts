@@ -13,7 +13,7 @@ import {
 } from '../blob/index.js';
 import { approvalSubject, blobKeyDomain } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
-import { runSegment } from '../machine-host/index.js';
+import { alreadyRanNote, DO_NOT_REPEAT_HINT, runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { legacySuspendError } from './legacy-gate.js';
@@ -269,6 +269,7 @@ function toToolCallResult(
       return {
         content: [
           { type: 'text', text: JSON.stringify(outcome.output ?? null, null, 2) },
+          ...approvalSummaryBlocks(outcome.audit),
           ...logBlocks(outcome.logs),
         ],
         structuredContent: {
@@ -284,6 +285,33 @@ function toToolCallResult(
     case 'error':
       return errorResult(outcome.error);
   }
+}
+
+/**
+ * A completed workflow's approvals, counted per tool, as a text block after
+ * the output: the calls that were approved and ran (a failure among them
+ * reached the machine as TOOL_ERROR), and the ones the user declined. Empty
+ * when nothing was approved or declined. The full audit rides in
+ * `structuredContent.approvals`, which many hosts do not show the model;
+ * without this line a machine whose output omits its writes reads as
+ * "nothing happened", and the model runs it again.
+ */
+function approvalSummaryBlocks(audit: readonly AuditEntry[]): { type: 'text'; text: string }[] {
+  const tally = (decision: AuditEntry['decision']): string[] => {
+    const counts = new Map<string, number>();
+    for (const entry of audit) {
+      if (entry.decision === decision) counts.set(entry.tool, (counts.get(entry.tool) ?? 0) + 1);
+    }
+    return [...counts].map(([tool, n]) => `${tool} ×${n}`);
+  };
+  const ran = tally('approved');
+  const declined = tally('declined');
+  if (ran.length === 0 && declined.length === 0) return [];
+  const parts = [
+    ...(ran.length > 0 ? [`approved and ran: ${ran.join(', ')}`] : []),
+    ...(declined.length > 0 ? [`declined, did not run: ${declined.join(', ')}`] : []),
+  ];
+  return [{ type: 'text', text: `Approvals in this workflow: ${parts.join('; ')}.` }];
 }
 
 function suspendResult(
@@ -309,8 +337,8 @@ function suspendResult(
   if (outcome.trip > caps.maxRoundTrips) {
     return fail(
       'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
-      `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips.`,
+      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips${alreadyRanNote(outcome.audit, 'before the limit')}`,
+      `${DO_NOT_REPEAT_HINT} For the rest, send every remaining write from one state, so they are approved together in one round trip (the fan-out example in discover_apis); a machine needs at most ${caps.maxRoundTrips} approval round trips.`,
     );
   }
 

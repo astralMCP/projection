@@ -80,8 +80,15 @@ import { assertApprovalsMode } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { generateToolTypes, type ToolTypeText } from '../typegen/index.js';
-import { isRecord, type ApprovalsMode, type StructuredError, type ToolCatalog } from '../types.js';
+import {
+  clampCaps,
+  isRecord,
+  type ApprovalsMode,
+  type StructuredError,
+  type ToolCatalog,
+} from '../types.js';
 import type { ProjectionFacade } from '../wrap.js';
+import { roundTripSentence } from '../machine-host/index.js';
 import {
   assertPolicyKeys,
   resolveCatalogOptions,
@@ -189,7 +196,10 @@ export async function wrapMcpServers(
       overview,
       toolTypes,
       // The code-mode resources (R3, R45), then the box overviews (R43, R45).
-      resources: [...buildResources(view, dts, policySettings), ...boxOverviewResources(view)],
+      resources: [
+        ...buildResources(view, dts, policySettings, clampCaps(options.caps ?? {}).maxRoundTrips),
+        ...boxOverviewResources(view),
+      ],
       instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
       options,
       policySettings,
@@ -353,31 +363,37 @@ const DESCRIBE_TOOL_TYPES_POINTER = ` Pass types: true to also get the tool's ge
 
 const CALL_TOOL_CODE_MODE_POINTER = ` For loops or branching over results, many steps, or a workflow worth saving, author a machine and use execute_machine instead.`;
 
-const EXECUTE_MACHINE_BODY = `Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+function executeMachineBody(maxRoundTrips: number): string {
+  return `Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+
+${roundTripSentence(maxRoundTrips)}
 
 Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
+}
 
 const DISCOVER_APIS_DESCRIPTION = `Return the tool type definitions of every toolbox (tools.<box>.<tool>), the machine authoring contract, worked examples and each box's guidance. Call this before authoring a machine for execute_machine.`;
 
 /** execute_machine when it is the only way to run a tool (code mode only). */
-const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.\n\n${EXECUTE_MACHINE_BODY}`;
+const EXECUTE_MACHINE_LEAD = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.`;
 
 /**
  * execute_machine beside the catalog (R29): leads with when a machine is
  * worth it and sends short lookup-then-act chains to call_tool, where the
  * model reads each result before the next step.
  */
-const EXECUTE_MACHINE_ROUTED_DESCRIPTION = `Run a multi-step workflow — loops, branching over results, many steps, or one worth saving — as an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes. For a short lookup-then-act chain, use call_tool for each step instead.\n\n${EXECUTE_MACHINE_BODY}`;
+const EXECUTE_MACHINE_ROUTED_LEAD = `Run a multi-step workflow — loops, branching over results, many steps, or one worth saving — as an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes. For a short lookup-then-act chain, use call_tool for each step instead.`;
 
-/** The code-mode tool copy for a projection selection (R29). */
-function codeModeCopy(projections: Readonly<ProjectionSelection>): {
+/** The code-mode tool copy for a projection selection (R29) and round-trip cap (R18). */
+function codeModeCopy(
+  projections: Readonly<ProjectionSelection>,
+  maxRoundTrips: number,
+): {
   executeMachine: string;
   discoverApis: string;
 } {
+  const lead = projections.catalog ? EXECUTE_MACHINE_ROUTED_LEAD : EXECUTE_MACHINE_LEAD;
   return {
-    executeMachine: projections.catalog
-      ? EXECUTE_MACHINE_ROUTED_DESCRIPTION
-      : EXECUTE_MACHINE_DESCRIPTION,
+    executeMachine: `${lead}\n\n${executeMachineBody(maxRoundTrips)}`,
     discoverApis: DISCOVER_APIS_DESCRIPTION,
   };
 }
@@ -502,6 +518,7 @@ class MultiFacade implements MultiProjectionFacade {
       resources: this.resources,
       // The samples are picked under the facade's policy (R45).
       policy: this.deps.policySettings,
+      maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
     });
   }
@@ -579,7 +596,13 @@ class MultiFacade implements MultiProjectionFacade {
     const era = options?.era;
     if (this.projections.codeMode) {
       // The workflow prompts name the boxes by alias (R39): they read the view.
-      registerCodeModeTools(server, era, this, codeModeCopy(this.projections), this.deps.view);
+      registerCodeModeTools(
+        server,
+        era,
+        this,
+        codeModeCopy(this.projections, clampCaps(this.deps.options.caps ?? {}).maxRoundTrips),
+        this.deps.view,
+      );
     }
     if (this.projections.catalog) {
       registerCatalogTools(server, era, this, this.copy);

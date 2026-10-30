@@ -7,7 +7,12 @@
  * it wants them. Clients with weak resource support still function.
  */
 
-import { authoringContract, sampleNote, type ToolSamples } from '../machine-host/index.js';
+import {
+  authoringContract,
+  fanOutExample,
+  sampleNote,
+  type ToolSamples,
+} from '../machine-host/index.js';
 import { DASHBOARD_HTML, DASHBOARD_RESOURCE_URI, MCP_APP_MIME_TYPE } from '../apps/dashboard.js';
 import {
   boxesLabel,
@@ -28,6 +33,7 @@ export const RESOURCE_URIS = {
   contract: 'projection://docs/authoring-contract.md',
   happyPath: 'projection://examples/happy-path.ts',
   denialFallback: 'projection://examples/denial-fallback.ts',
+  fanOut: 'projection://examples/fan-out.ts',
 } as const;
 
 /** One resource Projection serves, ready to register on the MCP server. */
@@ -209,8 +215,10 @@ export function buildResources(
   catalog: ServerCatalog,
   dts: string,
   policy?: PolicyOptions,
+  maxRoundTrips?: number,
 ): ProjectionResource[] {
   const subject = codeModeSubject(catalog, policy);
+  const contractOptions = maxRoundTrips !== undefined ? { maxRoundTrips } : {};
   return [
     {
       uri: RESOURCE_URIS.toolTypes,
@@ -224,7 +232,7 @@ export function buildResources(
       name: 'authoring-contract.md',
       description: 'Rules an authored machine must follow.',
       mimeType: 'text/markdown',
-      text: authoringContract(subject.samples),
+      text: authoringContract(subject.samples, contractOptions),
     },
     {
       uri: RESOURCE_URIS.happyPath,
@@ -239,6 +247,13 @@ export function buildResources(
       description: 'Example machine: continues gracefully when approval is declined.',
       mimeType: 'text/plain',
       text: exampleDenialFallback(subject.samples),
+    },
+    {
+      uri: RESOURCE_URIS.fanOut,
+      name: 'fan-out.ts',
+      description: 'Example machine: many writes from one state, approved in one round trip.',
+      mimeType: 'text/plain',
+      text: fanOutExample(subject.samples),
     },
     {
       // MCP Apps dashboard (PRD 12.1): rendered by app-capable hosts when
@@ -283,6 +298,8 @@ export interface DiscoverApisOptions {
    * multi-server view (R45, {@link toolSamples}).
    */
   policy?: PolicyOptions;
+  /** The facade's approval round-trip cap (R18), which the contract states. Default 8. */
+  maxRoundTrips?: number;
 }
 
 /** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
@@ -327,7 +344,10 @@ export function discoverApis(
     '',
     toolsSection,
     '',
-    authoringContract(subject.samples),
+    authoringContract(
+      subject.samples,
+      options.maxRoundTrips !== undefined ? { maxRoundTrips: options.maxRoundTrips } : {},
+    ),
   ].join('\n');
 
   const links: ContentBlock[] = (options.resources ?? buildResources(catalog, ''))

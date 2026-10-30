@@ -10,6 +10,7 @@ import {
   EXAMPLE_HAPPY_PATH,
   RESOURCE_URIS,
 } from '../../src/mrtr/index.js';
+import { fanOutExample } from '../../src/machine-host/index.js';
 import { generateToolTypes } from '../../src/typegen/index.js';
 import { CATALOG } from '../machine-host/fixtures.js';
 
@@ -58,6 +59,29 @@ describe('discover_apis (R3)', () => {
     expect(byUri.get(RESOURCE_URIS.denialFallback)?.text).toBe(EXAMPLE_DENIAL_FALLBACK);
     // The denial example must actually demonstrate handling a denial.
     expect(EXAMPLE_DENIAL_FALLBACK).toContain('TOOL_DENIED');
+    expect(byUri.get(RESOURCE_URIS.fanOut)?.text).toBe(fanOutExample());
+  });
+
+  it('states the round-trip budget and inlines the fan-out example (R15, R18)', () => {
+    const text = inline(discoverApis(CATALOG, overview));
+    expect(text).toContain('a workflow gets at most 8.');
+    expect(text).toContain('issue EVERY write from ONE state');
+    expect(text).toContain('Example — fan-out');
+    expect(text).toContain('enqueue(toolCall(');
+    // The facade's own cap, when it is lowered.
+    const lowered = inline(discoverApis(CATALOG, overview, { maxRoundTrips: 3 }));
+    expect(lowered).toContain('a workflow gets at most 3.');
+    expect(lowered).not.toContain('at most 8');
+    expect(
+      buildResources(CATALOG, dts, undefined, 3).find((r) => r.uri === RESOURCE_URIS.contract)
+        ?.text,
+    ).toContain('a workflow gets at most 3.');
+  });
+
+  it("says the code is JavaScript unless lang is 'ts'", () => {
+    expect(inline(discoverApis(CATALOG, overview))).toContain(
+      "The code is JavaScript unless you pass lang: 'ts' to execute_machine",
+    );
   });
 });
 

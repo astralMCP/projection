@@ -1310,3 +1310,45 @@ much more data in all three boxes.
   then first number) or a final `ANSWER:` line. Writes are graded on the
   exact recorded set or the real end state, and any write outside the set
   is forbidden.
+
+## D21 — Code mode teaches fan-out; the round-trip cap and completed results say what ran (2026-10-30)
+
+On the `multi-hard` tier, models that used code mode wrote bulk changes as a
+loop, one gated write per state. Each write was its own approval round trip,
+so the 9th hit R18's cap of 8. The terminal error said only that the limit
+was reached; the 8 writes it had approved had already run, and models read
+it as "nothing happened" and redid them (duplicate issues and comments).
+Approval semantics and the cap stay as they are. What the model is told
+changes:
+
+- **The contract and `execute_machine` state the budget.** Rule 5 says each
+  pause is one round trip, a workflow gets at most the facade's
+  `maxRoundTrips`, every gated call pending at a pause shares it, and bulk
+  writes go out from ONE state after the reads. The figure is the facade's
+  clamped cap, not a constant. `execute_machine`'s description carries the
+  same sentence on single- and multi-server facades.
+- **A fan-out example.** `fanOutExample()` (inline in the contract, and
+  `projection://examples/fan-out.ts`): `enqueueActions` sends one `toolCall`
+  per item with ids `w0…`, the state collects one event per call with
+  target-less handlers, and an `always` guard leaves once every call has
+  answered. Plain XState v5, no library helper: R15 already batches every
+  gated call queued before the machine goes quiet, so a helper would only
+  rename `enqueueActions`.
+- **Errors list what already ran.** The R18 `terminal` error at suspension
+  names each approved call (tool and compact arguments, 20 at most), or
+  says none ran, and its hint says not to repeat them. Any other error that
+  ends a workflow after approved calls ran (a resumed machine that throws or
+  gets stuck) carries the same list. In the after runs, Sonnet's fan-out
+  machines ran their writes and then got stuck in a state with no handler;
+  the bare "stuck" error read as a no-op and the writes were redone. This
+  text goes to the model only; elicitation copy is unchanged.
+- **A completed result says what was approved.** After the output, one text
+  line counts the calls that were approved and ran, and those declined, per
+  tool. The audit was already in `structuredContent.approvals`, but hosts
+  that show the model only `content` left a machine with a `null` output
+  looking like a no-op, and models reran it.
+- **`lang` copy matches the default.** The schema said the default was
+  "TypeScript-compatible parsing"; it is `js`, and TypeScript syntax (`as`
+  casts) without `lang: 'ts'` failed `validate` in a third of code-mode
+  episodes. The schema and the contract now say so. Making `ts` the default
+  is the stronger fix and is left open.

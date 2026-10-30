@@ -16,6 +16,8 @@
  * actors, which would re-execute an already-approved write.
  */
 
+import { DEFAULT_CAPS } from '../types.js';
+
 /**
  * Prelude + `toolCall` implementation, appended to the generated bridge.
  *
@@ -120,6 +122,17 @@ export interface ToolSamples {
   list: SampleTool;
 }
 
+/** The round-trip budget, as both execute_machine descriptions state it (R15, R18). */
+export function roundTripSentence(maxRoundTrips: number): string {
+  return `Each approval pause is one round trip, and a workflow gets at most ${maxRoundTrips}. Gated calls pending together are approved in one round trip, so for many writes, read first, then send every write from one state (the fan-out example in discover_apis); a loop that writes one item per state spends a round trip per write.`;
+}
+
+/** Facade settings the contract text states. */
+export interface ContractOptions {
+  /** The facade's approval round-trip cap (R18); default `DEFAULT_CAPS.maxRoundTrips`. */
+  maxRoundTrips?: number;
+}
+
 /** What the samples say about a name the facade does not serve. */
 export const SAMPLE_NAMES_NOTE = '(sample names; use the names in tools.d.ts)';
 
@@ -137,9 +150,10 @@ export function sampleNote(sample: SampleTool): string {
  * tool names are qualified. Without it the text is the single-server
  * contract, byte for byte.
  */
-export function authoringContract(samples?: ToolSamples): string {
+export function authoringContract(samples?: ToolSamples, options: ContractOptions = {}): string {
   const read = samples?.read ?? { name: 'read_file', placeholder: false };
   const gated = samples?.gated ?? { name: 'write_file', placeholder: false };
+  const trips = options.maxRoundTrips ?? DEFAULT_CAPS.maxRoundTrips;
   const qualifiedRule =
     samples === undefined
       ? ''
@@ -159,6 +173,9 @@ approval round trip, so top-level side effects are rejected.
   import { toolCall } from '@astral-mcp/tools';
 
   export default setup({}).createMachine({ /* ... */ });
+
+The code is JavaScript unless you pass lang: 'ts' to execute_machine; pass it
+whenever you use TypeScript syntax (type annotations, as casts).
 
 Rules:
 1. Default-export a machine built with XState v5 setup(...).createMachine(...).
@@ -183,7 +200,13 @@ Rules:
      on: { TOOL_RESULT: { guard: whenCall('a'), target: 'done' } },
 5. Tools marked "asks for approval" pause the machine for user approval;
    tools marked "runs immediately" do not. The arguments captured at that
-   moment are the arguments that execute.
+   moment are the arguments that execute. Each pause is one approval round
+   trip, and a workflow gets at most ${trips}. Every gated call pending when
+   the machine pauses is approved in that same round trip. So for bulk
+   writes, do the reads first, then issue EVERY write from ONE state (one
+   entry action that sends all the toolCalls, or a parallel state) and
+   collect the results there: see the fan-out example. A loop that writes
+   one item per state spends one round trip per write and fails after ${trips}.
 6. Only 'xstate' and '@astral-mcp/tools' resolve as imports. There is no
    filesystem, no network, no fetch. All working state lives in context.
 7. Finish by reaching a final state. Use the machine's output for the result.
@@ -245,8 +268,65 @@ Example — handling a denied approval (run with input: { path }):
     },
     output: ({ context }) => ({ status: context.status }),
   });
-`;
+
+Example — fan-out: every write in one state, approved in one round trip
+(run with input: { paths }; do the reads the writes depend on first, in
+earlier states, and keep what they return in context):
+
+${indent(fanOutExample(samples))}`;
 }
 
 /** The single-server authoring contract (R3). */
 export const AUTHORING_CONTRACT = authoringContract();
+
+/**
+ * The fan-out example (R15, R18): one entry action sends every gated call,
+ * so they all pend at once and share one approval round trip; the state
+ * collects one event per call and leaves once every call has answered.
+ * Served inline in the contract and as the `fan-out.ts` resource;
+ * `samples` as for {@link authoringContract}.
+ */
+export function fanOutExample(samples?: ToolSamples): string {
+  const gated = samples?.gated ?? { name: 'write_file', placeholder: false };
+  return `import { setup, assign, enqueueActions } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'writeMany',
+  context: ({ input }) => ({ paths: input.paths, written: [], skipped: [], failed: [] }),
+  initial: 'writing',
+  states: {
+    writing: {
+      // One toolCall per item, all sent from this one entry action.
+      entry: enqueueActions(({ context, enqueue }) => {
+        context.paths.forEach((path, i) => {
+          enqueue(toolCall('${gated.name}', { path, content: 'hello' }, { id: 'w' + i }));${sampleNote(gated)}
+        });
+      }),
+      // One event per call arrives here; event.callId says which ('w0', 'w1', ...).
+      on: {
+        TOOL_RESULT: { actions: assign({ written: ({ context, event }) => [...context.written, event.callId] }) },
+        TOOL_DENIED: { actions: assign({ skipped: ({ context, event }) => [...context.skipped, event.callId] }) },
+        TOOL_ERROR: { actions: assign({ failed: ({ context, event }) => [...context.failed, event.callId] }) },
+      },
+      // Leave once every call has answered.
+      always: {
+        guard: ({ context }) =>
+          context.written.length + context.skipped.length + context.failed.length === context.paths.length,
+        target: 'done',
+      },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => ({ written: context.written, skipped: context.skipped, failed: context.failed }),
+});
+`;
+}
+
+/** Indent a module two spaces for the contract text; blank lines stay empty. */
+function indent(source: string): string {
+  return source
+    .split('\n')
+    .map((line) => (line.length > 0 ? `  ${line}` : line))
+    .join('\n');
+}

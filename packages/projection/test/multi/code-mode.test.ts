@@ -524,6 +524,7 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
       'projection://docs/authoring-contract.md',
       'projection://examples/happy-path.ts',
       'projection://examples/denial-fallback.ts',
+      'projection://examples/fan-out.ts',
       'projection://boxes/fs/overview.md',
       'projection://boxes/github/overview.md',
     ]);
@@ -586,6 +587,19 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
     expect(tools.find((tool) => tool.name === 'execute_machine')?.description).not.toContain(
       'call_tool',
     );
+  });
+
+  it("states the facade's round-trip cap in execute_machine and the contract (R18)", async () => {
+    const facade = await wrap({ caps: { maxRoundTrips: 5 } });
+    const c = await connectModern(facade);
+    const { tools } = await c.listTools();
+    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).toContain(
+      'a workflow gets at most 5.',
+    );
+    const inline = textOf(facade.discoverApis());
+    expect(inline).toContain('a workflow gets at most 5.');
+    // The fan-out example calls the first box's own gated tool.
+    expect(inline).toContain("enqueue(toolCall('fs.write_file'");
   });
 
   it('keeps the list inline at the threshold, and with the catalog projection off', async () => {

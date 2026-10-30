@@ -603,6 +603,15 @@ misconfiguration cannot disable the flow; non-finite values are ignored.
 | `maxStateNodes`          | 1      | 100     | 1 000  | state nodes in the machine                          |
 | `maxConsoleBytes`        | 1 KB   | 64 KB   | 256 KB | captured console output per segment                 |
 
+The model sees `maxRoundTrips`: `execute_machine`'s description and the
+authoring contract state this facade's value and teach the fan-out pattern
+(every gated write sent from one state, approved in one round trip). When
+the cap stops a workflow, or a resumed machine errors, the error lists the
+calls approved before it, which already ran, so the model does not repeat
+them. A
+completed `execute_machine` result adds one text line after the output that
+counts, per tool, the calls approved (which ran) and declined (D21).
+
 `wasmMemoryBytes` bounds real bytes: every session instantiates its own
 QuickJS WASM module with a `WebAssembly.Memory` whose `maximum` is the cap,
 so the engine refuses to grow the heap past it and the machine gets an

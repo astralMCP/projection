@@ -102,6 +102,18 @@ describe('projections switch (R1, R32)', () => {
     // No call_tool to route to: execute_machine keeps its plain description.
     const { tools } = await c.listTools();
     expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain('call_tool');
+    // It states the default round-trip budget and the fan-out pattern (R15, R18).
+    expect(tools.find((t) => t.name === 'execute_machine')?.description).toContain(
+      'a workflow gets at most 8.',
+    );
+  });
+
+  it("states the facade's own round-trip cap in execute_machine's description (R18)", async () => {
+    const c = await connect({ caps: { maxRoundTrips: 3 } });
+    const { tools } = await c.listTools();
+    const description = tools.find((t) => t.name === 'execute_machine')?.description ?? '';
+    expect(description).toContain('a workflow gets at most 3.');
+    expect(description).toContain('send every write from one state');
   });
 
   it('with both projections on, both surfaces are served and the routing preamble applies (R29)', async () => {

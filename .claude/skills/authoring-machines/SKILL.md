@@ -100,6 +100,20 @@ export default setup({}).createMachine({
   `… tool "<name>" is configured as deny`).
 - Caps (R12, overridable per facade; see R12 in `docs/PRD.md` for all ten):
   structured `cap_exceeded` errors name the limit.
+- Round trips (R15, R18): each approval pause is one round trip, 8 per
+  workflow by default. Every gated call pending when the machine pauses
+  shares that round trip, so bulk writes fan out from ONE state:
+  `entry: enqueueActions(({ context, enqueue }) => context.items.forEach((item, i) => enqueue(toolCall(name, args, { id: 'w' + i }))))`,
+  then collect `TOOL_RESULT`/`TOOL_DENIED`/`TOOL_ERROR` in that state (no
+  target) and leave with an `always` guard once every call has answered.
+  This is `fanOutExample()` in `contract.ts`, served inline in the contract
+  and as `projection://examples/fan-out.ts`. A loop that writes one item per
+  state spends one round trip per write; the 9th is a `terminal` error that
+  lists the calls that already ran (any error after approved calls ran
+  lists them too; a completed result adds a line counting them). Reads that run immediately do not use
+  round trips but count against 50 per segment.
+- Code is JavaScript unless `execute_machine` gets `lang: 'ts'`; TypeScript
+  syntax (`as` casts, annotations) without it fails `validate`.
 
 ## Errors come back structured (R25)
 

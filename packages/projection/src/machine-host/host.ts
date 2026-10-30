@@ -33,6 +33,41 @@ import {
   validationDriver,
 } from './drivers.js';
 
+/** How many calls an "already ran" note lists before it only counts them. */
+const MAX_LISTED_RAN = 20;
+
+/** Each listed call's arguments, as compact JSON, are cut at this many characters. */
+const MAX_LISTED_ARGS_CHARS = 120;
+
+/**
+ * What already happened, for an error that ends a workflow after some of
+ * its calls were approved (R18's cap, or a machine that errors or gets stuck
+ * on resume): those calls DID run, and a model that reads the error as
+ * "nothing happened" repeats them. Lists each one's tool and arguments (the
+ * model's own; this text goes to the model, never to the approver), so the
+ * model can tell which items are done. `when` places the calls, e.g.
+ * "before the limit". With `quietIfNone`, nothing is said when none ran.
+ */
+export function alreadyRanNote(
+  audit: readonly AuditEntry[],
+  when: string,
+  quietIfNone = false,
+): string {
+  const ran = audit.filter((entry) => entry.decision === 'approved');
+  if (ran.length === 0) return quietIfNone ? '' : '. No approved call had run yet.';
+  const listed = ran.slice(0, MAX_LISTED_RAN).map((entry) => {
+    const args = JSON.stringify(entry.args);
+    const cut =
+      args.length > MAX_LISTED_ARGS_CHARS ? `${args.slice(0, MAX_LISTED_ARGS_CHARS)}…` : args;
+    return `\n- ${entry.tool} ${cut}`;
+  });
+  const more = ran.length > MAX_LISTED_RAN ? `\n- …and ${ran.length - MAX_LISTED_RAN} more` : '';
+  return `. The ${ran.length} call${ran.length === 1 ? '' : 's'} approved ${when} already ran:${listed.join('')}${more}`;
+}
+
+/** The hint sentence an error carrying {@link alreadyRanNote}'s list adds. */
+export const DO_NOT_REPEAT_HINT = 'Do not repeat the calls that already ran.';
+
 /** A tool request as it comes out of the VM queue. */
 interface RawRequest {
   id: string;
@@ -153,7 +188,19 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
 
     return await runner.run(options);
   } catch (err) {
-    return { status: 'error', error: toStructuredError(err, session?.getLogs() ?? []) };
+    const error = toStructuredError(err, session?.getLogs() ?? []);
+    // Approved calls of this workflow already ran (earlier round trips, or
+    // this resume's verdicts): say so, or the model reruns them (R18, D21).
+    const note = alreadyRanNote(audit, 'earlier in this workflow', true);
+    if (note === '') return { status: 'error', error };
+    return {
+      status: 'error',
+      error: {
+        ...error,
+        message: `${error.message}${note}`,
+        hint: error.hint === '' ? DO_NOT_REPEAT_HINT : `${DO_NOT_REPEAT_HINT} ${error.hint}`,
+      },
+    };
   } finally {
     await session?.dispose();
   }

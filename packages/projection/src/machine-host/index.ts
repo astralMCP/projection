@@ -43,11 +43,14 @@
  * adapter.
  */
 
-export { runSegment, type RunSegmentOptions } from './host.js';
+export { alreadyRanNote, DO_NOT_REPEAT_HINT, runSegment, type RunSegmentOptions } from './host.js';
 export {
   AUTHORING_CONTRACT,
   authoringContract,
+  fanOutExample,
+  roundTripSentence,
   sampleNote,
   TOOL_CALL_MODULE_SOURCE,
+  type ContractOptions,
   type ToolSamples,
 } from './contract.js';
