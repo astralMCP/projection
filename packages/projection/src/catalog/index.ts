@@ -39,6 +39,7 @@ export {
   searchTools,
   summarizeTool,
   tokenize,
+  DEFAULT_QUERY_PAGE_SIZE,
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
   type BoxedSearchPage,

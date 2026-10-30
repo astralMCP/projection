@@ -140,12 +140,70 @@ describe('call_tool: validation (R35.1)', () => {
     expect(isSuspended(ok)).toBe(true);
   });
 
-  it('the validate hint names the offending argument as well as the tool', async () => {
-    const result = completed(
-      await callTool({ name: 'write_file', args: { path: '/x' } }, deps({ catalog: TYPED })),
+  it('the validate error names the offending argument and the tool, and attaches the compact input schema', async () => {
+    const d = deps({ catalog: TYPED });
+    const result = completed(await callTool({ name: 'write_file', args: { path: '/x' } }, d));
+    expect(result.isError).toBe(true);
+    const err = structured(result);
+    expect(err['message']).toBe(
+      'call_tool "write_file": argument "content" is required but missing',
     );
-    expect(String(structured(result)['hint'])).toContain('"write_file"');
-    expect(String(structured(result)['hint'])).toContain('"content"');
+    expect(err['hint']).toBe(
+      'Fix the arguments to match the input schema below and call again; no describe_tool needed.',
+    );
+    // A second text block, compact and not JSON-escaped inside the error.
+    expect(result.content).toHaveLength(2);
+    const schemaText = (result.content[1] as { text: string }).text;
+    expect(schemaText).toBe(
+      `Input schema of "write_file" (JSON Schema): ${JSON.stringify(TYPED.tools.find((t) => t.name === 'write_file')?.inputSchema)}`,
+    );
+    expect(schemaText).not.toContain('\n');
+    expect(d.executor.calls).toEqual([]);
+  });
+
+  it('attaches the input schema when args are not an object (a JSON string, say)', async () => {
+    const result = completed(
+      await callTool({ name: 'write_file', args: '{"path":"/x"}' }, deps({ catalog: TYPED })),
+    );
+    const err = structured(result);
+    expect(err['message']).toBe('call_tool args must be a JSON object');
+    expect(String(err['hint'])).toContain('not a JSON string');
+    expect((result.content[1] as { text: string }).text).toMatch(
+      /^Input schema of "write_file" \(JSON Schema\): \{"type":"object"/,
+    );
+  });
+
+  it('attaches no schema to an unknown tool or a cap error', async () => {
+    const unknown = completed(await callTool({ name: 'nope', args: 'x' }, deps()));
+    expect(unknown.content).toHaveLength(1);
+    const capped = completed(
+      await callTool(
+        { name: 'read_file', args: { blob: 'x'.repeat(2_000) } },
+        deps({ caps: { maxInputBytes: 1024 } }),
+      ),
+    );
+    expect(structured(capped)['phase']).toBe('cap_exceeded');
+    expect(capped.content).toHaveLength(1);
+  });
+
+  it('neutralizes a hostile schema in the attached copy (S5)', async () => {
+    const hostile: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'odd',
+          inputSchema: {
+            type: 'object',
+            properties: { ['p\u202e\u0085']: { type: 'string', description: 'x\u2028y' } },
+            required: ['p\u202e\u0085'],
+          },
+        }),
+      ],
+    };
+    const result = completed(await callTool({ name: 'odd', args: {} }, deps({ catalog: hostile })));
+    const schemaText = (result.content[1] as { text: string }).text;
+    expect(schemaText).not.toMatch(/[\u202e\u0085\u2028]/);
+    expect(schemaText).toContain('\ufffd');
   });
 
   it('a non-object inputSchema ({} or type string) imposes nothing: the call reaches the executor', async () => {

@@ -64,12 +64,21 @@ export interface SearchToolsArgs {
 
 /** The policy options (R14, R49) decide the rendered posture. */
 export interface SearchToolsOptions extends PolicyOptions {
-  /** Tools per page. Default {@link DEFAULT_SEARCH_PAGE_SIZE}, clamped to [1, 200]. */
+  /**
+   * Tools per page, clamped to [1, 200]. Default {@link DEFAULT_SEARCH_PAGE_SIZE}
+   * for a listing (no query), {@link DEFAULT_QUERY_PAGE_SIZE} for a query.
+   */
   pageSize?: number;
 }
 
-/** Page size — a transport bound, independent of the R37 inline threshold. */
+/** Page size of a listing — a transport bound, independent of the R37 inline threshold. */
 export const DEFAULT_SEARCH_PAGE_SIZE = 50;
+/**
+ * Page size of a query: results are ranked, and the tool a model goes on to
+ * use is almost always near the top, so a short page saves the tokens of
+ * the long tail it re-reads on every later turn. The cursor pages on.
+ */
+export const DEFAULT_QUERY_PAGE_SIZE = 8;
 const MAX_PAGE_SIZE = 200;
 /** `query` is capped (R33): its words are matched as plain substrings, never a regex. */
 export const MAX_QUERY_CHARS = 200;
@@ -149,10 +158,11 @@ function paginate<T, S>(
   rank: (query: string) => readonly T[],
   summarize: (item: T) => S,
 ): Paged<S> {
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? DEFAULT_SEARCH_PAGE_SIZE));
   // Slice, not capLength: an ellipsis would change what the filter matches.
   const rawQuery = args.query ?? '';
   const query = rawQuery.slice(0, MAX_QUERY_CHARS);
+  const defaultSize = query.length > 0 ? DEFAULT_QUERY_PAGE_SIZE : DEFAULT_SEARCH_PAGE_SIZE;
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? defaultSize));
   const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
   const offset = decodeCursor(args.cursor, query, tool);
 

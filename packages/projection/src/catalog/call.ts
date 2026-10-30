@@ -54,6 +54,7 @@ import {
 import { approvalSubject, blobKeyDomain, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
 import { unknownToolError } from './search.js';
+import { sanitizeSchema } from './schema-safety.js';
 import { validateArgsShape } from './validate-args.js';
 
 /**
@@ -107,15 +108,36 @@ const RESULT_PREVIEW_CHARS = 1_000;
 export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<ToolCallResult> {
   try {
     const caps = clampCaps(deps.caps ?? {});
-    const toolArgs = normalizeArgs(args.args, caps);
+    // First attempt only: a retry is checked against its blob, not the catalog.
+    const named = args.requestState === undefined ? findTool(deps.catalog, args.name) : undefined;
+    let toolArgs: Record<string, unknown>;
+    try {
+      toolArgs = normalizeArgs(args.args, caps);
+    } catch (err) {
+      if (named === undefined || !isArgsError(err)) throw err;
+      return argsErrorResult(
+        err,
+        named,
+        'Pass args as a JSON object (not a JSON string) that matches the input schema below.',
+      );
+    }
 
     if (args.requestState !== undefined) {
       return await resume(args, toolArgs, deps, caps);
     }
 
-    const entry = findTool(deps.catalog, args.name);
+    const entry = named;
     if (entry === undefined) throw unknownToolError(deps.catalog, args.name, 'call_tool');
-    validateArgsShape(entry.name, toolArgs, entry.inputSchema);
+    try {
+      validateArgsShape(entry.name, toolArgs, entry.inputSchema);
+    } catch (err) {
+      if (!isArgsError(err)) throw err;
+      return argsErrorResult(
+        err,
+        entry,
+        'Fix the arguments to match the input schema below and call again; no describe_tool needed.',
+      );
+    }
     // The binding text (R36), computed up front so values JSON cannot carry
     // (`undefined`, functions) are refused on every path, not only `ask`.
     const request = canonicalRequest(entry.name, toolArgs);
@@ -131,6 +153,30 @@ export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<
   } catch (err) {
     return errorResult(toStructuredError(err));
   }
+}
+
+/** A `validate` error about the arguments themselves (not a cap). */
+function isArgsError(err: unknown): err is ProjectionError {
+  return err instanceof ProjectionError && err.phase === 'validate';
+}
+
+/**
+ * The `validate` error for arguments that do not fit the tool, with the
+ * tool's input schema attached in compact form, so the model can fix the
+ * call without a describe_tool turn. The schema goes through the same S5
+ * sanitizer and neutralization as describe_tool's; it is a second text
+ * block, so it is not JSON-escaped inside the error.
+ */
+function argsErrorResult(
+  err: ProjectionError,
+  entry: ToolCatalogEntry,
+  hint: string,
+): CallToolResult {
+  const result = errorResult({ ...err.toStructured(), hint });
+  const schema = sanitizeSchema(entry.inputSchema);
+  const label = schema.truncated ? 'JSON Schema, truncated to fit the size cap' : 'JSON Schema';
+  const text = `Input schema of ${inert(entry.name)} (${label}): ${neutralizeControlChars(JSON.stringify(schema.schema))}`;
+  return { ...result, content: [...result.content, { type: 'text', text }] };
 }
 
 /** R35.1: `args` is a JSON object within `maxInputBytes`. */

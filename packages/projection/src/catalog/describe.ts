@@ -196,14 +196,14 @@ function undeclaredOutput(tool: ToolDescription): string {
 }
 
 /**
- * A sanitized schema as an indented JSON block. The sanitizer neutralizes
- * every string VALUE but keeps property names verbatim, and `JSON.stringify`
- * leaves C1 controls, U+2028/U+2029 and bidi marks raw — so the rendered text
- * is neutralized again as a whole (newlines kept: they are the pretty-print).
- * `structuredContent` carries the schema verbatim; this is the text copy.
+ * A sanitized schema as compact JSON on one indented line: no
+ * pretty-printing, which only cost tokens. The sanitizer neutralizes every
+ * string VALUE but keeps property names verbatim, and `JSON.stringify`
+ * leaves C1 controls, U+2028/U+2029 and bidi marks raw — so the rendered
+ * text is neutralized again as a whole (compact JSON has no newlines of its
+ * own; a raw one is neutralized too). `structuredContent` carries the schema
+ * verbatim; this is the text copy.
  */
 function jsonBlock(schema: Record<string, unknown>): string {
-  return indentBlock(
-    neutralizeControlChars(JSON.stringify(schema, null, 2), { allowNewline: true }),
-  );
+  return indentBlock(neutralizeControlChars(JSON.stringify(schema)));
 }
