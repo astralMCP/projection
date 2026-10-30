@@ -389,7 +389,7 @@ export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instea
 export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** Preamble when both projections are on: the routing rule (R29). */
-export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action or a short chain where you look something up and then act on it, call search_tools to find each tool, describe_tool to see its arguments, and call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** The R29 preamble variant for a projection selection. */
 export function defaultPreamble(projections: ProjectionSelection): string {

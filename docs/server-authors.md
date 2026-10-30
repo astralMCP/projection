@@ -324,6 +324,9 @@ Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> t
 - notes (1 tool)
 ```
 
+The routing sentence is the multi-server one: a short chain that looks
+something up and then acts on it goes through `call_tool` one step at a
+time, and a single-server facade keeps the plain R29 rule.
 `codeModePreamble` replaces the preamble; the shelf, header included, is
 always kept, so the qualified-name rule cannot be dropped. Approval blobs
 bind the whole alias → server mapping and are keyed separately from

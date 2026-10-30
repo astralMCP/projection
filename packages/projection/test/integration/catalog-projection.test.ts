@@ -116,16 +116,17 @@ describe('projections switch (R1, R32)', () => {
     expect(facade?.instructions).toContain(DEFAULT_ROUTING_PREAMBLE);
     expect(facade?.instructions).toContain('call_tool');
     expect(facade?.instructions).toContain('execute_machine');
-    // The catalog tools are reads: annotated so hosts never prompt for them.
     const { tools } = await c.listTools();
-    // Short lookup-then-act chains route to call_tool; machines are for loops,
-    // branching over results, many steps or a saved workflow.
-    expect(tools.find((t) => t.name === 'execute_machine')?.description).toContain(
-      'For a short lookup-then-act chain, use call_tool for each step instead.',
+    // The short-chain routing copy is multi-server only: a single-server
+    // facade keeps the plain execute_machine and call_tool descriptions.
+    expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain(
+      'lookup-then-act',
     );
-    expect(tools.find((t) => t.name === 'call_tool')?.description).toContain(
-      'successive call_tool calls, reading each result before the next',
+    expect(tools.find((t) => t.name === 'call_tool')?.description).not.toContain(
+      'successive call_tool calls',
     );
+    expect(facade?.instructions).not.toContain('short chain');
+    // The catalog tools are reads: annotated so hosts never prompt for them.
     for (const name of ['search_tools', 'describe_tool']) {
       expect(tools.find((t) => t.name === name)?.annotations?.readOnlyHint).toBe(true);
     }

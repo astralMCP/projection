@@ -110,16 +110,6 @@ describe('instructions forwarding (R29)', () => {
     expect(instructions).toContain('call_tool');
   });
 
-  it('routes short lookup-then-act chains to call_tool and reserves machines (R29)', () => {
-    expect(DEFAULT_ROUTING_PREAMBLE).toContain(
-      'short chain where you look something up and then act on it',
-    );
-    expect(DEFAULT_ROUTING_PREAMBLE).toContain('reading each result before the next');
-    expect(DEFAULT_ROUTING_PREAMBLE).toContain(
-      'only when the work loops or branches over results, takes many steps, or is a workflow worth saving',
-    );
-  });
-
   it('uses the preamble alone when the wrapped server has no instructions', () => {
     expect(buildInstructions(CATALOG)).toBe(DEFAULT_ROUTING_PREAMBLE);
   });
