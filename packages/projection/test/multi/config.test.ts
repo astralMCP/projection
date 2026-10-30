@@ -218,6 +218,7 @@ describe('facade options', () => {
     );
     expect(codeOnly.projections).toEqual({ codeMode: true, catalog: false });
     expect(codeOnly.instructions).toContain('pass the full name to toolCall in a machine:');
+    expect(codeOnly.instructions).not.toContain('look in the other boxes');
     await codeOnly.close();
     const catalogOnly = await wrapMcpServers(
       { fs: fsServer([]) },
@@ -225,6 +226,9 @@ describe('facade options', () => {
     );
     expect(catalogOnly.instructions).toContain(
       'then pass the full name to describe_tool and call_tool:',
+    );
+    expect(catalogOnly.instructions).toContain(
+      'call_tool to run it. When the user does not say which box holds the answer and a lookup in one box finds nothing, look in the other boxes that could hold it before answering that it is not there. Tools that change something may pause',
     );
     await catalogOnly.close();
 

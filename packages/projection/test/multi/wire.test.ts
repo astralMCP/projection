@@ -121,7 +121,7 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
       'successive call_tool calls, reading each result before the next',
     );
     expect(c.getInstructions()).toContain(
-      'call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results',
+      'call_tool for each step, reading each result before the next. When the user does not say which box holds the answer and a lookup in one box finds nothing, look in the other boxes that could hold it before answering that it is not there. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results',
     );
     const prompts = await c.listPrompts();
     expect(prompts.prompts.map((prompt) => prompt.name).toSorted()).toEqual([
