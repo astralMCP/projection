@@ -66,7 +66,7 @@ const readJSONL = (p) =>
 
 export const promptId = (task, model, mode) => `${task}.${model}.${mode}`;
 
-/** Phase a raw file belongs to, from its file name (multi.json, guard.json, direct.json). */
+/** Phase a raw file belongs to, from its file name (multi.json, guard.json, multi-hard.json, direct.json). */
 const phaseOf = (file) => basename(file, '.json');
 
 /** The Message Batches API bills every token at this share (the harness's BATCH_PRICE_FACTOR). */

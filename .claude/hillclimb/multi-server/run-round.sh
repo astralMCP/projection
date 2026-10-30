@@ -10,13 +10,21 @@
 #           would configure the facade (harness-change-2.md)
 #   guard   held-out guard: basic,hard,filesystem,mongodb through projection,
 #           both models, 1 rep (120 episodes)
+#   multi-hard
+#           opt-in hard tier (D20): multi-hard through projection, both models,
+#           3 reps (72 episodes), box descriptions on as in multi. Each task
+#           runs under its own 2N + 10 turn budget. Not in the default phases;
+#           name it. Its scope estimate comes from the gate's cost basis: the
+#           observed or pilot multi-hard cost once any variant has run it,
+#           else the conservative multi-hard prior ($1/episode at list price).
 #   direct  reference only: multi tier, direct mode, both models, 3 reps
 #
 # Each phase is one invocation of the live tool-choice test (the test's own
 # 30-minute timeout covers a phase: ~10 min measured for multi). The raw
 # harness JSON is copied to <variant>/raw/<phase>.json and must record the
 # phase's harness flags (boxDescriptions as set below; outputSchemas true, the
-# recording proxy mirroring the real servers' output schemas); a phase whose raw file
+# recording proxy mirroring the real servers' output schemas; no systemSuffix, as
+# PROJ_EVAL_FORCE_CODE_MODE is never passed to a round); a phase whose raw file
 # already holds every planned episode is skipped, so a re-run resumes at phase
 # granularity. Then export.mjs writes results.jsonl / errors.jsonl / traces /
 # summary.json.
@@ -44,7 +52,7 @@ for a in "$@"; do
 done
 VARIANT="${ARGS[0]:-}"
 if [[ -z "$VARIANT" || "$VARIANT" == */* || "$VARIANT" == .* ]]; then
-  echo "usage: run-round.sh <variant> [multi] [guard] [direct] [--approve-harness]" >&2
+  echo "usage: run-round.sh <variant> [multi] [guard] [multi-hard] [direct] [--approve-harness]" >&2
   exit 1
 fi
 PHASES=("${ARGS[@]:1}")
@@ -80,6 +88,7 @@ phase_env() {
   case "$1" in
     multi) echo "$base PROJ_EVAL_TIERS=multi PROJ_EVAL_MODES=projection,projection-boxes PROJ_EVAL_RUNS=3 PROJ_EVAL_BOX_DESCRIPTIONS=1" ;;
     guard) echo "$base PROJ_EVAL_TIERS=basic,hard,filesystem,mongodb PROJ_EVAL_MODES=projection PROJ_EVAL_RUNS=1" ;;
+    multi-hard) echo "$base PROJ_EVAL_TIERS=multi-hard PROJ_EVAL_MODES=projection PROJ_EVAL_RUNS=3 PROJ_EVAL_BOX_DESCRIPTIONS=1" ;;
     direct) echo "$base PROJ_EVAL_TIERS=multi PROJ_EVAL_MODES=direct PROJ_EVAL_RUNS=3" ;;
     *) echo "unknown phase $1" >&2; return 1 ;;
   esac
@@ -88,7 +97,7 @@ phase_env() {
 for PHASE in "${PHASES[@]}"; do
   ENVS="$(phase_env "$PHASE")"
   SCOPE="$VDIR/raw/.scope-$PHASE.json"
-  (cd "$REPO" && env -u PROJ_EVAL_TASKS -u PROJ_EVAL_BOX_DESCRIPTIONS $ENVS \
+  (cd "$REPO" && env -u PROJ_EVAL_TASKS -u PROJ_EVAL_BOX_DESCRIPTIONS -u PROJ_EVAL_FORCE_CODE_MODE $ENVS \
     pnpm --silent --filter @astral-mcp/harness exec unrun "$FLOW/scope.ts") >"$SCOPE"
   PLANNED="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).episodes))' "$SCOPE")"
   RAW="$VDIR/raw/$PHASE.json"
@@ -114,7 +123,7 @@ for PHASE in "${PHASES[@]}"; do
   BATCH_ENV=""
   if [[ "${PROJ_EVAL_BATCH:-}" == "1" ]]; then BATCH_ENV="PROJ_EVAL_BATCH=1"; fi
   set +e
-  (cd "$REPO" && env -u PROJ_EVAL_TASKS -u PROJ_EVAL_BOX_DESCRIPTIONS -u PROJ_EVAL_BATCH $ENVS $BATCH_ENV \
+  (cd "$REPO" && env -u PROJ_EVAL_TASKS -u PROJ_EVAL_BOX_DESCRIPTIONS -u PROJ_EVAL_FORCE_CODE_MODE -u PROJ_EVAL_BATCH $ENVS $BATCH_ENV \
     pnpm --filter @astral-mcp/harness exec vitest run test/tool-choice.live.test.ts) >"$LOG" 2>&1
   STATUS=$?
   set -e
@@ -141,9 +150,9 @@ process.stdout.write(hits[0] ?? "");' "$RESULTS_DIR" "$MARK")"
   if [[ "$ENVS" == *"PROJ_EVAL_BOX_DESCRIPTIONS=1"* ]]; then WANT_BOXES=true; fi
   FLAGS="$(node -e '
 const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-process.stdout.write(`${r.boxDescriptions === true} ${r.outputSchemas === true}`);' "$RESULTS")"
-  if [[ "$FLAGS" != "$WANT_BOXES true" ]]; then
-    echo "phase $PHASE: results flags (boxDescriptions outputSchemas) are '$FLAGS', expected '$WANT_BOXES true'" >&2
+process.stdout.write(`${r.boxDescriptions === true} ${r.outputSchemas === true} ${r.systemSuffix === undefined}`);' "$RESULTS")"
+  if [[ "$FLAGS" != "$WANT_BOXES true true" ]]; then
+    echo "phase $PHASE: results flags (boxDescriptions outputSchemas no-systemSuffix) are '$FLAGS', expected '$WANT_BOXES true true'" >&2
     exit 1
   fi
   cp "$RESULTS" "$RAW"

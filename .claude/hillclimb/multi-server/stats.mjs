@@ -7,7 +7,8 @@
 //
 // Prints, for the variant: each multi-tier cell (mode x model) as tasks
 // passing every rep / tasks and episode passes / scored episodes, the guard
-// per model, the direct reference when the variant is reference-direct, the
+// per model, the multi-hard tier per model (role "hard"), the direct
+// reference when the variant is reference-direct, the
 // paired-by-task noise floor for the gating cells, served models, spend, and
 // with --failures every failing gating episode. --crosscheck compares the
 // recomputed cell counts with the harness's own summary in raw/*.json.
@@ -133,6 +134,13 @@ if (phases.has('guard')) {
   for (const model of ['haiku45', 'sonnet-low']) {
     const c = cell('guard', 'projection', model);
     out.push(line(c, 'guard'));
+  }
+}
+if (phases.has('multi-hard')) {
+  for (const model of ['haiku45', 'sonnet-low']) {
+    const c = cell('multi-hard', 'projection', model);
+    if (c.scored + c.errors === 0) continue;
+    out.push(line(c, 'hard'));
   }
 }
 if (gating.length === 2) {

@@ -255,7 +255,11 @@ the default), `PROJ_EVAL_TIERS`
 `pnpm run setup:mongodb`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4), `PROJ_EVAL_BOX_DESCRIPTIONS=1` (multi
-tier: host box descriptions; default off). The report (success %,
+tier: host box descriptions; default off), `PROJ_EVAL_FORCE_CODE_MODE=1`
+(Projection modes: append "Use code mode (discover_apis, execute_machine)
+for this task." to the system prompt, recorded as `systemSuffix`; default
+off). Projection records also count `roundTrips`, the approval round trips
+(MRTR retries) next to `approvals`, one per gated call. The report (success %,
 tool-correct %, turns, upstream calls, tokens, cache-read share, estimated
 cost, turn-capped and harness-error counts, a per-tier summary, a block per
 tier with that tier's own success, turns — total and counted — tokens, cost

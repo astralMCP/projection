@@ -239,6 +239,10 @@
     "direct": {
       "episodes": 102,
       "split": "reference"
+    },
+    "multi-hard": {
+      "episodes": 72,
+      "split": "hard"
     }
   },
   "metrics": [
@@ -295,9 +299,13 @@
   },
   "harness_paths": [
     ".claude/hillclimb/multi-server/export.mjs",
+    ".claude/hillclimb/multi-server/render-instructions.ts",
     ".claude/hillclimb/multi-server/run-round.sh",
     ".claude/hillclimb/multi-server/scope.ts",
     ".claude/hillclimb/multi-server/stats.mjs",
+    "packages/harness/package.json",
+    "packages/harness/scripts/rescore.ts",
+    "packages/harness/src/env.ts",
     "packages/harness/src/eval/agent.ts",
     "packages/harness/src/eval/batch.ts",
     "packages/harness/src/eval/cost.ts",
@@ -322,9 +330,20 @@
     "packages/harness/src/eval/tasks.ts",
     "packages/harness/src/eval/world.ts",
     "packages/harness/src/index.ts",
+    "packages/harness/src/reasoning/anthropic.ts",
+    "packages/harness/src/reasoning/author.ts",
+    "packages/harness/src/reasoning/loop.ts",
+    "packages/harness/src/reasoning/metrics.ts",
+    "packages/harness/src/reasoning/tasks.ts",
+    "packages/harness/src/recording-server.ts",
+    "packages/harness/src/runner.ts",
+    "packages/harness/src/scenarios.ts",
     "packages/harness/src/types.ts",
     "packages/harness/test/fixtures/github-catalog.json",
-    "packages/harness/test/tool-choice.live.test.ts"
+    "packages/harness/test/tool-choice.live.test.ts",
+    "packages/harness/vendor/mongodb-mcp-server/package-lock.json",
+    "packages/harness/vendor/mongodb-mcp-server/package.json",
+    "packages/harness/vitest.config.ts"
   ],
   "budget_usd": 50,
   "stop": {
