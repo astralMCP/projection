@@ -8,7 +8,7 @@
  * exactly like a single-server one.
  */
 
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer, type StandardSchemaWithJSON } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { DASHBOARD_RESOURCE_URI } from '../apps/dashboard.js';
 import { boxSearchTool } from '../catalog/boxes.js';
@@ -22,6 +22,7 @@ import type {
 } from '../mrtr/index.js';
 import { WORKFLOW_PROMPTS } from '../prompts/workflow-prompts.js';
 import { clampCaps, type ServerCatalog } from '../types.js';
+import type { DirectTool } from './direct.js';
 import type { WrapOptions } from './options.js';
 
 /** The model-facing copy of the catalog tools: what differs between facade kinds. */
@@ -181,6 +182,62 @@ export function registerCatalogTools(
         clientCanElicit(server),
       ),
   );
+}
+
+/**
+ * Direct listing (`projections.direct`, `facade/direct.ts`): one mediated
+ * tool per wrapped tool, each a thin alias of `call_tool` — the handler is
+ * the facade's `callTool`, given the tool's catalog name, the model's
+ * arguments as `args`, and the MRTR retry envelope read from the transport
+ * exactly as for `call_tool`. No annotation is added beyond the server's
+ * own (sanitized); Projection's gate decides either way.
+ */
+export function registerDirectTools(
+  server: McpServer,
+  era: ProtocolEra | undefined,
+  handlers: Pick<CatalogHandlers, 'callTool'>,
+  tools: readonly DirectTool[],
+): void {
+  for (const tool of tools) {
+    server.registerTool(
+      tool.name,
+      {
+        ...(tool.title !== undefined ? { title: tool.title } : {}),
+        description: tool.description,
+        inputSchema: advertisedSchema(tool.inputSchema),
+        annotations: { ...tool.annotations },
+      },
+      async (args: unknown, ctx) =>
+        await handlers.callTool(
+          {
+            name: tool.target,
+            ...(args !== undefined ? { args } : {}),
+            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
+            ...(ctx.mcpReq.inputResponses !== undefined
+              ? { inputResponses: ctx.mcpReq.inputResponses }
+              : {}),
+          },
+          era,
+          clientCanElicit(server),
+        ),
+    );
+  }
+}
+
+/**
+ * A pass-through Standard Schema advertising `schema` in `tools/list`.
+ * Arguments are not validated by the SDK: `call_tool`'s own R35 validation
+ * runs on them, so a mediated tool fails exactly as `call_tool` would.
+ */
+function advertisedSchema(schema: Record<string, unknown>): StandardSchemaWithJSON {
+  return {
+    '~standard': {
+      version: 1,
+      vendor: 'astral-mcp-projection',
+      validate: (value: unknown) => ({ value }),
+      jsonSchema: { input: () => schema, output: () => schema },
+    },
+  };
 }
 
 /** One search tool (R33, R43): `{ query?, cursor? }`, read-only. */

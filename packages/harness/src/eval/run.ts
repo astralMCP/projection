@@ -111,6 +111,8 @@ export interface ProjectionUse {
    * (`search_github` → `github`). `searchTools` counts the global search.
    */
   searchBoxes?: Record<string, number>;
+  /** Calls to directly listed (mediated) tools, `projections.direct` modes only. */
+  directCalls?: number;
   /** Approval prompts auto-accepted (one per gated call). */
   approvals: number;
   /** MRTR retries sent: approval round trips, each carrying one or more approvals. */
@@ -314,6 +316,14 @@ export interface BatchEvalOptions {
 
 export const DEFAULT_RUNS = 3;
 
+const PROJECTION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'execute_machine',
+  'discover_apis',
+  'search_tools',
+  'describe_tool',
+  'call_tool',
+]);
+
 /**
  * How an episode used Projection. `world` names the boxes whose
  * `search_<alias>` calls are counted (multi world only).
@@ -325,7 +335,14 @@ function summarizeProjectionUse(
   roundTrips?: number,
 ): ProjectionUse {
   const count = (name: string): number => toolUses.filter((t) => t.name === name).length;
-  const callTool = count('call_tool') > 0;
+  // Direct listing: any tool that is not one of Projection's own is a
+  // mediated call_tool alias, and routes like call_tool.
+  const own = new Set([
+    ...PROJECTION_TOOL_NAMES,
+    ...('boxes' in world ? world.boxes.map((box) => `search_${box.alias}`) : []),
+  ]);
+  const directCalls = toolUses.filter((t) => !own.has(t.name)).length;
+  const callTool = count('call_tool') > 0 || directCalls > 0;
   const machine = count('execute_machine') > 0;
   const route: ProjectionRoute =
     callTool && machine ? 'both' : callTool ? 'call_tool' : machine ? 'execute_machine' : 'neither';
@@ -341,6 +358,7 @@ function summarizeProjectionUse(
           ),
         }
       : {}),
+    ...(directCalls > 0 ? { directCalls } : {}),
     approvals,
     ...(roundTrips !== undefined ? { roundTrips } : {}),
   };

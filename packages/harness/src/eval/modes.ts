@@ -62,8 +62,27 @@ import { MRTR_PROTOCOL_REVISION, wrapMcpServer, wrapMcpServers } from '@astral-m
 import type { AgentRuntime, AgentTool, AgentToolResult } from './agent.js';
 import { isBoxedWorldName, type EvalWorld, type MultiWorld, type WorldName } from './world.js';
 
-export type EvalMode = 'direct' | 'projection' | 'projection-boxes';
+export type EvalMode =
+  'direct' | 'projection' | 'projection-boxes' | 'projection-direct' | 'projection-auto';
+/** The modes a run plans by default (the opt-in exploration modes are not among them). */
 export const EVAL_MODES: readonly EvalMode[] = ['direct', 'projection', 'projection-boxes'];
+/**
+ * Every mode PROJ_EVAL_MODES accepts: the defaults plus the opt-in
+ * exploration modes. `projection-direct` wraps with `projections.direct:
+ * true` (every wrapped tool also listed as a mediated `call_tool` alias);
+ * `projection-auto` with `direct: 'auto'` (listed when the definitions fit
+ * the default budget).
+ */
+export const KNOWN_EVAL_MODES: readonly EvalMode[] = [
+  ...EVAL_MODES,
+  'projection-direct',
+  'projection-auto',
+];
+
+/** The `projections.direct` setting a Projection mode wraps with. */
+export function directSettingOf(mode: EvalMode): 'auto' | boolean {
+  return mode === 'projection-direct' ? true : mode === 'projection-auto' ? 'auto' : false;
+}
 
 /** Resolve a comma list of modes (PROJ_EVAL_MODES); unknown names throw. */
 export function resolveModes(spec: string | undefined): EvalMode[] {
@@ -73,8 +92,8 @@ export function resolveModes(spec: string | undefined): EvalMode[] {
     .map((s) => s.trim())
     .filter((s) => s !== '')
     .map((name) => {
-      if (!(EVAL_MODES as readonly string[]).includes(name)) {
-        throw new Error(`unknown mode "${name}"; known: ${EVAL_MODES.join(', ')}`);
+      if (!(KNOWN_EVAL_MODES as readonly string[]).includes(name)) {
+        throw new Error(`unknown mode "${name}"; known: ${KNOWN_EVAL_MODES.join(', ')}`);
       }
       return name as EvalMode;
     });
@@ -366,15 +385,27 @@ export async function openProjectionSession(
   world: EvalWorld,
   options: SessionOptions = {},
 ): Promise<ModeSession> {
-  if ('boxes' in world) return openMultiProjectionSession(world, 'projection', options);
-  const facade = await wrapMcpServer(world.server, { blob: { key: randomBytes(32) } });
-  return connectFacade(
-    'projection',
-    world,
-    facade,
-    () => PROJECTION_DISCOVERY_TOOLS,
-    options.systemSuffix,
-  );
+  return openSingleProjectionSession(world, 'projection', options);
+}
+
+/**
+ * A Projection mode on any world: the multi-server facade for a boxed
+ * world, else `wrapMcpServer`, with the mode's `projections.direct`.
+ * Mediated tools (direct listing) are action tools: only the discovery
+ * tools are budget-free, as in `projection`.
+ */
+async function openSingleProjectionSession(
+  world: EvalWorld,
+  mode: Exclude<EvalMode, 'direct'>,
+  options: SessionOptions = {},
+): Promise<ModeSession> {
+  if ('boxes' in world) return openMultiProjectionSession(world, mode, options);
+  const direct = directSettingOf(mode);
+  const facade = await wrapMcpServer(world.server, {
+    blob: { key: randomBytes(32) },
+    ...(direct !== false ? { projections: { direct } } : {}),
+  });
+  return connectFacade(mode, world, facade, () => PROJECTION_DISCOVERY_TOOLS, options.systemSuffix);
 }
 
 /**
@@ -397,9 +428,11 @@ export async function openMultiProjectionSession(
           : box.world.server,
       ]),
     );
+  const direct = directSettingOf(mode);
   const facade = await wrapMcpServers(sources, {
     blob: { key: randomBytes(32) },
     ...(mode === 'projection-boxes' ? { catalog: { globalSearch: false } } : {}),
+    ...(direct !== false ? { projections: { direct } } : {}),
   });
   return connectFacade(
     mode,
@@ -481,5 +514,8 @@ export function openSession(
         );
       }
       return openMultiProjectionSession(world, mode, options);
+    case 'projection-direct':
+    case 'projection-auto':
+      return openSingleProjectionSession(world, mode, options);
   }
 }

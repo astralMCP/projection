@@ -112,6 +112,73 @@ export interface WrapOptions {
 export interface ProjectionsOptions {
   codeMode?: boolean;
   catalog?: boolean;
+  /**
+   * Direct listing (exploration; see `facade/direct.ts`): also register one
+   * **mediated** facade tool per wrapped tool, a thin alias of
+   * `call_tool({ name, args })` under exactly the same gate, so the model
+   * sees every tool's name, description and schema without searching.
+   * `true` always lists them; `'auto'` lists them when their estimated
+   * definitions fit `directBudgetTokens`; `false` (default) never. Needs the
+   * catalog projection: `true` with `catalog: false` fails the wrap
+   * (`validate`); `'auto'` then stays off.
+   */
+  direct?: 'auto' | boolean;
+  /**
+   * `direct: 'auto'`: the largest estimated size, in tokens, of all mediated
+   * tool definitions (name, description, input schema; characters / 3.5)
+   * that is still listed directly. Default {@link DEFAULT_DIRECT_BUDGET_TOKENS}.
+   */
+  directBudgetTokens?: number;
+}
+
+/**
+ * Default `projections.directBudgetTokens`: about 12k tokens of tool
+ * definitions — every single box in the eval worlds but the 95-tool GitHub
+ * one fits, and the multi world (130 tools, ~42k tokens) does not.
+ */
+export const DEFAULT_DIRECT_BUDGET_TOKENS = 12_000;
+
+/** The validated direct-listing settings (see {@link ProjectionsOptions.direct}). */
+export interface DirectSetting {
+  mode: 'auto' | 'on' | 'off';
+  budgetTokens: number;
+}
+
+/**
+ * `projections.direct` / `directBudgetTokens`, validated at wrap time;
+ * `catalog` is the resolved catalog switch. Anything malformed is a
+ * `validate` error, before any source is connected.
+ */
+export function resolveDirectSetting(
+  options: ProjectionsOptions | undefined,
+  catalog: boolean,
+): DirectSetting {
+  const direct: unknown = options?.direct;
+  const budget: unknown = options?.directBudgetTokens;
+  if (direct !== undefined && typeof direct !== 'boolean' && direct !== 'auto') {
+    throw new ProjectionError('validate', "projections.direct must be true, false or 'auto'", {
+      hint: "Pass projections: { direct: 'auto' } to list small catalogs directly, or omit it.",
+    });
+  }
+  if (
+    budget !== undefined &&
+    (typeof budget !== 'number' || !Number.isInteger(budget) || budget < 0)
+  ) {
+    throw new ProjectionError(
+      'validate',
+      'projections.directBudgetTokens must be a whole number of tokens',
+      {
+        hint: `Pass e.g. directBudgetTokens: ${DEFAULT_DIRECT_BUDGET_TOKENS}, or omit it for the default.`,
+      },
+    );
+  }
+  if (direct === true && !catalog) {
+    throw new ProjectionError('validate', 'projections.direct needs the catalog projection', {
+      hint: 'Directly listed tools are aliases of call_tool: keep projections.catalog on, or drop direct.',
+    });
+  }
+  const mode = direct === true ? 'on' : direct === 'auto' && catalog ? 'auto' : 'off';
+  return { mode, budgetTokens: (budget as number | undefined) ?? DEFAULT_DIRECT_BUDGET_TOKENS };
 }
 
 /** Options for registering the projections on a server the caller built. */

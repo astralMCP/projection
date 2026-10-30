@@ -1,0 +1,209 @@
+/**
+ * Direct listing (exploration; `projections.direct`): one **mediated** facade
+ * tool per wrapped tool, so on a small catalog the model sees every tool's
+ * name, description and input schema without `search_tools` /
+ * `describe_tool` turns.
+ *
+ * A mediated tool is a thin alias of `call_tool({ name, args })`, never a
+ * pass-through to the upstream (R1): its handler calls the facade's own
+ * `callTool` with the tool's catalog name (qualified on a multi-server
+ * facade, R40) and the MRTR retry envelope, so validation, the policy
+ * decision (R14, R42, R49), the elicitation copy (R16, R46), the sealed
+ * `call` blob and its binding hash (R36, S2, S4), the replay cache (R38),
+ * the key domain (R41) and the legacy gate (R28) are exactly `call_tool`'s.
+ * An approval minted through `fs__write_file` binds `fs.write_file` and can
+ * never resume `github__write_file` — the binding hash differs.
+ *
+ * Everything the listing shows is server text (S5) and goes through the
+ * `describe_tool` helpers: the description is neutralized, capped and
+ * rendered as an indented block under a library-written posture line, the
+ * input schema passes the R34 allowlist sanitizer, and the annotation title
+ * is neutralized. Tool names are mapped onto `[A-Za-z0-9_-]{1,64}` — the
+ * strictest common host rule (the Messages API's; MCP itself also allows
+ * dots, up to 128) — so a hostile name cannot carry anything but those
+ * characters, and a collision with a Projection tool or another mapped name
+ * gets a hash suffix rather than shadowing it.
+ */
+
+import { createHash } from 'node:crypto';
+import { MAX_DESCRIPTION_CHARS, sanitizeAnnotations } from '../catalog/describe.js';
+import { boxedTool, isBoxedCatalog } from '../catalog/boxes.js';
+import { sanitizeSchema } from '../catalog/schema-safety.js';
+import { decidePolicy, policyContext, postureOf, type ToolPosture } from '../policy/index.js';
+import { capLength, indentBlock, neutralizeControlChars } from '../text-safety.js';
+import type { PolicyOptions, ServerCatalog, ToolAnnotations } from '../types.js';
+import type { DirectSetting } from './options.js';
+
+/** Host tool-name rule the mapped names satisfy (the Messages API's). */
+export const DIRECT_TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const DIRECT_TOOL_NAME_MAX = 64;
+
+/** Separator between a box alias and its tool in a mapped name (`fs__read_file`). */
+export const DIRECT_BOX_SEPARATOR = '__';
+
+/** Average characters per token assumed by the `'auto'` size estimate. */
+export const CHARS_PER_TOKEN = 3.5;
+
+/** One mediated tool, as listed. */
+export interface DirectTool {
+  /** The facade tool name, `[A-Za-z0-9_-]{1,64}`. */
+  name: string;
+  /** The catalog name `call_tool` is called with (qualified on a multi-server facade). */
+  target: string;
+  title?: string;
+  description: string;
+  /** The R34-sanitized input schema, always `type: "object"` at the root. */
+  inputSchema: Record<string, unknown>;
+  annotations: ToolAnnotations;
+  posture: ToolPosture;
+}
+
+/** What {@link planDirectTools} needs besides the catalog. */
+export interface DirectPlanOptions extends PolicyOptions {
+  /** Names the facade already serves (Projection's own tools): never shadowed. */
+  reserved: ReadonlySet<string>;
+}
+
+/**
+ * The mediated tools of a catalog, in catalog order. On a multi-server view
+ * each is named `<alias>__<tool>`; on a single-server facade, the tool's own
+ * name when it is legal and free. A name that is not legal is mapped
+ * (illegal characters become `_`, an over-long name is cut and hashed); a
+ * name that collides with a reserved one or an earlier mapped one gets
+ * `_<8 hex of the catalog name>`. A tool whose name still collides is not
+ * listed — it stays reachable through `call_tool`.
+ */
+export function planDirectTools(catalog: ServerCatalog, options: DirectPlanOptions): DirectTool[] {
+  const policy = policyContext(options);
+  const taken = new Set(options.reserved);
+  const tools: DirectTool[] = [];
+  for (const entry of catalog.tools) {
+    // On a boxed view `entry` is the qualified entry: policy is decided on it
+    // (R42), the name is built from the alias and the box's own name.
+    const member = isBoxedCatalog(catalog) ? boxedTool(catalog, entry.name) : undefined;
+    if (isBoxedCatalog(catalog) && member === undefined) continue;
+    const raw =
+      member !== undefined
+        ? `${member.alias}${DIRECT_BOX_SEPARATOR}${member.entry.name}`
+        : entry.name;
+    const name = uniqueName(raw, entry.name, taken);
+    if (name === undefined) continue;
+    taken.add(name);
+
+    const posture = postureOf(decidePolicy(entry, policy));
+    const annotations = sanitizeAnnotations(entry.annotations);
+    const input = sanitizeSchema(entry.inputSchema);
+    const schema: Record<string, unknown> = { ...input.schema, type: 'object' };
+    delete schema['$truncated'];
+    tools.push({
+      name,
+      target: entry.name,
+      ...(annotations.title !== undefined ? { title: annotations.title } : {}),
+      description: directDescription(entry.description, posture, {
+        destructive: entry.annotations?.destructiveHint === true,
+        // Named only when the listed name does not spell it by the
+        // <alias>__<tool> rule (a mapped or hash-suffixed name).
+        qualified: name !== raw ? entry.name : undefined,
+        schemaTruncated: input.truncated,
+      }),
+      inputSchema: schema,
+      annotations,
+      posture,
+    });
+  }
+  return tools;
+}
+
+/**
+ * The posture line every mediated description leads with (library copy,
+ * S5): the R33 posture words in brackets, as `search_tools` shows them,
+ * then `destructive` when the server marks the tool so. What a posture
+ * means is said once, in the preamble.
+ */
+function postureLine(posture: ToolPosture, destructive: boolean): string {
+  return `[${posture}${destructive ? '; destructive' : ''}]`;
+}
+
+/**
+ * A mediated tool's description: the posture line, the qualified name a
+ * machine uses (multi-server), then the server's own words as an indented
+ * block — neutralized and capped exactly as `describe_tool` renders them,
+ * so a hostile description cannot forge the posture line.
+ */
+function directDescription(
+  raw: string | undefined,
+  posture: ToolPosture,
+  extra: { destructive: boolean; qualified: string | undefined; schemaTruncated: boolean },
+): string {
+  const lines = [postureLine(posture, extra.destructive)];
+  if (extra.qualified !== undefined) {
+    // Server-controlled: neutralized, capped and quoted like describe_tool's header.
+    const shown = JSON.stringify(capLength(neutralizeControlChars(extra.qualified), 200));
+    lines.push(`Catalog name (describe_tool, call_tool, toolCall): ${shown}`);
+  }
+  const text =
+    raw !== undefined && raw.trim().length > 0
+      ? neutralizeControlChars(capLength(raw.trim(), MAX_DESCRIPTION_CHARS), {
+          allowNewline: true,
+        })
+      : '(no description)';
+  lines.push('The server says:', indentBlock(text, '  '));
+  if (extra.schemaTruncated) {
+    lines.push('[input schema truncated to fit the size cap — the server enforces the full one]');
+  }
+  return lines.join('\n');
+}
+
+/** Map `raw` onto the host name rule, deterministically. */
+export function directToolName(raw: string): string {
+  const safe = raw.replace(/[^A-Za-z0-9_-]/g, '_');
+  if (safe.length > 0 && safe.length <= DIRECT_TOOL_NAME_MAX) return safe;
+  return `${safe.slice(0, DIRECT_TOOL_NAME_MAX - 9)}_${hash8(raw)}`;
+}
+
+function uniqueName(raw: string, target: string, taken: ReadonlySet<string>): string | undefined {
+  const first = directToolName(raw);
+  if (!taken.has(first)) return first;
+  const suffix = `_${hash8(target)}`;
+  const second = `${first.slice(0, DIRECT_TOOL_NAME_MAX - suffix.length)}${suffix}`;
+  return taken.has(second) ? undefined : second;
+}
+
+function hash8(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 8);
+}
+
+/**
+ * Estimated tokens of the listed definitions: name + title + description +
+ * input schema JSON, at {@link CHARS_PER_TOKEN} characters per token.
+ */
+export function estimateDirectTokens(tools: readonly DirectTool[]): number {
+  let chars = 0;
+  for (const tool of tools) {
+    chars +=
+      tool.name.length +
+      (tool.title?.length ?? 0) +
+      tool.description.length +
+      JSON.stringify(tool.inputSchema).length;
+  }
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+/** Whether a facade lists its tools directly, given its setting and plan. */
+export function decideDirect(setting: DirectSetting, tools: readonly DirectTool[]): boolean {
+  if (setting.mode === 'off') return false;
+  if (setting.mode === 'on') return true;
+  return estimateDirectTokens(tools) <= setting.budgetTokens;
+}
+
+/** Projection's own tool names on a facade, which a mediated name never takes. */
+export function reservedToolNames(searchTools: Iterable<string>): Set<string> {
+  return new Set([
+    'execute_machine',
+    'discover_apis',
+    'describe_tool',
+    'call_tool',
+    'search_tools',
+    ...searchTools,
+  ]);
+}

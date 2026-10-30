@@ -358,6 +358,12 @@ function deferredBoxesSection(view: BoxedCatalog, toolCount: number, search: str
 export interface ProjectionSelection {
   codeMode: boolean;
   catalog: boolean;
+  /**
+   * Whether the wrapped tools are also listed directly, as mediated aliases
+   * of `call_tool` (`projections.direct`, resolved at wrap time). Absent
+   * means not listed.
+   */
+  direct?: boolean;
 }
 
 /**
@@ -391,8 +397,23 @@ export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a
 /** Preamble when both projections are on: the routing rule (R29). */
 export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
+/**
+ * The sentence every direct-listing preamble carries: what a mediated tool
+ * is, and what its results mean (they are `call_tool` results).
+ */
+export const DIRECT_LISTING_SENTENCE = `Each tool's description starts with its approval posture in brackets: [runs immediately], [asks for approval] (the call pauses until the user approves that exact call) or [blocked by policy]; "destructive" means the server marks the tool so. A result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it; "denied_by_policy" means the server's policy blocks the tool.`;
+
+/** Preamble when the catalog is listed directly and code mode is off. */
+export const DEFAULT_DIRECT_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. ${DIRECT_LISTING_SENTENCE}`;
+
+/** Preamble when the catalog is listed directly beside code mode. */
+export const DEFAULT_DIRECT_ROUTING_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. For a single action or a short chain where you look something up and then act on it, call the tools one at a time, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for the tool types, the authoring contract, and worked examples). ${DIRECT_LISTING_SENTENCE}`;
+
 /** The R29 preamble variant for a projection selection. */
 export function defaultPreamble(projections: ProjectionSelection): string {
+  if (projections.direct === true && projections.catalog) {
+    return projections.codeMode ? DEFAULT_DIRECT_ROUTING_PREAMBLE : DEFAULT_DIRECT_PREAMBLE;
+  }
   if (projections.codeMode && projections.catalog) return DEFAULT_ROUTING_PREAMBLE;
   if (projections.catalog) return DEFAULT_CATALOG_PREAMBLE;
   return DEFAULT_CODE_MODE_PREAMBLE;

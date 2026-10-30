@@ -43,6 +43,7 @@ import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
   freezePolicySettings,
+  resolveDirectSetting,
   resolveIntrospectTimeout,
   resolveProjections,
   type PolicySettings,
@@ -53,9 +54,16 @@ import {
   createProjectionServer,
   registerCatalogTools,
   registerCodeModeTools,
+  registerDirectTools,
   registerResources,
   type CatalogToolCopy,
 } from './facade/server.js';
+import {
+  decideDirect,
+  planDirectTools,
+  reservedToolNames,
+  type DirectTool,
+} from './facade/direct.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
 import {
   buildInstructions,
@@ -165,6 +173,18 @@ const CATALOG_TOOL_COPY: CatalogToolCopy = {
   describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
 };
 
+/**
+ * The catalog tools' copy under direct listing: no search tool (every tool
+ * is listed), and describe_tool / call_tool point at the listed tools.
+ */
+const DIRECT_CATALOG_TOOL_COPY: CatalogToolCopy = {
+  searches: [],
+  describeDescription: `Return one tool's description, its input and output JSON Schemas, and its approval posture. Every tool is already listed directly with its input schema; call this only to see a tool's output schema, or pass types: true for its generated TypeScript when authoring a machine for execute_machine.`,
+  callDescription: `Run one of this server's tools by name with a JSON object of arguments. Every tool is also listed directly, taking the same arguments: prefer calling it that way. Approvals, "declined" and "denied_by_policy" results work the same either way.`,
+  toolName: 'Tool name as the server declares it.',
+  describeTypes: CATALOG_TOOL_COPY.describeTypes,
+};
+
 const CODE_MODE_COPY = {
   executeMachine: EXECUTE_MACHINE_DESCRIPTION,
   discoverApis: DISCOVER_APIS_DESCRIPTION,
@@ -182,7 +202,8 @@ export async function wrapMcpServer(
   // Validate the selection, the approvals mode, the token store and a URL
   // source BEFORE connecting: the throw must not leave an in-process wrapped
   // server attached to a transport nobody will close.
-  const projections = resolveProjections(options.projections);
+  const selected = resolveProjections(options.projections);
+  const direct = resolveDirectSetting(options.projections, selected.catalog);
   const approvals = assertApprovalsMode(options.approvals);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const tokenStore = tokenStoreOption(options.tokenStore);
@@ -218,6 +239,17 @@ export async function wrapMcpServer(
   // be the posture `describe_tool` and the approval gate decide with.
   const policySettings = freezePolicySettings({ policy: options.policy, approvals });
 
+  // Direct listing: planned under the same frozen policy, so each mediated
+  // tool's posture line is the posture call_tool decides with.
+  const plan =
+    direct.mode === 'off'
+      ? []
+      : planDirectTools(catalog, { ...policySettings, reserved: reservedToolNames([]) });
+  const listed = decideDirect(direct, plan);
+  const projections: Readonly<ProjectionSelection> = listed
+    ? Object.freeze({ ...selected, direct: true })
+    : selected;
+
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
   const resources = buildResources(catalog, dts);
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
@@ -234,6 +266,7 @@ export async function wrapMcpServer(
     options,
     policySettings,
     projections,
+    directTools: listed ? plan : [],
     ...(connector !== undefined ? { connector } : {}),
   });
 }
@@ -254,6 +287,8 @@ interface FacadeDeps {
    */
   policySettings: PolicySettings;
   projections: Readonly<ProjectionSelection>;
+  /** The mediated tools listed directly (`projections.direct`); empty when not listed. */
+  directTools: readonly DirectTool[];
   /** The source given by URL, when the facade wraps one (R51). */
   connector?: UpstreamConnector;
 }
@@ -365,7 +400,15 @@ class Facade implements ProjectionFacade {
     if (this.projections.codeMode) {
       registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.catalog);
     }
-    if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
+    if (this.projections.catalog) {
+      registerCatalogTools(
+        server,
+        era,
+        this,
+        this.projections.direct === true ? DIRECT_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY,
+      );
+      registerDirectTools(server, era, this, this.deps.directTools);
+    }
     registerResources(server, this.resources);
   }
 

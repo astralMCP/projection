@@ -39,6 +39,15 @@ export {
   type RegisterOptions,
   type WrapOptions,
 } from './wrap.js';
+// Direct listing of small catalogs as mediated call_tool aliases (exploration)
+export { DEFAULT_DIRECT_BUDGET_TOKENS } from './facade/options.js';
+export {
+  directToolName,
+  estimateDirectTokens,
+  planDirectTools,
+  DIRECT_BOX_SEPARATOR,
+  type DirectTool,
+} from './facade/direct.js';
 export {
   wrapMcpServers,
   type MultiProjectionFacade,

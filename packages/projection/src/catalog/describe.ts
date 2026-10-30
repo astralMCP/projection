@@ -68,7 +68,7 @@ export interface ToolDescription {
   types?: string;
 }
 
-const MAX_DESCRIPTION_CHARS = 2_000;
+export const MAX_DESCRIPTION_CHARS = 2_000;
 
 /**
  * Run `describe_tool`. Throws a `validate`-phase {@link ProjectionError}
@@ -111,7 +111,7 @@ export function describeTool(
   };
 }
 
-function sanitizeAnnotations(annotations: ToolAnnotations | undefined): ToolAnnotations {
+export function sanitizeAnnotations(annotations: ToolAnnotations | undefined): ToolAnnotations {
   if (annotations === undefined) return {};
   const out: ToolAnnotations = {};
   if (typeof annotations.readOnlyHint === 'boolean') out.readOnlyHint = annotations.readOnlyHint;

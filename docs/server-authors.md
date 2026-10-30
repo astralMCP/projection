@@ -206,6 +206,18 @@ stops listing tools inline and points at `search_tools` / `describe_tool`;
 with it off the list is always inline, whatever the size. The `.d.ts`
 resource stays complete either way.
 
+Small catalogs can also be listed directly (exploration, off by default):
+`projections: { direct: 'auto' }` registers one tool per wrapped tool —
+`<box>__<tool>` on a multi-server facade, the tool's own name otherwise —
+when their estimated definitions fit `directBudgetTokens` (default 12 000),
+and falls back to the search tools when they do not. Each listed tool is a
+thin alias of `call_tool({ name, args })`: same validation, policy, approval
+prompt and sealed blob, its description led by its posture
+(`[asks for approval]`) and the server's own text indented beneath. In this
+mode the search tools are dropped, except a box's `search_<box>` when its
+server sends guidance; `describe_tool`, `call_tool` and code mode stay.
+`direct: true` lists them whatever the size.
+
 Approval blobs for `call_tool` live 5 minutes by default (`blob.callTtlMs`),
 shorter than machine blobs: once approved there is no further step, so a
 captured approved retry is a standing capability until it expires (see
