@@ -357,7 +357,8 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 /** Strip what legitimately differs between two runs of the same episode. */
 function comparable(record: EpisodeRecord): Record<string, unknown> {
-  const { wallMs: _wall, batch: _batch, ...rest } = record;
+  // estimatedUsd is the actual spend, which the batch discount halves.
+  const { wallMs: _wall, batch: _batch, estimatedUsd: _spend, ...rest } = record;
   return rest;
 }
 
@@ -430,6 +431,13 @@ describe('runToolChoiceEval with batch (offline)', () => {
   });
 
   it('costs half the interactive estimate', () => {
+    for (const [i, record] of batched.entries()) {
+      const twin = interactive[i] as EpisodeRecord;
+      expect(record.estimatedUsd).toBeCloseTo((twin.estimatedUsd ?? NaN) / 2, 12);
+      // The standard host cost does not depend on how the run was billed.
+      expect(record.standardUsd).toBe(twin.standardUsd);
+    }
+    expect(batched.some((r) => (r.standardUsd ?? 0) > 0)).toBe(true);
     const usage = (batched[0] as EpisodeRecord).usage;
     expect(estimateUsd('claude-haiku-4-5', usage, true)).toBeCloseTo(
       estimateUsd('claude-haiku-4-5', usage) / 2,

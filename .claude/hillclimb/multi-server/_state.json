@@ -285,6 +285,7 @@
     ".claude/hillclimb/multi-server/scope.ts",
     "packages/harness/src/eval/agent.ts",
     "packages/harness/src/eval/batch.ts",
+    "packages/harness/src/eval/cost.ts",
     "packages/harness/src/eval/filesystem-tasks.ts",
     "packages/harness/src/eval/filesystem-world.ts",
     "packages/harness/src/eval/github-fake.ts",

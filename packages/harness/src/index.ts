@@ -256,16 +256,22 @@ export {
   type SessionOptions,
 } from './eval/modes.js';
 export {
+  BATCH_PRICE_FACTOR,
+  CACHE_READ_FACTOR,
+  CACHE_WRITE_FACTOR,
+  estimateUsd,
+  MIN_CACHEABLE_TOKENS,
+  MODEL_PRICES,
+  standardCost,
+} from './eval/cost.js';
+export {
   boxRouting,
   createResultsWriter,
-  estimateUsd,
-  BATCH_PRICE_FACTOR,
   formatEpisodeLine,
   formatToolChoiceReport,
   runToolChoiceEval,
   summarizeToolChoice,
   writeToolChoiceResults,
-  MODEL_PRICES,
   type BatchEvalOptions,
   type BoxRouting,
   type CellSummary,

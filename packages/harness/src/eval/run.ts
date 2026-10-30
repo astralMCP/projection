@@ -77,6 +77,7 @@ import {
   type ModeSession,
 } from './modes.js';
 import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
+import { estimateUsd, standardCost } from './cost.js';
 import { boxOf, taskBoxes } from './multi-tasks.js';
 import {
   promptFor,
@@ -198,6 +199,17 @@ export interface EpisodeRecord {
   transcript?: Transcript;
   /** Present when the model calls went through the Message Batches API (billed at 50%). */
   batch?: true;
+  /**
+   * The eval's actual spend on this episode, batch discount included
+   * (`estimateUsd`). Absent in results files from before it was recorded.
+   */
+  estimatedUsd?: number;
+  /**
+   * The standard host cost (`standardCost`): warm static prefix, conversation
+   * cached incrementally, no batch discount. Comparable across modes and
+   * runs. Absent when not measured (no per-turn usage).
+   */
+  standardUsd?: number;
   /**
    * Present (with `harnessError`) when the batch runner gave up on a turn
    * after its retries: an infrastructure failure, not the model's.
@@ -607,6 +619,7 @@ export async function runToolChoiceEval(
           lane.done();
         }
       }
+      record = withCosts(record);
       records[slot.index] = record;
       try {
         options.onEpisode?.(record, slot.index);
@@ -622,28 +635,39 @@ export async function runToolChoiceEval(
 // ---------------------------------------------------------------------------
 // Summary and report
 
-/** USD per million tokens, Anthropic list prices. */
-export const MODEL_PRICES: Readonly<Record<string, { input: number; output: number }>> = {
-  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
-  'claude-haiku-4-5': { input: 1, output: 5 },
-  'claude-sonnet-5-5': { input: 2, output: 10 },
-};
-
-/** The Message Batches API bills every token (cache reads and writes included) at this share. */
-export const BATCH_PRICE_FACTOR = 0.5;
+/** The eval's actual spend on a record: list price, halved for a batch episode. */
+function recordEstimatedUsd(record: EpisodeRecord): number {
+  return estimateUsd(record.modelId, record.usage, record.batch === true);
+}
 
 /**
- * Cache reads at 10% of input, cache writes at 125%; unknown models cost 0.
- * `batch`: the episode ran through the Message Batches API (the whole sum at
- * {@link BATCH_PRICE_FACTOR}).
+ * The record's standard host cost ({@link standardCost}); undefined when it
+ * made calls but has no per-turn usage (a results file from before it was
+ * recorded): not measured, never $0.
  */
-export function estimateUsd(modelId: string, usage: EpisodeUsage, batch = false): number {
-  const price = MODEL_PRICES[modelId];
-  if (price === undefined) return 0;
-  const input =
-    usage.inputTokens + usage.cacheReadInputTokens * 0.1 + usage.cacheCreationInputTokens * 1.25;
-  const usd = (input * price.input + usage.outputTokens * price.output) / 1_000_000;
-  return batch ? usd * BATCH_PRICE_FACTOR : usd;
+function recordStandardUsd(record: EpisodeRecord): number | undefined {
+  if (record.turns === undefined) return record.apiTurns === 0 ? 0 : undefined;
+  return standardCost(record.turns, record.modelId);
+}
+
+/** The sum, or undefined when any term is not measured. */
+function sumMeasured(values: (number | undefined)[]): number | undefined {
+  let total = 0;
+  for (const value of values) {
+    if (value === undefined) return undefined;
+    total += value;
+  }
+  return total;
+}
+
+/** The record with its actual spend and standard host cost attached. */
+function withCosts(record: EpisodeRecord): EpisodeRecord {
+  const standard = recordStandardUsd(record);
+  return {
+    ...record,
+    estimatedUsd: recordEstimatedUsd(record),
+    ...(standard !== undefined ? { standardUsd: standard } : {}),
+  };
 }
 
 export interface CellSummary {
@@ -666,7 +690,10 @@ export interface CellSummary {
   meanOutputTokens: number;
   /** cache-read / (uncached + cache-read + cache-write) input tokens. */
   cacheReadShare: number;
+  /** Actual eval spend, batch discount included. */
   estimatedUsd: number;
+  /** Standard host cost (`standardCost`); absent when any episode's was not measured. */
+  standardUsd?: number;
   /** Projection mode only. */
   routes?: Record<ProjectionRoute, number>;
   meanSearchTools?: number;
@@ -726,7 +753,10 @@ export interface TierCellSummary {
   meanBudgetTurns: number;
   meanInputTokens: number;
   meanOutputTokens: number;
+  /** Actual eval spend, batch discount included. */
   estimatedUsd: number;
+  /** Standard host cost; absent when any episode's was not measured. */
+  standardUsd?: number;
   /** Projection modes only: mean discovery calls per episode. */
   meanSearchTools?: number;
   meanSearchBoxes?: Record<string, number>;
@@ -738,6 +768,10 @@ export interface TierCellSummary {
 
 export interface ToolChoiceSummary {
   episodes: number;
+  /** Actual eval spend over every episode, batch discount included. */
+  estimatedUsd: number;
+  /** Standard host cost over every episode; absent when any was not measured. */
+  standardUsd?: number;
   cells: CellSummary[];
   /** Per tier × cell, in tier order (TASK_TIERS). */
   tiers: TierCellSummary[];
@@ -759,7 +793,9 @@ function spendOf(records: EpisodeRecord[]): {
   meanInputTokens: number;
   meanOutputTokens: number;
   estimatedUsd: number;
+  standardUsd?: number;
 } {
+  const standard = sumMeasured(records.map(recordStandardUsd));
   return {
     meanTurns: mean(records.map((r) => r.apiTurns)),
     meanBudgetTurns: mean(records.map((r) => r.budgetTurns)),
@@ -770,10 +806,8 @@ function spendOf(records: EpisodeRecord[]): {
       ),
     ),
     meanOutputTokens: mean(records.map((r) => r.usage.outputTokens)),
-    estimatedUsd: records.reduce(
-      (a, r) => a + estimateUsd(r.modelId, r.usage, r.batch === true),
-      0,
-    ),
+    estimatedUsd: records.reduce((a, r) => a + recordEstimatedUsd(r), 0),
+    ...(standard !== undefined ? { standardUsd: standard } : {}),
   };
 }
 
@@ -845,6 +879,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     meanOutputTokens: spend.meanOutputTokens,
     cacheReadShare: totalInput === 0 ? 0 : cacheRead / totalInput,
     estimatedUsd: spend.estimatedUsd,
+    ...(spend.standardUsd !== undefined ? { standardUsd: spend.standardUsd } : {}),
   };
   if (isProjectionMode(first.mode)) {
     const uses = records.flatMap((r) => (r.projection !== undefined ? [r.projection] : []));
@@ -915,8 +950,11 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
       });
     }
   }
+  const total = spendOf(records);
   return {
     episodes: records.length,
+    estimatedUsd: total.estimatedUsd,
+    ...(total.standardUsd !== undefined ? { standardUsd: total.standardUsd } : {}),
     cells: [...byCell.values()].map(summarizeCell),
     tiers,
     tasks,
@@ -974,6 +1012,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'out-tok',
       'cache-read',
       'est $',
+      'std $',
       'turn-capped',
       'harness-err',
     ],
@@ -991,6 +1030,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       Math.round(cell.meanOutputTokens).toString(),
       pct(cell.cacheReadShare, 1),
       cell.estimatedUsd.toFixed(4),
+      usdOrDash(cell.standardUsd),
       cell.turnCapped.toString(),
       cell.harnessErrors.toString(),
     ]);
@@ -1034,6 +1074,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'in-tok',
       'out-tok',
       'est $',
+      'std $',
       'discovery per episode',
       ...(routed ? ['global search (ok)', '1st call right box', 'detours (mean calls)'] : []),
     ];
@@ -1050,6 +1091,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
         Math.round(cell.meanInputTokens).toString(),
         Math.round(cell.meanOutputTokens).toString(),
         cell.estimatedUsd.toFixed(4),
+        usdOrDash(cell.standardUsd),
         formatDiscovery(cell),
         ...(routed
           ? routing === undefined
@@ -1126,11 +1168,19 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       (records.some((r) => r.batch === true)
         ? 'Episodes run through the Message Batches API are billed at 50% of that. '
         : '') +
+      'est $ is that actual spend; std $ is the standard host cost (static prefix warm and read every turn ' +
+      "when at or above the model's minimum cacheable size, conversation cached incrementally, no batch " +
+      'discount), comparable across modes and runs; - where not measured. ' +
       'The turn budget counts action turns (Projection discovery turns are free, up to an absolute ceiling of twice the budget); ' +
       'turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
   return lines.join('\n');
+}
+
+/** USD to 4 places, or `-` when not measured. */
+function usdOrDash(usd: number | undefined): string {
+  return usd === undefined ? '-' : usd.toFixed(4);
 }
 
 /** A tier cell's discovery means, or `-` outside the Projection modes. */
