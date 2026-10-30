@@ -138,6 +138,27 @@ describe('describe_tool (R34)', () => {
     expect(described(result).inputSchema['required']).toEqual([name]);
   });
 
+  it('an undeclared output is not called text; a read-only tool that runs immediately says to look first', () => {
+    const readOnly = text(describeTool(RICH, { name: 'read_file' }));
+    expect(readOnly).toContain('Output schema: none declared');
+    expect(readOnly).not.toContain('arrive as text');
+    expect(readOnly).toContain('structured object');
+    expect(readOnly).toContain('call it once with call_tool');
+    const gated = text(
+      describeTool(
+        { ...RICH, tools: [entry({ name: 'poke', description: 'Poke.' })] },
+        { name: 'poke' },
+      ),
+    );
+    expect(gated).toContain('Output schema: none declared');
+    expect(gated).not.toContain('call_tool');
+    expect(gated).toContain('a result shape you have not seen');
+    // A declared schema keeps the schema block and none of this copy.
+    const declared = text(describeTool(RICH, { name: 'write_file' }));
+    expect(declared).toContain('Output schema (JSON Schema):');
+    expect(declared).not.toContain('none declared');
+  });
+
   it('shows the destructive marker and policy overrides in the posture line', () => {
     const rendered = text(
       describeTool(CATALOG, { name: 'delete_file' }, { policy: { delete_file: 'deny' } }),

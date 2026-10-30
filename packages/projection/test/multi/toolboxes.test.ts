@@ -327,7 +327,7 @@ describe('search_<alias> descriptions (R43, S5)', () => {
     expect(head('search_fs')).toBe(
       `Search the fs toolbox. "FS-SERVER-INSTRUCTIONS: read me first." (server's words) (3 tools)`,
     );
-    expect(head('search_notes')).toBe('Search the notes toolbox. (1 tool, e.g. add_note)');
+    expect(head('search_notes')).toBe('Search the notes toolbox. (1 tool)');
     for (const alias of ['fs', 'github', 'notes']) {
       const search = tool(tools, `search_${alias}`);
       expect(search.annotations?.readOnlyHint).toBe(true);
@@ -365,14 +365,11 @@ describe('the shelf (R44)', () => {
     const f = await wrapThree();
     const [preamble, shelf] = f.instructions.split('\n\n');
     expect(preamble).toContain("or a box's own search_<box> tool to look inside that box");
-    expect(preamble).toContain(
-      "When the user doesn't say which box holds what they need, look before asking: search_tools searches every box at once, and a box's own search lists what it holds.",
-    );
     expect(shelf?.split('\n')).toEqual([
       'Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:',
       `- fs — "FS-SERVER-INSTRUCTIONS: read me first." (server's words) (3 tools)`,
       '- github — Issues and pull requests. (4 tools)',
-      '- notes (1 tool, e.g. add_note)',
+      '- notes (1 tool)',
     ]);
     // No posture counts on the shelf.
     expect(shelf).not.toMatch(/asks for approval|runs immediately/);
@@ -386,7 +383,7 @@ describe('the shelf (R44)', () => {
       expect.stringContaining('tools are named <box>.<tool>'),
       expect.stringMatching(/^- fs — /),
       expect.stringMatching(/^- github — /),
-      '- notes (1 tool, e.g. add_note)',
+      '- notes (1 tool)',
     ]);
   });
 
@@ -434,9 +431,6 @@ describe('catalog.globalSearch: false (R43)', () => {
     expect(JSON.stringify(tools)).not.toContain('search_tools');
     expect(c.getInstructions()).not.toContain('search_tools');
     expect(c.getInstructions()).toContain("call a box's search_<box> tool to look inside that box");
-    expect(c.getInstructions()).toContain(
-      "When the user doesn't say which box holds what they need, look before asking: a box's own search lists what it holds, so check every box that could hold it.",
-    );
     for (const name of ['describe_tool', 'call_tool']) {
       expect(argDescription(tool(tools, name), 'name')).toBe(
         'Qualified tool name (<box>.<tool>) as listed by the search_<box> tool of its box.',
@@ -491,7 +485,7 @@ describe('tool boxes over the 2026-07-28 wire', () => {
       'describe_tool',
       'call_tool',
     ]);
-    expect(c.getInstructions()).toContain('- notes (1 tool, e.g. add_note)');
+    expect(c.getInstructions()).toContain('- notes (1 tool)');
 
     type Page = { structuredContent?: Record<string, unknown>; content: { text: string }[] };
     const first = (await c.callTool({ name: 'search_fs', arguments: {} })) as Page;

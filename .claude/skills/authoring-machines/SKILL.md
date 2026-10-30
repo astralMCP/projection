@@ -84,8 +84,10 @@ export default setup({}).createMachine({
   server returns one (see its Output type in `tools.d.ts`); otherwise the
   text of its single text block, `null` for an empty result, or the raw
   content array for anything else. Tools without an Output type are typed
-  `unknown` — usually a string. A tool returning `isError` arrives as
-  `TOOL_ERROR`.
+  `unknown` — not necessarily a string: many servers return
+  `structuredContent` without declaring a schema (the MongoDB server's
+  `count` returns `{ count: 4 }`), and JSON text arrives as a string. A
+  tool returning `isError` arrives as `TOOL_ERROR`.
 - Contract item 5: tools marked "asks for approval" suspend the machine for
   approval; tools marked "runs immediately" (read-only, `auto` by policy, or,
   under `approvals: 'destructive-only'`, a declared non-destructive write)

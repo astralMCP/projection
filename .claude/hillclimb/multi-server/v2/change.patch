@@ -1,0 +1,128 @@
+diff --git a/.claude/skills/authoring-machines/SKILL.md b/.claude/skills/authoring-machines/SKILL.md
+index fbdae45..d072dbe 100644
+--- a/.claude/skills/authoring-machines/SKILL.md
++++ b/.claude/skills/authoring-machines/SKILL.md
+@@ -84,8 +84,10 @@ export default setup({}).createMachine({
+   server returns one (see its Output type in `tools.d.ts`); otherwise the
+   text of its single text block, `null` for an empty result, or the raw
+   content array for anything else. Tools without an Output type are typed
+-  `unknown` — usually a string. A tool returning `isError` arrives as
+-  `TOOL_ERROR`.
++  `unknown` — not necessarily a string: many servers return
++  `structuredContent` without declaring a schema (the MongoDB server's
++  `count` returns `{ count: 4 }`), and JSON text arrives as a string. A
++  tool returning `isError` arrives as `TOOL_ERROR`.
+ - Contract item 5: tools marked "asks for approval" suspend the machine for
+   approval; tools marked "runs immediately" (read-only, `auto` by policy, or,
+   under `approvals: 'destructive-only'`, a declared non-destructive write)
+diff --git a/packages/projection/src/catalog/describe.ts b/packages/projection/src/catalog/describe.ts
+index d53cb06..6d701d1 100644
+--- a/packages/projection/src/catalog/describe.ts
++++ b/packages/projection/src/catalog/describe.ts
+@@ -155,7 +155,7 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
+   if (tool.outputSchema !== undefined) {
+     lines.push('', 'Output schema (JSON Schema):', jsonBlock(tool.outputSchema));
+   } else {
+-    lines.push('', 'Output schema: none declared — results arrive as text.');
++    lines.push('', undeclaredOutput(tool));
+   }
+   if (tool.schemaTruncated) {
+     lines.push(
+@@ -175,6 +175,26 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
+   return lines.join('\n');
+ }
+ 
++/**
++ * The output line for a tool that declares no `outputSchema`. Such a tool's
++ * result is not necessarily text: servers often return `structuredContent`
++ * without declaring a schema, and JSON text arrives as a string, so the
++ * `TOOL_RESULT.result` a machine receives (R35.5) can be an object or a
++ * string the model has never seen. A model told "text" writes
++ * `parseInt(event.result)` against `{ count: 4 }`. The line says the shape
++ * is unknown and, for a tool that only reads and runs without approval,
++ * says how to see it before code depends on it. Library copy; the posture
++ * and `readOnlyHint` it branches on are already shown or applied (R14, R33).
++ */
++function undeclaredOutput(tool: ToolDescription): string {
++  const head =
++    'Output schema: none declared — the result may be a structured object or text (sometimes JSON text, which a machine receives as a string).';
++  if (tool.posture === 'runs immediately' && tool.annotations.readOnlyHint === true) {
++    return `${head} Before a machine reads its fields, call it once with call_tool and look at the result: event.result is that same value (call_tool prints an object as indented JSON, text as it is).`;
++  }
++  return `${head} Do not write code that depends on a result shape you have not seen.`;
++}
++
+ /**
+  * A sanitized schema as an indented JSON block. The sanitizer neutralizes
+  * every string VALUE but keeps property names verbatim, and `JSON.stringify`
+diff --git a/packages/projection/src/machine-host/contract.ts b/packages/projection/src/machine-host/contract.ts
+index bab5fed..6f5944e 100644
+--- a/packages/projection/src/machine-host/contract.ts
++++ b/packages/projection/src/machine-host/contract.ts
+@@ -191,7 +191,11 @@ Rules:
+    one (see its Output type in tools.d.ts); otherwise the text of its single
+    text block, null for an empty result, or the raw content array for
+    anything else. A tool that returns isError arrives as TOOL_ERROR. Tools
+-   without an Output type are typed unknown — usually a string.
++   without an Output type are typed unknown, and that does not mean text:
++   many servers return an object without declaring it, and JSON text
++   arrives as a string. Never parse a result you have not seen: run the
++   read on its own first (call_tool, or a machine whose output is
++   event.result) and write the machine against the shape it returns.
+ 9. Tool inputs such as paths, ids and names are server-specific. Do not guess
+    them: take them from the machine's input, or discover them first with a
+    read-only call (a list/search tool) and keep what you learn in context.
+diff --git a/packages/projection/test/catalog/describe.test.ts b/packages/projection/test/catalog/describe.test.ts
+index bc4616a..b7bfde3 100644
+--- a/packages/projection/test/catalog/describe.test.ts
++++ b/packages/projection/test/catalog/describe.test.ts
+@@ -138,6 +138,27 @@ describe('describe_tool (R34)', () => {
+     expect(described(result).inputSchema['required']).toEqual([name]);
+   });
+ 
++  it('an undeclared output is not called text; a read-only tool that runs immediately says to look first', () => {
++    const readOnly = text(describeTool(RICH, { name: 'read_file' }));
++    expect(readOnly).toContain('Output schema: none declared');
++    expect(readOnly).not.toContain('arrive as text');
++    expect(readOnly).toContain('structured object');
++    expect(readOnly).toContain('call it once with call_tool');
++    const gated = text(
++      describeTool(
++        { ...RICH, tools: [entry({ name: 'poke', description: 'Poke.' })] },
++        { name: 'poke' },
++      ),
++    );
++    expect(gated).toContain('Output schema: none declared');
++    expect(gated).not.toContain('call_tool');
++    expect(gated).toContain('a result shape you have not seen');
++    // A declared schema keeps the schema block and none of this copy.
++    const declared = text(describeTool(RICH, { name: 'write_file' }));
++    expect(declared).toContain('Output schema (JSON Schema):');
++    expect(declared).not.toContain('none declared');
++  });
++
+   it('shows the destructive marker and policy overrides in the posture line', () => {
+     const rendered = text(
+       describeTool(CATALOG, { name: 'delete_file' }, { policy: { delete_file: 'deny' } }),
+diff --git a/packages/projection/test/multi/code-mode.test.ts b/packages/projection/test/multi/code-mode.test.ts
+index 5c9fbb7..d8dadb8 100644
+--- a/packages/projection/test/multi/code-mode.test.ts
++++ b/packages/projection/test/multi/code-mode.test.ts
+@@ -722,6 +722,17 @@ describe('sample tool names in the contract and examples (R45)', () => {
+     expect(contract).toContain(`e.g. toolCall('alpha.peek', ...) ${NOTE}.`);
+   });
+ 
++  it('rule 8 does not call an undeclared result text, and says to look before parsing', () => {
++    for (const contract of [
++      authoringContract(),
++      authoringContract(toolSamples(sampleView([sampleEntry('peek')]))),
++    ]) {
++      expect(contract).not.toContain('usually a string');
++      expect(contract).toContain('that does not mean text');
++      expect(contract).toContain('Never parse a result you have not seen');
++    }
++  });
++
+   it('decides read-only and gated under the facade policy', () => {
+     const samples = toolSamples(
+       sampleView([sampleEntry('peek', { readOnlyHint: true }), sampleEntry('poke')]),

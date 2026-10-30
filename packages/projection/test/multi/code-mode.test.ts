@@ -722,6 +722,17 @@ describe('sample tool names in the contract and examples (R45)', () => {
     expect(contract).toContain(`e.g. toolCall('alpha.peek', ...) ${NOTE}.`);
   });
 
+  it('rule 8 does not call an undeclared result text, and says to look before parsing', () => {
+    for (const contract of [
+      authoringContract(),
+      authoringContract(toolSamples(sampleView([sampleEntry('peek')]))),
+    ]) {
+      expect(contract).not.toContain('usually a string');
+      expect(contract).toContain('that does not mean text');
+      expect(contract).toContain('Never parse a result you have not seen');
+    }
+  });
+
   it('decides read-only and gated under the facade policy', () => {
     const samples = toolSamples(
       sampleView([sampleEntry('peek', { readOnlyHint: true }), sampleEntry('poke')]),

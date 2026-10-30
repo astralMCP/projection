@@ -191,7 +191,11 @@ Rules:
    one (see its Output type in tools.d.ts); otherwise the text of its single
    text block, null for an empty result, or the raw content array for
    anything else. A tool that returns isError arrives as TOOL_ERROR. Tools
-   without an Output type are typed unknown — usually a string.
+   without an Output type are typed unknown, and that does not mean text:
+   many servers return an object without declaring it, and JSON text
+   arrives as a string. Never parse a result you have not seen: run the
+   read on its own first (call_tool, or a machine whose output is
+   event.result) and write the machine against the shape it returns.
 9. Tool inputs such as paths, ids and names are server-specific. Do not guess
    them: take them from the machine's input, or discover them first with a
    read-only call (a list/search tool) and keep what you learn in context.

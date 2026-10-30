@@ -1,0 +1,22 @@
+v2 model-facing copy (as applied)
+
+== describe_tool, undeclared output, read-only tool that runs immediately ==
+Output schema: none declared — the result may be a structured object or text (sometimes JSON text, which a machine receives as a string). Before a machine reads its fields, call it once with call_tool and look at the result: event.result is that same value (call_tool prints an object as indented JSON, text as it is).
+
+== describe_tool, undeclared output, any other tool ==
+Output schema: none declared — the result may be a structured object or text (sometimes JSON text, which a machine receives as a string). Do not write code that depends on a result shape you have not seen.
+
+== discover_apis authoring contract, rule 8 ==
+8. TOOL_RESULT.result is the tool's structuredContent when the server returns
+   one (see its Output type in tools.d.ts); otherwise the text of its single
+   text block, null for an empty result, or the raw content array for
+   anything else. A tool that returns isError arrives as TOOL_ERROR. Tools
+   without an Output type are typed unknown, and that does not mean text:
+   many servers return an object without declaring it, and JSON text
+   arrives as a string. Never parse a result you have not seen: run the
+   read on its own first (call_tool, or a machine whose output is
+   event.result) and write the machine against the shape it returns.
+
+== before (baseline / v1) ==
+describe_tool: Output schema: none declared — results arrive as text.
+rule 8 tail:   Tools without an Output type are typed unknown — usually a string.
