@@ -56,11 +56,16 @@ function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Mess
 }
 
 const ok = (msg: Anthropic.Message): BatchResult => ({ type: 'succeeded', message: msg });
-const errored = (type: 'overloaded_error' | 'api_error' = 'overloaded_error'): BatchResult =>
+const errored = (
+  type: 'overloaded_error' | 'api_error' | 'invalid_request_error' = 'overloaded_error',
+  text = 'Overloaded',
+): BatchResult =>
   ({
     type: 'errored',
-    error: { type: 'error', request_id: null, error: { type, message: 'Overloaded' } },
+    error: { type: 'error', request_id: null, error: { type, message: text } },
   }) as BatchResult;
+const tooLong = (): BatchResult =>
+  errored('invalid_request_error', 'prompt is too long: 215000 tokens > 200000 maximum');
 
 interface FakeBatch {
   id: string;
@@ -76,7 +81,12 @@ interface FakeBatch {
  */
 class FakeBatches implements BatchesClient {
   readonly batches: FakeBatch[] = [];
+  readonly canceled: string[] = [];
   failCreates = 0;
+  /** Status polls that throw (each poll decrements). */
+  failPolls = 0;
+  /** Results reads that throw after yielding this many lines (undefined: never). */
+  failResultsAfter: number | undefined;
   constructor(
     private readonly respond: (
       customId: string,
@@ -108,7 +118,16 @@ class FakeBatches implements BatchesClient {
     return { id };
   }
 
+  async cancel(id: string): Promise<{ id: string }> {
+    this.canceled.push(id);
+    return { id };
+  }
+
   async retrieve(id: string) {
+    if (this.failPolls > 0) {
+      this.failPolls -= 1;
+      throw new Error('503 Service Unavailable');
+    }
     const batch = this.batches.find((b) => b.id === id);
     if (batch === undefined) throw new Error(`no batch ${id}`);
     batch.polls += 1;
@@ -125,9 +144,17 @@ class FakeBatches implements BatchesClient {
   ): Promise<AsyncIterable<Anthropic.Messages.MessageBatchIndividualResponse>> {
     const batch = this.batches.find((b) => b.id === id);
     const lines = batch?.results ?? [];
+    const failAfter = this.failResultsAfter;
+    this.failResultsAfter = undefined;
     return (async function* () {
       // Out of order, as the API does not promise order.
-      yield* lines.toReversed();
+      let n = 0;
+      for (const line of lines.toReversed()) {
+        if (failAfter !== undefined && n >= failAfter) throw new Error('stream reset');
+        n += 1;
+        yield line;
+      }
+      if (failAfter !== undefined && n >= failAfter) throw new Error('stream reset');
     })();
   }
 }
@@ -305,6 +332,137 @@ describe('LockstepBatcher', () => {
     expect(batcher.ticks[0]?.error).toBe('Error: connection reset');
     expect(episodes['a']?.harnessError).toBeUndefined();
     expect(episodes['a']?.apiTurns).toBe(1);
+  });
+
+  it('never retries an invalid request; a prompt too long is a context overflow, not infra', async () => {
+    // a overflows on turn 2; b's turn 1 is malformed; c is served.
+    const fake = new FakeBatches(async (id, params) => {
+      if (id.startsWith('a-t02')) return tooLong();
+      if (id.startsWith('b-')) return errored('invalid_request_error', 'tools.0: bad schema');
+      return ok(stepModel(params));
+    });
+    const batcher = new LockstepBatcher({ client: fake, sleep: fakeSleep() });
+    const episodes = await runSteps(batcher, { a: 'turns:3', b: 'turns:2', c: 'turns:2' });
+
+    // One submission each: nothing resubmitted.
+    expect(fake.batches.map((b) => b.requests.map((r) => r.custom_id))).toEqual([
+      ['a-t01-a1', 'b-t01-a1', 'c-t01-a1'],
+      ['a-t02-a1', 'c-t02-a1'],
+    ]);
+    const a = episodes['a'];
+    expect(a?.contextOverflow).toBe(true);
+    expect(a?.harnessError).toBeUndefined();
+    expect(a?.infraFailure).toBeUndefined();
+    expect(a?.apiTurns).toBe(1);
+    expect(a?.stopReason).toBe('model_context_window_exceeded');
+    const b = episodes['b'];
+    expect(b?.harnessError).toMatch(
+      /^api error: Error: turn 1 rejected by the batch API: errored \(invalid_request_error: tools.0: bad schema\)/,
+    );
+    expect(b?.infraFailure).toBeUndefined();
+    expect(b?.contextOverflow).toBeUndefined();
+    expect(episodes['c']?.harnessError).toBeUndefined();
+    expect(batcher.ticks.map((t) => [t.errored, t.invalid, t.contextOverflows, t.retries])).toEqual(
+      [
+        [1, 1, 0, 0],
+        [1, 1, 1, 0],
+      ],
+    );
+  });
+
+  it('cancels a batch it gave up polling and logs its id for reconciliation', async () => {
+    const fake = new FakeBatches(async (_id, params) => ok(stepModel(params)));
+    fake.failPolls = 2;
+    const log: string[] = [];
+    const batcher = new LockstepBatcher({
+      client: fake,
+      sleep: fakeSleep(),
+      maxPollErrors: 2,
+      log: (line) => log.push(line),
+    });
+    const episodes = await runSteps(batcher, { a: 'turns:1' });
+    expect(fake.canceled).toEqual(['msgbatch_1']);
+    expect(batcher.ticks[0]?.cancel).toBe('requested');
+    expect(batcher.ticks[0]?.error).toBe('Error: 503 Service Unavailable');
+    expect(log).toHaveLength(1);
+    expect(log[0]).toContain('msgbatch_1');
+    expect(log[0]).toMatch(/reconcile/);
+    // The request was resubmitted in a new batch and served.
+    expect(batcher.ticks[1]?.cancel).toBeUndefined();
+    expect(episodes['a']?.harnessError).toBeUndefined();
+    expect(episodes['a']?.apiTurns).toBe(1);
+  });
+
+  it('cancels a batch whose results read threw, keeping the results it did read', async () => {
+    const fake = new FakeBatches(async (_id, params) => ok(stepModel(params)));
+    fake.failResultsAfter = 1;
+    const log: string[] = [];
+    const batcher = new LockstepBatcher({
+      client: fake,
+      sleep: fakeSleep(),
+      log: (line) => log.push(line),
+    });
+    const episodes = await runSteps(batcher, { a: 'turns:1', b: 'turns:1' });
+    expect(fake.canceled).toEqual(['msgbatch_1']);
+    expect(batcher.ticks[0]?.error).toBe('Error: stream reset');
+    expect(batcher.ticks[0]?.succeeded).toBe(1);
+    expect(batcher.ticks[0]?.missing).toBe(1);
+    expect(log[0]).toContain('msgbatch_1');
+    // Only the unread one went out again.
+    expect(fake.batches[1]?.requests).toHaveLength(1);
+    expect(episodes['a']?.harnessError).toBeUndefined();
+    expect(episodes['b']?.harnessError).toBeUndefined();
+  });
+
+  it('still records a tick when the cancel itself throws', async () => {
+    const fake = new FakeBatches(async (_id, params) => ok(stepModel(params)));
+    fake.failPolls = 1;
+    fake.cancel = async () => {
+      throw new Error('404 Not Found');
+    };
+    const log: string[] = [];
+    const batcher = new LockstepBatcher({
+      client: fake,
+      sleep: fakeSleep(),
+      maxPollErrors: 1,
+      log: (line) => log.push(line),
+    });
+    await runSteps(batcher, { a: 'turns:1' });
+    expect(batcher.ticks[0]?.cancel).toBe('failed: Error: 404 Not Found');
+    expect(log[0]).toContain('msgbatch_1');
+  });
+
+  it("records each tick's cache reads and writes, and the hit rate between them", async () => {
+    const fake = new FakeBatches(async (id, params) => {
+      const msg = stepModel(params);
+      // Turn 1 writes the cache; turn 2 reads most of it back.
+      const turn = Number(/-t(\d+)-/.exec(id)?.[1]);
+      msg.usage = {
+        ...msg.usage,
+        input_tokens: 50,
+        cache_read_input_tokens: turn === 1 ? 0 : 900,
+        cache_creation_input_tokens: turn === 1 ? 1_000 : 100,
+      };
+      return ok(msg);
+    });
+    const batcher = new LockstepBatcher({ client: fake, sleep: fakeSleep() });
+    await runSteps(batcher, { a: 'turns:2', b: 'turns:2' });
+    expect(
+      batcher.ticks.map((t) => [
+        t.inputTokens,
+        t.cacheReadInputTokens,
+        t.cacheCreationInputTokens,
+        t.cacheHitRate,
+      ]),
+    ).toEqual([
+      [100, 0, 2_000, 0],
+      [100, 1_800, 200, 0.9],
+    ]);
+    // A tick that served nothing has no rate.
+    const idle = new FakeBatches(async () => undefined);
+    const none = new LockstepBatcher({ client: idle, sleep: fakeSleep(), maxAttempts: 1 });
+    await runSteps(none, { a: 'turns:1' });
+    expect(none.ticks[0]?.cacheHitRate).toBeNull();
   });
 
   it('rejects bad and duplicate keys', () => {
@@ -486,6 +644,31 @@ describe('runToolChoiceEval with batch (offline)', () => {
     expect(written.batch).toBe(true);
     expect(written.batchTicks.map((t) => t.requests)).toEqual([8, 8]);
     expect(written.records.every((r) => r.batch === true)).toBe(true);
+  });
+
+  it('records a batch context overflow as a scored failure, not infra', async () => {
+    // Turn 1 is served (the right call); turn 2 is too long for the window.
+    const fake = new FakeBatches(async (id, params) =>
+      /-t01-/.test(id) ? ok(await answer(params)) : tooLong(),
+    );
+    const [record] = await runToolChoiceEval({
+      models: [haiku],
+      modes: ['direct'],
+      tasks: resolveTasks('who-am-i'),
+      runs: 1,
+      batch: { client: fake, sleep: fakeSleep() },
+    });
+    expect(fake.batches).toHaveLength(2);
+    expect(record?.contextOverflow).toBe(true);
+    expect(record?.harnessError).toBeUndefined();
+    expect(record?.infraFailure).toBeUndefined();
+    expect(record?.toolCorrect).toBe(true);
+    expect(record?.success).toBe(false);
+    expect(summarizeToolChoice([record as EpisodeRecord]).cells[0]).toMatchObject({
+      scored: 1,
+      contextOverflows: 1,
+      harnessErrors: 0,
+    });
   });
 
   it('records an episode the batches never served as an infra failure', async () => {

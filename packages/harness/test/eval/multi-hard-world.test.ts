@@ -442,6 +442,7 @@ describe.skipIf(!installed)('multi-hard world', () => {
           created.push(params);
           return { id: `msgbatch_${created.length}` };
         },
+        cancel: async (id) => ({ id }),
         retrieve: async (id) => ({
           id,
           processing_status: 'ended',
