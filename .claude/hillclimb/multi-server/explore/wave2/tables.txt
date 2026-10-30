@@ -1,0 +1,116 @@
+systemSuffix='Use code mode (discover_apis, execute_machine) for this task.' episodes=14
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-audit-shipped-orders | haiku45 | fail | execute_machine | transpile, ok | 0 | 1 | 1 | 6 | 0.0326 |
+| hard-audit-shipped-orders | sonnet-low | PASS | call_tool | - | 5 | 1 | 1 | 8 | 0.0656 |
+| hard-branch-failing-checks | haiku45 | fail | both | ok, ok, ok, ok, ok | 19 | 20 | 2 | 24 | 0.1493 |
+| hard-branch-failing-checks | sonnet-low | PASS | both | ok | 3 | 10 | 1 | 7 | 0.0669 |
+| hard-branch-vip-tiers | haiku45 | PASS | both | ok, ok | 3 | 24 | 4 | 9 | 0.0482 |
+| hard-branch-vip-tiers | sonnet-low | PASS | both | ok, runtime, ok | 9 | 4 | 2 | 14 | 0.1011 |
+| hard-comment-export-prs | haiku45 | PASS | both | runtime, ok | 4 | 9 | 1 | 11 | 0.0566 |
+| hard-comment-export-prs | sonnet-low | PASS | both | ok | 2 | 9 | 1 | 7 | 0.0611 |
+| hard-gold-order-totals | haiku45 | fail | both | ok, ok | 5 | 0 | 0 | 11 | 0.0427 |
+| hard-gold-order-totals | sonnet-low | PASS | call_tool | - | 9 | 0 | 0 | 9 | 0.0587 |
+| hard-label-stale-issues | haiku45 | PASS | both | ok, ok, ok, ok, ok, ok, ok, ok, ok | 2 | 12 | 1 | 16 | 0.1512 |
+| hard-label-stale-issues | sonnet-low | PASS | both | ok | 1 | 12 | 1 | 6 | 0.0587 |
+| hard-log-error-lines | haiku45 | fail | both | runtime, runtime, runtime, runtime, runtime, runtime, ok | 1 | 0 | 0 | 12 | 0.0657 |
+| hard-log-error-lines | sonnet-low | PASS | both | ok | 2 | 0 | 0 | 6 | 0.0439 |
+total $1.0024
+haiku45: 3/7 pass, $0.5464, $/success 0.1821
+sonnet-low: 7/7 pass, $0.4560, $/success 0.0651
+systemSuffix=None episodes=14
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-audit-shipped-orders | haiku45 | PASS | both | ok | 6 | 1 | 1 | 10 | 0.0531 |
+| hard-audit-shipped-orders | sonnet-low | PASS | call_tool | - | 6 | 1 | 1 | 8 | 0.0533 |
+| hard-branch-failing-checks | haiku45 | PASS | call_tool | - | 21 | 10 | 10 | 10 | 0.0473 |
+| hard-branch-failing-checks | sonnet-low | fail | both | runtime, ok | 2 | 20 | 2 | 9 | 0.0714 |
+| hard-branch-vip-tiers | haiku45 | PASS | both | validate, validate, runtime, terminal, runtime, ok | 10 | 20 | 9 | 21 | 0.1061 |
+| hard-branch-vip-tiers | sonnet-low | PASS | call_tool | - | 9 | 2 | 2 | 11 | 0.0640 |
+| hard-comment-export-prs | haiku45 | fail | both | runtime, runtime, ok, runtime, ok, ok, ok, ok, ok, ok, ok, ok | 15 | 11 | 3 | 32 | 0.2060 |
+| hard-comment-export-prs | sonnet-low | PASS | both | ok | 2 | 9 | 1 | 6 | 0.0658 |
+| hard-gold-order-totals | haiku45 | PASS | call_tool | - | 9 | 0 | 0 | 14 | 0.0502 |
+| hard-gold-order-totals | sonnet-low | PASS | call_tool | - | 8 | 0 | 0 | 8 | 0.0564 |
+| hard-label-stale-issues | haiku45 | PASS | both | ok, ok | 1 | 12 | 1 | 9 | 0.0528 |
+| hard-label-stale-issues | sonnet-low | PASS | both | runtime | 13 | 24 | 13 | 6 | 0.0748 |
+| hard-log-error-lines | haiku45 | fail | call_tool | - | 2 | 0 | 0 | 4 | 0.0741 |
+| hard-log-error-lines | sonnet-low | PASS | both | ok | 2 | 0 | 0 | 6 | 0.0443 |
+total $1.0196
+haiku45: 5/7 pass, $0.5896, $/success 0.1179
+sonnet-low: 6/7 pass, $0.4300, $/success 0.0717
+systemSuffix='Use code mode (discover_apis, execute_machine) for this task.' episodes=5
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-audit-shipped-orders | haiku45 | PASS | both | ok, ok, ok, ok | 15 | 6 | 6 | 22 | 0.1318 |
+| hard-branch-failing-checks | haiku45 | PASS | both | ok, ok, ok, ok, ok, ok | 2 | 10 | 1 | 16 | 0.1112 |
+| hard-branch-vip-tiers | haiku45 | PASS | execute_machine | ok | 0 | 12 | 2 | 7 | 0.0353 |
+| hard-comment-export-prs | haiku45 | PASS | both | ok, ok, ok, ok, ok | 2 | 9 | 1 | 11 | 0.0699 |
+| hard-label-stale-issues | haiku45 | PASS | both | ok, ok, ok, ok, ok, ok, ok, ok | 1 | 12 | 1 | 14 | 0.1019 |
+total $0.4502
+haiku45: 5/5 pass, $0.4502, $/success 0.0900
+systemSuffix='Use code mode (discover_apis, execute_machine) for this task.' episodes=5
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-audit-shipped-orders | sonnet-low | PASS | call_tool | - | 5 | 1 | 1 | 8 | 0.0657 |
+| hard-branch-failing-checks | sonnet-low | PASS | both | ok | 3 | 10 | 1 | 7 | 0.0766 |
+| hard-branch-vip-tiers | sonnet-low | PASS | both | runtime | 8 | 2 | 1 | 10 | 0.0765 |
+| hard-comment-export-prs | sonnet-low | PASS | both | ok | 2 | 9 | 1 | 7 | 0.0603 |
+| hard-label-stale-issues | sonnet-low | PASS | both | ok | 1 | 12 | 1 | 6 | 0.0594 |
+total $0.3384
+sonnet-low: 5/5 pass, $0.3384, $/success 0.0677
+systemSuffix=None episodes=4
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-branch-failing-checks | haiku45 | PASS | call_tool | - | 9 | 7 | 7 | 8 | 0.0366 |
+| hard-branch-failing-checks | sonnet-low | PASS | call_tool | - | 13 | 10 | 10 | 9 | 0.0805 |
+| hard-comment-export-prs | haiku45 | PASS | both | runtime, ok, ok | 5 | 9 | 1 | 14 | 0.0708 |
+| hard-comment-export-prs | sonnet-low | PASS | both | ok | 2 | 9 | 1 | 6 | 0.0661 |
+total $0.2541
+haiku45: 2/2 pass, $0.1075, $/success 0.0537
+sonnet-low: 2/2 pass, $0.1466, $/success 0.0733
+systemSuffix='Use code mode (discover_apis, execute_machine) for this task.' episodes=14
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-audit-shipped-orders | haiku45 | fail | execute_machine | ok | 0 | 1 | 1 | 5 | 0.0246 |
+| hard-audit-shipped-orders | sonnet-low | PASS | call_tool | - | 5 | 1 | 1 | 8 | 0.0588 |
+| hard-branch-failing-checks | haiku45 | fail | both | terminal, ok | 11 | 18 | 18 | 23 | 0.0841 |
+| hard-branch-failing-checks | sonnet-low | FORBID | both | runtime, terminal, ok, ok | 10 | 24 | 22 | 14 | 0.1331 |
+| hard-branch-vip-tiers | haiku45 | fail | both | validate, terminal, ok | 5 | 10 | 10 | 13 | 0.0596 |
+| hard-branch-vip-tiers | sonnet-low | PASS | call_tool | - | 9 | 2 | 2 | 10 | 0.0700 |
+| hard-comment-export-prs | haiku45 | PASS | both | runtime, cap:?, cap:?, ok, ok | 30 | 9 | 9 | 19 | 0.1219 |
+| hard-comment-export-prs | sonnet-low | fail | both | validate, terminal, ok, ok | 7 | 17 | 17 | 12 | 0.1063 |
+| hard-gold-order-totals | haiku45 | PASS | execute_machine | ok, ok, ok | 0 | 0 | 0 | 7 | 0.0422 |
+| hard-gold-order-totals | sonnet-low | PASS | call_tool | - | 7 | 0 | 0 | 8 | 0.0523 |
+| hard-label-stale-issues | haiku45 | PASS | both | terminal, validate, ok, ok, ok | 45 | 53 | 53 | 29 | 0.2082 |
+| hard-label-stale-issues | sonnet-low | PASS | both | validate, terminal | 14 | 20 | 20 | 10 | 0.1053 |
+| hard-log-error-lines | haiku45 | fail | both | validate, runtime, runtime, ok | 1 | 0 | 0 | 9 | 0.0433 |
+| hard-log-error-lines | sonnet-low | PASS | both | validate, ok | 2 | 0 | 0 | 7 | 0.0521 |
+total $1.1619
+haiku45: 3/7 pass, $0.5839, $/success 0.1946
+sonnet-low: 5/7 pass, $0.5779, $/success 0.1156
+systemSuffix=None episodes=14
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-audit-shipped-orders | haiku45 | PASS | call_tool | - | 7 | 1 | 1 | 8 | 0.0525 |
+| hard-audit-shipped-orders | sonnet-low | PASS | call_tool | - | 3 | 1 | 1 | 6 | 0.0458 |
+| hard-branch-failing-checks | haiku45 | PASS | call_tool | - | 19 | 7 | 7 | 12 | 0.0454 |
+| hard-branch-failing-checks | sonnet-low | PASS | call_tool | - | 13 | 10 | 10 | 9 | 0.0804 |
+| hard-branch-vip-tiers | haiku45 | fail | both | validate, terminal | 7 | 10 | 10 | 12 | 0.0527 |
+| hard-branch-vip-tiers | sonnet-low | PASS | call_tool | - | 9 | 2 | 2 | 10 | 0.0652 |
+| hard-comment-export-prs | haiku45 | PASS | both | validate, ok, ok, ok, ok | 37 | 9 | 9 | 19 | 0.1205 |
+| hard-comment-export-prs | sonnet-low | fail | both | validate, terminal, ok | 16 | 17 | 17 | 12 | 0.1223 |
+| hard-gold-order-totals | haiku45 | fail | call_tool | - | 7 | 0 | 0 | 10 | 0.0350 |
+| hard-gold-order-totals | sonnet-low | PASS | call_tool | - | 9 | 0 | 0 | 9 | 0.0466 |
+| hard-label-stale-issues | haiku45 | PASS | both | ok, ok, ok, ok, ok, terminal, ok, terminal, ok, ok, ok, ok, ok, ok, ok, ok, ok | 23 | 57 | 57 | 33 | 0.2606 |
+| hard-label-stale-issues | sonnet-low | PASS | call_tool | - | 13 | 12 | 12 | 5 | 0.0665 |
+| hard-log-error-lines | haiku45 | fail | call_tool | - | 2 | 0 | 0 | 5 | 0.0809 |
+| hard-log-error-lines | sonnet-low | PASS | both | validate, ok | 2 | 0 | 0 | 7 | 0.0543 |
+total $1.1287
+haiku45: 4/7 pass, $0.6475, $/success 0.1619
+sonnet-low: 6/7 pass, $0.4812, $/success 0.0802
+systemSuffix='Use code mode (discover_apis, execute_machine) for this task.' episodes=1
+| task | model | pass | route | execute_machine outcomes | call_tool | approvals | round trips | turns | $ |
+|---|---|---|---|---|---|---|---|---|---|
+| hard-log-error-lines | haiku45 | fail | both | runtime, runtime, runtime, runtime, runtime, ok | 1 | 0 | None | 11 | 0.0511 |
+total $0.0511
+haiku45: 0/1 pass, $0.0511, $/success inf
