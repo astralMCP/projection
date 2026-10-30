@@ -41,7 +41,7 @@ import type { SideEffect } from '../types.js';
 import { FILE_READ_TOOLS, readText, root } from './filesystem-tasks.js';
 import { HARD_REPO } from './github-fake.js';
 import { COMMENT_TOOLS, labelNames, targets, inRepo } from './github-predicates.js';
-import { SHOP_DB, withMongodb } from './mongodb-world.js';
+import { FIXTURE_CUSTOMERS, MONGODB_FIXTURE, SHOP_DB, withMongodb } from './mongodb-world.js';
 import {
   ALL_HARD_ORDERS,
   EXPECTED_CHAIN_ORDERS,
@@ -51,6 +51,7 @@ import {
   EXPECTED_VIP_MISSING,
   EXPECTED_VIP_UPGRADES,
   HARD_AUDIT_DOCS,
+  HARD_CUSTOMERS,
   HARD_STAFF,
   HARD_TIER_BY_EMAIL,
   SHIPPED_ORDER_IDS,
@@ -64,7 +65,9 @@ import {
   EXPECTED_MISSING_FILES,
   EXPECTED_STALE_ISSUES,
   EXPECTED_TITLE_FILE_ISSUES,
+  HARD_WORLD_ISSUES,
   OWNER_LOGIN,
+  type HardIssue,
   RHEA_OPEN_ASSIGNED,
 } from './multi-hard-github.js';
 import { boxOf, isBoxWrite, unbox } from './multi-tasks.js';
@@ -138,12 +141,30 @@ function escaped(text: string): string {
 }
 
 /**
- * For each line naming `id` as a whole token (not inside a longer name or
- * address), the first number after it on that line. An id the text never
- * names yields an empty list.
+ * An email address as a whole token: not inside a longer address or name,
+ * and not the tail of a path.
+ */
+function emailToken(email: string): RegExp {
+  return new RegExp(`(?<![\\w.@/-])${escaped(email)}(?![\\w@-]|\\.\\w)`, 'i');
+}
+
+/**
+ * A file name as a whole token, optionally after a directory prefix
+ * (`auth.log`, `logs/services/auth.log`), but not inside a longer name
+ * (`oauth.log`, `auth.log.1`, `auth.log/x`).
+ */
+function fileToken(name: string): RegExp {
+  return new RegExp(`(?<![\\w.@-])${escaped(name)}(?![\\w@/-]|\\.\\w)`, 'i');
+}
+
+/**
+ * For each line naming `id` as a whole token — an email address
+ * ({@link emailToken}) or a file name, path prefix allowed
+ * ({@link fileToken}) — the first number after it on that line. An id the
+ * text never names yields an empty list.
  */
 export function valuesAfter(text: string, id: string): number[] {
-  const token = new RegExp(`(?<![\\w.@/-])${escaped(id)}(?![\\w@-]|\\.\\w)`, 'i');
+  const token = id.includes('@') ? emailToken(id) : fileToken(id);
   const out: number[] = [];
   for (const line of plain(text).split('\n')) {
     const m = token.exec(line);
@@ -189,25 +210,37 @@ const isCreate = (call: SideEffect): boolean =>
   call.tool === 'issue_write' && sameText(call.args['method'], 'create');
 
 /**
- * A call that makes a comment visible on PR/issue `n` right away, or a
- * pending review's submit (when its comments become visible): the units a
- * "one comment per PR" grader counts.
+ * A call that posts a comment on PR/issue `n`: the units a "one comment per
+ * PR" grader counts. Both tasks that use it ask for a plain comment, so a
+ * plain issue comment counts, and so does a review whose event is
+ * `COMMENT` (created with it, or a pending review submitted with it). An
+ * approval or a change request is not a comment; neither is a reply in an
+ * existing review thread.
  */
 function postsCommentOn(call: SideEffect, n: number): boolean {
   if (!targets(call.args, n, HARD)) return false;
   switch (call.tool) {
     case 'add_issue_comment':
       return typeof call.args['body'] === 'string' && call.args['body'].trim() !== '';
-    case 'add_reply_to_pull_request_comment':
-      return true;
     case 'pull_request_review_write': {
-      const method = str(call.args['method']) ?? '';
-      const event = str(call.args['event']) ?? '';
-      return (method === 'create' && event !== '') || method === 'submit_pending';
+      const method = (str(call.args['method']) ?? '').toLowerCase();
+      return (method === 'create' || method === 'submit_pending') && isCommentEvent(call);
     }
     default:
       return false;
   }
+}
+
+/** A review write whose event is COMMENT. */
+function isCommentEvent(call: SideEffect): boolean {
+  return sameText(call.args['event'], 'COMMENT');
+}
+
+/** A review write that approves or requests changes (an event other than COMMENT). */
+function isVerdictReview(bareTool: string, args: Record<string, unknown>): boolean {
+  if (bareTool !== 'pull_request_review_write') return false;
+  const event = (str(args['event']) ?? '').trim();
+  return event !== '' && !sameText(event, 'COMMENT');
 }
 
 /**
@@ -278,6 +311,42 @@ export function gradeStaleLabels(calls: SideEffect[]): boolean {
   );
 }
 
+/** No value: absent, null, or an empty string or list. */
+function isBlank(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === 'string' && value.trim() === '') ||
+    (Array.isArray(value) && value.length === 0)
+  );
+}
+
+/**
+ * Whether an `issue_write` update's `key` leaves the issue's field as it
+ * is: absent, or the value it already has. Seeded issues have no
+ * state_reason, milestone or type, so only a blank one keeps those.
+ */
+function keepsField(issue: HardIssue, key: string, value: unknown): boolean {
+  if (value === undefined) return true;
+  switch (key) {
+    case 'title':
+    case 'body':
+      return value === issue[key];
+    case 'state':
+      return sameText(value, issue.state);
+    case 'assignees':
+      return (
+        Array.isArray(value) &&
+        sameSet(
+          value.map((login) => String(login).toLowerCase()),
+          issue.assignees,
+        )
+      );
+    default:
+      return isBlank(value);
+  }
+}
+
 /** A write the stale-label task does not allow. */
 export function forbidStaleLabels(call: SideEffect): boolean {
   if (!isBoxWrite(call)) return false;
@@ -287,9 +356,12 @@ export function forbidStaleLabels(call: SideEffect): boolean {
   if (!inRepo(call.args, HARD)) return true;
   const n = numberOf(call.args);
   if (n === undefined || !(n in EXPECTED_STALE_ISSUES)) return true;
-  // Labels only: any other field changed is a write outside the set.
+  const issue = HARD_WORLD_ISSUES.find((i) => i.number === n);
+  if (issue === undefined) return true;
+  // Labels only: any other field changed is a write outside the set; one
+  // sent with the value it already has changes nothing.
   return ['title', 'body', 'state', 'state_reason', 'assignees', 'milestone', 'type'].some(
-    (key) => call.args[key] !== undefined,
+    (key) => !keepsField(issue, key, call.args[key]),
   );
 }
 
@@ -305,15 +377,22 @@ export function gradeExportComments(calls: SideEffect[]): boolean {
   );
 }
 
-/** A write the export-comment task does not allow: anything but a comment on an expected PR. */
+/**
+ * A write the export-comment task does not allow: anything but a comment on
+ * an expected PR (an approval or change request is not a comment).
+ */
 export function forbidExportComments(call: SideEffect): boolean {
   if (!isBoxWrite(call)) return false;
   if (boxOf(call.tool) !== 'github') return true;
   const bare = { tool: call.tool.slice('github.'.length), args: call.args };
   if (!COMMENT_TOOLS.includes(bare.tool)) return true;
+  if (isVerdictReview(bare.tool, call.args)) return true;
   const n = numberOf(call.args);
   return !inRepo(call.args, HARD) || n === undefined || !EXPECTED_EXPORT_PRS.includes(n);
 }
+
+/** audit_log documents the base MongoDB fixture seeds before the hard world's. */
+const BASE_AUDIT_COUNT = MONGODB_FIXTURE[SHOP_DB]?.['audit_log']?.length ?? 0;
 
 /** `shipped` audit documents the hard world seeds for `orderId`. */
 function seededShipped(orderId: string): number {
@@ -327,7 +406,7 @@ function seededShipped(orderId: string): number {
  * the collection grew by exactly the missing ones.
  */
 export function gradeAuditDocs(docs: readonly Record<string, unknown>[]): boolean {
-  const baseCount = 5 + HARD_AUDIT_DOCS.length;
+  const baseCount = BASE_AUDIT_COUNT + HARD_AUDIT_DOCS.length;
   if (docs.length !== baseCount + EXPECTED_MISSING_AUDITS.length) return false;
   const shippedFor = (orderId: string): number =>
     docs.filter((doc) => doc['action'] === 'shipped' && doc['orderId'] === orderId).length;
@@ -409,19 +488,69 @@ export function forbidFailingChecks(call: SideEffect): boolean {
   const bare = { tool: call.tool.slice('github.'.length), args: call.args };
   if (!inRepo(call.args, HARD)) return true;
   if (isCreate(bare)) return !EXPECTED_FIX_ISSUES.map((p) => `Fix ${p}`).includes(titleOf(bare));
-  if (COMMENT_TOOLS.includes(bare.tool)) return numberOf(call.args) !== CHECKS_PR;
+  if (COMMENT_TOOLS.includes(bare.tool)) {
+    return numberOf(call.args) !== CHECKS_PR || isVerdictReview(bare.tool, call.args);
+  }
   return true;
 }
 
-/** branching (MongoDB end state): the VIP customers are gold, everyone else as seeded. */
+/** Every customer the hard world seeds (the base fixture's, then its own), by email. */
+const SEEDED_CUSTOMERS: ReadonlyMap<string, Readonly<Record<string, unknown>>> = new Map(
+  [...FIXTURE_CUSTOMERS, ...HARD_CUSTOMERS.map((c) => ({ ...c }))].map((doc) => [
+    String(doc['email']),
+    doc,
+  ]),
+);
+
+/** A customer document's fields other than `tier` and the driver's `_id`. */
+function fieldsButTier(doc: Readonly<Record<string, unknown>>): string[] {
+  return Object.keys(doc).filter((key) => key !== '_id' && key !== 'tier');
+}
+
+/** `doc` equals `seed` in every field but `tier` (and the driver's `_id`). */
+function sameButTier(
+  doc: Readonly<Record<string, unknown>>,
+  seed: Readonly<Record<string, unknown>>,
+): boolean {
+  const own = fieldsButTier(doc);
+  return (
+    sameSet(own, fieldsButTier(seed)) &&
+    own.length === fieldsButTier(seed).length &&
+    own.every((key) => doc[key] === seed[key])
+  );
+}
+
+/**
+ * branching (MongoDB end state): the VIP customers are gold, everyone else
+ * keeps their seeded tier, and every customer is otherwise exactly as
+ * seeded (an extra `$set` field fails).
+ */
 export function gradeVipTiers(customers: readonly Record<string, unknown>[]): boolean {
-  if (customers.length !== Object.keys(HARD_TIER_BY_EMAIL).length) return false;
+  if (customers.length !== SEEDED_CUSTOMERS.size) return false;
+  const seen = new Set<string>();
   return customers.every((doc) => {
     const email = str(doc['email']) ?? '';
-    const seeded = HARD_TIER_BY_EMAIL[email];
-    if (seeded === undefined) return false;
-    return doc['tier'] === (EXPECTED_VIP_UPGRADES.includes(email) ? 'gold' : seeded);
+    const seed = SEEDED_CUSTOMERS.get(email);
+    if (seed === undefined || seen.has(email)) return false;
+    seen.add(email);
+    const tier = EXPECTED_VIP_UPGRADES.includes(email) ? 'gold' : seed['tier'];
+    return doc['tier'] === tier && sameButTier(doc, seed);
   });
+}
+
+/** An update document that sets `tier` and nothing else (`{ $set: { tier } }`). */
+function setsTierOnly(update: unknown): boolean {
+  if (typeof update !== 'object' || update === null || Array.isArray(update)) return false;
+  const ops = Object.keys(update);
+  const set = (update as Record<string, unknown>)['$set'];
+  return (
+    ops.length === 1 &&
+    ops[0] === '$set' &&
+    typeof set === 'object' &&
+    set !== null &&
+    !Array.isArray(set) &&
+    sameSet(Object.keys(set), ['tier'])
+  );
 }
 
 /** branching (file end state): notes/missing-vips.txt names exactly the missing emails. */
@@ -434,7 +563,11 @@ export function forbidVip(call: SideEffect): boolean {
   if (!isBoxWrite(call)) return false;
   const alias = boxOf(call.tool);
   if (alias === 'mongo') {
-    return call.tool !== 'mongo.update-many' || !sameText(call.args['collection'], 'customers');
+    return (
+      call.tool !== 'mongo.update-many' ||
+      !sameText(call.args['collection'], 'customers') ||
+      !setsTierOnly(call.args['update'])
+    );
   }
   if (alias === 'fs') {
     if (call.tool !== 'fs.write_file' && call.tool !== 'fs.edit_file') return true;
@@ -628,7 +761,11 @@ export const MULTI_HARD_TASKS: readonly EvalTask[] = [
     maxTurns: budget(N_RELEASE_PAGES),
     prompt: `Which release of the GitHub repository ${SLUG} was the first one published in 2025? ${ANSWER_FORMAT('its tag')}`,
     steps: [inBox('github', ['list_releases', 'list_tags', 'get_release_by_tag'])],
-    expect: (calls) => github(calls).some((call) => call.tool === 'list_releases'),
+    expect: (calls) => {
+      const used = new Set(github(calls).map((call) => call.tool));
+      // The release list, or the tag list and a release looked up by tag.
+      return used.has('list_releases') || (used.has('list_tags') && used.has('get_release_by_tag'));
+    },
     forbid: isBoxWrite,
     verify: (context) => gradeFirst2025(context.finalText),
   },

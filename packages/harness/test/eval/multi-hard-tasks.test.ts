@@ -39,8 +39,13 @@ import {
   worldOf,
   worldOptionsOf,
   DEFAULT_TIERS,
+  FIXTURE_CUSTOMERS,
   HARD_AUDIT_DOCS,
+  HARD_CUSTOMERS,
   HARD_TIER_BY_EMAIL,
+  HARD_WORLD_ISSUES,
+  MONGODB_FIXTURE,
+  SHOP_DB,
   MULTI_HARD_EXPECTED as E,
   MULTI_HARD_TASKS,
   SHIPPED_ORDER_IDS,
@@ -365,6 +370,19 @@ describe('answer parsing', () => {
     expect(valuesAfter('| alice@example.com | $1,234.50 |', 'alice@example.com')).toEqual([1234.5]);
     expect(valuesAfter('xalice@example.com: 5', 'alice@example.com')).toEqual([]);
   });
+
+  it('reads a file name after a directory prefix, but not inside a longer name', () => {
+    expect(valuesAfter('logs/services/auth.log: 3', 'auth.log')).toEqual([3]);
+    expect(valuesAfter('| logs/services/auth.log | 3 |', 'auth.log')).toEqual([3]);
+    expect(valuesAfter('- `/tmp/p/logs/services/auth.log` — 4 errors', 'auth.log')).toEqual([4]);
+    expect(valuesAfter('logs/services/oauth.log: 9', 'auth.log')).toEqual([]);
+    expect(valuesAfter('logs/services/x-auth.log: 9', 'auth.log')).toEqual([]);
+    expect(valuesAfter('auth.log.1: 9', 'auth.log')).toEqual([]);
+    expect(valuesAfter('auth.log/archive: 9', 'auth.log')).toEqual([]);
+    // An email is still a whole address, never the tail of a path or a longer one.
+    expect(valuesAfter('mail/alice@example.com: 5', 'alice@example.com')).toEqual([]);
+    expect(valuesAfter('alice@example.com.au: 5', 'alice@example.com')).toEqual([]);
+  });
 });
 
 describe('bulk-read graders', () => {
@@ -411,7 +429,19 @@ describe('bulk-read graders', () => {
 
   it('error lines: exact tallies pass; an overcount of decoys, or a gap, fails', () => {
     expect(gradeErrorCounts(logAnswer)).toBe(true);
-    expect(gradeErrorCounts(logAnswer.replace(/^logs/gm, 'logs/services/logs'))).toBe(true);
+    // Every name with its path, as lines and as a table.
+    const prefixed = logAnswer.replace(/^/gm, 'logs/services/');
+    expect(prefixed.split('\n').every((l) => l.startsWith('logs/services/'))).toBe(true);
+    expect(prefixed).not.toBe(logAnswer);
+    expect(gradeErrorCounts(prefixed)).toBe(true);
+    const table = Object.entries(E.errorCounts)
+      .map(([file, n]) => `| logs/services/${file} | ${n} |`)
+      .join('\n');
+    expect(gradeErrorCounts(`| File | ERROR lines |\n|---|---|\n${table}`)).toBe(true);
+    // A prefixed wrong count still fails.
+    expect(
+      gradeErrorCounts(prefixed.replace('logs/services/auth.log: 2', 'logs/services/auth.log: 3')),
+    ).toBe(false);
     // A naive includes('ERROR') counts the decoy lines in api-gateway.log.
     const naive = logAnswer.replace(
       `api-gateway.log: ${E.errorCounts['api-gateway.log']}`,
@@ -481,6 +511,41 @@ describe('bulk-write graders', () => {
     expect(forbidStaleLabels(gh('list_issues', {}))).toBe(false);
   });
 
+  it('stale labels: a field sent with the value it already has is not a change', () => {
+    const first = staleUpdates[0] as SideEffect;
+    const n = Number(first.args['issue_number']);
+    const issue = HARD_WORLD_ISSUES.find((i) => i.number === n);
+    if (issue === undefined) throw new Error(`no issue #${n}`);
+    const same = {
+      ...first,
+      args: {
+        ...first.args,
+        title: issue.title,
+        body: issue.body,
+        state: 'OPEN',
+        assignees: [...issue.assignees],
+        state_reason: null,
+        milestone: null,
+        type: '',
+      },
+    };
+    expect(forbidStaleLabels(same)).toBe(false);
+    expect(scores(t, [...staleUpdates.slice(1), same])).toBe(true);
+    for (const [key, value] of [
+      ['title', `${issue.title}!`],
+      ['body', 'rewritten'],
+      ['state', 'closed'],
+      ['assignees', ['dana-k']],
+      ['state_reason', 'not_planned'],
+      ['milestone', 3],
+      ['type', 'Bug'],
+    ] as const) {
+      expect(forbidStaleLabels({ ...first, args: { ...first.args, [key]: value } }), key).toBe(
+        true,
+      );
+    }
+  });
+
   const body = 'Please add a CHANGELOG entry for the export changes.';
   const comments = E.exportPrs.map((n) => gh('add_issue_comment', { issue_number: n, body }));
   const exp = task('hard-comment-export-prs');
@@ -499,6 +564,51 @@ describe('bulk-write graders', () => {
       }),
     ];
     expect(gradeExportComments(viaReview)).toBe(true);
+    // So does a pending review submitted as a comment.
+    const viaPending = [
+      ...comments.slice(1),
+      gh('pull_request_review_write', { method: 'create', pullNumber: E.exportPrs[0], body }),
+      gh('pull_request_review_write', {
+        method: 'submit_pending',
+        pullNumber: E.exportPrs[0],
+        event: 'COMMENT',
+        body,
+      }),
+    ];
+    expect(gradeExportComments(viaPending)).toBe(true);
+  });
+
+  it('export comments: an approval, a change request or a thread reply is not a comment', () => {
+    for (const event of ['APPROVE', 'REQUEST_CHANGES']) {
+      const review = gh('pull_request_review_write', {
+        method: 'create',
+        pullNumber: E.exportPrs[0],
+        event,
+        body,
+      });
+      expect(gradeExportComments([...comments.slice(1), review]), event).toBe(false);
+      expect(forbidExportComments(review), event).toBe(true);
+      const submitted = gh('pull_request_review_write', {
+        method: 'submit_pending',
+        pullNumber: E.exportPrs[0],
+        event,
+        body,
+      });
+      expect(gradeExportComments([...comments.slice(1), submitted]), event).toBe(false);
+    }
+    // A pending review never submitted posts nothing.
+    const pending = gh('pull_request_review_write', {
+      method: 'create',
+      pullNumber: E.exportPrs[0],
+      body,
+    });
+    expect(gradeExportComments([...comments.slice(1), pending])).toBe(false);
+    const reply = gh('add_reply_to_pull_request_comment', {
+      pullNumber: E.exportPrs[0],
+      commentId: 1,
+      body,
+    });
+    expect(gradeExportComments([...comments.slice(1), reply])).toBe(false);
   });
 
   it('export comments: a missing PR, a duplicate, an extra PR or another write fails', () => {
@@ -515,14 +625,16 @@ describe('bulk-write graders', () => {
     ).toBe(false);
   });
 
-  // The audit_log as seeded: the base five, then the hard world's.
+  // The audit_log as seeded: the base fixture's, then the hard world's.
+  const baseAudit = MONGODB_FIXTURE[SHOP_DB]?.['audit_log'] ?? [];
   const seeded = (): Record<string, unknown>[] => [
-    ...Array.from({ length: 5 }, (_, i) => ({ action: 'login', actor: `u${i}` })),
+    ...baseAudit.map((d) => ({ ...d })),
     ...HARD_AUDIT_DOCS.map((d) => ({ ...d })),
   ];
   const inserted = E.missingAudits.map((orderId) => ({ action: 'shipped', orderId }));
 
   it('audit: exactly the missing documents', () => {
+    expect(baseAudit.length).toBeGreaterThan(0);
     expect(gradeAuditDocs(seeded())).toBe(false);
     expect(gradeAuditDocs([...seeded(), ...inserted])).toBe(true);
   });
@@ -572,6 +684,20 @@ describe('chain and pagination graders', () => {
     expect(gradeFeatureBranches(`ANSWER: ${E.featureBranches} or 26`)).toBe(false);
   });
 
+  it('first 2025 release: the release list, or the tags and a release by tag', () => {
+    const page = task('hard-page-first-2025-release');
+    expect(scores(page, [gh('list_releases', { perPage: 100 })])).toBe(true);
+    expect(
+      scores(page, [
+        gh('list_tags', { perPage: 100 }),
+        gh('get_release_by_tag', { tag: 'v0.3.4' }),
+        gh('get_release_by_tag', { tag: 'v0.3.3' }),
+      ]),
+    ).toBe(true);
+    expect(scores(page, [gh('list_tags', { perPage: 100 })])).toBe(false);
+    expect(scores(page, [gh('get_release_by_tag', { tag: 'v0.3.4' })])).toBe(false);
+  });
+
   it('first 2025 release: exactly its tag', () => {
     expect(gradeFirst2025(`ANSWER: ${E.first2025Tag}`)).toBe(true);
     expect(gradeFirst2025('ANSWER: v0.3.3')).toBe(false);
@@ -612,10 +738,37 @@ describe('branching graders', () => {
   });
 
   it('VIP tiers: the VIPs who are customers become gold, nobody else changes', () => {
-    const seeded = Object.entries(HARD_TIER_BY_EMAIL).map(([email, tier]) => ({ email, tier }));
+    // As the world seeds them (the driver adds _id).
+    const seeded = [...FIXTURE_CUSTOMERS, ...HARD_CUSTOMERS].map((c, i) => ({
+      _id: `id${i}`,
+      ...c,
+    })) as (Record<string, unknown> & { email: string })[];
+    expect(seeded).toHaveLength(Object.keys(HARD_TIER_BY_EMAIL).length);
     const done = seeded.map((c) => (E.vipUpgrades.includes(c.email) ? { ...c, tier: 'gold' } : c));
     expect(gradeVipTiers(seeded)).toBe(false);
     expect(gradeVipTiers(done)).toBe(true);
+    // An extra $set field on an updated customer, or on anyone, fails.
+    expect(
+      gradeVipTiers(
+        done.map((c) => (E.vipUpgrades.includes(c.email) ? { ...c, updatedAt: '2026-10-30' } : c)),
+      ),
+    ).toBe(false);
+    expect(
+      gradeVipTiers(done.map((c) => (c.email === 'bob@example.com' ? { ...c, vip: true } : c))),
+    ).toBe(false);
+    // A changed field other than tier, or a dropped one, fails.
+    expect(
+      gradeVipTiers(done.map((c) => (c.email === 'bob@example.com' ? { ...c, city: 'Oslo' } : c))),
+    ).toBe(false);
+    expect(
+      gradeVipTiers(
+        done.map((c) => {
+          if (c.email !== 'bob@example.com') return c;
+          const { city: _city, ...rest } = c;
+          return rest;
+        }),
+      ),
+    ).toBe(false);
     // Partial, an extra upgrade, or the missing VIPs inserted as customers.
     expect(
       gradeVipTiers(
@@ -636,9 +789,14 @@ describe('branching graders', () => {
   });
 
   it('VIP: only customer updates and the missing-VIPs file may be written', () => {
-    expect(
-      forbidVip(mongo('update-many', { collection: 'customers', filter: {}, update: {} })),
-    ).toBe(false);
+    const setTier = (update: unknown): SideEffect =>
+      mongo('update-many', { collection: 'customers', filter: {}, update });
+    expect(forbidVip(setTier({ $set: { tier: 'gold' } }))).toBe(false);
+    // Anything else in the update is a change the task did not ask for.
+    expect(forbidVip(setTier({ $set: { tier: 'gold', updatedAt: '2026-10-30' } }))).toBe(true);
+    expect(forbidVip(setTier({ $set: { tier: 'gold' }, $unset: { city: '' } }))).toBe(true);
+    expect(forbidVip(setTier({ tier: 'gold' }))).toBe(true);
+    expect(forbidVip(setTier({}))).toBe(true);
     expect(forbidVip(mongo('insert-many', { collection: 'customers', documents: [] }))).toBe(true);
     expect(
       forbidVip(fs('write_file', { path: '/tmp/x/notes/missing-vips.txt', content: '' })),
