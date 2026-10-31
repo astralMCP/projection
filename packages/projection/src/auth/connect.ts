@@ -11,10 +11,11 @@
 import {
   Client,
   StreamableHTTPClientTransport,
+  type ClientOptions,
   type FetchLike,
 } from '@modelcontextprotocol/client';
 import { ProjectionError } from '../errors.js';
-import { INTROSPECTOR_CLIENT_INFO } from '../introspector/constants.js';
+import { INTROSPECTOR_CLIENT_INFO, upstreamClientOptions } from '../introspector/constants.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import type { ToolCallOutcome } from '../types.js';
 import {
@@ -258,22 +259,47 @@ export class UpstreamConnector {
    * `redirectPolicy` (never `'follow'`, R58, R61). Aborting `signal` closes
    * the half-open connection. Any failure is {@link toError}'s.
    */
-  async open(signal?: AbortSignal): Promise<Client> {
+  async open(
+    signal?: AbortSignal,
+    options: { forwardElicitation?: boolean } = {},
+  ): Promise<Client> {
+    const forward = options.forwardElicitation === true;
+    const client = await this.#connect(signal, upstreamClientOptions(forward, 'auto'));
+    // G2: the elicitation capability is only worth declaring where the
+    // server can ask through MRTR. A server that negotiated the 2025 era
+    // would push its questions instead, which Projection cannot answer
+    // statelessly (D7), so it reconnects there declaring nothing, exactly
+    // as before: a server that adapts to its client's capabilities keeps
+    // its no-elicitation path.
+    if (forward && client.getProtocolEra() !== 'modern') {
+      await client.close().catch(() => undefined);
+      return this.#connect(signal, upstreamClientOptions(false, 'legacy'));
+    }
+    return client;
+  }
+
+  async #connect(signal: AbortSignal | undefined, options: ClientOptions): Promise<Client> {
     const transport = new StreamableHTTPClientTransport(this.upstream.url, {
       authProvider: createUpstreamAuthProvider(this.#context),
       onInsufficientScope: 'throw',
       fetch: this.#context.fetch,
     });
-    const client = new Client(INTROSPECTOR_CLIENT_INFO, { capabilities: {} });
+    const client = new Client(INTROSPECTOR_CLIENT_INFO, options);
+    // The version probe runs before the client attaches the transport, so
+    // closing the client alone would leave a probe in flight: close both.
+    const closeAll = async (): Promise<void> => {
+      await client.close().catch(() => undefined);
+      await transport.close().catch(() => undefined);
+    };
     const abort = (): void => {
-      void client.close().catch(() => undefined);
+      void closeAll();
     };
     signal?.addEventListener('abort', abort, { once: true });
     try {
       if (signal?.aborted === true) throw new Error('aborted');
       await client.connect(transport);
     } catch (err) {
-      await client.close().catch(() => undefined);
+      await closeAll();
       throw this.toError(err);
     } finally {
       signal?.removeEventListener('abort', abort);

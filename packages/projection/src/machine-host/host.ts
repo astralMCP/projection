@@ -7,6 +7,7 @@
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
 import { isBoxedCatalog, routeCall } from '../catalog/boxes.js';
+import { assertForwardable, MAX_FORWARDED_QUESTIONS } from '../mrtr/upstream-input.js';
 import { didYouMeanHint } from '../catalog/search.js';
 import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
@@ -14,6 +15,7 @@ import {
   type ApprovalVerdict,
   type AuditEntry,
   type ErrorPhase,
+  type HeldCall,
   type HostEvent,
   type LogEntry,
   type PendingToolCall,
@@ -23,6 +25,8 @@ import {
   type SegmentOutcome,
   type ServerCatalog,
   type ToolExecutor,
+  type UpstreamHold,
+  type UpstreamInputRequest,
 } from '../types.js';
 import { TOOL_CALL_MODULE_SOURCE } from './contract.js';
 import {
@@ -80,6 +84,12 @@ export interface RunSegmentOptions extends PolicyOptions {
     audit?: AuditEntry[];
     /** Round-trip counter carried in the blob (R18). */
     trip: number;
+    /**
+     * Calls held on their server's question (G1), keyed by call id, with
+     * the server's answers to send back, keyed like the hold's questions'
+     * own keys. Re-issued as recorded; no verdict applies to them.
+     */
+    held?: Record<string, { hold: UpstreamHold; responses: Record<string, unknown> }>;
   };
 }
 
@@ -269,6 +279,8 @@ class SegmentRunner {
   private readonly deps: RunnerDeps;
   private readCalls = 0;
   private eventsProcessed = 0;
+  /** Calls that ran and are waiting on their server's question (G1). */
+  private readonly heldBatch: HeldCall[] = [];
 
   constructor(deps: RunnerDeps) {
     this.deps = deps;
@@ -288,11 +300,14 @@ class SegmentRunner {
       // Deliver verdicts for the calls sealed alongside the snapshot. The
       // args come from the sealed map, never from the restored machine (S2).
       const events = await this.applyVerdicts(resume.pending, resume.verdicts);
+      // G1: calls held on their server's question go back with the answers.
+      events.push(...(await this.reissueHeld(resume.held ?? {})));
       drained = await this.send(events);
     }
 
     // Gated calls accumulate across settle passes so that everything reached
-    // before the machine goes quiet lands in ONE suspension (R15).
+    // before the machine goes quiet lands in ONE suspension (R15); so do
+    // calls whose server asked the human a question (G1).
     const gatedBatch: PendingToolCall[] = [];
 
     // Settle: process requests until the machine either finishes, errors,
@@ -307,8 +322,8 @@ class SegmentRunner {
       const requests = this.collectRequests(drained);
       if (requests.length === 0) {
         // Nothing more to run: suspend on whatever accumulated, if anything.
-        if (gatedBatch.length > 0) {
-          return await this.suspend(gatedBatch);
+        if (gatedBatch.length > 0 || this.heldBatch.length > 0) {
+          return await this.suspendOrFinish(gatedBatch, drained);
         }
         if (drained.status === 'done' || drained.status === 'stopped') {
           return this.complete(drained);
@@ -328,9 +343,9 @@ class SegmentRunner {
       gatedBatch.push(...gated);
 
       if (events.length === 0) {
-        // Only gated calls remain, so the machine cannot advance further
-        // without a human. Snapshot now.
-        return await this.suspend(gatedBatch);
+        // Only gated (or held) calls remain, so the machine cannot advance
+        // further without a human. Snapshot now.
+        return await this.suspendOrFinish(gatedBatch, drained);
       }
 
       // Deliver auto/denied results before snapshotting. This must go
@@ -401,18 +416,51 @@ class SegmentRunner {
           },
         );
       }
-      events.push(await this.execute(request, 'auto'));
+      const event = await this.execute({ ...call }, 'auto');
+      if (event !== undefined) events.push(event);
     }
 
     return { events, gated };
   }
 
-  /** Execute one call against the wrapped server and build its event. */
-  private async execute(request: RawRequest, decision: 'auto' | 'approved'): Promise<HostEvent> {
+  /**
+   * Execute one call against the wrapped server and build its event, or
+   * hold it (no event) when its server asked the human a question on a box
+   * that forwards (G1): the machine keeps waiting for that call's event,
+   * and the segment suspends once nothing else can run.
+   */
+  private async execute(
+    call: PendingToolCall,
+    decision: 'auto' | 'approved',
+    input?: { responses: Record<string, unknown>; requestState?: string },
+  ): Promise<HostEvent | undefined> {
+    const request: RawRequest = { id: call.id, name: call.name, args: call.args };
     // A multi-server facade routes the qualified name to its box (R40, R45);
     // a single-server catalog sends it to its one alias unchanged.
     const target = routeCall(this.deps.catalog, request.name);
-    const outcome = await this.deps.executor.callTool(target.alias, target.name, request.args);
+    const outcome = await this.deps.executor.callTool(
+      target.alias,
+      target.name,
+      request.args,
+      input !== undefined ? { input } : {},
+    );
+    if (!outcome.ok && outcome.upstreamInput !== undefined) {
+      const refused = this.holdRefusal(call, target.alias, outcome.upstreamInput);
+      if (refused === undefined) {
+        this.heldBatch.push({ call, decision, input: outcome.upstreamInput });
+        return undefined;
+      }
+      // R64.1, R64.8: a question that cannot be passed on fails this step
+      // like a refused one, now, so the machine's own TOOL_ERROR handling runs.
+      this.deps.audit.push({
+        callId: request.id,
+        tool: request.name,
+        args: request.args,
+        decision: 'error',
+        reason: refused,
+      });
+      return { type: 'TOOL_ERROR', callId: request.id, error: { message: refused } };
+    }
     if (outcome.ok) {
       this.deps.audit.push({
         callId: request.id,
@@ -486,9 +534,94 @@ class SegmentRunner {
         });
         continue;
       }
-      events.push(
-        await this.execute({ id: call.id, name: call.name, args: call.args }, 'approved'),
+      const event = await this.execute(call, 'approved');
+      if (event !== undefined) events.push(event);
+    }
+    return events;
+  }
+
+  /**
+   * Why a call whose server asked a question cannot be held, or undefined
+   * when it can: the question is not forwardable (R64.8), or holding it
+   * would put more than {@link MAX_FORWARDED_QUESTIONS} questions in front
+   * of the human in one round trip. A second in-flight call with the same
+   * id would lose an answer, so it is an authoring error.
+   */
+  private holdRefusal(
+    call: PendingToolCall,
+    alias: string,
+    input: UpstreamInputRequest,
+  ): string | undefined {
+    if (this.heldBatch.some((held) => held.call.id === call.id)) {
+      throw new ProjectionError(
+        'validate',
+        `two tool calls in flight share the id ${JSON.stringify(call.id)}`,
+        {
+          hint: 'Give each toolCall that can be waiting at the same time its own id.',
+        },
       );
+    }
+    const context = {
+      ...(isBoxedCatalog(this.deps.catalog) ? { box: alias } : {}),
+      tool: call.name,
+      clientUrl: false,
+    };
+    try {
+      assertForwardable(input, context);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    const asked = this.heldBatch.reduce(
+      (total, held) => total + Object.keys(held.input.requests).length,
+      0,
+    );
+    if (asked + Object.keys(input.requests).length > MAX_FORWARDED_QUESTIONS) {
+      return `${JSON.stringify(call.name)} asked the user a question, but this workflow step already has ${asked} waiting, and at most ${MAX_FORWARDED_QUESTIONS} are passed on at once. The call did not complete.`;
+    }
+    return undefined;
+  }
+
+  /**
+   * G1: re-issue each held call exactly as recorded, with the human's
+   * answers and its server's own state. The call already passed the gate
+   * when it first ran; only a policy now `deny` stops it (D9). Its server
+   * may ask again, which holds it again.
+   */
+  private async reissueHeld(
+    held: Record<string, { hold: UpstreamHold; responses: Record<string, unknown> }>,
+  ): Promise<HostEvent[]> {
+    const events: HostEvent[] = [];
+    for (const { hold, responses } of Object.values(held)) {
+      const call: PendingToolCall = {
+        id: hold.id,
+        name: hold.name,
+        args: hold.args,
+        stateName: hold.stateName,
+      };
+      const resolved = resolveCallPolicy(call, this.deps.catalog, this.deps.policy);
+      if (!resolved.ok) throw resolved.error;
+      // D9: policy outranks the call's earlier authorization. A call that
+      // ran without approval and now needs one is not re-issued either.
+      const regated = resolved.decision === 'ask' && hold.decision === 'auto';
+      if (resolved.decision === 'deny' || regated) {
+        const reason = regated
+          ? `${call.name} now needs approval under this server's policy; run it again to ask for it.`
+          : policyDeniedReason(call.name);
+        events.push({ type: 'TOOL_DENIED', callId: call.id, reason });
+        this.deps.audit.push({
+          callId: call.id,
+          tool: call.name,
+          args: call.args,
+          decision: 'denied_by_policy',
+          reason,
+        });
+        continue;
+      }
+      const event = await this.execute(call, hold.decision, {
+        responses,
+        ...(hold.requestState !== undefined ? { requestState: hold.requestState } : {}),
+      });
+      if (event !== undefined) events.push(event);
     }
     return events;
   }
@@ -509,6 +642,40 @@ class SegmentRunner {
   }
 
   /**
+   * Suspend on the gated and held calls — unless only held calls remain and
+   * the machine already finished (say, a sibling region reached the final
+   * state): nobody needs the server's answer then, so the machine completes
+   * and the held calls are recorded as unfinished instead of asking.
+   */
+  private async suspendOrFinish(
+    gated: PendingToolCall[],
+    drained: DrainResult,
+  ): Promise<SegmentOutcome> {
+    if (
+      gated.length === 0 &&
+      this.heldBatch.length > 0 &&
+      (drained.status === 'done' || drained.status === 'stopped')
+    ) {
+      this.abandonHeld();
+      return this.complete(drained);
+    }
+    return await this.suspend(gated);
+  }
+
+  /** Audit held calls the finished machine no longer waits on. */
+  private abandonHeld(): void {
+    for (const { call, decision } of this.heldBatch.splice(0)) {
+      this.deps.audit.push({
+        callId: call.id,
+        tool: call.name,
+        args: call.args,
+        decision,
+        reason: "the workflow finished before the server's question was answered",
+      });
+    }
+  }
+
+  /**
    * Suspend for approval, sealing the exact calls that were requested.
    *
    * Every event the machine could act on has already been delivered by the
@@ -523,9 +690,19 @@ class SegmentRunner {
     for (const call of gated) {
       pending[call.id] = call;
     }
+    // A held call and a gated call sharing an id would both answer to it.
+    const clash = this.heldBatch.find((held) => Object.hasOwn(pending, held.call.id));
+    if (clash !== undefined) {
+      throw new ProjectionError(
+        'validate',
+        `two tool calls in flight share the id ${JSON.stringify(clash.call.id)}`,
+        { hint: 'Give each toolCall that can be waiting at the same time its own id.' },
+      );
+    }
     return {
       status: 'suspended',
       pending,
+      held: this.heldBatch,
       snapshot,
       trip: this.deps.trip + 1,
       audit: this.deps.audit,

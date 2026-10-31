@@ -52,6 +52,7 @@ import {
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
+  assertUpstreamElicitationMode,
   freezePolicySettings,
   resolveDirectSetting,
   resolveIntrospectTimeout,
@@ -155,8 +156,16 @@ export async function wrapMcpServers(
   const selected = resolveProjections(options.projections);
   const direct = resolveDirectSetting(options.projections, selected.catalog);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
+  const facadeElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
+  // G1: a box forwards its server's questions when its own setting, else
+  // the facade's, says `forward`.
+  const forwarding = new Set(
+    resolved
+      .filter((source) => (source.upstreamElicitation ?? facadeElicitation) === 'forward')
+      .map((source) => source.alias),
+  );
 
-  const introspector = await introspect(resolved, introspectTimeoutMs);
+  const introspector = await introspect(resolved, introspectTimeoutMs, forwarding);
   // R47 fail-closed: anything that throws once the sources are connected
   // closes every connection Projection opened (caller-owned Clients stay open).
   try {
@@ -276,6 +285,7 @@ function assertOptionsGiven(options: unknown): asserts options is WrapServersOpt
 async function introspect(
   resolved: readonly ResolvedSource[],
   timeoutMs: number,
+  forwardElicitation: ReadonlySet<string>,
 ): Promise<Introspector> {
   const where = new Map(
     resolved.map((source) => [
@@ -286,7 +296,11 @@ async function introspect(
   try {
     return await createIntrospector(
       Object.fromEntries(resolved.map((source) => [source.alias, source.source])),
-      { timeoutMs, describe: (alias) => where.get(alias) ?? `source "${alias}"` },
+      {
+        timeoutMs,
+        describe: (alias) => where.get(alias) ?? `source "${alias}"`,
+        forwardElicitation,
+      },
     );
   } catch (err) {
     const foreign = resolved.filter((source) => !source.sdk).map((source) => source.alias);
@@ -640,9 +654,10 @@ class MultiFacade implements MultiProjectionFacade {
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
     return executeMachine(args, {
-      ...this.gateDeps(era, clientCanElicit),
+      ...this.gateDeps(era, clientCanElicit, clientUrlElicitation),
       bridgeSource: this.deps.bridgeSource,
     });
   }
@@ -704,8 +719,9 @@ class MultiFacade implements MultiProjectionFacade {
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
-    return callTool(args, this.gateDeps(era, clientCanElicit));
+    return callTool(args, this.gateDeps(era, clientCanElicit, clientUrlElicitation));
   }
 
   /**
@@ -716,6 +732,7 @@ class MultiFacade implements MultiProjectionFacade {
   private gateDeps(
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
+    clientUrlElicitation?: boolean,
   ): ApprovalGateDeps {
     return approvalGateDeps({
       catalog: this.deps.view,
@@ -726,6 +743,7 @@ class MultiFacade implements MultiProjectionFacade {
       policySettings: this.deps.policySettings,
       era,
       clientCanElicit,
+      clientUrlElicitation,
     });
   }
 

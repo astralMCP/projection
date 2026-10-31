@@ -151,6 +151,10 @@ forbids. Forwarded upstream copy would be third-party text and MUST get the
 S6 inert-rendering treatment; it must never be conflated with Projection's
 own approval prompts.
 
+Update (D24): forwarding now exists for 2026-07-28 upstreams, opt-in per box
+(`upstreamElicitation: 'forward'`), exactly as sketched here; the default and
+every 2025-era upstream stay fail-closed.
+
 ## D8 — Two views of a run: the dashboard is for hosts, /visualize-workflow is for the person (2026-09-14)
 
 The MCP App dashboard (`src/apps/dashboard.ts`, D5) and the
@@ -1402,3 +1406,114 @@ Still unanswerable by any ranking: 73 distinct queries (310 issued) search
 the catalog for data — "CSV export", "widgets", "grace@example.com order"
 — which is a facade question (what `search_<alias>` is for), not a ranking
 one.
+
+## D23 — call_tool relays content blocks, progress and cancellation (2026-10-30)
+
+The spec-conformance audit (`packages/projection/test/conformance/`) wrapped
+an upstream using the whole 2026-07-28 surface. Three cheap gaps were closed
+on the `call_tool` path only: (1) a raw content array is rendered block by
+block, with image, audio and embedded binary resources attached as native
+content blocks instead of base64 JSON in the text — `structuredContent.output`
+is unchanged (R35.5) and `resource_link` blocks are described, never attached,
+because the facade cannot serve the upstream URI; (2) when the client sends a
+`progressToken`, upstream `notifications/progress` are relayed under the
+client's token, the message attributed `<tool>: …` (qualified on a
+multi-server facade) and neutralized and capped at 200 characters (S5), and
+each report resets the upstream request timeout; (3) the facade request's
+abort signal is passed to the upstream call, so cancelling `call_tool`
+cancels the wrapped tool. The `ToolExecutor` contract gains an optional
+host-side `UpstreamCallOptions` argument; nothing model-authored reaches it.
+Machines relay neither progress nor cancellation yet: a segment can span
+many calls and resumes on another instance, so that needs its own design.
+
+## D24 — Upstream questions: 2026-07-28 to every owned upstream, forwarding opt-in per box (2026-10-30)
+
+The spec-conformance audit (gaps G1, G2) found every upstream driven as a
+2025-era client with no capabilities, so a wrapped server's own question —
+confirm, pick an account, open a link to connect — failed, and `call_tool`
+told the model to check its arguments. PRD R63 and R64 record the result;
+this entry records why.
+
+**G2: the era.** An in-process `McpServer` hand-connected to a transport is
+pinned to the 2025 era by the SDK, and `createMcpHandler` needs a fresh
+instance per request (one shared instance fails concurrent requests). The
+SDK's connection-pinned entry, `serveStdio`, accepts a supplied transport,
+so the introspector serves the caller's instance over an in-memory pair
+through it and pins the client to 2026-07-28: concurrent calls work, one
+instance, no probe round trip. A server given by URL is probed (`'auto'`)
+and falls back to the 2025 handshake. Auto-fulfilment is off everywhere, so
+an `input_required` is data Projection decides about, never a prompt the SDK
+answers. On 2026-07-28 the SDK checks a tool's output schema against
+whatever comes back, `input_required` included, so in manual mode the
+introspector hands the SDK the tool definition without `outputSchema` and
+runs the same check (same validator, same wording) on complete results.
+
+**Capabilities follow the setting.** A refusing box declares nothing, so a
+server that adapts to its client keeps its no-elicitation path, and one that
+asks anyway is refused by its own SDK. A forwarding box declares form and
+URL elicitation, and only on 2026-07-28: a URL source that falls back to the
+2025 era reconnects declaring nothing (one extra handshake at wrap, for that
+case only), because a 2025 server would push its question, which a
+stateless facade cannot hold across the human's answer (D7).
+
+**Default `'refuse'`.** Forwarding gives a wrapped server a direct line to
+the human, in the same client UI that shows Projection's approvals. The copy
+makes it unmistakable that it is the server speaking, but no rendering can
+stop a hostile server from asking for a password in plain words or linking
+to a look-alike sign-in page. That is the same trust extension as
+`approvals: 'destructive-only'` (D17), and it gets the same treatment: the
+integrator opts in per source, for servers they trust. Refusing costs
+little now that the refusal says what happened: the model is told the
+arguments were fine and a retry asks again, so it stops instead of burning
+turns (the cost goal), and nothing changes for servers that never ask.
+
+**No pass-through.** A question is forwarded only from a call that already
+ran under the gate. The answer re-issues the recorded call (name and args
+from the blob, never the retry's), so a question can neither run a gated
+call nor change what an approval authorized. Holds live in a new blob field,
+`upstreamInput`, never in `pending`: like sign-in (R56), an entry an
+`accept` must not execute does not belong in the S2 map. `call_tool` mints a
+new kind, `upstream_input` (it opens both of its kinds), bound to the same
+canonical request as the call; a machine blob carries its holds next to its
+pending approvals, so one round trip can carry both (R15). Replay (R38),
+expiry, identity and D9's deny-wins rule apply unchanged. `BLOB_SCHEMA_VERSION`
+stays 1, as for `call` and `signin`.
+
+**Copy and schema (S5, S6).** First line `Question from <alias> (not an
+approval)`; the server's message quoted with a `│ ` prefix on every line,
+so a forged `Approve:` heading reads as its quoted words; the requested
+schema cut to the elicitation primitives, every string neutralized and
+capped; the answer cut back to the fields the human saw. A link must be
+plain `https:` and shows its origin. Wire keys are Projection's
+(`upstream-<n>`, skipping any machine call id), so a server's keys never
+reach the client.
+
+**Not forwarded.** Sampling and roots (Q2; G6 stays a proposal), more than
+four questions per round, a server state over 16 KB, and — for a source
+given by URL — a server state that would need credential redaction, since
+it would otherwise be sealed into a blob (S1) and must round-trip
+byte-exact.
+
+**Machines.** A step whose server asks is held: the actor keeps waiting for
+that call's event, the segment settles everything else, then suspends. On
+resume the held call is re-issued before the machine continues. A question
+that cannot be forwarded is refused when the call is held, so the machine's
+own `TOOL_ERROR` handling runs; at most four questions are held per
+suspension across calls (a machine could otherwise fan one state out into
+hundreds of prompts). A machine that finishes with only held calls left
+completes without asking. Progress and cancellation are still not relayed
+for machines (G3).
+
+**Review follow-ups.** Two rules came out of the adversarial review. (1) A
+held `auto` call whose tool now asks is not re-issued: before forwarding, a
+call that needed no approval never crossed a round trip, so a new `ask`
+override always applied, and a blob minted earlier must not outlive that.
+(2) A long quoted line is hard-wrapped with each piece prefixed, and form
+labels that mimic approval copy are prefixed `The server's text:`. The
+in-process `serveStdio` path leaves the caller's `McpServer` with the
+2026-07-28 handlers installed after `close()`; re-wrapping works, hand-
+connecting it to a 2025-era client does not. That is documented rather than
+worked around (a per-connection instance would need a factory from the
+integrator). MRTR's state-only "call me again" is re-issued at once, at most
+eight times, as the SDK's own driver would have done for the 2025-era
+client Projection used to be.

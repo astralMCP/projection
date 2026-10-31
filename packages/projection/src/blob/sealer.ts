@@ -65,6 +65,7 @@ import {
   type BlobSealerConfig,
   type PendingToolCall,
   type BlobKind,
+  type UpstreamHold,
 } from '../types.js';
 import { LIB_VERSION, XSTATE_VERSION } from './versions.js';
 
@@ -262,6 +263,37 @@ function malformed(field: string): ProjectionError {
   );
 }
 
+/** G1: every hold is a recorded call plus its questions (see `UpstreamHold`). */
+function assertHolds(held: unknown): void {
+  if (!isRecord(held)) throw malformed('upstreamInput');
+  for (const [key, hold] of Object.entries(held)) {
+    const field = `upstreamInput["${key}"]`;
+    if (
+      !isRecord(hold) ||
+      hold['id'] !== key ||
+      typeof hold['name'] !== 'string' ||
+      typeof hold['stateName'] !== 'string' ||
+      !isRecord(hold['args']) ||
+      (hold['decision'] !== 'auto' && hold['decision'] !== 'approved') ||
+      (hold['requestState'] !== undefined && typeof hold['requestState'] !== 'string') ||
+      !isRecord(hold['questions']) ||
+      Object.keys(hold['questions']).length === 0
+    ) {
+      throw malformed(field);
+    }
+    for (const question of Object.values(hold['questions'])) {
+      if (
+        !isRecord(question) ||
+        typeof question['key'] !== 'string' ||
+        (question['mode'] !== 'form' && question['mode'] !== 'url') ||
+        (question['mode'] === 'form' && !isRecord(question['schema']))
+      ) {
+        throw malformed(`${field}.questions`);
+      }
+    }
+  }
+}
+
 /**
  * Structural check of everything except v/libv/xstatev (already exact-matched
  * by the caller before this runs). The payload is authenticated, so failures
@@ -271,7 +303,8 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
   // R36: `kind` is required; a payload without it predates the field and is
   // fenced by the exact `libv` match once the release that introduced `kind`
   // ships, so here it is simply malformed.
-  if (payload['kind'] !== 'machine' && payload['kind'] !== 'call') {
+  const kind = payload['kind'];
+  if (kind !== 'machine' && kind !== 'call' && kind !== 'upstream_input') {
     throw malformed('kind');
   }
   if (typeof payload['codeHash'] !== 'string' || payload['codeHash'].length === 0) {
@@ -313,10 +346,30 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload['audit'])) {
     throw malformed('audit');
   }
+  const held = payload['upstreamInput'];
+  if (held !== undefined) assertHolds(held);
+  // G1: an `upstream_input` blob is one call_tool call waiting on its
+  // server's question: nothing pending approval, exactly one hold keyed
+  // `call`, no snapshot, no audit. Its trip counts the questions asked.
+  if (kind === 'upstream_input') {
+    if (Object.keys(pending).length !== 0) throw malformed('pending (upstream_input blob)');
+    const keys = isRecord(held) ? Object.keys(held) : [];
+    if (keys.length !== 1 || keys[0] !== 'call') {
+      throw malformed('upstreamInput (upstream_input blob)');
+    }
+    if ((held as Record<string, UpstreamHold>)['call']?.id !== 'call') {
+      throw malformed('upstreamInput["call"].id (upstream_input blob)');
+    }
+    if (payload['snapshot'] !== null) throw malformed('snapshot (upstream_input blob)');
+    if ((payload['audit'] as unknown[]).length !== 0)
+      throw malformed('audit (upstream_input blob)');
+    if ((payload['trip'] as number) < 1) throw malformed('trip (upstream_input blob)');
+  }
   // R36: a `call` blob is the degenerate one-call machine, so its shape is
   // fixed — exactly one pending entry keyed `call` whose id is `call`, no
   // snapshot, no prior audit, and trip 1 (there is no second round trip).
-  if (payload['kind'] === 'call') {
+  if (kind === 'call') {
+    if (held !== undefined) throw malformed('upstreamInput (call blob)');
     const keys = Object.keys(pending);
     if (keys.length !== 1 || keys[0] !== 'call') {
       throw malformed('pending (call blob)');
@@ -341,7 +394,7 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
 // ---------------------------------------------------------------------------
 
 function toolFor(kind: BlobKind): string {
-  return kind === 'call' ? 'call_tool' : 'execute_machine';
+  return kind === 'machine' ? 'execute_machine' : 'call_tool';
 }
 
 /** SHA-256 hex digest of a code argument (S4 binding — R20 `codeHash`). */
@@ -367,6 +420,8 @@ export interface BuildBlobPayloadInput {
   audit?: AuditEntry[] | undefined;
   /** Round-trip counter (R18). */
   trip: number;
+  /** Calls waiting on their own server's question (G1); see `BlobPayload.upstreamInput`. */
+  upstreamInput?: Record<string, UpstreamHold> | undefined;
   /** Blob TTL in ms. Default {@link DEFAULT_TTL_MS} (15 minutes). */
   ttlMs?: number | undefined;
   /** Clock override for testability, Unix ms. Default `Date.now()`. */
@@ -391,6 +446,9 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
     pending: input.pending,
     audit: input.audit ?? [],
     trip: input.trip,
+    ...(input.upstreamInput !== undefined && Object.keys(input.upstreamInput).length > 0
+      ? { upstreamInput: input.upstreamInput }
+      : {}),
     nonce: randomBytes(16).toString('base64url'),
     iat,
     exp: iat + ttlMs,
@@ -435,7 +493,9 @@ export function sealBlob(
         hint:
           payload.kind === 'call'
             ? 'The arguments are too large to seal for approval; shrink them and call call_tool again.'
-            : 'Machine context is too large to suspend. Keep large tool results out of context — store only the fields later states need — then re-run execute_machine.',
+            : payload.kind === 'upstream_input'
+              ? "The tool's question is too large to pass on to the user; call it with arguments that need less input, or run it another way."
+              : 'Machine context is too large to suspend. Keep large tool results out of context — store only the fields later states need — then re-run execute_machine.',
       },
     );
   }
@@ -443,8 +503,11 @@ export function sealBlob(
 }
 
 export interface OpenBlobOptions {
-  /** The tool opening the blob (R36). Default `machine`. */
-  expectedKind?: BlobKind | undefined;
+  /**
+   * The kind(s) the opening tool accepts (R36). Default `machine`.
+   * `call_tool` opens `call` and `upstream_input` blobs.
+   */
+  expectedKind?: BlobKind | readonly BlobKind[] | undefined;
   /**
    * The text re-sent with the retry (S4): the `code` argument for
    * `execute_machine`, the canonical request for `call_tool`.
@@ -546,17 +609,18 @@ export function openBlob(blob: string, options: OpenBlobOptions): BlobPayload {
   }
 
   // (3b) Kind (R36): a blob minted by one tool cannot be opened by the other.
-  const expectedKind = options.expectedKind ?? 'machine';
-  if (verified.kind !== expectedKind) {
+  const expected = options.expectedKind ?? 'machine';
+  const kinds: readonly BlobKind[] = typeof expected === 'string' ? [expected] : expected;
+  if (!kinds.includes(verified.kind)) {
     throw verificationError(
-      `blob kind mismatch: this requestState was issued by ${toolFor(verified.kind)} and cannot be used with ${toolFor(expectedKind)}`,
+      `blob kind mismatch: this requestState was issued by ${toolFor(verified.kind)} and cannot be used with ${toolFor(kinds[0] ?? 'machine')}`,
       HINT_KIND,
     );
   }
 
   // (4) Binding hash (S4) and server identity (R30, cross-server replay).
   if (hashCode(options.code) !== verified.codeHash) {
-    throw verified.kind === 'call'
+    throw verified.kind !== 'machine'
       ? verificationError(
           "request mismatch: the retried call's name or args differ from the request that produced this requestState",
           HINT_REQUEST,
