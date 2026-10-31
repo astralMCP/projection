@@ -10,7 +10,7 @@
  * tier (15 tasks, `acme/widgets` and the user's own repositories) is built
  * to discriminate: several write tools whose `method` enum the prompt's
  * verb must pick; candidate lists the prompt's criterion narrows to one;
- * a paged listing with the target on page 2; first attempts the fake rejects
+ * a paged listing with the target past the first page; first attempts the fake rejects
  * until the arguments are corrected; conditional writes that must NOT happen
  * when a lookup shows them unnecessary; multi-step chains; and URLs to parse.
  * Hard tasks may also `forbid` calls (a wrong write is a failure even when
@@ -29,7 +29,7 @@
  */
 
 import type { SideEffect } from '../types.js';
-import { BASIC_REPO, branchesListed, FAKE_USER, HARD_BRANCHES, HARD_REPO } from './github-fake.js';
+import { ACME_BRANCHES, BASIC_REPO, branchesListed, FAKE_USER, HARD_REPO } from './github-fake.js';
 import {
   branchName,
   commented,
@@ -258,8 +258,8 @@ export const BASIC_TASKS: readonly EvalTask[] = [
 // OPEN bug), #25 (documentation) and #30 (bug, newest but closed); open PRs
 // #8 (carol; review thread comment 9001 by bob on src/auth.ts), #10 (alice),
 // #11 (alice, touches CHANGELOG.md) and #12 (bob, touches CHANGELOG.md);
-// six branches paged three at a time with no `main` (default `master`,
-// release/1.2 and release/1.3 on page 2); a lowercase `readme.md`. The user
+// 64 branches paged 30 at a time with no `main` (default `master`,
+// release/1.2 and release/1.3 on page 3); a lowercase `readme.md`. The user
 // (vibdev) owns blog, dotfiles and toolbox — only toolbox has open Dependabot
 // alerts (lodash, minimist) — and has already starred acme/widgets.
 
@@ -402,14 +402,14 @@ export const HARD_TASKS: readonly EvalTask[] = [
     forbid: (call) => isComment(call) && targetsOther(call.args, 23, HARD),
   },
 
-  // --- Pagination: the target branch is on page 2 of the default page size.
+  // --- Pagination: the target branch is on page 3 of the default page size.
   {
     name: 'branch-from-latest-release-branch',
     tier: 'hard',
     kind: 'multi',
     prompt: `In ${HARD_SLUG}, create a branch release/1.4 from the highest-numbered release/* branch.`,
     steps: [['list_branches'], ['create_branch']],
-    // Success needs a listing that actually showed release/1.3 (page 2, or a
+    // Success needs a listing that actually showed release/1.3 (page 3, or a
     // page size large enough to include it) before the create.
     expect: (calls) => {
       const shown = calls.findIndex(
@@ -439,7 +439,8 @@ export const HARD_TASKS: readonly EvalTask[] = [
     kind: 'single',
     prompt: `Create a branch named hotfix/login in ${HARD_SLUG}, based on main — or on the default branch if there is no main.`,
     steps: [['create_branch']],
-    // The fake rejects from_branch main (no such branch; default is master).
+    // The fake rejects from_branch main with GitHub's bare 404 on the ref
+    // (no such branch; default is master, which the error does not say).
     // The corrected call names master; or it omits from_branch (letting the
     // server pick the default) once the model has established there is no
     // main — by that failure, by a listing that showed every branch, or by a
@@ -461,7 +462,7 @@ export const HARD_TASKS: readonly EvalTask[] = [
         const seen = new Set(
           earlier.filter((c) => c.tool === 'list_branches').flatMap((c) => branchesListed(c.args)),
         );
-        if (HARD_BRANCHES.every((b) => seen.has(b))) return true;
+        if (ACME_BRANCHES.every((b) => seen.has(b))) return true;
         return earlier.some(
           (c) => c.tool === 'search_repositories' && containsText(c.args['query'], HARD.repo),
         );

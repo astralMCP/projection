@@ -70,6 +70,7 @@ export { FILE_SERVER_TASKS, FILE_SERVER_FIXTURE } from './reasoning/tasks.js';
 // or a real server behind a recording proxy.
 export {
   answerFor,
+  apiError,
   branchesListed,
   createGithubFake,
   fakeError,
@@ -77,8 +78,10 @@ export {
   pageOf,
   queryTerms,
   textMatches,
+  ACME_BRANCHES,
   BASIC_REPO,
   FAKE_PAGE_SIZE,
+  GITHUB_PAGE_SIZE,
   FAKE_USER,
   GITHUB_CATALOG,
   GITHUB_FAKE_ANSWERS,

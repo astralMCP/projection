@@ -610,7 +610,7 @@ const N_STALE = Object.keys(EXPECTED_STALE_ISSUES).length; // 12 writes
 const N_EXPORT = 26 + EXPECTED_EXPORT_PRS.length; // 26 open PRs inspected + 9 comments
 const N_AUDIT = EXPECTED_MISSING_AUDITS.length; // 14 inserts
 const N_CHAIN_RELEASE = 6; // package.json, release, issue, customer, orders (+ the other issues)
-const N_CHAIN_OWNER = 5; // PRs, checks, CODEOWNERS, staff, assigned issues
+const N_CHAIN_OWNER = 6; // PRs, checks, the job log, CODEOWNERS, staff, assigned issues
 const N_BRANCH_PAGES = 3; // 64 branches at 30 per page
 const N_RELEASE_PAGES = 3; // 62 releases at 30 per page
 const N_CHECKS = 15; // check runs of #139, 11 failing
@@ -731,6 +731,8 @@ export const MULTI_HARD_TASKS: readonly EvalTask[] = [
     steps: [
       inBox('github', ['list_pull_requests', 'search_pull_requests']),
       inBox('github', ['pull_request_read']),
+      // A check run carries no output: what it reports is in its job's log.
+      inBox('github', ['get_job_logs']),
       inBox('fs', FILE_READ_TOOLS),
       inBox('mongo', ['find', 'aggregate']),
       inBox('github', ['search_issues', 'list_issues']),
@@ -780,6 +782,7 @@ export const MULTI_HARD_TASKS: readonly EvalTask[] = [
     prompt: `Pull request #${CHECKS_PR} in the GitHub repository ${SLUG} has failing checks, and each failing check reports one file. For each such file: if it exists in my project, open an issue in ${SLUG} titled "Fix <path>" with the path as the check reports it (one issue per file); if it doesn't exist, comment on pull request #${CHECKS_PR} naming the missing file instead. Make no other changes.`,
     steps: [
       inBox('github', ['pull_request_read']),
+      inBox('github', ['get_job_logs']),
       inBox('fs', ['get_file_info', 'directory_tree', 'list_directory', 'search_files']),
       inBox('github', ['issue_write']),
       inBox('github', COMMENT_TOOLS),

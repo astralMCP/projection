@@ -91,7 +91,7 @@ describe('multi-hard tier', () => {
       ['hard-comment-export-prs', 'bulk-write', 35, 80],
       ['hard-audit-shipped-orders', 'bulk-write', 14, 38],
       ['hard-chain-release-reporter', 'chain', 6, 22],
-      ['hard-chain-failing-owner', 'chain', 5, 20],
+      ['hard-chain-failing-owner', 'chain', 6, 22],
       ['hard-page-feature-branches', 'pagination', 3, 16],
       ['hard-page-first-2025-release', 'pagination', 3, 16],
       ['hard-branch-failing-checks', 'branching', 15, 40],

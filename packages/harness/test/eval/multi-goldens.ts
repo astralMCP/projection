@@ -265,16 +265,16 @@ export const GOLDEN: Record<string, Golden> = {
     ],
   },
   'global-version-branch': {
-    calls: [readPackage, github('list_branches', { ...ACME, page: 2 })],
+    calls: [readPackage, github('list_branches', { ...ACME, page: 3 })],
     variants: [[readReadme, github('list_branches', { ...ACME, perPage: 100 })]],
     answer:
       'The project is on version 1.2.0. acme/widgets has a release/1.2 branch for that line (and release/1.3).',
     wrongAnswer: 'The project is on 1.2.0, and there is no release/1.2.0 branch.',
     wrong: [
-      // Page 1 (three branches) has no release branch.
+      // Page 1 (30 branches) has no release branch.
       [readPackage, github('list_branches', ACME)],
-      [github('list_branches', { ...ACME, page: 2 })],
-      [readPackage, github('list_branches', { ...ACME, page: 2 }), branch('release/1.2.0')],
+      [github('list_branches', { ...ACME, page: 3 })],
+      [readPackage, github('list_branches', { ...ACME, page: 3 }), branch('release/1.2.0')],
     ],
   },
   'global-who-is-grace': {

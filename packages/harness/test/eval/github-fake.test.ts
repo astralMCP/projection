@@ -17,6 +17,9 @@ import {
   FakeError,
   fakeError,
   pageOf,
+  ACME_BRANCHES,
+  HARD_LABELS,
+  HARD_README_TEXT,
   queryTerms,
   textMatches,
   GITHUB_CATALOG,
@@ -26,6 +29,7 @@ import {
   type AgentToolResult,
   type GithubFake,
 } from '../../src/index.js';
+import { FakeContent, FakeText } from '../../src/eval/github-fake.js';
 
 const ACME = { owner: 'acme', repo: 'widgets' };
 const BASIC = { owner: 'modelcontextprotocol', repo: 'servers' };
@@ -48,7 +52,11 @@ async function call(
   try {
     const result = toolResultText(await client.callTool({ name, arguments: args }));
     if (result.isError === true) return { error: result.text, result };
-    return { value: JSON.parse(result.text) as unknown, result };
+    try {
+      return { value: JSON.parse(result.text) as unknown, result };
+    } catch {
+      return { result }; // a text answer (a diff, a file's status line and content)
+    }
   } finally {
     await client.close();
   }
@@ -96,42 +104,57 @@ describe('github fake', () => {
     }
   });
 
-  it('records calls and answers from the canned table, defaulting to ok', async () => {
+  it('records calls and answers from the canned table, and unmodeled tools realistically', async () => {
     const fake = createGithubFake();
     const client = await connect(fake);
     try {
       const me = toolResultText(await client.callTool({ name: 'get_me', arguments: {} }));
-      expect(me).toEqual({ text: '{"login":"vibdev"}' });
+      expect(JSON.parse(me.text)).toMatchObject({ login: 'vibdev', details: { public_repos: 3 } });
       const star = toolResultText(
-        await client.callTool({ name: 'star_repository', arguments: { owner: 'a', repo: 'b' } }),
+        await client.callTool({ name: 'star_repository', arguments: { ...BASIC } }),
       );
-      expect(star).toEqual({ text: '{"ok":true}' });
+      expect(star).toEqual({
+        text: 'Successfully starred repository modelcontextprotocol/servers',
+      });
       expect(fake.calls).toEqual([
         { tool: 'get_me', args: {} },
-        { tool: 'star_repository', args: { owner: 'a', repo: 'b' } },
+        { tool: 'star_repository', args: { ...BASIC } },
       ]);
     } finally {
       await client.close();
     }
   });
 
-  it('answers unmodeled reads like the real server when asked to', async () => {
-    const fake = createGithubFake({ unmodeled: 'realistic' });
+  it('answers unmodeled tools like the real server: never a bare ok', async () => {
+    const fake = createGithubFake();
     const client = await connect(fake);
     try {
       const call = async (name: string, args: Record<string, unknown>) =>
-        await client.callTool({ name, arguments: args });
-      expect(toolResultText(await call('list_releases', ACME))).toEqual({ text: '[]' });
-      const latest = await call('get_latest_release', ACME);
-      expect(toolResultText(latest)).toEqual({ text: '404 Not Found', isError: true });
-      expect(toolResultText(await call('search_code', { query: 'csv' }))).toEqual({
+        toolResultText(await client.callTool({ name, arguments: args }));
+      expect(await call('list_releases', ACME)).toEqual({ text: '[]' });
+      expect((await call('get_latest_release', ACME)).isError).toBe(true);
+      expect(await call('search_code', { query: 'csv' })).toEqual({
         text: '{"total_count":0,"incomplete_results":false,"items":[]}',
       });
-      // Writes keep the default; canned answers still win.
-      expect(toolResultText(await call('star_repository', { owner: 'a', repo: 'b' }))).toEqual({
-        text: '{"ok":true}',
-      });
-      expect(toolResultText(await call('get_me', {}))).toEqual({ text: '{"login":"vibdev"}' });
+      // A repository GitHub does not have is a 404 for any tool.
+      const missing = await call('star_repository', { owner: 'a', repo: 'b' });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain('404 Not Found');
+      // Writes answer the real success shape.
+      expect(
+        JSON.parse((await call('merge_pull_request', { ...BASIC, pullNumber: 7 })).text),
+      ).toMatchObject({ merged: true, message: 'Pull Request successfully merged' });
+      expect(
+        JSON.parse(
+          (await call('update_pull_request', { ...ACME, pullNumber: 12, state: 'closed' })).text,
+        ),
+      ).toEqual({ id: expect.any(String), url: 'https://github.com/acme/widgets/pull/12' });
+      for (const text of [
+        (await call('star_repository', ACME)).text,
+        (await call('merge_pull_request', ACME)).text,
+      ]) {
+        expect(text).not.toContain('"ok":true');
+      }
     } finally {
       await client.close();
     }
@@ -186,41 +209,53 @@ describe('github fake', () => {
     }
   });
 
-  describe('basic world (modelcontextprotocol/servers) is unchanged', () => {
-    it('answers the static values the basic tasks rely on', () => {
-      expect(numbers(answer('list_pull_requests', { ...BASIC }))).toEqual([7, 9]);
+  describe('basic world (modelcontextprotocol/servers)', () => {
+    it('answers what the basic tasks read, in the real shapes', async () => {
+      expect(numbers(answer('list_pull_requests', { ...BASIC }))).toEqual([12, 9, 7]);
       expect(
         numbers(answer('search_pull_requests', { query: 'repo:modelcontextprotocol/servers' })),
-      ).toEqual([7, 9]);
-      expect(numbers(answer('list_issues', { ...BASIC }))).toEqual([42]);
-      expect(numbers(answer('search_issues', { query: 'crash on startup' }))).toEqual([42]);
-      expect(numbers(answer('search_issues', { ...BASIC, query: 'anything at all' }))).toEqual([
-        42,
+      ).toEqual([12, 9, 7]);
+      expect(
+        numbers((answer('list_issues', { ...BASIC }) as { issues: unknown[] }).issues),
+      ).toEqual([42, 40, 36]);
+      expect(numbers(answer('search_issues', { ...BASIC, query: 'crash on startup' }))).toEqual([
+        42, 40, 36,
       ]);
+      expect(
+        numbers(answer('search_issues', { ...BASIC, query: 'crash on startup is:open' })),
+      ).toEqual([42, 40]);
       expect(answer('issue_read', { ...BASIC, method: 'get', issue_number: 42 })).toMatchObject({
         number: 42,
+        title: 'Crash on startup',
       });
-      expect(answer('pull_request_read', { ...BASIC, method: 'get', pullNumber: 7 })).toMatchObject(
-        { number: 7 },
-      );
+      // A large repository: any number exists there.
+      expect(
+        answer('pull_request_read', { ...BASIC, method: 'get', pullNumber: 12 }),
+      ).toMatchObject({
+        number: 12,
+      });
+      expect(
+        answer('add_issue_comment', { ...BASIC, issue_number: 12, body: 'LGTM' }),
+      ).toMatchObject({
+        url: expect.stringContaining('/modelcontextprotocol/servers/issues/12#issuecomment-'),
+      });
       expect(
         answer('create_branch', { ...BASIC, branch: 'feature/x', from_branch: 'main' }),
-      ).toMatchObject({ ok: true });
-      expect(answer('get_file_contents', { ...BASIC, path: 'README.md' })).toEqual({ ok: true });
-      expect(answer('star_repository', { ...BASIC })).toEqual({ ok: true });
-      expect(
-        answer('issue_write', { ...BASIC, method: 'create', title: 'Crash on startup' }),
-      ).toMatchObject({ number: 101 });
-      // The basic search still finds something (its repo), so episodes stay short.
+      ).toMatchObject({ ref: 'refs/heads/feature/x', object: { type: 'commit' } });
+      const readme = await call('get_file_contents', { ...BASIC, path: 'README.md' });
+      expect(readme.error).toBeUndefined();
+      expect(readme.result.text).toContain(
+        'reference implementations for the Model Context Protocol',
+      );
       expect(answer('search_repositories', { query: 'model context protocol' })).toMatchObject({
         total_count: 1,
-        items: [{ full_name: 'modelcontextprotocol/servers' }],
+        items: [{ full_name: 'modelcontextprotocol/servers', default_branch: 'main' }],
       });
-      expect(answer('get_label', { ...BASIC, name: 'bug' })).toEqual({ ok: true });
+      expect(answer('get_label', { ...BASIC, name: 'bug' })).toMatchObject({ name: 'bug' });
     });
   });
 
-  describe('hard world (acme/widgets and the user)', () => {
+  describe('hard world (acme/widgets and the user), as the real server answers', () => {
     it('is a pure function of the arguments: the same call answers the same twice', async () => {
       const fake = createGithubFake();
       const client = await connect(fake);
@@ -232,7 +267,6 @@ describe('github fake', () => {
           await client.callTool({ name: 'list_branches', arguments: { ...ACME, page: 2 } }),
         );
         expect(a).toEqual(b);
-        // And a fresh fake starts from the same world.
         const fresh = await call('list_branches', { ...ACME, page: 2 });
         expect(fresh.result).toEqual(a);
       } finally {
@@ -240,53 +274,52 @@ describe('github fake', () => {
       }
     });
 
-    it('list_issues: newest first, filters by state and labels, honours direction', () => {
-      const all = answer('list_issues', { ...ACME }) as { issues: unknown[]; totalCount: number };
+    it('list_issues: open and closed by default, GraphQL items, labels match any, cursor pages', async () => {
+      const all = answer('list_issues', { ...ACME }) as {
+        issues: Record<string, unknown>[];
+        totalCount: number;
+        pageInfo: Record<string, unknown>;
+      };
       expect(numbers(all.issues)).toEqual([30, 25, 23, 17]);
       expect(all.totalCount).toBe(4);
-      expect(
-        numbers(
-          (answer('list_issues', { ...ACME, state: 'OPEN' }) as { issues: unknown[] }).issues,
-        ),
-      ).toEqual([25, 23, 17]);
-      expect(
-        numbers(
-          (answer('list_issues', { ...ACME, labels: ['bug'] }) as { issues: unknown[] }).issues,
-        ),
-      ).toEqual([30, 23, 17]);
-      expect(
-        numbers(
-          (
-            answer('list_issues', { ...ACME, state: 'OPEN', labels: ['bug'] }) as {
-              issues: unknown[];
-            }
-          ).issues,
-        ),
-      ).toEqual([23, 17]);
-      expect(
-        numbers(
-          (
-            answer('list_issues', {
-              ...ACME,
-              state: 'OPEN',
-              labels: ['bug'],
-              orderBy: 'CREATED_AT',
-              direction: 'ASC',
-            }) as { issues: unknown[] }
-          ).issues,
-        ),
-      ).toEqual([17, 23]);
-      const first = all.issues[0] as {
-        labels: { name: string }[];
-        created_at: string;
-        state: string;
+      expect(all.pageInfo).toMatchObject({ hasNextPage: false, hasPreviousPage: false });
+      // GraphQL shape (upstream issues.go:925): uppercase state, user login, label names, no url.
+      expect(all.issues[0]).toEqual({
+        number: 30,
+        title: 'Memory leak in file watcher',
+        body: 'Fixed in 1.3.',
+        state: 'CLOSED',
+        user: { login: 'vibdev' },
+        labels: ['bug'],
+        assignees: [],
+        created_at: '2026-09-28T09:00:00Z',
+        updated_at: '2026-09-28T09:00:00Z',
+      });
+      const list = (args: Record<string, unknown>): number[] =>
+        numbers((answer('list_issues', { ...ACME, ...args }) as { issues: unknown[] }).issues);
+      expect(list({ state: 'OPEN' })).toEqual([25, 23, 17]);
+      expect(list({ labels: ['bug'] })).toEqual([30, 23, 17]);
+      expect(list({ labels: ['documentation', 'needs-triage'] })).toEqual([25, 17]);
+      expect(list({ state: 'OPEN', labels: ['bug'], direction: 'ASC' })).toEqual([17, 23]);
+      const first = answer('list_issues', { ...ACME, perPage: 3 }) as {
+        issues: unknown[];
+        pageInfo: { hasNextPage: boolean; endCursor: string };
       };
-      expect(first.state).toBe('closed');
-      expect(first.labels).toEqual([{ name: 'bug' }]);
-      expect(first.created_at).toBe('2026-09-28T09:00:00Z');
+      expect(numbers(first.issues)).toEqual([30, 25, 23]);
+      expect(first.pageInfo.hasNextPage).toBe(true);
+      expect(list({ perPage: 3, after: first.pageInfo.endCursor })).toEqual([17]);
+      // The server normalises case before validating (upstream typed_read_normalizers.go).
+      const lowerState = await call('list_issues', { ...ACME, state: 'open', direction: 'asc' });
+      expect(numbers((lowerState.value as { issues: unknown[] }).issues)).toEqual([17, 23, 25]);
+      // page is refused with the server's own hint (upstream issues.go:3895).
+      const paged = await call('list_issues', { ...ACME, page: 2 });
+      expect(paged.error).toMatch(
+        /^This tool uses cursor-based pagination\. Use the 'after' parameter/,
+      );
+      expect(answer('list_issues', { owner: 'acme', repo: 'nope' })).toBeInstanceOf(FakeError);
     });
 
-    it('search_issues: scoped to acme/widgets it text-matches; existing title found, missing one empty', () => {
+    it('search_issues: is:issue implied, repo: from owner/repo, raw REST items', () => {
       expect(numbers(answer('search_issues', { ...ACME, query: 'Flaky test in CI' }))).toEqual([
         23,
       ]);
@@ -295,26 +328,11 @@ describe('github fake', () => {
           answer('search_issues', { query: 'repo:acme/widgets "Flaky test in CI" in:title' }),
         ),
       ).toEqual([23]);
-      expect(numbers(answer('search_issues', { ...ACME, query: 'flaky tests' }))).toEqual([23]);
       expect(numbers(answer('search_issues', { ...ACME, query: 'Add dark mode' }))).toEqual([]);
-      expect(numbers(answer('search_issues', { ...ACME, query: 'dark mode' }))).toEqual([]);
-      expect(numbers(answer('search_issues', { ...ACME, query: 'crash config missing' }))).toEqual([
-        17,
-      ]);
-      // Qualifiers are honoured the way the real server honours them.
       expect(numbers(answer('search_issues', { ...ACME, query: 'is:open label:bug' }))).toEqual([
         23, 17,
       ]);
-      expect(
-        numbers(answer('search_issues', { query: 'repo:acme/widgets state:open label:bug' })),
-      ).toEqual([23, 17]);
       expect(numbers(answer('search_issues', { ...ACME, query: 'is:closed' }))).toEqual([30]);
-      expect(
-        numbers(answer('search_issues', { ...ACME, query: 'is:issue label:documentation' })),
-      ).toEqual([25]);
-      expect(
-        numbers(answer('search_issues', { ...ACME, query: 'label:bug label:needs-triage' })),
-      ).toEqual([17]);
       expect(
         numbers(
           answer('search_issues', {
@@ -325,253 +343,315 @@ describe('github fake', () => {
           }),
         ),
       ).toEqual([17, 23]);
-      // No text terms and no qualifiers: everything in the repo.
-      expect(numbers(answer('search_issues', { ...ACME, query: '' }))).toEqual([30, 25, 23, 17]);
+      const result = answer('search_issues', { ...ACME, query: 'Flaky' }) as {
+        total_count: number;
+        incomplete_results: boolean;
+        items: Record<string, unknown>[];
+      };
+      expect(result.incomplete_results).toBe(false);
+      const item = result.items[0] as Record<string, unknown>;
+      expect(Object.keys(item)).toEqual(Object.keys(item).toSorted());
+      expect(item).toMatchObject({
+        number: 23,
+        state: 'open',
+        html_url: 'https://github.com/acme/widgets/issues/23',
+        user: { login: 'vibdev', type: 'User' },
+        labels: [{ name: 'bug', color: 'd73a4a' }],
+      });
+      expect(answer('search_issues', { ...ACME, query: '' })).toBeInstanceOf(FakeError);
+      expect(answer('search_issues', { query: 'repo:acme/nope crash' })).toBeInstanceOf(FakeError);
     });
 
-    it('issue_read: get, get_labels, and a 404 for unknown numbers', () => {
-      expect(answer('issue_read', { ...ACME, method: 'get', issue_number: 25 })).toMatchObject({
+    it('issue_read: MinimalIssue, get_labels wrapper, {parent:null}, and the real 404 text', () => {
+      expect(answer('issue_read', { ...ACME, method: 'get', issue_number: 25 })).toEqual({
         number: 25,
         title: 'Docs: add usage examples',
-        labels: [{ name: 'documentation' }],
+        body: 'The readme has no examples.',
+        state: 'open',
+        html_url: 'https://github.com/acme/widgets/issues/25',
+        user: expect.objectContaining({
+          login: 'vibdev',
+          profile_url: 'https://github.com/vibdev',
+        }),
+        author_association: 'OWNER',
+        labels: ['documentation'],
+        assignees: [],
+        comments: 1,
+        created_at: '2026-09-25T09:00:00Z',
+        updated_at: '2026-09-25T09:00:00Z',
       });
-      expect(answer('issue_read', { ...ACME, method: 'get_labels', issue_number: 17 })).toEqual([
-        { name: 'bug' },
-        { name: 'needs-triage' },
-      ]);
-      expect(answer('issue_read', { ...ACME, method: 'get', issue_number: 99 })).toBeInstanceOf(
-        FakeError,
+      expect(answer('issue_read', { ...ACME, method: 'get_labels', issue_number: 17 })).toEqual({
+        labels: [
+          expect.objectContaining({ name: 'bug', color: 'd73a4a' }),
+          expect.objectContaining({ name: 'needs-triage' }),
+        ],
+        totalCount: 2,
+      });
+      expect(answer('issue_read', { ...ACME, method: 'get_parent', issue_number: 17 })).toEqual({
+        parent: null,
+      });
+      expect(
+        (answer('issue_read', { ...ACME, method: 'get', issue_number: 99 }) as FakeError).message,
+      ).toBe(
+        'failed to get issue: GET https://api.github.com/repos/acme/widgets/issues/99: 404 Not Found []',
       );
-      // PRs are issues: reading one by number works, with a pull_request marker.
+      // PRs are issues: reading one by number works.
       expect(answer('issue_read', { ...ACME, method: 'get', issue_number: 12 })).toMatchObject({
         number: 12,
-        pull_request: {},
+        html_url: 'https://github.com/acme/widgets/pull/12',
       });
-      expect(answer('issue_read', { ...ACME, method: 'get_comments', issue_number: 12 })).toEqual(
-        [],
-      );
-      expect(answer('issue_read', { ...ACME, method: 'get_labels', issue_number: 12 })).toEqual([]);
     });
 
-    it('list_pull_requests / search_pull_requests: four open PRs (three per page), author and head filters', () => {
-      const listed = answer('list_pull_requests', { ...ACME, state: 'open' }) as {
-        items: unknown[];
-        has_next_page: boolean;
-      };
-      expect(numbers(listed.items)).toEqual([12, 11, 10]);
-      expect(listed.has_next_page).toBe(true); // #8 is on page 2 at the default page size
-      expect(
-        numbers(
-          (answer('list_pull_requests', { ...ACME, perPage: 10 }) as { items: unknown[] }).items,
-        ),
-      ).toEqual([12, 11, 10, 8]);
-      expect((listed.items[1] as { user: { login: string } }).user.login).toBe('alice');
-      expect(
-        numbers(
-          (
-            answer('list_pull_requests', { ...ACME, head: 'acme:release-1.3' }) as {
-              items: unknown[];
-            }
-          ).items,
-        ),
-      ).toEqual([11]);
+    it('list_pull_requests: a bare array of MinimalPullRequest, 30 per page', () => {
+      const listed = answer('list_pull_requests', { ...ACME, state: 'open' }) as Record<
+        string,
+        unknown
+      >[];
+      expect(numbers(listed)).toEqual([12, 11, 10, 8]);
+      expect(listed[1]).toMatchObject({
+        number: 11,
+        draft: false,
+        merged: false,
+        user: { login: 'alice' },
+        head: { ref: 'release-1.3', sha: expect.stringMatching(/^[0-9a-f]{40}$/) },
+        base: { ref: 'master', repo: { full_name: 'acme/widgets' } },
+      });
+      expect(listed[1]).not.toHaveProperty('mergeable');
+      expect(numbers(answer('list_pull_requests', { ...ACME, perPage: 2, page: 2 }))).toEqual([
+        10, 8,
+      ]);
+      expect(numbers(answer('list_pull_requests', { ...ACME, head: 'acme:release-1.3' }))).toEqual([
+        11,
+      ]);
       expect(
         numbers(
           answer('search_pull_requests', { query: 'repo:acme/widgets is:open author:alice' }),
         ),
       ).toEqual([11, 10]);
-      expect(numbers(answer('search_pull_requests', { ...ACME, query: 'author:bob' }))).toEqual([
-        12,
-      ]);
-      expect(numbers(answer('search_pull_requests', { ...ACME, query: 'CHANGELOG' }))).toEqual([]); // titles only
       expect(numbers(answer('search_pull_requests', { ...ACME, query: 'release' }))).toEqual([11]);
-      // `is:pr` is a type, not a state; a later `is:closed` still filters.
-      expect(
-        numbers(answer('search_pull_requests', { ...ACME, query: 'is:pr is:closed' })),
-      ).toEqual([]);
-      expect(numbers(answer('search_pull_requests', { ...ACME, query: 'is:pr is:open' }))).toEqual([
-        12, 11, 10, 8,
-      ]);
-    });
-
-    it('pull_request_read: files per PR and the review thread on #8', () => {
-      expect(answer('pull_request_read', { ...ACME, method: 'get_files', pullNumber: 11 })).toEqual(
-        [
-          { filename: 'CHANGELOG.md', status: 'modified' },
-          { filename: 'package.json', status: 'modified' },
-        ],
-      );
-      expect(answer('pull_request_read', { ...ACME, method: 'get_files', pullNumber: 10 })).toEqual(
-        [
-          { filename: 'src/fetch.ts', status: 'modified' },
-          { filename: 'test/fetch.test.ts', status: 'modified' },
-        ],
-      );
-      const comments = answer('pull_request_read', {
-        ...ACME,
-        method: 'get_review_comments',
-        pullNumber: 8,
-      }) as {
-        id: number;
-        user: { login: string };
-        path: string;
-      }[];
-      expect(comments.map((c) => [c.id, c.user.login, c.path])).toEqual([
-        [9001, 'bob', 'src/auth.ts'],
-        [9002, 'carol', 'README.md'],
-      ]);
-      expect(
-        answer('pull_request_read', { ...ACME, method: 'get_review_comments', pullNumber: 10 }),
-      ).toEqual([]);
-      expect(answer('pull_request_read', { ...ACME, method: 'get', pullNumber: 12 })).toMatchObject(
-        {
-          number: 12,
-          user: { login: 'bob' },
-        },
-      );
-      expect(
-        answer('pull_request_read', { ...ACME, method: 'get', pullNumber: 99 }),
-      ).toBeInstanceOf(FakeError);
-    });
-
-    it('list_branches: three per page by default, release/1.3 on page 2, perPage honoured', () => {
-      const page1 = answer('list_branches', { ...ACME }) as {
-        items: { name: string }[];
-        has_next_page: boolean;
-        total_count: number;
-      };
-      expect(page1.items.map((b) => b.name)).toEqual(['chore/ci', 'develop', 'docs/site']);
-      expect(page1.has_next_page).toBe(true);
-      expect(page1.total_count).toBe(6);
-      const page2 = answer('list_branches', { ...ACME, page: 2 }) as {
-        items: { name: string }[];
-        has_next_page: boolean;
-      };
-      expect(page2.items.map((b) => b.name)).toEqual(['master', 'release/1.2', 'release/1.3']);
-      expect(page2.has_next_page).toBe(false);
-      expect((answer('list_branches', { ...ACME, page: 3 }) as { items: unknown[] }).items).toEqual(
-        [],
-      );
-      expect(
-        (answer('list_branches', { ...ACME, perPage: 100 }) as { items: unknown[] }).items,
-      ).toHaveLength(6);
-      expect(branchesListed({ ...ACME })).toEqual(['chore/ci', 'develop', 'docs/site']);
-      expect(branchesListed({ ...ACME, page: 2 })).toContain('release/1.3');
-      expect(branchesListed({ ...ACME, page: '2' })).toContain('release/1.3');
-      expect(branchesListed({ ...ACME, perPage: 5 })).not.toContain('release/1.3');
-      expect(branchesListed({ ...BASIC, page: 2 })).toEqual([]);
-      expect(HARD_BRANCHES).not.toContain('main');
-      expect(pageOf([1, 2, 3, 4, 5], { page: 2, perPage: 2 })).toEqual({
-        items: [3, 4],
-        page: 2,
-        per_page: 2,
-        total_count: 5,
-        has_next_page: true,
+      const item = (
+        answer('search_pull_requests', { ...ACME, query: 'release' }) as {
+          items: Record<string, unknown>[];
+        }
+      ).items[0];
+      expect(item).toMatchObject({
+        pull_request: { url: 'https://api.github.com/repos/acme/widgets/pulls/11' },
       });
     });
 
-    it('create_branch: from main fails naming the default; from master or omitted succeeds', async () => {
+    it('pull_request_read: real per-method shapes; review comments as threads with no id field', async () => {
+      expect(answer('pull_request_read', { ...ACME, method: 'get_files', pullNumber: 11 })).toEqual(
+        [
+          {
+            filename: 'CHANGELOG.md',
+            status: 'modified',
+            additions: 15,
+            deletions: 2,
+            changes: 17,
+          },
+          {
+            filename: 'package.json',
+            status: 'modified',
+            additions: 15,
+            deletions: 2,
+            changes: 17,
+          },
+        ],
+      );
+      const threads = answer('pull_request_read', {
+        ...ACME,
+        method: 'get_review_comments',
+        pullNumber: 8,
+      }) as { review_threads: { comments: Record<string, unknown>[] }[]; totalCount: number };
+      expect(threads.totalCount).toBe(2);
+      const first = threads.review_threads[0]?.comments[0] as Record<string, unknown>;
+      expect(first).toMatchObject({
+        author: 'bob',
+        path: 'src/auth.ts',
+        html_url: 'https://github.com/acme/widgets/pull/8#discussion_r9001',
+      });
+      expect(first).not.toHaveProperty('id');
+      const get = answer('pull_request_read', { ...ACME, method: 'get', pullNumber: 12 });
+      expect(get).toMatchObject({ number: 12, mergeable_state: 'clean', changed_files: 3 });
+      expect(get).not.toHaveProperty('mergeable');
+      expect(
+        answer('pull_request_read', { ...ACME, method: 'get_status', pullNumber: 12 }),
+      ).toMatchObject({
+        state: 'pending',
+        total_count: 0,
+        statuses: [],
+      });
+      expect(
+        answer('pull_request_read', { ...ACME, method: 'get_check_runs', pullNumber: 12 }),
+      ).toEqual({
+        total_count: 0,
+        check_runs: [],
+      });
+      const diff = await call('pull_request_read', { ...ACME, method: 'get_diff', pullNumber: 10 });
+      expect(diff.result.text).toMatch(/^diff --git a\/src\/fetch\.ts b\/src\/fetch\.ts/);
+      expect(
+        (answer('pull_request_read', { ...ACME, method: 'get', pullNumber: 99 }) as FakeError)
+          .message,
+      ).toBe(
+        'failed to get pull request: GET https://api.github.com/repos/acme/widgets/pulls/99: 404 Not Found []',
+      );
+    });
+
+    it('list_branches: a bare array of {name, sha, protected}, 30 per page, release/* on page 3', () => {
+      const page1 = answer('list_branches', { ...ACME }) as { name: string; sha: string }[];
+      expect(page1).toHaveLength(30);
+      expect(page1[0]).toEqual({
+        name: 'chore/bump-node',
+        sha: expect.stringMatching(/^[0-9a-f]{40}$/),
+        protected: false,
+      });
+      const page3 = answer('list_branches', { ...ACME, page: 3 }) as { name: string }[];
+      expect(page3.map((b) => b.name)).toEqual([
+        'release/1.0',
+        'release/1.1',
+        'release/1.2',
+        'release/1.3',
+      ]);
+      expect(answer('list_branches', { ...ACME, page: 4 })).toEqual([]);
+      expect(answer('list_branches', { ...ACME, perPage: 100 })).toHaveLength(ACME_BRANCHES.length);
+      expect(branchesListed({ ...ACME, page: 3 })).toContain('release/1.3');
+      expect(branchesListed({ ...ACME, page: '3' })).toContain('release/1.3');
+      expect(branchesListed({ ...ACME })).not.toContain('release/1.3');
+      expect(branchesListed({ ...BASIC, page: 2 })).toEqual([]);
+      expect(ACME_BRANCHES).not.toContain('main');
+      expect(HARD_BRANCHES.every((b) => ACME_BRANCHES.includes(b))).toBe(true);
+      expect(pageOf([1, 2, 3, 4, 5], { page: 2, perPage: 2 })).toEqual({
+        items: [3, 4],
+        page: 2,
+        perPage: 2,
+        hasNext: true,
+      });
+    });
+
+    it('create_branch: a missing source is a bare 404 on the ref; success is the new Reference', async () => {
       const failed = await call('create_branch', {
         ...ACME,
         branch: 'hotfix/login',
         from_branch: 'main',
       });
-      expect(failed.error).toMatch(/"main" does not exist/);
-      expect(failed.error).toMatch(/default branch is "master"/);
-      expect(failed.result.isError).toBe(true);
+      expect(failed.error).toBe(
+        'failed to get reference: GET https://api.github.com/repos/acme/widgets/git/ref/heads/main: 404 Not Found []',
+      );
       const ok = await call('create_branch', {
         ...ACME,
         branch: 'hotfix/login',
         from_branch: 'master',
       });
-      expect(ok.value).toEqual({ ok: true, ref: 'refs/heads/hotfix/login' });
+      expect(ok.value).toMatchObject({
+        ref: 'refs/heads/hotfix/login',
+        object: { type: 'commit', sha: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      });
       const omitted = await call('create_branch', { ...ACME, branch: 'hotfix/login' });
-      expect(omitted.value).toMatchObject({ ok: true });
+      expect(omitted.value).toMatchObject({ ref: 'refs/heads/hotfix/login' });
+      expect((answer('create_branch', { ...ACME, branch: 'develop' }) as FakeError).message).toBe(
+        'failed to create branch: Reference already exists',
+      );
+    });
+
+    it("get_file_contents: a file is text plus a resource; a miss gets the server's suffix match or error", async () => {
+      const missing = await call('get_file_contents', { ...ACME, path: 'README.md' });
+      expect(missing.error).toBe(
+        'Failed to get file contents. The path does not point to a file or directory, or the file does not exist in the repository.',
+      );
+      const root = answer('get_file_contents', { ...ACME, path: '/' }) as Record<string, unknown>[];
+      expect(root.map((e) => [e['name'], e['type']])).toEqual([
+        ['package.json', 'file'],
+        ['readme.md', 'file'],
+        ['src', 'dir'],
+      ]);
+      expect(root[1]).toMatchObject({
+        path: 'readme.md',
+        html_url: 'https://github.com/acme/widgets/blob/master/readme.md',
+        download_url: 'https://raw.githubusercontent.com/acme/widgets/master/readme.md',
+      });
+      expect(answer('get_file_contents', { ...ACME })).toEqual(root);
+      const found = answer('get_file_contents', { ...ACME, path: 'readme.md' }) as FakeContent;
+      expect(found).toBeInstanceOf(FakeContent);
+      expect(found.blocks[0]).toEqual({
+        type: 'text',
+        text: expect.stringMatching(/^successfully downloaded text file \(SHA: [0-9a-f]{40}\)$/),
+      });
+      expect(found.blocks[1]).toMatchObject({
+        type: 'resource',
+        resource: { mimeType: 'text/plain; charset=utf-8', text: HARD_README_TEXT },
+      });
+      // The host shows the resource's text to the model.
+      const viaMcp = await call('get_file_contents', { ...ACME, path: 'readme.md' });
+      expect(viaMcp.result.text).toContain('Small, sturdy widgets.');
+      // A partial path resolves through the tree, not as an error.
+      const partial = answer('get_file_contents', { ...ACME, path: 'auth.ts' }) as FakeText;
+      expect(partial.text).toMatch(
+        /^Resolved potential matches in the repository tree .*\["src\/auth\.ts"\]/,
+      );
+      // ref main falls back to the default branch with a note; another bad ref fails.
+      const viaMain = answer('get_file_contents', {
+        ...ACME,
+        path: 'readme.md',
+        ref: 'main',
+      }) as FakeContent;
+      expect((viaMain.blocks[0] as { text: string }).text).toContain(
+        "Note: the provided ref 'main' does not exist, default branch 'refs/heads/master' was used instead.",
+      );
       expect(
-        answer('create_branch', { ...ACME, branch: 'x', from_branch: 'refs/heads/release/1.3' }),
-      ).toMatchObject({ ok: true });
-      expect(answer('create_branch', { ...ACME, branch: 'x', from_branch: 'nope' })).toBeInstanceOf(
+        (answer('get_file_contents', { ...ACME, path: 'readme.md', ref: 'nope' }) as FakeError)
+          .message,
+      ).toBe('failed to resolve git reference: could not resolve ref "nope" as a branch or a tag');
+    });
+
+    it('get_repository_tree: blob/tree entries with mode and sha; path_filter is a plain prefix', () => {
+      const tree = (args: Record<string, unknown>) =>
+        answer('get_repository_tree', { ...ACME, ...args }) as {
+          tree: { path: string; type: string }[];
+          truncated: boolean;
+          count: number;
+          tree_sha: string;
+        };
+      expect(tree({}).tree.map((e) => [e.path, e.type])).toEqual([
+        ['package.json', 'blob'],
+        ['readme.md', 'blob'],
+        ['src', 'tree'],
+      ]);
+      expect(tree({})).toMatchObject({ truncated: false, count: 3, tree_sha: 'master' });
+      expect(tree({ recursive: true, path_filter: 'src/' }).tree.map((e) => e.path)).toEqual([
+        'src/auth.ts',
+        'src/fetch.ts',
+        'src/index.ts',
+      ]);
+      // No trimming: a leading ./ matches nothing, as upstream git.go's HasPrefix.
+      expect(tree({ recursive: true, path_filter: './src/' }).tree).toEqual([]);
+    });
+
+    it("add_issue_comment: body or reaction required, with the server's text; answers {id, url}", () => {
+      expect(
+        (answer('add_issue_comment', { ...ACME, issue_number: 23 }) as FakeError).message,
+      ).toBe('at least one of body or reaction is required');
+      expect(answer('add_issue_comment', { ...ACME, issue_number: 23, body: 'hi' })).toEqual({
+        id: expect.stringMatching(/^\d+$/),
+        url: expect.stringMatching(
+          /^https:\/\/github\.com\/acme\/widgets\/issues\/23#issuecomment-\d+$/,
+        ),
+      });
+      expect(answer('add_issue_comment', { ...ACME, issue_number: 99, body: 'hi' })).toBeInstanceOf(
         FakeError,
       );
     });
 
-    it('get_file_contents: README.md is a 404, the root lists readme.md, readme.md has content', async () => {
-      const missing = await call('get_file_contents', { ...ACME, path: 'README.md' });
-      expect(missing.error).toMatch(/404/);
-      expect(missing.error).toContain('README.md');
-      expect(missing.error).not.toContain('readme.md'); // the error does not hand over the answer
-      for (const root of ['', '/', '.', './']) {
-        expect(answer('get_file_contents', { ...ACME, path: root })).toEqual([
-          { name: 'package.json', type: 'file', path: 'package.json' },
-          { name: 'readme.md', type: 'file', path: 'readme.md' },
-          { name: 'src', type: 'dir', path: 'src' },
-        ]);
-      }
-      expect(answer('get_file_contents', { ...ACME })).toHaveLength(3);
-      const found = await call('get_file_contents', { ...ACME, path: 'readme.md' });
-      expect(found.value).toMatchObject({
-        path: 'readme.md',
-        content: expect.stringContaining('widgets'),
+    it('list_starred_repositories: bare MinimalRepository array (no owner object)', () => {
+      const starred = answer('list_starred_repositories', {}) as Record<string, unknown>[];
+      expect(starred.map((r) => r['full_name'])).toEqual(['acme/widgets', 'octocat/Hello-World']);
+      expect(starred[0]).toMatchObject({
+        name: 'widgets',
+        html_url: 'https://github.com/acme/widgets',
       });
-      expect(answer('get_file_contents', { ...ACME, path: './readme.md' })).toMatchObject({
-        path: 'readme.md',
-      });
-      expect(answer('get_file_contents', { ...ACME, path: 'Readme.md' })).toBeInstanceOf(FakeError);
-      expect(answer('get_file_contents', { ...ACME, path: 'src/' })).toEqual([
-        { name: 'auth.ts', type: 'file', path: 'src/auth.ts' },
-        { name: 'fetch.ts', type: 'file', path: 'src/fetch.ts' },
-        { name: 'index.ts', type: 'file', path: 'src/index.ts' },
-      ]);
-      expect(answer('get_repository_tree', { ...ACME })).toMatchObject({
-        tree: expect.arrayContaining([{ path: 'readme.md', type: 'file' }]),
-      });
+      expect(starred[0]).not.toHaveProperty('owner');
     });
 
-    it('get_repository_tree: recursive adds the src files; path_filter keeps a prefix', () => {
-      const paths = (args: Record<string, unknown>): string[] =>
-        (
-          answer('get_repository_tree', { ...ACME, ...args }) as { tree: { path: string }[] }
-        ).tree.map((entry) => entry.path);
-      expect(paths({})).toEqual(['package.json', 'readme.md', 'src']);
-      expect(paths({ recursive: true })).toEqual([
-        'package.json',
-        'readme.md',
-        'src',
-        'src/auth.ts',
-        'src/fetch.ts',
-        'src/index.ts',
-      ]);
-      expect(paths({ recursive: true, path_filter: 'src' })).toEqual([
-        'src',
-        'src/auth.ts',
-        'src/fetch.ts',
-        'src/index.ts',
-      ]);
-      expect(paths({ recursive: true, path_filter: './src/' })).toEqual([
-        'src/auth.ts',
-        'src/fetch.ts',
-        'src/index.ts',
-      ]);
-      expect(paths({ path_filter: 'src' })).toEqual(['src']);
-    });
-
-    it('add_issue_comment: needs a body or a reaction, as the real server does', () => {
-      expect(answer('add_issue_comment', { ...ACME, issue_number: 23 })).toBeInstanceOf(FakeError);
-      expect(answer('add_issue_comment', { ...ACME, issue_number: 23, body: 'hi' })).toEqual({
-        ok: true,
-      });
-      expect(answer('add_issue_comment', { ...ACME, issue_number: 23, reaction: 'eyes' })).toEqual({
-        ok: true,
-      });
-    });
-
-    it('list_starred_repositories: acme/widgets is already starred, whoever asks', () => {
-      const starred = answer('list_starred_repositories', {}) as { full_name: string }[];
-      expect(starred.map((r) => r.full_name)).toEqual(['acme/widgets', 'octocat/Hello-World']);
-      expect(answer('list_starred_repositories', { username: 'vibdev' })).toEqual(starred);
-    });
-
-    it("search_repositories: the user's repos by user:/@me, acme/widgets by name, else the basic repo", () => {
+    it('search_repositories: owner scoping and text over names and descriptions; unrelated queries find nothing', () => {
       const mine = answer('search_repositories', { query: 'user:vibdev' }) as {
         items: { full_name: string }[];
       };
@@ -581,61 +661,90 @@ describe('github fake', () => {
         'vibdev/toolbox',
       ]);
       expect(answer('search_repositories', { query: 'user:@me' })).toEqual(mine);
-      expect(answer('search_repositories', { query: 'owner:vibdev fork:true' })).toEqual(mine);
       expect(answer('search_repositories', { query: 'vibdev' })).toEqual(mine);
       expect(answer('search_repositories', { query: 'widgets in:name' })).toMatchObject({
         items: [{ full_name: 'acme/widgets', default_branch: 'master' }],
       });
-      expect(answer('search_repositories', { query: 'model context protocol' })).toMatchObject({
-        total_count: 1,
-        items: [{ full_name: 'modelcontextprotocol/servers', default_branch: 'main' }],
+      expect(answer('search_repositories', { query: 'quantum teleporter' })).toEqual({
+        total_count: 0,
+        incomplete_results: false,
+        items: [],
       });
     });
 
-    it('list_dependabot_alerts: only vibdev/toolbox has open alerts; state and severity filter', () => {
+    it('list_dependabot_alerts: {alerts, pageInfo}; no state means every state', () => {
       const alerts = answer('list_dependabot_alerts', { owner: 'vibdev', repo: 'toolbox' }) as {
-        dependency: { package: { name: string } };
-      }[];
-      expect(alerts.map((a) => a.dependency.package.name)).toEqual(['lodash', 'minimist']);
+        alerts: { dependency: { package: { name: string } } }[];
+        pageInfo: unknown;
+      };
+      expect(alerts.alerts.map((a) => a.dependency.package.name)).toEqual(['lodash', 'minimist']);
+      expect(alerts.pageInfo).toEqual({ hasNextPage: false, hasPreviousPage: false });
+      const high = answer('list_dependabot_alerts', {
+        owner: 'vibdev',
+        repo: 'toolbox',
+        severity: 'high',
+      }) as {
+        alerts: unknown[];
+      };
+      expect(high.alerts).toHaveLength(1);
       expect(
-        answer('list_dependabot_alerts', { owner: 'vibdev', repo: 'toolbox', severity: 'high' }),
-      ).toHaveLength(1);
-      expect(
-        answer('list_dependabot_alerts', { owner: 'vibdev', repo: 'toolbox', state: 'fixed' }),
+        (
+          answer('list_dependabot_alerts', { owner: 'vibdev', repo: 'dotfiles' }) as {
+            alerts: unknown[];
+          }
+        ).alerts,
       ).toEqual([]);
-      expect(answer('list_dependabot_alerts', { owner: 'vibdev', repo: 'dotfiles' })).toEqual([]);
-      expect(answer('list_dependabot_alerts', { owner: 'vibdev', repo: 'blog' })).toEqual([]);
-      expect(answer('list_dependabot_alerts', { ...ACME })).toEqual([]);
     });
 
-    it('list_label / get_label: the labels the hard tasks need already exist', () => {
-      expect(answer('list_label', { ...ACME })).toEqual([
-        { name: 'bug' },
-        { name: 'documentation' },
-        { name: 'good first issue' },
-        { name: 'needs-triage' },
-      ]);
-      expect(answer('get_label', { ...ACME, name: 'Good First Issue' })).toEqual({
+    it("list_label / get_label: GraphQL label objects in a wrapper; a miss is the server's text", () => {
+      const labels = answer('list_label', { ...ACME }) as {
+        labels: { name: string; color: string; id: string; description: string }[];
+        totalCount: number;
+      };
+      expect(labels.labels.map((l) => l.name)).toEqual([...HARD_LABELS]);
+      expect(labels.totalCount).toBe(4);
+      expect(answer('get_label', { ...ACME, name: 'Good First Issue' })).toMatchObject({
         name: 'good first issue',
-        color: 'ededed',
+        color: '7057ff',
       });
-      expect(answer('get_label', { ...ACME, name: 'nope' })).toBeInstanceOf(FakeError);
+      expect((answer('get_label', { ...ACME, name: 'nope' }) as FakeError).message).toBe(
+        "label 'nope' not found in acme/widgets",
+      );
       expect(answer('semantic_issue_similarity_search', { ...ACME, issue_number: 23 })).toEqual([]);
     });
 
-    it('issue_write: a create answers with a number and url; an update acknowledges', () => {
+    it('issue_write: create needs a title; create and update answer {id, url}, never the issue', async () => {
+      const untitled = await call('issue_write', { ...ACME, method: 'create' });
+      expect(untitled.error).toBe('missing required parameter: title');
       expect(answer('issue_write', { ...ACME, method: 'create', title: 'Add dark mode' })).toEqual({
-        number: 101,
-        title: 'Add dark mode',
-        state: 'open',
-        html_url: 'https://github.com/acme/widgets/issues/101',
+        id: expect.stringMatching(/^\d+$/),
+        url: 'https://github.com/acme/widgets/issues/101',
       });
       expect(
         answer('issue_write', { ...ACME, method: 'update', issue_number: 17, state: 'closed' }),
-      ).toEqual({ ok: true, number: 17 });
+      ).toEqual({
+        id: expect.stringMatching(/^\d+$/),
+        url: 'https://github.com/acme/widgets/issues/17',
+      });
+      expect(
+        (answer('issue_write', { ...ACME, method: 'update', state: 'closed' }) as FakeError)
+          .message,
+      ).toBe('missing required parameter: issue_number');
+      expect(
+        (
+          answer('issue_write', {
+            ...ACME,
+            method: 'update',
+            issue_number: 99,
+            state: 'closed',
+          }) as FakeError
+        ).message,
+      ).toBe(
+        'failed to update issue: PATCH https://api.github.com/repos/acme/widgets/issues/99: 404 Not Found []',
+      );
     });
 
-    it('writes that are not scripted still answer ok and are recorded', async () => {
+    it('writes that are not scripted answer the real success shape and are recorded', async () => {
       const fake = createGithubFake();
       const client = await connect(fake);
       try {
@@ -645,12 +754,28 @@ describe('github fake', () => {
             arguments: { ...ACME, method: 'rerun_failed_jobs', run_id: 123 },
           }),
         );
-        expect(result).toEqual({ text: '{"ok":true}' });
-        expect(fake.calls).toEqual([
-          {
-            tool: 'actions_run_trigger',
-            args: { ...ACME, method: 'rerun_failed_jobs', run_id: 123 },
-          },
+        expect(JSON.parse(result.text)).toEqual({
+          message: 'Failed jobs have been queued for re-run',
+          run_id: 123,
+          status: '201 Created',
+          status_code: 201,
+        });
+        const review = toolResultText(
+          await client.callTool({
+            name: 'pull_request_review_write',
+            arguments: {
+              ...ACME,
+              method: 'create',
+              pullNumber: 10,
+              event: 'REQUEST_CHANGES',
+              body: 'x',
+            },
+          }),
+        );
+        expect(review.text).toBe('pull request review submitted successfully');
+        expect(fake.calls.map((c) => c.tool)).toEqual([
+          'actions_run_trigger',
+          'pull_request_review_write',
         ]);
       } finally {
         await client.close();

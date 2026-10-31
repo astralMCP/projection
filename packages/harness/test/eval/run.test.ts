@@ -34,6 +34,7 @@ import {
   type ModelCaller,
   type ModelPreset,
 } from '../../src/index.js';
+import { GITHUB_FAKE_ANSWERS } from '../../src/eval/github-fake.js';
 import { toolNames } from './tool-names.js';
 
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
@@ -241,8 +242,9 @@ describe('tool-choice eval plumbing (offline)', () => {
       const block = Array.isArray(last?.content) ? last.content[0] : undefined;
       return block !== undefined && block.type === 'tool_result' ? String(block.content) : '';
     });
-    expect(texts.some((t) => t === '{"login":"vibdev"}')).toBe(true); // direct
-    expect(texts.some((t) => t.includes('vibdev') && t !== '{"login":"vibdev"}')).toBe(true); // via call_tool
+    const me = JSON.stringify(GITHUB_FAKE_ANSWERS['get_me']);
+    expect(texts.some((t) => t === me)).toBe(true); // direct
+    expect(texts.some((t) => t.includes('vibdev') && t !== me)).toBe(true); // via call_tool
   });
 
   it('summarizes, formats and writes the results', () => {
@@ -801,7 +803,9 @@ describe('tool-choice eval plumbing (offline)', () => {
         }
       }
       expect(errorBlocks.size).toBe(2);
-      for (const block of errorBlocks) expect(String(block.content)).toMatch(/404/);
+      for (const block of errorBlocks) {
+        expect(String(block.content)).toContain('Failed to get file contents.');
+      }
       const summary = summarizeToolChoice(hard);
       expect(
         summary.tiers.map((t) => [t.tier, t.mode, t.successes, t.scored, t.forbidden]),

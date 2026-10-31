@@ -21,7 +21,7 @@ import {
   type FakeBox,
   type FakeTool,
 } from './workplace-fake.js';
-import { PEOPLE } from './workplace-people.js';
+import { PEOPLE, WORLD_NOW } from './workplace-people.js';
 
 export interface Email {
   id: string;
@@ -137,10 +137,37 @@ export function seedMail(): MailState {
 // ---------------------------------------------------------------------------
 // Search
 
+const DAY = 86_400_000;
+
+/** An `after:`/`before:` date (`2026/10/13`, `2026-10-13` or epoch seconds), as UTC ms. */
+function searchDate(value: string): number | undefined {
+  if (/^\d{9,}$/.test(value)) return Number(value) * 1000;
+  const m = /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(value);
+  if (m === null) return undefined;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/** A `newer_than:`/`older_than:` period (`2d`, `1m`, `1y`) in ms. */
+function searchPeriod(value: string): number | undefined {
+  const m = /^(\d+)([dmy])$/.exec(value);
+  if (m === null) return undefined;
+  return Number(m[1]) * DAY * (m[2] === 'd' ? 1 : m[2] === 'm' ? 30 : 365);
+}
+
+/**
+ * Whether `e` matches a search query, with the mail search operators the
+ * real service supports — `from:` `to:` `subject:` `label:` `in:` `is:`
+ * `has:` `after:` `before:` `newer_than:` `older_than:`, free text, and `-`
+ * to negate a term — so an operator is never silently ignored. Dates are
+ * UTC, relative periods end at {@link WORLD_NOW}.
+ */
 function matches(e: Email, query: string): boolean {
-  const tokens = query.match(/(?:\S+:"[^"]*"|"[^"]*"|\S+)/g) ?? [];
-  return tokens.every((raw) => {
-    const m = /^(from|to|subject|label|is):(.*)$/i.exec(raw);
+  const tokens = query.match(/(?:-?\S+:"[^"]*"|-?"[^"]*"|\S+)/g) ?? [];
+  const at = Date.parse(e.date);
+  const term = (raw: string): boolean => {
+    const m = /^(from|to|subject|label|is|in|has|after|before|newer_than|older_than):(.*)$/i.exec(
+      raw,
+    );
     const strip = (v: string): string => v.replace(/^"|"$/g, '').toLowerCase();
     if (m === null) {
       const needle = strip(raw);
@@ -148,6 +175,7 @@ function matches(e: Email, query: string): boolean {
     }
     const key = (m[1] as string).toLowerCase();
     const value = strip(m[2] as string);
+    const labels = e.labels.map((l) => l.toLowerCase());
     switch (key) {
       case 'from':
         return e.from.toLowerCase().includes(value);
@@ -156,12 +184,44 @@ function matches(e: Email, query: string): boolean {
       case 'subject':
         return e.subject.toLowerCase().includes(value);
       case 'label':
-        return e.labels.some((l) => l.toLowerCase() === value);
-      default:
-        return value === 'unread' ? e.labels.includes('UNREAD') : true;
+        return labels.includes(value);
+      case 'in':
+        return value === 'anywhere' || labels.includes(value);
+      case 'is':
+        return value === 'read' ? !labels.includes('unread') : labels.includes(value);
+      case 'has':
+        return false; // no message has attachments, stars by colour, or user labels
+      case 'after':
+      case 'before': {
+        const t = searchDate(value);
+        if (t === undefined) return false;
+        return key === 'after' ? at >= t : at < t;
+      }
+      default: {
+        const ms = searchPeriod(value);
+        if (ms === undefined) return false;
+        const edge = Date.parse(WORLD_NOW) - ms;
+        return key === 'newer_than' ? at >= edge : at < edge;
+      }
     }
-  });
+  };
+  return tokens.every((raw) => (raw.startsWith('-') ? !term(raw.slice(1)) : term(raw)));
 }
+
+/** Label IDs a message can be given: the system labels (no user labels exist). */
+const LABEL_IDS: ReadonlySet<string> = new Set([
+  'INBOX',
+  'UNREAD',
+  'STARRED',
+  'IMPORTANT',
+  'SPAM',
+  'TRASH',
+  'CATEGORY_PERSONAL',
+  'CATEGORY_SOCIAL',
+  'CATEGORY_PROMOTIONS',
+  'CATEGORY_UPDATES',
+  'CATEGORY_FORUMS',
+]);
 
 function addresses(args: FakeArgs, key: string): string[] | undefined {
   const v = args[key];
@@ -326,6 +386,9 @@ export function createMailBox(state: MailState, onCall?: (call: SideEffect) => v
         if (e === undefined) return toolError('Error: Requested entity was not found.');
         const add = addresses(args, 'addLabelIds') ?? [];
         const remove = addresses(args, 'removeLabelIds') ?? [];
+        // Label IDs, not names: an unknown one is the API's 400.
+        const unknown = [...add, ...remove].find((l) => !LABEL_IDS.has(l));
+        if (unknown !== undefined) return toolError(`Error: Invalid label: ${unknown}`);
         e.labels = [...new Set([...e.labels.filter((l) => !remove.includes(l)), ...add])];
         state.relabels.push({ id: e.id, add, remove });
         return json({ id: e.id, labelIds: e.labels });

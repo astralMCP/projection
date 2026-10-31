@@ -257,7 +257,10 @@ describe('filesystem world', () => {
           { type: 'text', text: 'first' },
           { type: 'image', data: 'abcd', mimeType: 'image/png' },
           { type: 'audio', data: 'abcdefgh', mimeType: 'audio/wav' },
-          { type: 'resource', resource: { uri: 'file:///x', mimeType: 'text/plain', text: '' } },
+          {
+            type: 'resource',
+            resource: { uri: 'file:///x', mimeType: 'text/plain', blob: 'AA==' },
+          },
           { type: 'mystery' },
           { type: 'text', text: 'last' },
         ],
@@ -272,6 +275,18 @@ describe('filesystem world', () => {
         'last',
       ].join('\n'),
     });
+    // An embedded text resource is shown as its text, as a host shows it.
+    expect(
+      toolResultText({
+        content: [
+          { type: 'text', text: 'successfully downloaded text file (SHA: abc)' },
+          {
+            type: 'resource',
+            resource: { uri: 'repo://a/b/x.md', mimeType: 'text/plain', text: '# x' },
+          },
+        ],
+      }),
+    ).toEqual({ text: 'successfully downloaded text file (SHA: abc)\n# x' });
     expect(toolResultText({ content: [], structuredContent: { a: 1 } })).toEqual({
       text: '{"a":1}',
     });

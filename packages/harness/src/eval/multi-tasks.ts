@@ -16,7 +16,7 @@
  *   a customer's email becomes a todo line. The write must follow the read
  *   that justified it, and must carry the value read (exact fixture values:
  *   `- Add CSV export`, 4 shipped orders, `app.log`, `1.2.0`, the four open
- *   PRs of acme/widgets — paged three at a time — and grace@example.com).
+ *   PRs of acme/widgets — one page at GitHub's 30 — and grace@example.com).
  * - **Box choice** (4): two boxes have a similarly named tool — the
  *   project's README (filesystem) vs acme/widgets' readme (GitHub's
  *   `get_file_contents`), the project's `src` folder vs acme/widgets'.
@@ -56,7 +56,7 @@ import { FIXTURE_TODO } from './filesystem-world.js';
 import {
   branchesListed,
   GITHUB_CATALOG,
-  HARD_BRANCHES,
+  ACME_BRANCHES,
   HARD_PULLS,
   HARD_REPO,
 } from './github-fake.js';
@@ -489,7 +489,7 @@ export const MULTI_TASKS: readonly EvalTask[] = [
         const from = branchName(call.args['from_branch']);
         return (
           sameText(branchName(call.args['branch']), RELEASE_BRANCH) &&
-          (from === undefined || from === '' || HARD_BRANCHES.includes(from.toLowerCase()))
+          (from === undefined || from === '' || ACME_BRANCHES.includes(from))
         );
       });
       return read >= 0 && created > read;
@@ -503,8 +503,8 @@ export const MULTI_TASKS: readonly EvalTask[] = [
           (!inRepo(c.args, HARD) || !sameText(branchName(c.args['branch']), RELEASE_BRANCH)),
       ),
   },
-  // --- Cross-box: github -> fs. Four open PRs, listed three per page by
-  // default: the file must hold all four titles.
+  // --- Cross-box: github -> fs. Four open PRs (one page at GitHub's
+  // default of 30): the file must hold all four titles.
   {
     name: 'cross-open-prs-to-notes',
     tier: 'multi',
@@ -657,7 +657,7 @@ export const MULTI_TASKS: readonly EvalTask[] = [
     prompt:
       'What version is the widgets project on, and is there a release branch for that version?',
     // The version is only in the project (acme/widgets' package.json is a
-    // 404); the branches are only on GitHub, release/1.2 on page 2.
+    // 404); the branches are only on GitHub, release/1.2 on page 3.
     steps: [inBox('fs', FILE_READ_TOOLS), inBox('github', ['list_branches'])],
     expect: (calls) =>
       any(
