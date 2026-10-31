@@ -44,9 +44,12 @@ import {
   argGlosses,
   callSignature,
   glossLine,
+  sharedArgs,
+  sharedArgsText,
   signatureLine,
   type ArgGloss,
   type CallSignature,
+  type SharedArg,
 } from './signature.js';
 import {
   boxSearchTool,
@@ -57,6 +60,7 @@ import {
 } from './boxes.js';
 import {
   dedupeTools,
+  findTool,
   type PolicyContext,
   type PolicyOptions,
   type ServerCatalog,
@@ -202,10 +206,104 @@ export function searchTools(
     (q) => rankTools(dedupeTools(catalog.tools), q),
     (entry, rank, q) => summarizeTool(entry, context, signed(q, rank), glossed(q, rank)),
   );
+  const shared = sharedArgsOf(catalog);
+  const head = sharedHead(page.tools, query, () => ({ box: '', scope: 'tools here', shared }));
+  const sharedView: SharedView = {
+    heads: head,
+    signatureOf: (entry) =>
+      abbreviated(findTool(catalog, entry.name), head.length > 0 ? shared : []),
+  };
   return {
-    content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
+    content: [
+      {
+        type: 'text',
+        text: renderPage(catalog, page, query, offset, queryTruncated, sharedView),
+      },
+    ],
     structuredContent: { ...page },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared arguments (D34)
+// ---------------------------------------------------------------------------
+
+/** Shared arguments per catalog: the catalog is immutable once introspected. */
+const sharedCache = new WeakMap<ServerCatalog, SharedArg[]>();
+
+/**
+ * The shared arguments of one server's catalog (D34), computed once per
+ * catalog over its deduplicated tools. For a box, pass the box's own
+ * catalog (bare names), never the merged view.
+ */
+export function sharedArgsOf(catalog: ServerCatalog): SharedArg[] {
+  let shared = sharedCache.get(catalog);
+  if (shared === undefined) {
+    shared = sharedArgs(dedupeTools(catalog.tools));
+    sharedCache.set(catalog, shared);
+  }
+  return shared;
+}
+
+/** A box and its shared arguments, as the head of a page names them (D34). */
+interface SharedBox {
+  /** The box's alias; `''` for a single server. */
+  box: string;
+  /** Shown after `most`: `tools here`, `mongo tools`. */
+  scope: string;
+  shared: readonly SharedArg[];
+}
+
+/** One shared-args line at the head of a page (D34). */
+interface SharedHeadLine {
+  box: string;
+  line: string;
+  /** The glosses it shows: a hit's `where` line leaves them out. */
+  glosses: ArgGloss[];
+}
+
+/** What a page renders for shared arguments (D34). */
+interface SharedView {
+  heads: SharedHeadLine[];
+  /** A signed entry's signature as the text shows it: abbreviated when its box's line is shown. */
+  signatureOf: (entry: ToolSummary) => CallSignature | undefined;
+}
+
+/**
+ * The head lines of a page (D34): the shared-args line of each box the
+ * page's calls can be built from — every box with a tool on a listing
+ * page, and every box with a signed hit on a query page (a hit without
+ * args is not called from the page) — in order of first appearance.
+ * `boxOf` names an entry's box and its shared arguments.
+ */
+function sharedHead(
+  tools: readonly ToolSummary[],
+  query: string,
+  boxOf: (entry: ToolSummary) => SharedBox | undefined,
+): SharedHeadLine[] {
+  const heads = new Map<string, SharedBox>();
+  for (const entry of tools) {
+    if (query.length > 0 && entry.signature === undefined) continue;
+    const box = boxOf(entry);
+    if (box === undefined || box.shared.length === 0 || heads.has(box.box)) continue;
+    heads.set(box.box, box);
+  }
+  return [...heads.values()].map(({ box, scope, shared }) => ({
+    box,
+    line: `Shared args (most ${scope} take them): ${sharedArgsText(shared)}`,
+    glosses: shared.flatMap((arg) =>
+      arg.gloss !== undefined ? [{ name: arg.name, text: arg.gloss }] : [],
+    ),
+  }));
+}
+
+/** The signature a signed hit's text shows, with `shared` abbreviated (D34). */
+function abbreviated(
+  entry: ToolCatalogEntry | undefined,
+  shared: readonly SharedArg[],
+): CallSignature | undefined {
+  if (entry === undefined) return undefined;
+  return callSignature(entry.inputSchema, { shared });
 }
 
 /** One page of a search, with the normalized query it answered. */
@@ -337,6 +435,24 @@ export function searchBoxes(
       box: member.alias,
     }),
   );
+  const heads = sharedHead(page.tools, query, (entry) => {
+    const owner = catalog.boxes.get((entry as BoxedToolSummary).box);
+    // A box listed directly has its schemas in the tool list already.
+    if (owner === undefined || catalog.directBoxes.includes(owner.alias)) return undefined;
+    return { box: owner.alias, scope: `${owner.alias} tools`, shared: sharedArgsOf(owner.catalog) };
+  });
+  const headed = new Set(heads.map((head) => head.box));
+  const sharedView: SharedView = {
+    heads,
+    signatureOf: (entry) => {
+      const member = catalog.members.get(entry.name);
+      if (member === undefined) return undefined;
+      const owner = catalog.boxes.get(member.alias);
+      const shared =
+        owner !== undefined && headed.has(member.alias) ? sharedArgsOf(owner.catalog) : [];
+      return abbreviated(member.qualified, shared);
+    },
+  };
   const firstListing = query.length === 0 && offset === 0;
   const overview =
     scope !== undefined && firstListing ? boxOverview(scope.catalog.instructions) : undefined;
@@ -360,7 +476,7 @@ export function searchBoxes(
     scopeLabel = `in boxes ${[...aliases].join(', ')}`;
   }
   const where = box !== undefined ? `in the ${box} box` : 'in any box';
-  lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel));
+  lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel, sharedView));
   lines.push('', `Tool names are qualified as <box>.<tool>. ${nextStep(result.tools)}`);
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
@@ -795,6 +911,7 @@ function renderPage(
   query: string,
   offset: number,
   queryTruncated: boolean,
+  sharedView: SharedView,
 ): string {
   const lines: string[] = [];
   if (queryTruncated) {
@@ -808,6 +925,7 @@ function renderPage(
       'search_tools',
       `on server ${inertIdentity(catalog.identity)}`,
       `server ${inertIdentity(catalog.identity)}`,
+      sharedView,
     ),
   );
   lines.push('', nextStep(page.tools));
@@ -837,7 +955,8 @@ function renderEntries(
   offset: number,
   tool: string,
   where: string,
-  scopeLabel?: string,
+  scopeLabel: string | undefined,
+  sharedView: SharedView,
 ): string[] {
   const lines: string[] = [];
   const scope =
@@ -845,12 +964,18 @@ function renderEntries(
   if (page.tools.length === 0) {
     lines.push(`No tools${scope} ${where}.`);
   } else {
+    // A gloss already on this page (same argument, same words) is not repeated (D33).
+    const shownGlosses = new Set<string>();
+    // The shared-args lines lead (D34): ours, built from the sanitized
+    // schemas, with names and glosses quoted as on an args line.
+    for (const head of sharedView.heads) {
+      lines.push(head.line);
+      for (const gloss of head.glosses) shownGlosses.add(JSON.stringify([gloss.name, gloss.text]));
+    }
     const label = scopeLabel !== undefined ? ` (${scopeLabel})` : '';
     lines.push(
       `Tools ${offset + 1}–${offset + page.tools.length} of ${page.total}${scope}${label}:`,
     );
-    // A gloss already on this page (same argument, same words) is not repeated (D33).
-    const shownGlosses = new Set<string>();
     for (const entry of page.tools) {
       // Names and purposes are S5-controlled: neutralize so a hostile value
       // cannot forge a line of its own (e.g. relabel a write as "runs
@@ -861,7 +986,9 @@ function renderEntries(
       lines.push(`- ${name} — ${entry.purpose} [${flags}]`);
       // One line built by `callSignature` from the sanitized schema, under
       // the entry and indented: it cannot forge an entry or a posture.
-      if (entry.signature !== undefined) lines.push(`  ${signatureLine(entry.signature)}`);
+      if (entry.signature !== undefined) {
+        lines.push(`  ${signatureLine(sharedView.signatureOf(entry) ?? entry.signature)}`);
+      }
       // The glosses are server text, each JSON-quoted on our own indented
       // line (`glossLine`), so they cannot forge an entry either.
       const fresh = (entry.glosses ?? []).filter((gloss) => {

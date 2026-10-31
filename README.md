@@ -11,7 +11,7 @@ Projection wraps an existing MCP server and exposes two projections of it — fi
 
 **Catalog** — for single actions and large tool surfaces:
 
-- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more. A query's top three hits also show their arguments on one line, with a short gloss of each required argument whose name does not say what it takes, so `call_tool` can follow the search directly.
+- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more. A query's top three hits also show their arguments on one line, with a short gloss of each required argument whose name does not say what it takes, so `call_tool` can follow the search directly. Arguments most of a server's tools require (MongoDB's `connectionId`, GitHub's `owner` and `repo`) are shown once, glossed, at the head of the page.
 - **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
 - **`call_tool`** — runs one tool by name, under exactly the same gate: read-only (or, under `destructive-only`, a non-destructive write) runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
 

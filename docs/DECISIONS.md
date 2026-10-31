@@ -2097,3 +2097,104 @@ Rejected: a gloss on optional arguments on the search page (over the
 GitHub tools their glosses come to 9,640 characters against 3,504 for the
 required ones); a first-sentence rule (the
 instruction in `connectionId` is in its second); glossing every hit.
+
+## D34 — A box's shared arguments are shown once, at the head of its pages and on the shelf (2026-10-31)
+
+Context. D32/D33 cut `describe_tool` calls by 60–100 %, but the v15
+transcripts show another wasted turn in most MongoDB episodes: the model
+lists the box (`search_mongo {}`), whose one-liners carry no arguments,
+then calls `mongo.list-databases` with `{}` or an invented
+`connectionId`, reads the `validate` hint's gloss ("Use … or
+\"preconfigured\"") and retries. The argument it lacked is the one almost
+every tool of the box requires. Many servers work this way: MongoDB's
+`connectionId` / `database` / `collection`, GitHub's `owner` / `repo`,
+Sentry's `organizationSlug`, Slack's `channel_id`.
+
+Decision (PRD R33, R44; amends D32, D33).
+
+- **Shared arguments.** Per box (a single server is one box), a required
+  argument is shared when at least half of the box's deduplicated tools,
+  and at least three, require it under the same name with the same
+  rendered type (`SHARED_ARG_SHARE = 0.5`, `MIN_SHARED_ARG_TOOLS = 3`). It
+  must be flat (no nested shape, no cut enum, not `any`) and have no
+  default; a name typed differently across tools counts only the tools of
+  its most common type. At most four (`MAX_SHARED_ARGS`), most shared first,
+  their `{…}` capped at 240 characters. Each carries the D33 gloss that at
+  least half of the tools sharing it give it (so a per-tool description such
+  as Slack's "The ID of the channel containing the thread" is not promoted).
+- **At the head of the page.** A search page leads, above its `Tools …`
+  header, with one line per box it shows calls for:
+  `Shared args (most mongo tools take them): {connectionId: string,
+database: string, collection: string}, where connectionId: "The
+connection to run the operation against. Use the id returned by one of
+the connect tools, or \"preconfigured\" to use…"` — on a listing page
+  for every box with a tool on it (a listing has no `args:` lines, so this
+  is what the model builds a call from), on a query page for every box
+  with a signed hit (an unsigned hit is not called from the page), never
+  for a box listed directly (its schemas are in the tool list). A hit's
+  `where` line leaves out a gloss the shared line shows (D33's once per
+  page).
+- **Signed hits name them.** A signed hit's text writes a required shared
+  argument whose type matches the line's by name alone:
+  `args: {connectionId, database, collection, newName: string, dropTarget?:
+boolean = false}`. `structuredContent` keeps the whole signature and
+  every gloss, so a client reading the structure loses nothing.
+- **On the shelf.** Each box with shared arguments, not listed directly,
+  gets one indented line under its shelf line, names and types only (the
+  gloss comes with the box's first page): `  shared args: {connectionId:
+string, database: string, collection: string}`.
+
+The threshold. Run over every offline catalog, the arguments that recur
+are required by 58–95 % of their box's tools — GitHub `owner` 63/95 (66
+%), `repo` 55/95 (58 %); MongoDB `connectionId` 20/21, `database` 19/21,
+`collection` 15/21 (71 %); filesystem `path` 11/14 (79 %); synthetic `id`
+590/1,003 (59 %); Sentry `organizationSlug` 46/66 (70 %); Slack
+`channel_id` 5/8 (63 %) — and the next most required by at most 25 %
+(Notion `page_id` and `block_id` 6/24, Slack `thread_ts` 2/8, GitHub
+`method` 15/95); Notion and Stripe have none. Anything from a third to a
+half separates them; a half is the one the copy can state honestly
+("most … tools take them"). Glossed: MongoDB `connectionId` and Sentry
+`organizationSlug` (46 of 46 give the same gloss); GitHub `owner` gets
+none (49 of its 63 descriptions restate the name).
+
+Abbreviation, measured (D22 corpus, 1,173 cases, chars / 4, retrieval
+unchanged: R@1 75.5 %, R@5 92.8 %, MRR 0.831). Mean first page: v15 539;
+shared line with full signatures 560; names only 551; `...shared` (one
+spread token for a tool that takes them all, names otherwise) 549. The
+spread form saves two more tokens a page on average (12 on the MongoDB
+box) but makes the model expand a token into arguments, and a tool that
+takes only some of them still needs the names; names alone keep every
+argument a call needs on the hit's own line. Chosen: names.
+
+Measured (names). Mean first page 539 → 551 (github 622 → 630,
+multi:github 661 → 669, mongo 360 → 372, multi:mongo 289 → 303, fs 392 →
+400, multi:fs 414 → 422, synthetic 442 → 454). Box listing (first page,
+no query): `search_mongo {}` 585 → 647 tokens (the line with the
+`connectionId` gloss, +62), `search_github {}` 3,298 → 3,316, global
+`search_tools {}` 1,495 → 1,513; single-server `search_tools {}` mongodb
+549 → 611, github 1,413 → 1,431. Query pages: `search_mongo "list
+collections"` 249 → 268, `"rename collection"` 534 → 544, `search_github
+"create issue"` 673 → 683. Multi-server system prompt (shelf) 504 → 535
+tokens in `projection` mode, 493 → 524 in `projection-boxes` (two lines,
+github and mongo; fs is listed directly); single-server prompts unchanged.
+The +62 on the MongoDB listing stands against the extra turn the
+rejected `list-databases` call cost (the whole prompt re-sent, plus the
+error).
+
+S5. Computed from the R34-sanitized schemas only, as signatures and
+glosses are. Names print as a signature prints them (a plain identifier
+bare, anything else JSON-quoted after neutralization; over 64 characters
+never shared), types are the signature's, and glosses are D33's (one
+line, invisible characters stripped, neutralized, cut, JSON-quoted). The
+line is ours, starts with our own words, and sits above the `Tools …`
+header, so a hostile schema cannot forge an entry, a posture or a header;
+on the shelf it is an indented line under the box's own line. A hostile
+server can fill only its own box's line, within the caps. Approval and
+gating are unchanged: the line grants nothing, and a call still goes
+through `call_tool`'s gate.
+
+Rejected: glosses on the shelf (the gloss is ~30 tokens per box in every
+prompt, and the box's first page shows it); a one-third threshold (the
+same arguments on these catalogs, and "most" would no longer be true);
+dropping the shared arguments from the hits altogether (a tool that takes
+only some of them, like `list-databases`, would no longer say which).

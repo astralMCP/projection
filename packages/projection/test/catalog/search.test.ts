@@ -559,8 +559,10 @@ describe('search results carry call signatures for the top hits (D32)', () => {
       callable: true,
     });
     const rendered = text(result);
+    // Every tool requires `path`: the shared line types it once, the hits name it (D34).
+    expect(rendered.split('\n')[0]).toBe('Shared args (most tools here take them): {path: string}');
     expect(rendered).toContain(
-      '- file_read — file read things. [runs immediately]\n  args: {path: string, limit?: integer = 10}\n- file_move',
+      '- file_read — file read things. [runs immediately]\n  args: {path, limit?: integer = 10}\n- file_move',
     );
     // Ranked 4th and 5th (shorter names cover more, D22): no args line.
     expect(rendered).toContain(
@@ -692,6 +694,9 @@ describe('search results gloss the top hits’ required arguments (D33)', () => 
         },
       }),
       mongo('db-drop'),
+      // Three tools without connectionId keep it under the D34 share, so
+      // these tests see the glosses on the hits rather than on a shared line.
+      ...['note-add', 'note-list', 'note-remove'].map((name) => entry({ name })),
     ],
   };
 
@@ -739,5 +744,97 @@ describe('search results gloss the top hits’ required arguments (D33)', () => 
       name: 'mongo.db-read',
       glosses: [{ name: 'connectionId', text: CONNECTION }],
     });
+  });
+});
+
+describe('search pages lead with the box’s shared arguments (D34)', () => {
+  const CONNECTION = 'Use the id a connect tool returned, or "preconfigured".';
+  const PROPERTIES = {
+    connectionId: { type: 'string', description: CONNECTION },
+    database: { type: 'string', description: 'Database name' },
+    newName: { type: 'string', description: 'The new name' },
+  };
+  const db = (name: string, required: string[], extra: Record<string, unknown> = {}) =>
+    entry({
+      name,
+      description: `${name.replace('-', ' ')} things.`,
+      inputSchema: {
+        type: 'object',
+        properties: Object.fromEntries(
+          required.map((arg) => [arg, PROPERTIES[arg as keyof typeof PROPERTIES]]),
+        ),
+        required,
+      },
+      ...extra,
+    });
+  const DB: ServerCatalog = {
+    alias: 'default',
+    identity: 'db@1.0.0',
+    tools: [
+      db('list-databases', ['connectionId'], { annotations: { readOnlyHint: true } }),
+      db('list-collections', ['connectionId', 'database'], { annotations: { readOnlyHint: true } }),
+      db('rename-database', ['connectionId', 'database', 'newName']),
+      db('drop-database', ['connectionId', 'database']),
+      entry({ name: 'connect', description: 'Connect to a cluster.' }),
+    ],
+  };
+  const HEAD =
+    'Shared args (most tools here take them): {connectionId: string, database: string}, where connectionId: "Use the id a connect tool returned, or \\"preconfigured\\"."';
+
+  it('puts the shared line, with its gloss, at the head of a listing', () => {
+    const lines = text(searchTools(DB, {})).split('\n');
+    expect(lines.slice(0, 2)).toEqual([HEAD, 'Tools 1–5 of 5 (server "db@1.0.0"):']);
+    // Still no args lines on a listing (D32).
+    expect(lines.some((line) => line.startsWith('  args:'))).toBe(false);
+  });
+
+  it('names the shared arguments on the signed hits, and glosses them once, on the shared line', () => {
+    const result = searchTools(DB, { query: 'database' });
+    const rendered = text(result);
+    expect(rendered.split('\n')[0]).toBe(HEAD);
+    expect(rendered).toContain(
+      '- list-databases — list databases things. [runs immediately]\n  args: {connectionId}\n',
+    );
+    expect(rendered).toContain('  args: {connectionId, database, newName: string}\n');
+    expect(rendered.split('\n').filter((line) => line.startsWith('  where '))).toEqual([]);
+    // The structured signature and glosses stay whole.
+    const tools = page(result).tools;
+    expect(tools.find((t) => t.name === 'rename-database')).toMatchObject({
+      signature: { text: '{connectionId: string, database: string, newName: string}' },
+      glosses: [{ name: 'connectionId', text: CONNECTION }],
+    });
+  });
+
+  it('shows no shared line on a query page without a signed hit, or for a catalog without one', () => {
+    const blocked = searchTools(
+      DB,
+      { query: 'list' },
+      { policy: { 'list-databases': 'deny', 'list-collections': 'deny' } },
+    );
+    expect(text(blocked)).not.toContain('Shared args');
+    expect(text(searchTools(CATALOG, {}))).not.toContain('Shared args');
+  });
+
+  it('leads a box search with that box’s line, and a global search with the lines of the boxes it signs', () => {
+    const view = buildBoxedCatalog([
+      { alias: 'db', catalog: DB },
+      { alias: 'notes', catalog: CATALOG },
+    ]);
+    const box = text(searchBoxes(view, {}, { box: 'db' })).split('\n');
+    expect(box[0]).toBe(HEAD.replace('most tools here', 'most db tools'));
+    const across = text(searchBoxes(view, { query: 'rename database' }));
+    expect(across.split('\n')[0]).toBe(HEAD.replace('most tools here', 'most db tools'));
+    expect(across).toContain('  args: {connectionId, database, newName: string}');
+    // A box listed directly has its schemas in the tool list: no line for it.
+    const listed = buildBoxedCatalog(
+      [
+        { alias: 'db', catalog: DB },
+        { alias: 'notes', catalog: CATALOG },
+      ],
+      { directBoxes: ['db'] },
+    );
+    const direct = text(searchBoxes(listed, { query: 'rename database' }));
+    expect(direct).not.toContain('Shared args');
+    expect(direct).toContain('  args: {connectionId: string, database: string, newName: string}');
   });
 });

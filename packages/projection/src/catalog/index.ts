@@ -37,10 +37,15 @@ export {
 export {
   argGlosses,
   callSignature,
+  sharedArgs,
   MAX_GLOSS_CHARS,
+  MAX_SHARED_ARGS,
   MAX_SIGNATURE_CHARS,
+  MIN_SHARED_ARG_TOOLS,
+  SHARED_ARG_SHARE,
   type ArgGloss,
   type CallSignature,
+  type SharedArg,
 } from './signature.js';
 export {
   searchBoxes,

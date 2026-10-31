@@ -16,6 +16,9 @@ import {
 } from '../../src/catalog/box-guidance.js';
 import type { ToolBox } from '../../src/catalog/boxes.js';
 import { wrapMcpServers, type MultiProjectionFacade } from '../../src/index.js';
+import { buildBoxedCatalog } from '../../src/catalog/boxes.js';
+import { buildMultiInstructions } from '../../src/multi/facade.js';
+import type { ServerCatalog, ToolCatalogEntry } from '../../src/types.js';
 import { structured } from '../mrtr/helpers.js';
 import {
   fsServer,
@@ -253,5 +256,62 @@ describe('search-tool phrase for a single box (R43)', () => {
     } finally {
       await off.close();
     }
+  });
+});
+
+const required = (name: string, args: string[]): ToolCatalogEntry => ({
+  name,
+  description: `${name} things.`,
+  inputSchema: {
+    type: 'object',
+    properties: Object.fromEntries(
+      args.map((arg) => [arg, { type: 'string', description: 'Use "preconfigured".' }]),
+    ),
+    required: args,
+  },
+});
+const catalog = (identity: string, tools: ToolCatalogEntry[]): ServerCatalog => ({
+  alias: 'default',
+  identity,
+  tools,
+});
+
+describe('the shelf names each box’s shared arguments (D34)', () => {
+  const db = catalog('db@1.0.0', [
+    required('find', ['connectionId', 'database']),
+    required('count', ['connectionId', 'database']),
+    required('db-stats', ['connectionId', 'database']),
+  ]);
+  const notes = catalog('notes@1.0.0', [required('add', []), required('list', [])]);
+
+  it('adds one indented line, names and types only, under a box that has them', () => {
+    const view = buildBoxedCatalog([
+      { alias: 'db', catalog: db },
+      { alias: 'notes', catalog: notes },
+    ]);
+    const lines = buildMultiInstructions(view, { codeMode: false, catalog: true }).split('\n');
+    const at = lines.indexOf('- db (3 tools)');
+    expect(lines.slice(at, at + 3)).toEqual([
+      '- db (3 tools)',
+      '  shared args: {connectionId: string, database: string}',
+      '- notes (2 tools)',
+    ]);
+    expect(lines.join('\n')).not.toContain('preconfigured');
+  });
+
+  it('adds none under a box listed directly', () => {
+    const view = buildBoxedCatalog(
+      [
+        { alias: 'db', catalog: db },
+        { alias: 'notes', catalog: notes },
+      ],
+      { directBoxes: ['db'] },
+    );
+    const instructions = buildMultiInstructions(view, {
+      codeMode: false,
+      catalog: true,
+      directBoxes: ['db'],
+    });
+    expect(instructions).not.toContain('shared args');
   });
 });

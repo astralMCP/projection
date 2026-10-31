@@ -91,8 +91,18 @@ interface Partiality {
 const PROSE_KEYS: ReadonlySet<string> = new Set(['description', 'title']);
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
-/** The compact signature of a tool's input schema; never throws. */
-export function callSignature(inputSchema: unknown): CallSignature {
+/**
+ * The compact signature of a tool's input schema; never throws. With
+ * `shared` (D34), a required argument the box's shared-args line already
+ * shows with the same type, and that has no default, is written by name
+ * alone (`{connectionId, database, newName: string}`): copy that renders
+ * this text must show that line on the same page. `complete` and
+ * `callable` are unchanged.
+ */
+export function callSignature(
+  inputSchema: unknown,
+  options: { shared?: readonly SharedArg[] } = {},
+): CallSignature {
   const sanitized = sanitizeSchema(inputSchema);
   const schema = sanitized.schema;
   const properties = isRecord(schema['properties']) ? schema['properties'] : {};
@@ -113,6 +123,7 @@ export function callSignature(inputSchema: unknown): CallSignature {
   let omitted = 0;
   let partial = !flat;
   let callable = flat;
+  const shared = new Map((options.shared ?? []).map((arg) => [arg.name, arg.type]));
   for (const name of order) {
     const optional = !requiredSet.has(name);
     const key = renderName(name);
@@ -120,9 +131,12 @@ export function callSignature(inputSchema: unknown): CallSignature {
     let part = '';
     if (key !== undefined) {
       const property = properties[name];
-      part = `${key}${optional ? '?' : ''}: ${renderType(property, 0, state)}`;
+      const type = renderType(property, 0, state);
+      part = `${key}${optional ? '?' : ''}: ${type}`;
       const kept = isRecord(property) ? safeDefault(property['default']) : undefined;
       if (kept !== undefined) part += ` = ${JSON.stringify(kept.value)}`;
+      // Shown on the shared-args line with this type (D34): the name says it.
+      else if (!optional && flat && shared.get(name) === type) part = key;
     }
     const cost = part.length + (parts.length > 0 ? 2 : 0);
     // Required arguments are listed past the cap (a call without them
@@ -412,5 +426,139 @@ function restatesName(description: string, known: readonly string[]): boolean {
           (k.length >= 3 && word.startsWith(k)) ||
           (word.length >= 3 && k.startsWith(word)),
       ),
+  );
+}
+
+/**
+ * A required argument most of a box's tools share (D34): `connectionId` in
+ * the MongoDB box, `owner` and `repo` in GitHub's.
+ */
+export interface SharedArg {
+  /** The argument's name, as the schemas declare it. */
+  name: string;
+  /** Its type as a signature prints it, the same in every tool counted. */
+  type: string;
+  /** How many of the box's tools require it with that type. */
+  tools: number;
+  /** Its gloss (D33), when most of those tools give it the same one. */
+  gloss?: string;
+}
+
+/**
+ * Share of a box's tools that must require an argument (same name, same
+ * rendered type) for it to be shared (D34). Sized on the offline catalogs:
+ * the arguments that recur are required by 58–95 % of their box's tools
+ * (GitHub `repo` 58 %, `owner` 66 %; MongoDB `collection` 71 %, `database`
+ * 90 %, `connectionId` 95 %; filesystem `path` 79 %; Sentry
+ * `organizationSlug` 70 %; Slack `channel_id` 63 %), and the next ones by at
+ * most 25 % (Notion `page_id`, Slack `thread_ts`, GitHub `method` 16 %).
+ */
+export const SHARED_ARG_SHARE = 0.5;
+/** Fewest tools an argument is shared by: two tools agreeing is not a pattern. */
+export const MIN_SHARED_ARG_TOOLS = 3;
+/** Most shared arguments a box's line shows (MongoDB has three). */
+export const MAX_SHARED_ARGS = 4;
+/** Longest `{…}` part of a shared-args line, in characters; arguments past it are dropped. */
+const MAX_SHARED_ARGS_CHARS = 240;
+
+/**
+ * The shared arguments of a box's tools (D34): required arguments, with a
+ * flat type (no nested shape, no cut enum) and no default, that at least
+ * {@link SHARED_ARG_SHARE} of `tools` (and {@link MIN_SHARED_ARG_TOOLS})
+ * require under the same name and the same rendered type; most shared
+ * first, then in order of first appearance, at most
+ * {@link MAX_SHARED_ARGS}. An argument whose name differs in type across
+ * tools counts only the tools of its most common type. Each carries the
+ * D33 gloss that at least half of the tools counted give it, if one does.
+ * Built from the sanitized schemas (S5). `tools` should be deduplicated by
+ * name. Never throws.
+ */
+export function sharedArgs(tools: readonly { name: string; inputSchema: unknown }[]): SharedArg[] {
+  if (tools.length < MIN_SHARED_ARG_TOOLS) return [];
+  /** name → type → indexes of the tools requiring it with that type. */
+  const seen = new Map<string, Map<string, number[]>>();
+  tools.forEach((tool, index) => {
+    const sanitized = sanitizeSchema(tool.inputSchema);
+    const schema = sanitized.schema;
+    if (sanitized.truncated) return;
+    if (['anyOf', 'oneOf', 'allOf', '$ref', 'not'].some((key) => Object.hasOwn(schema, key))) {
+      return;
+    }
+    const properties = isRecord(schema['properties']) ? schema['properties'] : {};
+    const required = Array.isArray(schema['required']) ? schema['required'] : [];
+    for (const name of new Set(required)) {
+      if (typeof name !== 'string' || !Object.hasOwn(properties, name)) continue;
+      if (renderName(name) === undefined) continue;
+      const property = properties[name];
+      if (isRecord(property) && safeDefault(property['default']) !== undefined) continue;
+      const state: Partiality = { nested: false, cut: false };
+      const type = renderType(property, 0, state);
+      if (state.nested || state.cut || type === 'any') continue;
+      const types = seen.get(name) ?? new Map<string, number[]>();
+      seen.set(name, types);
+      const indexes = types.get(type) ?? [];
+      types.set(type, indexes);
+      indexes.push(index);
+    }
+  });
+  const floor = Math.max(MIN_SHARED_ARG_TOOLS, Math.ceil(SHARED_ARG_SHARE * tools.length));
+  const candidates: { name: string; type: string; indexes: number[] }[] = [];
+  for (const [name, types] of seen) {
+    let best: [string, number[]] | undefined;
+    for (const entry of types)
+      if (best === undefined || entry[1].length > best[1].length) best = entry;
+    if (best !== undefined && best[1].length >= floor) {
+      candidates.push({ name, type: best[0], indexes: best[1] });
+    }
+  }
+  // Stable: equal counts keep first-appearance order.
+  const ranked = candidates.toSorted((a, b) => b.indexes.length - a.indexes.length);
+  const shared: SharedArg[] = [];
+  let length = 2;
+  for (const candidate of ranked.slice(0, MAX_SHARED_ARGS)) {
+    const cost = `${renderName(candidate.name) ?? ''}: ${candidate.type}`.length + 2;
+    if (length + cost > MAX_SHARED_ARGS_CHARS) break;
+    length += cost;
+    const gloss = commonGloss(tools, candidate.name, candidate.indexes);
+    shared.push({
+      name: candidate.name,
+      type: candidate.type,
+      tools: candidate.indexes.length,
+      ...(gloss !== undefined ? { gloss } : {}),
+    });
+  }
+  return shared;
+}
+
+/** The D33 gloss at least half of the tools at `indexes` give argument `name`, if any. */
+function commonGloss(
+  tools: readonly { name: string; inputSchema: unknown }[],
+  name: string,
+  indexes: readonly number[],
+): string | undefined {
+  const counts = new Map<string, number>();
+  for (const index of indexes) {
+    const tool = tools[index];
+    if (tool === undefined) continue;
+    const text = argGlosses(tool.name, tool.inputSchema, { names: [name] })[0]?.text;
+    if (text !== undefined) counts.set(text, (counts.get(text) ?? 0) + 1);
+  }
+  let best: [string, number] | undefined;
+  for (const entry of counts) if (best === undefined || entry[1] > best[1]) best = entry;
+  return best !== undefined && 2 * best[1] >= indexes.length ? best[0] : undefined;
+}
+
+/**
+ * The shared arguments on one line (D34): `{connectionId: string, database:
+ * string}`, then their glosses as {@link glossLine} renders them. Names
+ * print as a signature prints them, glosses JSON-quoted (S5).
+ */
+export function sharedArgsText(shared: readonly SharedArg[], withGlosses = true): string {
+  const args = `{${shared.map((arg) => `${renderName(arg.name) ?? ''}: ${arg.type}`).join(', ')}}`;
+  const glosses = shared.flatMap((arg) =>
+    arg.gloss !== undefined ? [{ name: arg.name, text: arg.gloss }] : [],
+  );
+  return neutralizeControlChars(
+    withGlosses && glosses.length > 0 ? `${args}, ${glossLine(glosses)}` : args,
   );
 }
