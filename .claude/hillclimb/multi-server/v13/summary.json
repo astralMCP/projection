@@ -7,19 +7,9 @@
       "sha256": "823cbbc2c70f66eaba19dd0733eb76038be790457ef6d5b9b0ddc2cbf0b23a72",
       "generatedAt": "2026-10-31T06:19:29.263Z",
       "updatedAt": "2026-10-31T06:22:27.982Z",
-      "models": [
-        "haiku45",
-        "sonnet-low"
-      ],
-      "modes": [
-        "projection"
-      ],
-      "tiers": [
-        "basic",
-        "hard",
-        "filesystem",
-        "mongodb"
-      ],
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["basic", "hard", "filesystem", "mongodb"],
       "runs": 1,
       "tasks": 60,
       "records": 120,
@@ -35,16 +25,9 @@
       "sha256": "bacdf33eff4028db6bc1b201369ff6daca6f846d0d9efc003b9c1e276462b902",
       "generatedAt": "2026-10-31T06:12:31.967Z",
       "updatedAt": "2026-10-31T06:19:26.359Z",
-      "models": [
-        "haiku45",
-        "sonnet-low"
-      ],
-      "modes": [
-        "projection"
-      ],
-      "tiers": [
-        "multi-hard"
-      ],
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["multi-hard"],
       "runs": 3,
       "tasks": 12,
       "records": 72,
@@ -73,17 +56,9 @@
       "sha256": "d28f85aa58491009b7c612d30f766815e36068148108ff1a56028775be19aa5d",
       "generatedAt": "2026-10-31T06:22:30.924Z",
       "updatedAt": "2026-10-31T06:29:33.857Z",
-      "models": [
-        "haiku45",
-        "sonnet-low"
-      ],
-      "modes": [
-        "projection",
-        "projection-boxes"
-      ],
-      "tiers": [
-        "multi"
-      ],
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection", "projection-boxes"],
+      "tiers": ["multi"],
       "runs": 3,
       "tasks": 17,
       "records": 204,
