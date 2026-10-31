@@ -2098,7 +2098,7 @@ GitHub tools their glosses come to 9,640 characters against 3,504 for the
 required ones); a first-sentence rule (the
 instruction in `connectionId` is in its second); glossing every hit.
 
-## D34 — A box's shared arguments are shown once, at the head of its pages and on the shelf (2026-10-31)
+## D34 — A box's shared arguments are shown once, at the head of its pages (2026-10-31)
 
 Context. D32/D33 cut `describe_tool` calls by 60–100 %, but the v15
 transcripts show another wasted turn in most MongoDB episodes: the model
@@ -2139,10 +2139,14 @@ the connect tools, or \"preconfigured\" to use…"` — on a listing page
   `args: {connectionId, database, collection, newName: string, dropTarget?:
 boolean = false}`. `structuredContent` keeps the whole signature and
   every gloss, so a client reading the structure loses nothing.
-- **On the shelf.** Each box with shared arguments, not listed directly,
-  gets one indented line under its shelf line, names and types only (the
-  gloss comes with the box's first page): `  shared args: {connectionId:
-string, database: string, collection: string}`.
+- **Not on the shelf.** v16 first also put one `  shared args: {…}` line
+  under each searched box on the shelf. Round v16 measured it: MongoDB
+  call errors fell 47 → 16, but Haiku asked the user "which database and
+  collection should I query?" before calling any tool (global-who-is-grace,
+  2 of 6, never before), and its multi pass fell 50 → 46. On the shelf,
+  required arguments read as facts the model must already have before it
+  acts. The line was removed (v16b); the shared arguments lead the box's
+  pages only.
 
 The threshold. Run over every offline catalog, the arguments that recur
 are required by 58–95 % of their box's tools — GitHub `owner` 63/95 (66

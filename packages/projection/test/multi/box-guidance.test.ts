@@ -276,42 +276,17 @@ const catalog = (identity: string, tools: ToolCatalogEntry[]): ServerCatalog => 
   tools,
 });
 
-describe('the shelf names each box’s shared arguments (D34)', () => {
+describe('the shelf leaves shared arguments to the search pages (D34)', () => {
   const db = catalog('db@1.0.0', [
     required('find', ['connectionId', 'database']),
     required('count', ['connectionId', 'database']),
     required('db-stats', ['connectionId', 'database']),
   ]);
-  const notes = catalog('notes@1.0.0', [required('add', []), required('list', [])]);
 
-  it('adds one indented line, names and types only, under a box that has them', () => {
-    const view = buildBoxedCatalog([
-      { alias: 'db', catalog: db },
-      { alias: 'notes', catalog: notes },
-    ]);
-    const lines = buildMultiInstructions(view, { codeMode: false, catalog: true }).split('\n');
-    const at = lines.indexOf('- db (3 tools)');
-    expect(lines.slice(at, at + 3)).toEqual([
-      '- db (3 tools)',
-      '  shared args: {connectionId: string, database: string}',
-      '- notes (2 tools)',
-    ]);
-    expect(lines.join('\n')).not.toContain('preconfigured');
-  });
-
-  it('adds none under a box listed directly', () => {
-    const view = buildBoxedCatalog(
-      [
-        { alias: 'db', catalog: db },
-        { alias: 'notes', catalog: notes },
-      ],
-      { directBoxes: ['db'] },
-    );
-    const instructions = buildMultiInstructions(view, {
-      codeMode: false,
-      catalog: true,
-      directBoxes: ['db'],
-    });
+  it('names no shared arguments under a box', () => {
+    const view = buildBoxedCatalog([{ alias: 'db', catalog: db }]);
+    const instructions = buildMultiInstructions(view, { codeMode: false, catalog: true });
+    expect(instructions).toContain('- db (3 tools)');
     expect(instructions).not.toContain('shared args');
   });
 });

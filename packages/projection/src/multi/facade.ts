@@ -48,9 +48,7 @@ import {
   findToolsSentence,
   listedBoxesSentence,
   searchToolsPhrase,
-  sharedArgsOf,
 } from '../catalog/search.js';
-import { sharedArgsText } from '../catalog/signature.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
@@ -466,11 +464,9 @@ export function buildMultiInstructions(
     const mixed = view.directBoxes.length > 0 && view.directBoxes.length < view.boxes.size;
     const listed = mixed && view.directBoxes.includes(alias) ? ', listed directly' : '';
     const tools = `${toolCount(view.counts.get(alias) ?? 0)}${listed}`;
+    // D34: shared arguments lead a box's search pages, not the shelf: on the
+    // shelf they read as facts the model must have before it acts (v16).
     lines.push(about !== undefined ? `- ${alias} — ${about} (${tools})` : `- ${alias} (${tools})`);
-    // D34: the box's shared arguments, names and types only (their glosses
-    // lead the box's search pages). A listed box's schemas are in the tool list.
-    const shared = view.directBoxes.includes(alias) ? [] : sharedArgsOf(box.catalog);
-    if (shared.length > 0) lines.push(`  shared args: ${sharedArgsText(shared, false)}`);
   }
   const copy =
     preamble ??

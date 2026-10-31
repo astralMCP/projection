@@ -470,14 +470,13 @@ This server fronts several toolboxes, each wrapping another server, and offers t
 Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:
 - fs — "Read and write files under /srv." (server's words) (3 tools)
 - github — Issues and pull requests. (4 tools)
-  shared args: {owner: string, repo: string}
 - notes (1 tool)
 ```
 
-A box whose tools mostly require the same argument gets the indented
-`shared args:` line (DECISIONS D34): a required argument at least half of
-the box's tools (and at least three) take with the same type. Its search
-pages lead with the same arguments and the gloss of any whose description
+A box whose tools mostly require the same argument has shared arguments
+(DECISIONS D34): a required argument at least half of the box's tools (and
+at least three) take with the same type. Its search pages lead with those
+arguments and the gloss of any whose description
 says what the name does not, so give a shared argument such as a
 connection id one description, the same in every tool.
 
