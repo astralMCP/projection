@@ -66,6 +66,9 @@ import {
   type ModelPreset,
   type PrefixCounter,
   type PrefixSource,
+  type PtcCallers,
+  type ServerToolUse,
+  type ToolSearchVariant,
   type ToolUseRecord,
   type TurnUsage,
 } from './agent.js';
@@ -73,12 +76,13 @@ import {
   EVAL_MODES,
   isProjectionMode,
   modeApplies,
+  modeSupportsModel,
   openSession,
   type EvalMode,
   type ModeSession,
 } from './modes.js';
 import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
-import { estimateUsd, standardCost } from './cost.js';
+import { estimateUsd, serverToolUsd, standardCost } from './cost.js';
 import {
   episodeApprover,
   hitlMetrics,
@@ -204,6 +208,13 @@ export interface EpisodeRecord {
   projection?: ProjectionUse;
   /** Multi tier only: how the episode moved between boxes. */
   boxes?: BoxRouting;
+  /** Native modes: the Anthropic server tools the episode used. */
+  serverTools?: ServerToolUse;
+  /**
+   * Native modes: server tool fees at list price ({@link serverToolUsd}),
+   * included in `estimatedUsd` and `standardUsd`. Absent when zero.
+   */
+  serverToolUsd?: number;
   /**
    * Every approval prompt and its answer (Projection's elicitations, or
    * direct mode's simulated host gate); absent when there were none.
@@ -318,6 +329,10 @@ export interface ToolChoiceEvalOptions {
   approver?: ApproverPersona;
   /** Projection modes: `WrapOptions.approvalPrompts` (PROJ_EVAL_APPROVAL_PROMPTS). */
   approvalPrompts?: ApprovalPrompts;
+  /** `native-search`: the tool search variant (PROJ_EVAL_TOOL_SEARCH). Default `bm25`. */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc`: each tool's `allowed_callers` (PROJ_EVAL_PTC_CALLERS). Default `code`. */
+  ptcCallers?: PtcCallers;
 }
 
 export interface BatchEvalOptions {
@@ -508,6 +523,7 @@ async function scoreEpisode(
       ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world, roundTrips) }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(episode.serverTools !== undefined ? { serverTools: episode.serverTools } : {}),
     ...(elicitations.length > 0 ? { elicitations } : {}),
     ...(hitl !== undefined ? { hitl } : {}),
     usage: episode.usage,
@@ -570,6 +586,7 @@ function harnessFailureRecord(
         }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(episode?.serverTools !== undefined ? { serverTools: episode.serverTools } : {}),
     ...(session !== undefined && session.elicitations.length > 0
       ? { elicitations: session.elicitations.slice() }
       : {}),
@@ -633,6 +650,8 @@ async function runPlanned(
         ...(options.approvalPrompts !== undefined
           ? { approvalPrompts: options.approvalPrompts }
           : {}),
+        ...(options.toolSearch !== undefined ? { toolSearch: options.toolSearch } : {}),
+        ...(options.ptcCallers !== undefined ? { ptcCallers: options.ptcCallers } : {}),
       });
       try {
         const prefixTokens = await countedPrefix(
@@ -690,6 +709,11 @@ export async function runToolChoiceEval(
   const tasks = options.tasks ?? TOOL_CHOICE_TASKS.filter((t) => DEFAULT_TIERS.includes(t.tier));
   const runs = options.runs ?? DEFAULT_RUNS;
   const batch = options.batch;
+  if (batch !== undefined && modes.includes('native-ptc')) {
+    // A paused programmatic call times out in ~4 minutes and an idle
+    // container is reclaimed in ~5 (the PTC docs): a batch tick is longer.
+    throw new Error('native-ptc cannot run through the Message Batches API (PROJ_EVAL_BATCH=1)');
+  }
   const caller = batch === undefined ? (options.caller ?? anthropicCaller()) : undefined;
 
   // Slots in result order (model → mode → task → run) ...
@@ -698,6 +722,7 @@ export async function runToolChoiceEval(
     modes.forEach((mode, modeAt) => {
       tasks.forEach((task, taskAt) => {
         if (!modeApplies(mode, worldOf(task.tier))) return;
+        if (!modeSupportsModel(mode, model.model)) return;
         for (let run = 0; run < runs; run += 1) {
           slots.push({ model, mode, task, run, index: slots.length, modelAt, modeAt, taskAt });
         }
@@ -769,7 +794,10 @@ export async function runToolChoiceEval(
 
 /** The eval's actual spend on a record: list price, halved for a batch episode. */
 function recordEstimatedUsd(record: EpisodeRecord): number {
-  return estimateUsd(record.modelId, record.usage, record.batch === true, record.turns);
+  return (
+    estimateUsd(record.modelId, record.usage, record.batch === true, record.turns) +
+    serverToolUsd(record.serverTools)
+  );
 }
 
 /**
@@ -779,7 +807,7 @@ function recordEstimatedUsd(record: EpisodeRecord): number {
  */
 function recordStandardUsd(record: EpisodeRecord): number | undefined {
   if (record.turns === undefined) return record.apiTurns === 0 ? 0 : undefined;
-  return standardCost(record.turns, record.modelId);
+  return standardCost(record.turns, record.modelId) + serverToolUsd(record.serverTools);
 }
 
 /** The sum, or undefined when any term is not measured. */
@@ -795,8 +823,10 @@ function sumMeasured(values: (number | undefined)[]): number | undefined {
 /** The record with its actual spend and standard host cost attached. */
 function withCosts(record: EpisodeRecord): EpisodeRecord {
   const standard = recordStandardUsd(record);
+  const fees = serverToolUsd(record.serverTools);
   return {
     ...record,
+    ...(fees > 0 ? { serverToolUsd: fees } : {}),
     estimatedUsd: recordEstimatedUsd(record),
     ...(standard !== undefined ? { standardUsd: standard } : {}),
   };
@@ -1307,7 +1337,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
           ? routing === undefined
             ? ['-', '-', '-']
             : [
-                cell.mode === 'direct'
+                !isProjectionMode(cell.mode)
                   ? '-'
                   : `${routing.usedGlobalSearch}/${routing.scored} (${routing.successWithGlobalSearch} ok)`,
                 `${routing.firstCallRightBox}/${routing.scored}`,
@@ -1511,6 +1541,10 @@ export interface ResultsMeta {
    * (PROJ_EVAL_FORCE_CODE_MODE=1); absent when none was.
    */
   systemSuffix?: string;
+  /** `native-search` runs: the tool search variant (PROJ_EVAL_TOOL_SEARCH). */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc` runs: the tools' `allowed_callers` (PROJ_EVAL_PTC_CALLERS). */
+  ptcCallers?: PtcCallers;
   modes?: EvalMode[];
   tiers?: TaskTier[];
   tasks?: string[];

@@ -11,7 +11,7 @@
  *   discount: it is a host-cost metric, not an eval-spend one.
  */
 
-import type { EpisodeUsage, TurnUsage } from './agent.js';
+import type { EpisodeUsage, ServerToolUse, TurnUsage } from './agent.js';
 
 /** A rate card: USD per million input and output tokens. */
 export interface RateCard {
@@ -154,4 +154,34 @@ export function standardCost(turns: readonly TurnUsage[], model: string): number
     usd += (input * rate.input + turn.outputTokens * rate.output) / 1_000_000;
   }
   return usd;
+}
+
+/**
+ * Code execution's list price beyond the organisation's free hours: USD per
+ * container-hour, with a 5-minute minimum per container (the code execution
+ * tool docs, "Usage and pricing", read 2026-10-31: 1,550 free hours a month
+ * per organisation, then $0.05 per hour per container; free when the request
+ * also carries web search or web fetch, which the eval never sends).
+ * Programmatic tool calling bills the same. Tool search is not metered (its
+ * docs: no `server_tool_use` usage field; the definitions it loads are
+ * ordinary input tokens).
+ */
+export const CODE_EXECUTION_USD_PER_HOUR = 0.05;
+/** The minimum billed execution time per container. */
+export const CODE_EXECUTION_MIN_MS = 5 * 60_000;
+
+/**
+ * Server tool fees for one episode, at list price as if the free hours were
+ * spent: each container billed for the longer of its observed span and the
+ * 5-minute minimum. An upper bound on the real fee (the container time the
+ * API meters is not reported per response), and $0 without containers.
+ */
+export function serverToolUsd(use: Pick<ServerToolUse, 'containers'> | undefined): number {
+  if (use === undefined) return 0;
+  return use.containers.reduce(
+    (sum, container) =>
+      sum +
+      (Math.max(CODE_EXECUTION_MIN_MS, container.spanMs) / 3_600_000) * CODE_EXECUTION_USD_PER_HOUR,
+    0,
+  );
 }

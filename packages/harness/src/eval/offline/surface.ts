@@ -106,7 +106,9 @@ export interface SurfaceRow {
 
 async function open(world: SurfaceWorldName, mode: EvalMode): Promise<ModeSession> {
   const w = world === 'multi' ? fixtureMultiWorld() : fixtureWorld(world);
-  if (mode === 'direct') return openDirectSession(w);
+  if (mode === 'direct' || mode === 'native-search' || mode === 'native-ptc') {
+    return openDirectSession(w, {}, mode);
+  }
   if (w.name === 'multi') return openMultiProjectionSession(w, mode);
   return openProjectionSession(w);
 }

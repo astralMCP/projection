@@ -101,7 +101,75 @@ export interface AgentRuntime {
   system: string;
   tools: AgentTool[];
   call(name: string, input: Record<string, unknown>): Promise<AgentToolResult>;
+  /**
+   * How `tools` are offered through Anthropic's own server tools (the
+   * `native-*` modes). Absent: every tool inline, as plain client tools.
+   */
+  native?: NativeTools;
 }
+
+/**
+ * The tool search variant (`tool_search_tool_<variant>_20251119`): `regex`
+ * has the model write Python regexes, `bm25` natural-language queries.
+ */
+export type ToolSearchVariant = 'regex' | 'bm25';
+
+/**
+ * Programmatic tool calling's `allowed_callers` per tool: `code` (callable
+ * from code execution only, the docs' recommended single choice) or `both`
+ * (also callable directly).
+ */
+export type PtcCallers = 'code' | 'both';
+
+/**
+ * Anthropic's server-side ways to offer a large tool list, from the tool
+ * search and programmatic tool calling docs
+ * (platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool,
+ * …/programmatic-tool-calling; read 2026-10-31):
+ *
+ * - `tool-search`: every tool keeps its full definition in `tools` but with
+ *   `defer_loading: true`, next to the non-deferred search tool; the API
+ *   expands what the model finds inline (`tool_reference` blocks). On every
+ *   model with tool search, Haiku 4.5 included. Not metered separately.
+ * - `ptc`: the code execution tool (`code_execution_20260120`, the first
+ *   version with programmatic calling) and every tool with
+ *   `allowed_callers`; a call made from code reaches the client as an
+ *   ordinary `tool_use` whose `caller` names the code execution run. Not on
+ *   Haiku 4.5 (it accepts the tool but not programmatic calling). Billed by
+ *   container time ({@link CODE_EXECUTION_USD_PER_HOUR} in cost.ts).
+ */
+export type NativeTools =
+  { kind: 'tool-search'; variant: ToolSearchVariant } | { kind: 'ptc'; callers: PtcCallers };
+
+/** The tool search server tools, by variant. */
+export const TOOL_SEARCH_TOOLS = {
+  regex: { type: 'tool_search_tool_regex_20251119', name: 'tool_search_tool_regex' },
+  bm25: { type: 'tool_search_tool_bm25_20251119', name: 'tool_search_tool_bm25' },
+} as const;
+
+/** The code execution tool version programmatic tool calling needs. */
+export const CODE_EXECUTION_TOOL = {
+  type: 'code_execution_20260120',
+  name: 'code_execution',
+} as const;
+
+/** The caller a programmatic `tool_use` names (whichever code execution version was declared). */
+export const PTC_CALLER = 'code_execution_20260120';
+
+/** Models that accept programmatic tool calling (the PTC docs' supportedModels; not Haiku 4.5). */
+export const PTC_MODELS: ReadonlySet<string> = new Set([
+  'claude-fable-5-1',
+  'claude-fable-5',
+  'claude-opus-5-5',
+  'claude-opus-5',
+  'claude-sonnet-5-5',
+  'claude-sonnet-5',
+  'claude-haiku-5-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-sonnet-4-6',
+]);
 
 /**
  * One model call. The default talks to the Anthropic API; tests inject a
@@ -122,7 +190,7 @@ export function anthropicCaller(client: Anthropic = new Anthropic()): ModelCalle
 export type PrefixCounter = (
   model: string,
   system: string,
-  tools: Anthropic.Tool[],
+  tools: Anthropic.ToolUnion[],
 ) => Promise<number>;
 
 /** The one-message probe both counts share, so it cancels out. */
@@ -218,13 +286,32 @@ export function isContextOverflow(err: unknown): boolean {
 /** The stop reason the API gives when a response ran out of context window. */
 export const CONTEXT_WINDOW_STOP = 'model_context_window_exceeded';
 
-/** The tools as the Messages API takes them. */
-export function agentTools(runtime: Pick<AgentRuntime, 'tools'>): Anthropic.Tool[] {
-  return runtime.tools.map((tool) => ({
+/**
+ * The tools as the Messages API takes them: inline client tools, or — for a
+ * runtime with {@link AgentRuntime.native} — the same definitions behind the
+ * server tool (search tool first, then every tool deferred; or the code
+ * execution tool first, then every tool callable from code).
+ */
+export function agentTools(runtime: Pick<AgentRuntime, 'tools' | 'native'>): Anthropic.ToolUnion[] {
+  const plain = runtime.tools.map((tool): Anthropic.Tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
   }));
+  const native = runtime.native;
+  if (native === undefined) return plain;
+  if (native.kind === 'tool-search') {
+    return [
+      { ...TOOL_SEARCH_TOOLS[native.variant] },
+      ...plain.map((tool) => ({ ...tool, defer_loading: true })),
+    ];
+  }
+  const callers: Anthropic.Tool['allowed_callers'] =
+    native.callers === 'both' ? ['direct', PTC_CALLER] : [PTC_CALLER];
+  return [
+    { ...CODE_EXECUTION_TOOL },
+    ...plain.map((tool) => ({ ...tool, allowed_callers: callers })),
+  ];
 }
 
 /**
@@ -236,9 +323,10 @@ export function agentTools(runtime: Pick<AgentRuntime, 'tools'>): Anthropic.Tool
 export function buildTurnRequest(
   preset: ModelPreset,
   system: string,
-  tools: Anthropic.Tool[],
+  tools: Anthropic.ToolUnion[],
   messages: Anthropic.MessageParam[],
   maxTokens: number = DEFAULT_MAX_TOKENS,
+  container?: string,
 ): Anthropic.MessageCreateParamsNonStreaming {
   return {
     model: preset.model,
@@ -254,6 +342,10 @@ export function buildTurnRequest(
     tools,
     messages,
     ...preset.params,
+    // Programmatic tool calling: the episode's container, once the API has
+    // made one (required while a programmatic call waits for its result).
+    // Last, so a request without one keeps its bytes.
+    ...(container !== undefined ? { container } : {}),
   };
 }
 
@@ -261,6 +353,37 @@ export interface ToolUseRecord {
   name: string;
   input: Record<string, unknown>;
   isError: boolean;
+  /**
+   * Present when the call came from code execution (programmatic tool
+   * calling): the `server_tool_use` id of the code run that made it.
+   */
+  fromCode?: string;
+}
+
+/**
+ * Anthropic server tools an episode used (the `native-*` modes): every
+ * `server_tool_use` block by tool name, the programmatic calls among the
+ * client tool calls, and the code execution containers it ran in.
+ */
+export interface ServerToolUse {
+  /** `server_tool_use` blocks by name (`tool_search_tool_bm25`, `code_execution`, …). */
+  calls: Record<string, number>;
+  /** Tools the searches surfaced (`tool_reference` names), in order, repeats kept. */
+  searchHits: string[];
+  /** Client tool calls made from code (each also in `toolUses`, with `fromCode`). */
+  programmaticCalls: number;
+  /**
+   * Code execution containers, with the wall-clock span (ms) from the first
+   * response that named each to the last; container time is what code
+   * execution bills (cost.ts).
+   */
+  containers: { id: string; spanMs: number }[];
+  /**
+   * Turns that only resumed paused code with tool results (no new code, no
+   * model text): free under the turn budget, like the calls a Projection
+   * machine makes inside one `execute_machine`.
+   */
+  codeResumeTurns: number;
 }
 
 export interface EpisodeUsage {
@@ -300,10 +423,20 @@ export type PrefixSource = 'count_tokens' | 'estimate';
  */
 export type TranscriptBlock =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_use'; id: string; name: string; input: unknown; fromCode?: string }
   | { type: 'thinking'; thinking: string }
   | { type: 'redacted_thinking' }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: true }
+  | { type: 'server_tool_use'; id: string; name: string; input: unknown }
+  | { type: 'tool_search_tool_result'; tool_use_id: string; tools: string[]; error?: string }
+  | {
+      type: 'code_execution_result';
+      tool_use_id: string;
+      stdout: string;
+      stderr: string;
+      return_code?: number;
+      error?: string;
+    }
   | { type: string };
 
 export interface TranscriptMessage {
@@ -325,13 +458,65 @@ export interface Transcript {
   messages: TranscriptMessage[];
 }
 
+/**
+ * The code run behind a programmatic `tool_use` (its `caller.tool_id`), or
+ * undefined for a direct call.
+ */
+export function programmaticCaller(block: Anthropic.ToolUseBlock): string | undefined {
+  const caller = (block as { caller?: { type?: unknown; tool_id?: unknown } }).caller;
+  if (caller === undefined || caller === null || caller.type === 'direct') return undefined;
+  return typeof caller.tool_id === 'string' ? caller.tool_id : String(caller.type);
+}
+
 /** An assistant block as the transcript records it. */
 function transcriptBlock(block: Anthropic.ContentBlock): TranscriptBlock {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text };
-    case 'tool_use':
-      return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+    case 'tool_use': {
+      const from = programmaticCaller(block);
+      return {
+        type: 'tool_use',
+        id: block.id,
+        name: block.name,
+        input: block.input,
+        ...(from !== undefined ? { fromCode: from } : {}),
+      };
+    }
+    case 'server_tool_use':
+      return { type: 'server_tool_use', id: block.id, name: block.name, input: block.input };
+    case 'tool_search_tool_result': {
+      const content = block.content as {
+        type?: string;
+        tool_references?: { tool_name?: unknown }[];
+        error_code?: unknown;
+      };
+      return {
+        type: 'tool_search_tool_result',
+        tool_use_id: block.tool_use_id,
+        tools: (content.tool_references ?? []).flatMap((ref) =>
+          typeof ref.tool_name === 'string' ? [ref.tool_name] : [],
+        ),
+        ...(typeof content.error_code === 'string' ? { error: content.error_code } : {}),
+      };
+    }
+    case 'code_execution_tool_result':
+    case 'bash_code_execution_tool_result': {
+      const content = block.content as {
+        stdout?: unknown;
+        stderr?: unknown;
+        return_code?: unknown;
+        error_code?: unknown;
+      };
+      return {
+        type: 'code_execution_result',
+        tool_use_id: block.tool_use_id,
+        stdout: typeof content.stdout === 'string' ? content.stdout : '',
+        stderr: typeof content.stderr === 'string' ? content.stderr : '',
+        ...(typeof content.return_code === 'number' ? { return_code: content.return_code } : {}),
+        ...(typeof content.error_code === 'string' ? { error: content.error_code } : {}),
+      };
+    }
     case 'thinking':
       return { type: 'thinking', thinking: block.thinking };
     case 'redacted_thinking':
@@ -363,6 +548,8 @@ export interface AgentEpisode {
   servedModel?: string;
   /** The full conversation, for reading what the model saw. */
   transcript: Transcript;
+  /** Present when the runtime offered tools through a server tool ({@link AgentRuntime.native}). */
+  serverTools?: ServerToolUse;
   /**
    * True when the loop stopped because the turn budget (`maxTurns` counting
    * turns, or `maxTotalTurns` in all) was spent while the model was still
@@ -429,6 +616,12 @@ export interface AgentEpisodeOptions {
 }
 
 export const DEFAULT_MAX_TURNS = 12;
+/**
+ * The ceiling on code-resume turns per episode ({@link ServerToolUse.codeResumeTurns}),
+ * which neither the budget nor `maxTotalTurns` counts: a script looping
+ * over tool calls stops here, turn-capped.
+ */
+export const MAX_CODE_RESUME_TURNS = 100;
 /** The default ceiling is twice the default budget; see `maxTotalTurns`. */
 export const DEFAULT_MAX_TOTAL_TURNS = 2 * DEFAULT_MAX_TURNS;
 export const DEFAULT_MAX_TOKENS = 16000;
@@ -439,6 +632,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+/** Record one response's server tool blocks and container on `use`. */
+function noteServerTools(
+  message: Anthropic.Message,
+  use: ServerToolUse,
+  containers: Map<string, { first: number; last: number }>,
+): void {
+  for (const block of message.content) {
+    if (block.type === 'server_tool_use') {
+      use.calls[block.name] = (use.calls[block.name] ?? 0) + 1;
+    } else if (block.type === 'tool_search_tool_result') {
+      const refs = (block.content as { tool_references?: { tool_name?: unknown }[] })
+        .tool_references;
+      for (const ref of refs ?? []) {
+        if (typeof ref.tool_name === 'string') use.searchHits.push(ref.tool_name);
+      }
+    } else if (block.type === 'tool_use' && programmaticCaller(block) !== undefined) {
+      use.programmaticCalls += 1;
+    }
+  }
+  const id = (message as { container?: { id?: unknown } | null }).container?.id;
+  if (typeof id === 'string') {
+    const now = performance.now();
+    const seen = containers.get(id);
+    if (seen === undefined) containers.set(id, { first: now, last: now });
+    else seen.last = now;
+  }
 }
 
 /** Run one task prompt to completion under a preset and runtime. */
@@ -475,6 +696,17 @@ export async function runAgentEpisode(
     system: runtime.system,
     messages: [{ role: 'user', content: prompt }],
   };
+  const serverTools: ServerToolUse | undefined =
+    runtime.native !== undefined
+      ? { calls: {}, searchHits: [], programmaticCalls: 0, containers: [], codeResumeTurns: 0 }
+      : undefined;
+  /** Each container's first and last sighting (performance.now()). */
+  const containerSeen = new Map<string, { first: number; last: number }>();
+  /** The latest container: sent back on every later request (programmatic calling). */
+  let container: string | undefined;
+  let codeResumeTurns = 0;
+  /** Code runs (`server_tool_use` ids) started in earlier turns. */
+  const earlierRuns = new Set<string>();
 
   let contextOverflow = false;
   const finish = (harnessError?: string, turnCapped = false, infra = false): AgentEpisode => ({
@@ -489,17 +721,34 @@ export async function runAgentEpisode(
     finalText,
     ...(servedModel !== undefined ? { servedModel } : {}),
     transcript,
+    ...(serverTools !== undefined
+      ? {
+          serverTools: {
+            ...serverTools,
+            codeResumeTurns,
+            containers: [...containerSeen].map(([id, seen]) => ({
+              id,
+              spanMs: Math.round(seen.last - seen.first),
+            })),
+          },
+        }
+      : {}),
     turnCapped,
     ...(harnessError !== undefined ? { harnessError } : {}),
     ...(infra ? { infraFailure: true as const } : {}),
     ...(contextOverflow ? { contextOverflow: true as const } : {}),
   });
 
-  while (budgetTurns < maxTurns && apiTurns < maxTotalTurns) {
+  // Code-resume turns count toward neither limit: they have their own ceiling.
+  while (
+    budgetTurns < maxTurns &&
+    apiTurns - codeResumeTurns < maxTotalTurns &&
+    codeResumeTurns < MAX_CODE_RESUME_TURNS
+  ) {
     let message: Anthropic.Message;
     try {
       message = await caller(
-        buildTurnRequest(preset, runtime.system, tools, messages, options.maxTokens),
+        buildTurnRequest(preset, runtime.system, tools, messages, options.maxTokens, container),
       );
     } catch (err) {
       if (err instanceof InfraError) return finish(`batch infra: ${err.message}`, false, true);
@@ -550,7 +799,30 @@ export async function runAgentEpisode(
       message.stop_reason === 'tool_use' &&
       called.length > 0 &&
       called.every((name) => free.has(name));
-    if (!isDiscovery) budgetTurns += 1;
+    // Programmatic tool calling: a turn whose every call comes from a code
+    // run started in an EARLIER turn, with no text of its own, only resumed
+    // that code — the model wrote nothing new, as when a Projection machine
+    // makes its calls inside one execute_machine. It is free and counted
+    // apart (MAX_CODE_RESUME_TURNS bounds it).
+    const callers = message.content.flatMap((block) =>
+      block.type === 'tool_use' ? [programmaticCaller(block)] : [],
+    );
+    const isCodeResume =
+      serverTools !== undefined &&
+      message.stop_reason === 'tool_use' &&
+      callers.length > 0 &&
+      callers.every((run) => run !== undefined && earlierRuns.has(run)) &&
+      !message.content.some((block) => block.type === 'text' && block.text.trim() !== '');
+    if (isCodeResume) codeResumeTurns += 1;
+    else if (!isDiscovery) budgetTurns += 1;
+    if (serverTools !== undefined) {
+      noteServerTools(message, serverTools, containerSeen);
+      const named = (message as { container?: { id?: unknown } | null }).container?.id;
+      if (typeof named === 'string') container = named;
+      for (const block of message.content) {
+        if (block.type === 'server_tool_use') earlierRuns.add(block.id);
+      }
+    }
 
     if (message.stop_reason === 'tool_use') {
       // Echo the whole assistant turn (thinking blocks included), then
@@ -567,7 +839,13 @@ export async function runAgentEpisode(
         } catch (err) {
           result = { text: `Tool error: ${errorMessage(err)}`, isError: true };
         }
-        toolUses.push({ name: block.name, input, isError: result.isError === true });
+        const fromCode = programmaticCaller(block);
+        toolUses.push({
+          name: block.name,
+          input,
+          isError: result.isError === true,
+          ...(fromCode !== undefined ? { fromCode } : {}),
+        });
         results.push({
           type: 'tool_result',
           tool_use_id: block.id,

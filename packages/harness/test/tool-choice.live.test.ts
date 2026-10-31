@@ -14,7 +14,12 @@
  * (which may live in the repo-root env file). Knobs:
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
- *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
+ *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only);
+ *                          opt-in: native-search, native-ptc (Anthropic's tool search / programmatic tool
+ *                          calling over the raw tools; native-ptc is skipped on models without it, e.g. Haiku
+ *                          4.5), projection-direct, projection-auto
+ *   PROJ_EVAL_TOOL_SEARCH  native-search: bm25 or regex (default bm25)
+ *   PROJ_EVAL_PTC_CALLERS  native-ptc: code (tools callable from code only) or both (also directly; default code)
  *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl (default all but the
  *                          opt-in multi-hard, workplace and hitl; workplace is the held-out world, in-process, no
  *                          mongod; hitl runs approval-persona tasks in the same world)
@@ -60,6 +65,7 @@ import {
   formatToolChoiceReport,
   loadNearestDotEnv,
   modeApplies,
+  modeSupportsModel,
   mongodbServerInstalled,
   resolveModelPresets,
   resolveApproverPersona,
@@ -123,6 +129,24 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       }
       const approvalPrompts =
         promptsEnv === 'per-call' || promptsEnv === 'batched' ? promptsEnv : undefined;
+      const searchEnv = process.env['PROJ_EVAL_TOOL_SEARCH'] ?? '';
+      if (searchEnv !== '' && searchEnv !== 'bm25' && searchEnv !== 'regex') {
+        throw new Error(`PROJ_EVAL_TOOL_SEARCH must be bm25 or regex, got ${searchEnv}`);
+      }
+      const toolSearch = searchEnv === 'regex' ? ('regex' as const) : ('bm25' as const);
+      const callersEnv = process.env['PROJ_EVAL_PTC_CALLERS'] ?? '';
+      if (callersEnv !== '' && callersEnv !== 'code' && callersEnv !== 'both') {
+        throw new Error(`PROJ_EVAL_PTC_CALLERS must be code or both, got ${callersEnv}`);
+      }
+      const ptcCallers = callersEnv === 'both' ? ('both' as const) : ('code' as const);
+      for (const model of models) {
+        for (const mode of modes) {
+          if (!modeSupportsModel(mode, model.model)) {
+            // eslint-disable-next-line no-console
+            console.info(`skipping ${model.name}/${mode}: the model does not support it`);
+          }
+        }
+      }
       const systemSuffix =
         process.env['PROJ_EVAL_FORCE_CODE_MODE'] === '1' ? FORCE_CODE_MODE_LINE : undefined;
       const batchWidth = positiveInt(process.env['PROJ_EVAL_BATCH_WIDTH'], DEFAULT_BATCH_WIDTH);
@@ -148,6 +172,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
             tasks.flatMap((t) => (t.maxTurns !== undefined ? [[t.name, t.maxTurns]] : [])),
           ),
           boxDescriptions,
+          ...(modes.includes('native-search') ? { toolSearch } : {}),
+          ...(modes.includes('native-ptc') ? { ptcCallers } : {}),
           ...(approver !== undefined ? { approver } : {}),
           ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
           outputSchemas: true,
@@ -171,6 +197,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         maxTotalTurns,
         concurrency,
         boxDescriptions,
+        toolSearch,
+        ptcCallers,
         ...(approver !== undefined ? { approver } : {}),
         ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
         ...(systemSuffix !== undefined ? { systemSuffix } : {}),
@@ -210,11 +238,20 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       // eslint-disable-next-line no-console
       console.info(`results written to ${results.path}`);
 
-      const planned = modes.reduce(
-        (n, mode) => n + tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length,
+      const planned = models.reduce(
+        (n, model) =>
+          n +
+          modes.reduce(
+            (m, mode) =>
+              m +
+              (modeSupportsModel(mode, model.model)
+                ? tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length
+                : 0),
+            0,
+          ),
         0,
       );
-      expect(records).toHaveLength(models.length * planned * runs);
+      expect(records).toHaveLength(planned * runs);
     },
   );
 });
