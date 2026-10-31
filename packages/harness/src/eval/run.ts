@@ -82,7 +82,8 @@ import {
   type ModeSession,
 } from './modes.js';
 import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
-import { estimateUsd, serverToolUsd, standardCost } from './cost.js';
+import { estimateUsd, hasStandardCost, MODEL_PRICES, serverToolUsd, standardCost } from './cost.js';
+import { openAiCompatCaller } from './openai-compat.js';
 import { hostPromptPrefix, type HostPromptKind } from './host-prompt.js';
 import {
   episodeApprover,
@@ -216,6 +217,12 @@ export interface EpisodeRecord {
    * included in `estimatedUsd` and `standardUsd`. Absent when zero.
    */
   serverToolUsd?: number;
+  /**
+   * OpenAI-compatible providers: the sum of what the provider reported each
+   * call cost (OpenRouter's `usage.cost`), next to the list-price
+   * `estimatedUsd`. Absent on the Anthropic API.
+   */
+  providerUsd?: number;
   /**
    * Every approval prompt and its answer (Projection's elicitations, or
    * direct mode's simulated host gate); absent when there were none.
@@ -433,7 +440,8 @@ function countedPrefix(
   model: ModelPreset,
   runtime: AgentRuntime,
 ): Promise<number | undefined> {
-  if (counter === undefined) return Promise.resolve(undefined);
+  // The counting endpoint is Anthropic's: other providers' prefixes are estimated.
+  if (counter === undefined || model.provider !== undefined) return Promise.resolve(undefined);
   const tools = agentTools(runtime);
   const key = createHash('sha256')
     .update(JSON.stringify([model.model, runtime.system, tools]))
@@ -720,7 +728,22 @@ export async function runToolChoiceEval(
     // container is reclaimed in ~5 (the PTC docs): a batch tick is longer.
     throw new Error('native-ptc cannot run through the Message Batches API (PROJ_EVAL_BATCH=1)');
   }
-  const caller = batch === undefined ? (options.caller ?? anthropicCaller()) : undefined;
+  if (batch !== undefined && models.some((model) => model.provider !== undefined)) {
+    throw new Error('OpenAI-compatible presets cannot run through the Message Batches API');
+  }
+  // One caller per provider: the injected one for everything, else the
+  // Anthropic API, or the preset's OpenAI-compatible endpoint.
+  const callers = new Map<string, ModelCaller>();
+  const callerFor = (model: ModelPreset): ModelCaller => {
+    if (options.caller !== undefined) return options.caller;
+    const key = model.provider?.name ?? 'anthropic';
+    let found = callers.get(key);
+    if (found === undefined) {
+      found = model.provider === undefined ? anthropicCaller() : openAiCompatCaller(model.provider);
+      callers.set(key, found);
+    }
+    return found;
+  };
 
   // Slots in result order (model → mode → task → run) ...
   const slots: Slot[] = [];
@@ -728,7 +751,7 @@ export async function runToolChoiceEval(
     modes.forEach((mode, modeAt) => {
       tasks.forEach((task, taskAt) => {
         if (!modeApplies(mode, worldOf(task.tier))) return;
-        if (!modeSupportsModel(mode, model.model)) return;
+        if (!modeSupportsModel(mode, model.model, model.provider === undefined)) return;
         for (let run = 0; run < runs; run += 1) {
           slots.push({ model, mode, task, run, index: slots.length, modelAt, modeAt, taskAt });
         }
@@ -765,7 +788,7 @@ export async function runToolChoiceEval(
       if (slot === undefined) return;
       let record: EpisodeRecord;
       if (batcher === undefined) {
-        record = await runPlanned(slot, caller as ModelCaller, options, prefixCounts);
+        record = await runPlanned(slot, callerFor(slot.model), options, prefixCounts);
       } else {
         // Enter the lockstep before the world opens, so no tick runs without
         // this episode's first request; leave it however the episode ends
@@ -813,6 +836,11 @@ function recordEstimatedUsd(record: EpisodeRecord): number {
  */
 function recordStandardUsd(record: EpisodeRecord): number | undefined {
   if (record.turns === undefined) return record.apiTurns === 0 ? 0 : undefined;
+  // A non-Anthropic model caches on its provider's terms: its host cost is
+  // what it was billed at list price, without a batch discount.
+  if (!hasStandardCost(record.modelId) && MODEL_PRICES[record.modelId] !== undefined) {
+    return estimateUsd(record.modelId, record.usage, false, record.turns);
+  }
   return standardCost(record.turns, record.modelId) + serverToolUsd(record.serverTools);
 }
 
@@ -830,9 +858,13 @@ function sumMeasured(values: (number | undefined)[]): number | undefined {
 function withCosts(record: EpisodeRecord): EpisodeRecord {
   const standard = recordStandardUsd(record);
   const fees = serverToolUsd(record.serverTools);
+  const reported = (record.turns ?? []).flatMap((turn) =>
+    turn.providerCostUsd !== undefined ? [turn.providerCostUsd] : [],
+  );
   return {
     ...record,
     ...(fees > 0 ? { serverToolUsd: fees } : {}),
+    ...(reported.length > 0 ? { providerUsd: reported.reduce((a, b) => a + b, 0) } : {}),
     estimatedUsd: recordEstimatedUsd(record),
     ...(standard !== undefined ? { standardUsd: standard } : {}),
   };

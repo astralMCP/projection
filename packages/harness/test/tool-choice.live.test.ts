@@ -13,7 +13,9 @@
  * Explicit opt-in only: PROJ_LIVE_EVAL=1 AND a non-empty ANTHROPIC_API_KEY
  * (which may live in the repo-root env file). Knobs:
  *
- *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
+ *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low;
+ *                          muse-spark and kimi-k25 run through OpenRouter and need OPENROUTER_API_KEY, else they are
+ *                          skipped with a message — no native modes, no batch)
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only);
  *                          opt-in: native-search, native-ptc (Anthropic's tool search / programmatic tool
  *                          calling over the raw tools; native-ptc is skipped on models without it, e.g. Haiku
@@ -22,6 +24,7 @@
  *                          (catalog false), projection-nopreamble (codeModePreamble '')
  *   PROJ_EVAL_HOST_PROMPT=realistic  every mode: put a ~12k-token generic agent-host system prompt
  *                          (src/eval/host-prompt.ts) before the session's own (default: the one-line framing only)
+ *   PROJ_EVAL_TIMEOUT_MIN  interactive runs: the test's timeout in minutes (default 30)
  *   PROJ_EVAL_TOOL_SEARCH  native-search: bm25 or regex (default bm25)
  *   PROJ_EVAL_PTC_CALLERS  native-ptc: code (tools callable from code only) or both (also directly; default code)
  *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl (default all but the
@@ -85,7 +88,10 @@ import {
 
 loadNearestDotEnv();
 
-const hasKey = (process.env['ANTHROPIC_API_KEY'] ?? '') !== '';
+// Either provider's key will do: presets whose provider has no key are skipped below.
+const hasKey =
+  (process.env['ANTHROPIC_API_KEY'] ?? '') !== '' ||
+  (process.env['OPENROUTER_API_KEY'] ?? '') !== '';
 const optedIn = process.env['PROJ_LIVE_EVAL'] === '1';
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -101,9 +107,24 @@ const DEFAULT_BATCH_WIDTH = 24;
 describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projection)', () => {
   it(
     'runs the matrix and reports',
-    { timeout: batchMode ? BATCH_TIMEOUT_MS : 1_800_000 },
+    {
+      timeout: batchMode
+        ? BATCH_TIMEOUT_MS
+        : positiveInt(process.env['PROJ_EVAL_TIMEOUT_MIN'], 30) * 60_000,
+    },
     async () => {
-      const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']);
+      const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']).filter((model) => {
+        const keyEnv = model.provider?.apiKeyEnv ?? 'ANTHROPIC_API_KEY';
+        if ((process.env[keyEnv] ?? '') !== '') return true;
+        // eslint-disable-next-line no-console
+        console.info(`skipping ${model.name}: ${keyEnv} is not set`);
+        return false;
+      });
+      if (models.length === 0) {
+        // eslint-disable-next-line no-console
+        console.info('no model preset has an API key; nothing to run');
+        return;
+      }
       const modes = resolveModes(process.env['PROJ_EVAL_MODES']);
       const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
       // Fail before spending anything: without the vendored server every
@@ -147,7 +168,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       const hostPrompt = resolveHostPrompt(process.env['PROJ_EVAL_HOST_PROMPT']);
       for (const model of models) {
         for (const mode of modes) {
-          if (!modeSupportsModel(mode, model.model)) {
+          if (!modeSupportsModel(mode, model.model, model.provider === undefined)) {
             // eslint-disable-next-line no-console
             console.info(`skipping ${model.name}/${mode}: the model does not support it`);
           }
@@ -252,7 +273,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
           modes.reduce(
             (m, mode) =>
               m +
-              (modeSupportsModel(mode, model.model)
+              (modeSupportsModel(mode, model.model, model.provider === undefined)
                 ? tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length
                 : 0),
             0,

@@ -15,6 +15,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { OPENROUTER, type OpenAiCompatProvider } from './providers.js';
 
 /** A model configuration the eval runs under. */
 export interface ModelPreset {
@@ -23,6 +24,11 @@ export interface ModelPreset {
   model: string;
   /** Request fields merged into every call (thinking / effort). */
   params: Pick<Anthropic.MessageCreateParams, 'thinking' | 'output_config'>;
+  /**
+   * Absent: the Anthropic API. Present: an OpenAI-compatible endpoint
+   * (openai-compat.ts), which the native modes cannot use.
+   */
+  provider?: OpenAiCompatProvider;
 }
 
 /**
@@ -54,6 +60,25 @@ export const MODEL_PRESETS: Record<string, ModelPreset> = {
     name: 'sonnet-medium',
     model: 'claude-sonnet-5-5',
     params: { thinking: { type: 'adaptive' }, output_config: { effort: 'medium' } },
+  },
+  /**
+   * Non-Anthropic models through OpenRouter (OPENROUTER_API_KEY; skipped
+   * without it). Muse Spark 1.3 is the newest Muse Spark 1.x OpenRouter
+   * lists; Kimi K2.5 stands in for the base model of a popular agentic
+   * coding product's in-house model. Both at their provider's default
+   * reasoning (no reasoning parameter sent). Prices in cost.ts.
+   */
+  'muse-spark': {
+    name: 'muse-spark',
+    model: 'meta/muse-spark-1.3',
+    params: {},
+    provider: OPENROUTER,
+  },
+  'kimi-k25': {
+    name: 'kimi-k25',
+    model: 'moonshotai/kimi-k2.5',
+    params: {},
+    provider: OPENROUTER,
   },
 };
 
@@ -406,6 +431,11 @@ export interface TurnUsage {
    * the episode's `prefixSource`.
    */
   prefixTokens: number;
+  /**
+   * OpenAI-compatible providers: what the provider says the call cost, in
+   * USD (OpenRouter's `usage.cost`). Absent on the Anthropic API.
+   */
+  providerCostUsd?: number;
 }
 
 /**
@@ -773,6 +803,8 @@ export async function runAgentEpisode(
       outputTokens: message.usage.output_tokens,
       prefixTokens,
     };
+    const providerCost = (message.usage as { provider_cost_usd?: unknown }).provider_cost_usd;
+    if (typeof providerCost === 'number') turn.providerCostUsd = providerCost;
     turns.push(turn);
     transcript.messages.push({
       role: 'assistant',

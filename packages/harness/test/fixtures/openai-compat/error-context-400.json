@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": 400,
+    "message": "This endpoint's maximum context length is 262144 tokens. However, you requested about 270011 tokens (269000 of text input, 1011 in the output). Please reduce the length of either one."
+  }
+}

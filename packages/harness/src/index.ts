@@ -386,6 +386,23 @@ export {
 } from './eval/mongodb-world.js';
 export { createRecordingProxy, type RecordingProxy } from './eval/recording-proxy.js';
 export {
+  fromOpenAiResponse,
+  openAiCompatCaller,
+  providerKey,
+  toOpenAiRequest,
+  toOpenAiTools,
+  OpenAiCompatError,
+  OPENROUTER,
+  type OpenAiCompatCallerOptions,
+  type OpenAiCompatProvider,
+  type OpenAiMessage,
+  type OpenAiRequest,
+  type OpenAiResponse,
+  type OpenAiTool,
+  type OpenAiToolCall,
+  type OpenAiUsage,
+} from './eval/openai-compat.js';
+export {
   hostPromptPrefix,
   resolveHostPrompt,
   REALISTIC_HOST_PROMPT,
@@ -431,6 +448,7 @@ export {
   CODE_EXECUTION_USD_PER_HOUR,
   serverToolUsd,
   estimateUsd,
+  hasStandardCost,
   rateFor,
   MIN_CACHEABLE_TOKENS,
   MODEL_PRICES,
