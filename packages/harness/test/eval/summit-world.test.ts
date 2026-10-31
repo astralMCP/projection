@@ -548,6 +548,23 @@ describe('notion fake', () => {
           },
         }),
       ).toMatchObject({ status: 400 });
+      const row = (
+        await t.json('notion.API-query-data-source', {
+          data_source_id: NOTION_IDS.accountsDs,
+          page_size: 1,
+        })
+      ).results[0];
+      expect(
+        await t.json('notion.API-patch-page', { page_id: row.id, properties: { MRR: 5000 } }),
+      ).toMatchObject({ status: 400, message: expect.stringContaining('MRR.number') });
+      expect(
+        (
+          await t.json('notion.API-patch-page', {
+            page_id: row.id,
+            properties: { MRR: { number: 5000 } },
+          })
+        ).properties.MRR.number,
+      ).toBe(5000);
       const md = await t.json('notion.API-retrieve-page-markdown', {
         page_id: NOTION_IDS.escalation,
       });

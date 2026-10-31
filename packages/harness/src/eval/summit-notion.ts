@@ -1947,11 +1947,17 @@ function propertyFromRequest(ds: NotionDataSource, name: string, value: unknown)
   if (entry === undefined)
     throw new NotionError(400, 'validation_error', `${name} is not a property that exists.`);
   const [propName, def] = entry;
-  const v = (
-    typeof value === 'object' && value !== null && !Array.isArray(value) && def.type in value
-      ? (value as Record<string, unknown>)[def.type]
-      : value
-  ) as unknown;
+  const keyed =
+    typeof value === 'object' && value !== null && !Array.isArray(value) && def.type in value;
+  // A property value is an object keyed by its type ({"number": 5}); only
+  // title and rich text also take the bare rich-text array.
+  if (!keyed && !(Array.isArray(value) && (def.type === 'title' || def.type === 'rich_text')))
+    throw new NotionError(
+      400,
+      'validation_error',
+      `body failed validation: body.properties.${propName}.${def.type} should be defined, instead was \`undefined\`.`,
+    );
+  const v = (keyed ? (value as Record<string, unknown>)[def.type] : value) as unknown;
   const base = { id: def.id, type: def.type };
   const options = (def.config['options'] ?? []) as { id: string; name: string; color: string }[];
   switch (def.type) {
