@@ -1787,7 +1787,7 @@ Decision 3 — text as text, and computation to machines.
 
 - `call_tool` prints a top-level string of three or more lines in a
   structured result as its own lines, indented under its quoted key below
-  the JSON, with `[N lines, shown as text below]` in its place (at most
+  the JSON, with `[string: N lines, shown as text below]` in its place (at most
   five fields). As a JSON string a file's contents was one line of `\n`
   escapes, which the model had to unescape to count or quote lines.
   `structuredContent.output` is unchanged.
@@ -1823,7 +1823,7 @@ before. The `tools.d.ts` header gains five comment lines. `call_tool` results an
 carry `notes` and `text`. Machines that parsed JSON text themselves must
 drop the `JSON.parse` — a minor-version change.
 
-## D30 — Many gated calls in one round trip: `toolCalls` and `whenCallIn` (2026-10-30)
+## D30 — Many gated calls in one round trip (`toolCalls`), and copy that says what it means (2026-10-30)
 
 Context. A live eval on Haiku 4.5 asked for 14 writes. The machine looped
 over the items with one gated `toolCall` per state, so each write cost one
@@ -1887,6 +1887,13 @@ out the ones listed as already done, or make them with call_tool.`
 
 The resume site used to throw before the audit was read, so it listed
 nothing; it now carries the same "Already done before this error" list.
+
+The text-field marker (PRD R35.5, amends D29). `call_tool`'s marker read
+`[N lines, shown as text below]` under a `"key" (N lines):` header. A
+Sonnet trace read that as a list: its machine treated the field as an
+array of content blocks and miscounted. Both now name the type —
+`[string: N lines, shown as text below]` and `"key" (string, N lines):` —
+so the reader knows `result.key` is one string.
 
 Consequences. The contract grows by about 280 tokens. A machine that
 already used parallel regions is unchanged. Tests that matched the old

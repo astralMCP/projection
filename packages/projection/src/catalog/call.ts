@@ -725,7 +725,9 @@ const MAX_TEXT_FIELDS = 5;
  * A structured result as pretty JSON — except that a top-level string of
  * several lines (a file's contents, a document body) is printed below the
  * JSON as its own lines, under its quoted key and indented like any
- * untrusted block, with a marker in its place in the JSON. As a JSON
+ * untrusted block, with a marker in its place in the JSON. Marker and
+ * header both say "string": a model that read only "N lines" took the
+ * field for an array of lines or content blocks (D30). As a JSON
  * string it is one line of `\n` escapes the model has to unescape to read,
  * count or quote. `structuredContent.output` still carries the value
  * verbatim, and the caller neutralizes the whole body (S5).
@@ -739,7 +741,7 @@ function structuredBody(output: unknown): string {
     const lines = typeof field === 'string' ? field.replace(/\r\n?/g, '\n').split('\n') : [];
     if (lines.length >= MIN_TEXT_FIELD_LINES && texts.length < MAX_TEXT_FIELDS) {
       texts.push([key, lines]);
-      shown.push([key, `[${lines.length} lines, shown as text below]`]);
+      shown.push([key, `[string: ${lines.length} lines, shown as text below]`]);
     } else {
       shown.push([key, field]);
     }
@@ -750,7 +752,7 @@ function structuredBody(output: unknown): string {
   if (texts.length === 0) return json;
   const blocks = texts.map(
     ([key, lines]) =>
-      `${JSON.stringify(capLength(key, 200))} (${lines.length} lines):\n${indentBlock(lines.join('\n'))}`,
+      `${JSON.stringify(capLength(key, 200))} (string, ${lines.length} lines):\n${indentBlock(lines.join('\n'))}`,
   );
   return [json, ...blocks].join('\n\n');
 }
