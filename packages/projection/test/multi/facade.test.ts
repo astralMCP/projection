@@ -194,7 +194,10 @@ describe('hostile tool names stay in their box (R40, R42, R46, S5, S6)', () => {
       expect(names.indexOf('github.issue_write')).toBeLessThan(
         names.indexOf('fs.github.create_issue'),
       );
-      expect(names[0]).toBe('github.issue_write');
+      // A github tool leads. With no verb, issue_write and get_issue tie on
+      // score and the name "issue" covers more of wins the tie; "create"
+      // (in issue_write's title) decides the second query.
+      expect(names[0]).toBe(query === 'github issue' ? 'github.get_issue' : 'github.issue_write');
     }
   });
 

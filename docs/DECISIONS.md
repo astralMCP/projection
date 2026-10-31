@@ -1343,3 +1343,62 @@ harness classifies and prices what that tier provokes.
   prior, except `multi-hard`, which takes a conservative $1/episode at list
   price. Batch `latency_s` spans lockstep ticks and is not comparable with
   interactive latency.
+
+## D22 — Search weights rare words and breaks ties by name coverage; measured offline (2026-10-30)
+
+D10's ranking counted every query word the same, so filler ("get", "list",
+"repository") outvoted the one word that names the tool, and ties fell to
+catalog position. Both were measured with a new offline eval
+(`packages/harness/src/eval/offline/`, `pnpm --filter @astral-mcp/harness
+run eval:offline`): 1,173 (surface, query, gold tools) cases — the 467
+distinct queries models actually sent to `search_tools` / `search_<alias>`
+in recorded eval episodes, labelled with the tools they went on to use,
+their lift onto the 130-tool global search, 120 hand-written queries and
+150 generated ones over a 1,003-tool synthetic catalog — run through the
+real facade, no model, deterministic. Cases are split 60/40 by a fixed
+seed; changes were judged on train and kept only if the held-out test
+split improved too.
+
+Decision, two changes (R33, R43 amended):
+
+- **Token weights.** Each token's score is multiplied by `1 + ln(N / df)`,
+  where `df` counts the tools it occurs in. A word every tool has weighs 1,
+  as before; "branches" in "get repository branches" now decides the
+  ranking. Matching is unchanged — any word, substring — so match sets,
+  `total` and page sizes are exactly D10's. The alias token adds a name hit
+  of the heaviest text token, so it keeps its relative strength.
+- **Name-coverage tie-break.** Equal scores rank first the tool whose name
+  the name-hit tokens spell more of (`list_issues` before
+  `list_issue_types` for "list issues"), then catalog order. Ties now
+  depend on the names, not the listing order: shuffling a catalog now
+  moves gold ranks a seventh as much (mean |Δrank| 0.80 → 0.11, invariance
+  0.929 → 0.989 on train).
+
+Measured (train / test): recall@5 89.1 / 89.6 → 91.8 / 94.2, MRR 0.779 /
+0.810 → 0.821 / 0.846, recall@1 69.5 / 74.2 → 74.4 / 77.2, mean first
+page ~741 / ~767 → ~738 / ~764 tokens (chars / 4). One test changed its
+expectation: in a facade test fixture "github issue" now leads with
+`get_issue` instead of `issue_write` (equal score; the name "issue" covers
+more of), and "(issue|branch)+" leads with its rarer word's tool.
+
+S5: weights come from the catalog, so a hostile server can shift a word's
+weight — but uniformly for every tool that has the word, its own included,
+which buys nothing that stuffing its own name did not already buy. Alias
+tokens are still never matched against tool text, so a foreign tool still
+scores nothing for another box's alias.
+
+Tried and rejected on the same eval: splitting camelCase query words
+(`createIssue` → create, issue; train up, test flat; it does fix the
+did-you-mean for camelCase guesses on a snake_case catalog, 0.51 → 1.00 on
+the describe invariance check, so it is worth revisiting on that ground);
+a Lucene-style coordination factor (train down); BM25 length normalization
+of description hits (both splits down); indexing input-schema words —
+`pull_request_read`'s `method` enum, `find`'s `sort` and `limit` (both MRRs
+up, but result pages 21 % larger as a new matching field, and test
+recall@5 down when it only re-ranked). Round log:
+`.claude/hillclimb/multi-server/explore/offline-search.md`.
+
+Still unanswerable by any ranking: 73 distinct queries (310 issued) search
+the catalog for data — "CSV export", "widgets", "grace@example.com order"
+— which is a facade question (what `search_<alias>` is for), not a ranking
+one.
