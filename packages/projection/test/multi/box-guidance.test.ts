@@ -235,12 +235,15 @@ describe('overview truncation (R43)', () => {
 describe('search-tool phrase for a single box (R43)', () => {
   it('names search_fs directly', async () => {
     const log: RecordedCall[] = [];
-    facade = await wrapMcpServers({ fs: fsServer(log) }, { blob: { key: KEY } });
+    facade = await wrapMcpServers(
+      { fs: fsServer(log) },
+      { blob: { key: KEY }, projections: { direct: false } },
+    );
     const hint = structured(facade.describeTool({ name: 'nope' }))['hint'];
     expect(hint).toContain('Call search_tools (every box) or search_fs to list');
     const off = await wrapMcpServers(
       { fs: fsServer(log) },
-      { blob: { key: KEY }, catalog: { globalSearch: false } },
+      { blob: { key: KEY }, catalog: { globalSearch: false }, projections: { direct: false } },
     );
     try {
       expect(structured(off.describeTool({ name: 'nope' }))['hint']).toContain(

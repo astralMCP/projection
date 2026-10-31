@@ -531,7 +531,7 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
 
   it('defers the list above the threshold counted across every box, with per-box counts', async () => {
     // 7 tools in all, 4 at most in one box: only the total crosses 5.
-    const facade = await wrap({ catalogInlineThreshold: 5 });
+    const facade = await wrap({ catalogInlineThreshold: 5, projections: { direct: false } });
     const inline = textOf(facade.discoverApis());
     expect(inline).toContain(
       'Tools: 7 across the toolboxes fs, github — too many to list here (fs: 3, github: 4). Call search_tools (every box) or the search_<box> tool of a box (search_fs, search_github) to find tools',

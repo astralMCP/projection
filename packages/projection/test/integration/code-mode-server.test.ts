@@ -173,7 +173,7 @@ describe('the code-mode server as a real client sees it', () => {
     await client.close();
   });
 
-  it('exposes exactly the five projection tools, never the wrapped ones (R1)', async () => {
+  it('lists the small wrapped catalog directly by default, and only the five projection tools with direct: false (R1, D28)', async () => {
     const client = await connect(handler, { modern: true });
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).toSorted()).toEqual([
@@ -181,9 +181,30 @@ describe('the code-mode server as a real client sees it', () => {
       'describe_tool',
       'discover_apis',
       'execute_machine',
-      'search_tools',
+      'read_file',
+      'write_file',
     ]);
     await client.close();
+
+    const searched = await wrapMcpServer(buildWrappedServer(), {
+      blob: { key: KEY },
+      projections: { direct: false },
+    });
+    const searchedHandler = createMcpHandler(searched.serverFactory);
+    try {
+      const searchedClient = await connect(searchedHandler, { modern: true });
+      expect((await searchedClient.listTools()).tools.map((tool) => tool.name).toSorted()).toEqual([
+        'call_tool',
+        'describe_tool',
+        'discover_apis',
+        'execute_machine',
+        'search_tools',
+      ]);
+      await searchedClient.close();
+    } finally {
+      await searchedHandler.close();
+      await searched.close();
+    }
   });
 
   it('really suspends a gated call, then completes it on the approved retry', async () => {

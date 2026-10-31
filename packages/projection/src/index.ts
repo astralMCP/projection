@@ -39,7 +39,7 @@ export {
   type RegisterOptions,
   type WrapOptions,
 } from './wrap.js';
-// Direct listing of small catalogs as mediated call_tool aliases (exploration)
+// Direct listing of small catalogs as mediated call_tool aliases (default 'auto', D28)
 export { DEFAULT_DIRECT_BUDGET_TOKENS } from './facade/options.js';
 export {
   directToolName,

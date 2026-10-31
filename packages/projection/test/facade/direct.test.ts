@@ -512,10 +512,24 @@ describe("projections.direct: 'auto' and validation", () => {
     await below.close();
   });
 
-  it('is off by default, and auto stays off without the catalog projection', async () => {
+  it('is auto by default, off with direct: false, and auto stays off without the catalog projection', async () => {
     const plain = await wrapMcpServer(hostileServer([]), { blob: { key: KEY } });
-    expect(plain.projections).toEqual({ codeMode: true, catalog: true });
+    expect(plain.projections).toEqual({ codeMode: true, catalog: true, direct: true });
     await plain.close();
+    const off = await wrapMcpServer(hostileServer([]), {
+      blob: { key: KEY },
+      projections: { direct: false },
+    });
+    expect(off.projections).toEqual({ codeMode: true, catalog: true });
+    facade = off;
+    const c = await connect(off);
+    expect((await c.listTools()).tools.map((tool) => tool.name)).toEqual([
+      'execute_machine',
+      'discover_apis',
+      'search_tools',
+      'describe_tool',
+      'call_tool',
+    ]);
     const codeOnly = await wrapMcpServer(hostileServer([]), {
       blob: { key: KEY },
       projections: { catalog: false, direct: 'auto' },

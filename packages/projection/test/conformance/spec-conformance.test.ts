@@ -234,13 +234,49 @@ async function runMachine(s: Session, tool: string): Promise<Record<string, unkn
   return result.structuredContent?.['output'] as Record<string, unknown>;
 }
 
+/** The everything server's tools, in its listing order. */
+const UPSTREAM_TOOLS = [
+  'get_weather',
+  'media',
+  'image_only',
+  'unannotated_write',
+  'explicit_write',
+  'nuke',
+  'slow_count',
+  'hostile',
+  'noisy',
+  'hang',
+  'ask_user',
+  'gated_ask',
+  'ask_structured',
+  'ask_twice',
+  'hostile_ask',
+  'call_again',
+  'ask_bad_url',
+  'ask_url',
+  'push_elicit',
+  'summarize',
+  'list_roots',
+  'add_tool',
+  'doomed',
+  'remove_tool',
+];
+
 // ---------------------------------------------------------------------------
 
 describe('single facade, 2026-07-28 client', () => {
-  it('tools: only the five Projection tools are listed; upstream tools are never direct (R1)', async () => {
+  it('tools: by default the upstream tools are also listed directly, each posture-tagged; direct: false lists only the five Projection tools (R1, D28)', async () => {
     const s = await modernSingle();
     const { tools } = await s.client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(
+    const projection = ['execute_machine', 'discover_apis', 'describe_tool', 'call_tool'];
+    expect(tools.map((t) => t.name)).toEqual([...projection, ...UPSTREAM_TOOLS]);
+    for (const tool of tools.filter((t) => !projection.includes(t.name))) {
+      expect(tool.description).toMatch(
+        /^\[(runs immediately|asks for approval|blocked by policy)[\];]/,
+      );
+    }
+    const searched = await modernSingle({ projections: { direct: false } });
+    expect((await searched.client.listTools()).tools.map((t) => t.name).sort()).toEqual(
       ['call_tool', 'describe_tool', 'discover_apis', 'execute_machine', 'search_tools'].sort(),
     );
   });
@@ -249,7 +285,11 @@ describe('single facade, 2026-07-28 client', () => {
     const s = await modernSingle();
     const instructions = s.client.getInstructions() ?? '';
     expect(instructions.startsWith('EVERYTHING-INSTRUCTIONS:')).toBe(true);
-    expect(instructions).toContain('call_tool');
+    expect(instructions).toContain("This server's tools are listed directly");
+    const searched = await modernSingle({ projections: { direct: false } });
+    const routed = searched.client.getInstructions() ?? '';
+    expect(routed.startsWith('EVERYTHING-INSTRUCTIONS:')).toBe(true);
+    expect(routed).toContain('call_tool');
   });
 
   it('server identity: the facade names itself; upstream title and icons are dropped', async () => {
@@ -753,10 +793,23 @@ describe('single facade, held legacy-era client', () => {
 });
 
 describe('multi-server facade (two boxes), 2026-07-28 client', () => {
-  it('tools: N + 3 catalog tools plus code mode; upstream tools never direct (R43)', async () => {
+  it('tools: by default both small boxes are listed directly as <box>__<tool>; direct: false lists N + 3 catalog tools plus code mode (R43, D28)', async () => {
     const s = await modernMulti();
     const names = (await s.client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual(
+      [
+        'call_tool',
+        'describe_tool',
+        'discover_apis',
+        'execute_machine',
+        // every sends instructions, so its search tool stays to read them.
+        'search_every',
+        ...UPSTREAM_TOOLS.map((name) => `every__${name}`),
+        ...['p0_a', 'p0_b', 'p1_a', 'p1_b', 'p2_a', 'p2_read'].map((name) => `paged__${name}`),
+      ].sort(),
+    );
+    const searched = await modernMulti(false, { projections: { direct: false } });
+    expect((await searched.client.listTools()).tools.map((t) => t.name).sort()).toEqual(
       [
         'call_tool',
         'describe_tool',

@@ -142,10 +142,15 @@ describe('surface-size meter', () => {
       const projection = rows.find((r) => r.world === world && r.mode === 'projection');
       expect(direct?.describeChars).toBeUndefined();
       expect(projection?.describeChars).toBeGreaterThan(0);
-      expect(projection?.searchChars).toBeGreaterThan(0);
-      expect((projection?.toolDefChars ?? 0) + (projection?.systemChars ?? 0)).toBeLessThan(
-        (direct?.toolDefChars ?? 0) + (direct?.systemChars ?? 0),
-      );
+      // filesystem fits the direct budget (D28): listed, so no search is offered.
+      if (world === 'filesystem') expect(projection?.searchChars).toBeUndefined();
+      else expect(projection?.searchChars).toBeGreaterThan(0);
+      const projectionChars = (projection?.toolDefChars ?? 0) + (projection?.systemChars ?? 0);
+      const directChars = (direct?.toolDefChars ?? 0) + (direct?.systemChars ?? 0);
+      // A fully listed world carries the facade's own tools on top of the
+      // listed ones, so it is larger than direct (a climb target, D28).
+      if (world === 'filesystem') expect(projectionChars).toBeGreaterThan(directChars);
+      else expect(projectionChars).toBeLessThan(directChars);
     }
     const multi = rows.find((r) => r.world === 'multi' && r.mode === 'direct');
     expect(multi?.tools).toBe(130);

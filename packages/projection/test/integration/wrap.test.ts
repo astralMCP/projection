@@ -352,9 +352,13 @@ export default setup({}).createMachine({
     expect(types?.text).toContain('write_file');
   });
 
-  it('registers exactly the five projection tools on a facade server (R1)', async () => {
+  it('registers the five projection tools on a facade server with direct: false (R1)', async () => {
+    const searched = await wrapMcpServer(buildWrappedServer(), {
+      blob: { key: KEY },
+      projections: { direct: false },
+    });
     const codeModeServer = new McpServer({ name: 'projection-demo', version: '0.1.0' });
-    facade.registerOn(codeModeServer);
+    searched.registerOn(codeModeServer);
 
     // Introspecting the facade server shows only Projection's own tools —
     // the wrapped server's tools are not exposed.
@@ -365,6 +369,24 @@ export default setup({}).createMachine({
       'discover_apis',
       'execute_machine',
       'search_tools',
+    ]);
+    await facadeIntrospector.close();
+    await searched.close();
+  });
+
+  it('also registers the small wrapped catalog directly by default (D28)', async () => {
+    const codeModeServer = new McpServer({ name: 'projection-demo', version: '0.1.0' });
+    facade.registerOn(codeModeServer);
+    const facadeIntrospector = await wrapMcpServer(codeModeServer, { blob: { key: KEY } });
+    expect(facadeIntrospector.catalog.tools.map((t) => t.name).toSorted()).toEqual([
+      'call_tool',
+      'delete_file',
+      'describe_tool',
+      'discover_apis',
+      'execute_machine',
+      'list_files',
+      'read_file',
+      'write_file',
     ]);
     await facadeIntrospector.close();
   });

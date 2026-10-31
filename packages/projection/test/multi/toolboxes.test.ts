@@ -65,7 +65,8 @@ async function wrapThree(
       github: { source: githubServer(log), description: 'Issues and pull requests.' },
       fs: fsServer(log, fsExtra),
     },
-    { blob: { key: KEY }, ...options },
+    // These tests are about the catalog surface: pin direct listing off (D28).
+    { blob: { key: KEY }, ...options, projections: { direct: false, ...options.projections } },
   );
   return facade;
 }

@@ -143,14 +143,14 @@ export interface ProjectionsOptions {
   codeMode?: boolean;
   catalog?: boolean;
   /**
-   * Direct listing (exploration; see `facade/direct.ts`): also register one
+   * Direct listing (see `facade/direct.ts`): also register one
    * **mediated** facade tool per wrapped tool, a thin alias of
    * `call_tool({ name, args })` under exactly the same gate, so the model
    * sees every tool's name, description and schema without searching.
    * `true` always lists them; `'auto'` lists them when their estimated
    * definitions fit `directBudgetTokens` (on a multi-server facade box by
    * box, smallest box first; the other boxes keep the catalog path);
-   * `false` (default) never. Needs the
+   * `false` never. Default `'auto'` (DECISIONS D28). Needs the
    * catalog projection: `true` with `catalog: false` fails the wrap
    * (`validate`); `'auto'` then stays off.
    */
@@ -190,7 +190,7 @@ export function resolveDirectSetting(
   const budget: unknown = options?.directBudgetTokens;
   if (direct !== undefined && typeof direct !== 'boolean' && direct !== 'auto') {
     throw new ProjectionError('validate', "projections.direct must be true, false or 'auto'", {
-      hint: "Pass projections: { direct: 'auto' } to list small catalogs directly, or omit it.",
+      hint: 'Pass projections: { direct: false } to always search, or omit it to list small catalogs directly.',
     });
   }
   if (
@@ -210,7 +210,7 @@ export function resolveDirectSetting(
       hint: 'Directly listed tools are aliases of call_tool: keep projections.catalog on, or drop direct.',
     });
   }
-  const mode = direct === true ? 'on' : direct === 'auto' && catalog ? 'auto' : 'off';
+  const mode = direct === true ? 'on' : direct !== false && catalog ? 'auto' : 'off';
   return { mode, budgetTokens: (budget as number | undefined) ?? DEFAULT_DIRECT_BUDGET_TOKENS };
 }
 

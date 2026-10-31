@@ -1,5 +1,5 @@
 /**
- * Direct listing (exploration; `projections.direct`): one **mediated** facade
+ * Direct listing (`projections.direct`, default `'auto'`, D28): one **mediated** facade
  * tool per wrapped tool, so on a small catalog the model sees every tool's
  * name, description and input schema without `search_tools` /
  * `describe_tool` turns.

@@ -54,12 +54,18 @@ function textOf(content: unknown): string {
 /** Wrap the spec's catalogs in a facade and connect a client to it. */
 export async function openOfflineFacade(spec: FacadeSpec): Promise<OfflineFacade> {
   const blob = { key: randomBytes(32) };
+  // The offline evals measure the search tools: pin direct listing off (D28).
+  const projections = { direct: false } as const;
   const facade =
     spec.kind === 'single'
-      ? await wrapMcpServer(catalogServer(spec.catalog), { blob })
+      ? await wrapMcpServer(catalogServer(spec.catalog), { blob, projections })
       : await wrapMcpServers(
           Object.fromEntries(spec.boxes.map((box) => [box.alias, catalogServer(box.catalog)])),
-          { blob, ...(spec.globalSearch === false ? { catalog: { globalSearch: false } } : {}) },
+          {
+            blob,
+            projections,
+            ...(spec.globalSearch === false ? { catalog: { globalSearch: false } } : {}),
+          },
         );
   const handler = createMcpHandler(facade.serverFactory);
   const client = new Client(

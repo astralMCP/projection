@@ -188,8 +188,13 @@ describe.skipIf(!installed)('multi world', () => {
         const session = await openSession(mode, world);
         try {
           surfaces[mode] = session;
-          const names = session.runtime.tools.map((t) => t.name).toSorted();
-          const boxSearches = ['search_fs', 'search_github', 'search_mongo'];
+          const all = session.runtime.tools.map((t) => t.name).toSorted();
+          // The fs box fits the direct budget (D28): its tools are listed as
+          // mediated `fs__<tool>` aliases instead of a search_fs.
+          const listed = all.filter((n) => n.startsWith('fs__'));
+          expect(listed).toContain('fs__read_text_file');
+          const names = all.filter((n) => !n.startsWith('fs__'));
+          const boxSearches = ['search_github', 'search_mongo'];
           expect(names).toEqual(
             [
               'call_tool',
@@ -215,9 +220,9 @@ describe.skipIf(!installed)('multi world', () => {
           if (mode === 'projection') expect(system).toContain('search_tools');
           else expect(system).not.toContain('search_tools');
           // A box search answers with that box's qualified names only.
-          const found = await session.runtime.call('search_fs', { query: 'read file' });
+          const found = await session.runtime.call('search_mongo', { query: 'find documents' });
           expect(found.isError).toBeUndefined();
-          expect(found.text).toContain('fs.read_text_file');
+          expect(found.text).toContain('mongo.find');
           expect(found.text).not.toContain('github.');
         } finally {
           await session.close();
@@ -355,8 +360,8 @@ describe.skipIf(!installed)('multi world', () => {
               {
                 type: 'tool_use',
                 id: 'tu_search',
-                name: 'search_fs',
-                input: { query: 'edit file' },
+                name: 'search_mongo',
+                input: { query: 'find documents' },
               },
             ],
             'tool_use',
@@ -403,7 +408,7 @@ describe.skipIf(!installed)('multi world', () => {
         expect(record?.projection).toMatchObject({
           route: 'call_tool',
           searchTools: 0,
-          searchBoxes: { fs: 1, github: 0, mongo: 0 },
+          searchBoxes: { fs: 0, github: 0, mongo: 1 },
           approvals: 1,
         });
         // The search turn was free.
@@ -419,7 +424,7 @@ describe.skipIf(!installed)('multi world', () => {
       const report = formatToolChoiceReport(records);
       expect(report).toContain('multi task (successes/scored)');
       expect(report).toMatch(
-        /scripted\/projection: call_tool 1, .*search_tools 0\.0, search_fs 1\.0, search_github 0\.0, search_mongo 0\.0,/,
+        /scripted\/projection: call_tool 1, .*search_tools 0\.0, search_fs 0\.0, search_github 0\.0, search_mongo 1\.0,/,
       );
       expect(report).toMatch(/scripted\/projection-boxes: call_tool 1, /);
     },

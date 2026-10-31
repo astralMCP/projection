@@ -70,7 +70,10 @@ correct arguments** for a task when the wrapped server (or, on the multi
 tier, servers) is exposed (A) directly as native tools or (B) through
 Projection's five tools
 (`search_tools`, `describe_tool`, `call_tool`, `discover_apis`,
-`execute_machine`). Each episode gets a fresh **world** (`openWorld`): an
+`execute_machine`). The `projection` and `projection-boxes` modes wrap with
+`projections.direct: false`, so they measure the search surface even though
+the library default is `'auto'` (D28); the opt-in `projection-auto` and
+`projection-direct` modes measure direct listing. Each episode gets a fresh **world** (`openWorld`): an
 MCP server whose tool executions are recorded, so the same task scores
 identically in both modes. Two kinds exist. The GitHub world is an offline
 fake of the remote GitHub MCP server (`createGithubFake`): the real 95-tool

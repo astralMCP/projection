@@ -1681,3 +1681,56 @@ Approve: …` and names them `approve_<n>`, so a server question could
   could live `maxRoundTrips × callTtlMs`. The blob now keeps the `exp` of
   the blob it continues (`buildBlobPayload`'s `notAfter`). A replay cache is
   recommended wherever forwarding is on.
+
+## D28 — `projections.direct` defaults to `'auto'` (2026-10-30)
+
+Context. Direct listing (`projections.direct`, `facade/direct.ts`) shipped
+as an opt-in exploration: each wrapped tool also listed as a mediated
+facade tool (`<tool>` on a single-server facade, `<alias>__<tool>` on a
+multi-server one), a thin alias of `call_tool` under the same gate. The
+hill-climb then ran it live, on the corrected harness, against the
+five-tool surface. Haiku on the multi tier went from 33/34 at $0.022 per
+episode to 34/34 at $0.011. Haiku on the held-out workplace tier went from
+23/28 at $0.048 to 27/28 at $0.023. Sonnet on the multi tier was level on
+both pass rate and cost. The one cost found: on multi-hard, Sonnet spent
+17% more per episode when the listed boxes went unused, since their
+definitions are paid for on every turn whether or not the task touches
+them.
+
+Decision (PRD R1, R32, R43). `projections.direct` defaults to `'auto'`.
+When the estimated definitions of the wrapped tools fit
+`directBudgetTokens` (default 8 000 estimated tokens), they are listed
+directly; on a multi-server facade the budget is filled box by box,
+smallest box first, and the other boxes keep their `search_<alias>`.
+Listed tools stay mediated: validation, policy, the approval prompt, the
+sealed blob and the result are `call_tool`'s, and the advertised
+annotations are Projection's own (D27). `'auto'` stays off when the
+catalog projection is off. `projections: { direct: false }` restores the
+five-tool surface.
+
+Why the default and not an opt-in: the gain is largest for the cheaper
+model and for small catalogs, which is where most integrators start, and
+the loss is bounded by the budget. A catalog large enough for search to
+matter is never listed. R1's rule is unchanged in substance: the wrapped
+tools are still never passed through. What changed is that a mediated
+alias may carry the tool's name.
+
+Consequences.
+
+- The default tool list now depends on catalog size. A small server
+  shows its tools by name plus `describe_tool`, `call_tool` and code mode,
+  without `search_tools`. A large server shows the five tools, as before.
+  Tests that are about the search surface pin `direct: false`.
+- Integrators who prefer a fixed, catalog-independent surface (a host
+  whose own tool search defers tools, or a token budget per turn) set
+  `direct: false`. Those who wrap several boxes, with only some used per
+  task, pay for the listed boxes on every turn: that is the multi-hard +17%
+  case.
+- The eval harness pins `direct: false` in its `projection` and
+  `projection-boxes` modes, and in the offline search evals, so they keep
+  measuring the search surface and stay comparable with earlier rounds.
+  The `projection-auto` mode measures the new default.
+- Adding a tool to a wrapped server can cross the budget and switch its
+  facade from direct listing to search. The listing is decided at wrap
+  time, like the rest of the catalog (R47), so a facade does not switch
+  mid-session.

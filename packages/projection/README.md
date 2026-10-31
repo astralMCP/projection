@@ -13,7 +13,7 @@ Both SDK packages are pinned at `2.0.0` in Projection's own dependencies, so
 install the same version to match the pin.
 
 Projection wraps an existing MCP server and exposes two projections of it —
-five tools in all, never the wrapped server's own:
+five tools in all, never a pass-through to the wrapped server's own:
 
 - **Code mode** — `execute_machine` runs an LLM-authored XState v5 state
   machine in a QuickJS WebAssembly sandbox (read-only calls, or, under
@@ -28,6 +28,11 @@ five tools in all, never the wrapped server's own:
   → `call_tool`; a workflow → `execute_machine`. Either projection can be
   disabled (`projections: { codeMode: false }` or `{ catalog: false }`; not
   both).
+- **Direct listing** (default `projections.direct: 'auto'`) — when the
+  wrapped tools' estimated definitions fit `directBudgetTokens` (8 000),
+  each is also listed by name (`<box>__<tool>` on a multi-server facade) as
+  a mediated alias of `call_tool` under the same gate, and `search_tools`
+  is dropped. `projections: { direct: false }` keeps the five tools.
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
 (read-only, `auto` by policy, or, under `destructive-only`, a non-destructive

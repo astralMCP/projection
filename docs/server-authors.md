@@ -1,8 +1,9 @@
 # Projection for server authors
 
 You have an MCP server. `wrapMcpServer` turns it into a Projection server:
-clients see five tools (fewer if you turn a projection off) — never your own —
-plus `projection://` resources.
+clients see Projection's tools — plus, when your catalog is small, each of
+your tools listed by name as a mediated alias of `call_tool` (never a
+pass-through; see below) — and `projection://` resources.
 **Code mode** (`discover_apis`, `execute_machine`) lets models author XState v5
 machines against generated types; the **catalog projection** (`search_tools`,
 `describe_tool`, `call_tool`) lets them find and run one tool at a time. Both
@@ -265,8 +266,8 @@ stops listing tools inline and points at `search_tools` / `describe_tool`;
 with it off the list is always inline, whatever the size. The `.d.ts`
 resource stays complete either way.
 
-Small catalogs can also be listed directly (exploration, off by default):
-`projections: { direct: 'auto' }` registers one tool per wrapped tool —
+Small catalogs are also listed directly (the default, `projections.direct:
+'auto'`; D28): Projection registers one tool per wrapped tool —
 `<box>__<tool>` on a multi-server facade, the tool's own name otherwise —
 when their estimated definitions fit `directBudgetTokens` (default 8 000),
 and falls back to the search tools when they do not. Each listed tool is a
@@ -276,7 +277,12 @@ progress and cancellation, its description led by its posture
 (`[asks for approval]`) and the server's own text indented beneath. In this
 mode the search tools are dropped, except a box's `search_<box>` when its
 server sends guidance; `describe_tool`, `call_tool` and code mode stay.
-`direct: true` lists them whatever the size.
+On a multi-server facade the budget is filled box by box, smallest box
+first; the boxes that do not fit keep their `search_<box>`. Direct listing
+is part of the catalog projection: with `catalog: false` it stays off.
+`direct: true` lists them whatever the size; `direct: false` never does,
+leaving the five tools (`search_tools`, `describe_tool`, `call_tool`,
+`discover_apis`, `execute_machine`).
 
 A listed tool advertises Projection's own annotations, never your server's:
 `readOnlyHint: true` only when Projection runs the call without asking and

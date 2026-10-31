@@ -60,7 +60,8 @@ async function wrap(
   log = [];
   facade = await wrapMcpServers(
     { fs: fsServer(log, fsExtra), github: githubServer(log, githubExtra) },
-    { blob: { key: KEY }, ...options },
+    // These tests are about the catalog surface: pin direct listing off (D28).
+    { blob: { key: KEY }, ...options, projections: { direct: false, ...options.projections } },
   );
   return facade;
 }
@@ -289,7 +290,7 @@ describe('search_tools across boxes (R43)', () => {
     log = [];
     facade = await wrapMcpServers(
       { z: fsServer(log), github: githubServer(log) },
-      { blob: { key: KEY } },
+      { blob: { key: KEY }, projections: { direct: false } },
     );
     // Without the boost github.write_file would tie z's file tools and lead
     // by sorted alias order; the alias token "z" puts z's tools first.
@@ -369,7 +370,7 @@ describe('instructions (R44)', () => {
     log = [];
     facade = await wrapMcpServers(
       { fs: fsServer(log), github: { source: githubServer(log), description: 'Issues and PRs.' } },
-      { blob: { key: KEY } },
+      { blob: { key: KEY }, projections: { direct: false } },
     );
     expect(facade.instructions).toContain('call search_tools to find a tool in any box');
     expect(facade.instructions).toContain('run it with execute_machine');
@@ -417,7 +418,7 @@ describe('approvals modes per source (R49)', () => {
         fs: fsServer(log, quiet),
         github: { source: githubServer(log, quiet), approvals: 'every-write' },
       },
-      { blob: { key: KEY }, approvals: 'destructive-only' },
+      { blob: { key: KEY }, approvals: 'destructive-only', projections: { direct: false } },
     );
     const postures = structured(facade.searchTools({ query: 'tag' }))['tools'];
     expect(postures).toEqual([

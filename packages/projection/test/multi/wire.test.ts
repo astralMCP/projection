@@ -36,7 +36,12 @@ async function wrap(legacyElicitation = false): Promise<MultiProjectionFacade> {
   log = [];
   facade = await wrapMcpServers(
     { fs: fsServer(log), github: githubServer(log) },
-    { blob: { key: KEY }, ...(legacyElicitation ? { compat: { legacyElicitation: true } } : {}) },
+    // These tests are about the catalog surface: pin direct listing off (D28).
+    {
+      blob: { key: KEY },
+      projections: { direct: false },
+      ...(legacyElicitation ? { compat: { legacyElicitation: true } } : {}),
+    },
   );
   return facade;
 }
