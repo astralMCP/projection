@@ -1936,3 +1936,86 @@ the machine snapshot, never events, and resume builds each event from the
 sealed record. An event's `args` are the request's own object sent back
 into the VM, bounded as the request was (sandbox memory, and for a gated
 call the R23 blob ceiling).
+
+## D32 — Search hits show how to call them; argument errors carry the signature (2026-10-31)
+
+Context. On the v13 dev tiers (basecamp harness) every upstream
+`call_tool` cost the model about one `search_<box>` plus 0.6–1.2
+`describe_tool` calls: Haiku on `multi-hard` averaged 11.5 API turns, 2.78
+of them `describe_tool` and 5.22 `call_tool`. On held-out servers
+Projection took about twice the turns of direct mode (9.0 vs 4.9), and with
+prompt caching a large direct tool list is cheap, so each extra turn — the
+whole prompt re-sent — ate the token savings. The search page could not be
+acted on: `search_github {query: "create issue"}` answered 25 one-liners
+with no arguments, so a `describe_tool` turn always sat between the search
+and the call.
+
+Decision (PRD R29, R33, R35.1, R35.5; amends D10/D22's page shape).
+
+- **Signatures on the top hits.** The first three hits of a query
+  (`SIGNATURE_HITS`) carry a compact call signature, one line under the
+  entry: `args: {method: "create"|"update", owner: string, repo: string,
+title?: string, perPage?: number = 30}` — required arguments first, then
+  optional ones, with types, enums (at most 12 members) and the scalar
+  defaults R34 keeps (D29). Only the top level: a nested object or
+  array-of-objects shows as `object` / `object[]`, and the line ends with
+  `(describe_tool has the full schema)`, or with `(call describe_tool
+first: …)` when a required argument is the nested one. Optional
+  arguments stop at 480 characters (`…N more`). `structuredContent` entries
+  carry the same `signature: { text, complete, callable }`. No signature on
+  a listing without a query (catalog order says nothing about intent), past
+  rank 3, or for a tool policy blocks.
+- **Why three.** On the D22 offline corpus (1,173 cases) the tool the
+  model went on to use ranks 1st in 75.5 % of cases, top 3 in 89.9 % (93.4 %
+  of the recorded queries) and top 5 in 92.8 %. Two more signatures would
+  buy 2.9 points on every search; a signature has a median of 109
+  characters (~27 tokens) over the GitHub tools, against ~800–1,400 tokens
+  for a `describe_tool` answer plus the turn that fetches it.
+- **Query pages hold 15.** A ranked page holds 15 tools (a listing still
+  50). The gold tool is in the top 15 in 96.6 % of cases and the top 50 in
+  97.7 %; every row past the 15th cost ~30 tokens on every search that had
+  it. The rest is a cursor away.
+- **Self-correcting errors.** A `validate` error from `call_tool` (or a
+  machine's `toolCall`) restates the signature: `"github.issue_write" takes
+args: {…}. Fix argument "owner" and try again.` An `upstream` failure
+  does too, because the server enforces what the shallow R35.1 check lets
+  through (nested fields, formats, names the schema does not forbid). A
+  call made without `describe_tool` costs at most one retry, where it used
+  to cost a `describe_tool` turn and a retry.
+- **Copy.** The preambles, the search and call descriptions and the page
+  footer say a tool shown with its args can go straight to `call_tool`, and
+  `describe_tool` is for any other tool or for what an argument means.
+
+Measured offline (chars / 4; retrieval metrics unchanged, R@1 75.5 %, R@5
+92.8 %, MRR 0.831). Mean first page over the corpus: 748 → 507 tokens
+(github 788 → 577, multi:github 816 → 613, synthetic 1,046 → 442; the small
+boxes grow by the signatures: mongo 233 → 307, multi:mongo 161 → 244, fs
+339 → 391). One search each: `search_github "create issue"` 832 → 642,
+`"list pull requests"` 1,301 → 805, `"comment on a pull request"` 1,616 →
+641, `"search code"` 557 → 648; `search_mongo "find documents"` 222 → 314,
+`"list collections"` 175 → 212. A `describe_tool` answer the signature
+replaces costs 801–1,392 (github `list_pull_requests`, `issue_write`) and
+885 (mongo `find`). Signatures are complete for 84 of the 95 GitHub tools,
+17 of 21 MongoDB and 13 of 14 filesystem tools, and callable without
+`describe_tool` for all but the seven whose required argument is nested
+(`push_files`, `create_repository_ruleset`,
+`check_dependency_vulnerabilities`, `aggregate`, `create-index`,
+`explain`, `edit_file`); two GitHub tools are cut for length. The surface
+table's sample search page: github 956 → 711, mongodb 208 → 301, multi 1,225
+→ 738. Tool definitions grew ~40 tokens, the preambles 10–40.
+
+S5. Signatures are built from the sanitized schema only (R34's allowlist,
+neutralized strings, `safeDefault`). Property names are server data: a
+plain identifier prints bare, anything else JSON-quoted after
+neutralization, a name over 64 characters is left out rather than cut (a
+cut name is a wrong key); a type word outside the JSON Schema vocabulary
+prints as `any`. The line is ours, indented under the entry it belongs to,
+after the posture label: a hostile schema cannot forge an entry or a
+posture. Approval, gating and the posture labels are unchanged; a signature
+grants nothing — the call still goes through `call_tool`'s gate.
+
+Rejected: argument descriptions in the signature (they are most of a
+`describe_tool` answer's size, and `describe_tool` serves them); signatures on every
+hit (a 15-row page of them costs more than the `describe_tool` it saves);
+rejecting unknown arguments the schema does not forbid (D9: the server is
+the authority).
