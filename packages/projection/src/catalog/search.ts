@@ -40,7 +40,14 @@ import {
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
 import { boxOverview, renderOverviewBlock, toolCount } from './box-guidance.js';
-import { callSignature, signatureLine, type CallSignature } from './signature.js';
+import {
+  argGlosses,
+  callSignature,
+  glossLine,
+  signatureLine,
+  type ArgGloss,
+  type CallSignature,
+} from './signature.js';
 import {
   boxSearchTool,
   isBoxedCatalog,
@@ -99,6 +106,13 @@ export const DEFAULT_QUERY_PAGE_SIZE = 15;
  * ~800–1,400 for one `describe_tool` answer plus the turn that fetches it.
  */
 export const SIGNATURE_HITS = 3;
+
+/**
+ * How many of a query's best hits also gloss their required arguments
+ * (D33): all of the signed ones. A page shows a gloss once; a later hit
+ * with the same argument and the same words leaves it out.
+ */
+export const GLOSS_HITS = SIGNATURE_HITS;
 const MAX_PAGE_SIZE = 200;
 /** `query` is capped (R33): its words are matched as plain substrings, never a regex. */
 export const MAX_QUERY_CHARS = 200;
@@ -114,6 +128,12 @@ export interface ToolSummary {
    * {@link SIGNATURE_HITS} hits of a query, unless the tool is blocked.
    */
   signature?: CallSignature;
+  /**
+   * What the tool's required arguments mean, where the name alone does not
+   * say (D33): on the first {@link GLOSS_HITS} signed hits, when any
+   * required argument has such a description.
+   */
+  glosses?: ArgGloss[];
 }
 
 export interface SearchToolsPage {
@@ -127,14 +147,20 @@ export interface SearchToolsPage {
  * Summarize one catalog entry (R33); `context` decides its posture (R14,
  * R49). With `withSignature`, a tool that is not blocked also carries its
  * call signature (D32): there is no point showing how to call a tool the
- * gate refuses.
+ * gate refuses. With `withGlosses` too, it carries its required
+ * arguments' glosses (D33), when it has any.
  */
 export function summarizeTool(
   entry: ToolCatalogEntry,
   context?: PolicyContext,
   withSignature = false,
+  withGlosses = false,
 ): ToolSummary {
   const posture = postureOf(decidePolicy(entry, context));
+  const glosses =
+    withSignature && withGlosses && posture !== 'blocked by policy'
+      ? argGlosses(entry.name, entry.inputSchema)
+      : [];
   return {
     name: entry.name,
     purpose: purposeSentence(entry.description) ?? '(no description)',
@@ -143,12 +169,18 @@ export function summarizeTool(
     ...(withSignature && posture !== 'blocked by policy'
       ? { signature: callSignature(entry.inputSchema) }
       : {}),
+    ...(glosses.length > 0 ? { glosses } : {}),
   };
 }
 
 /** Whether the hit at 0-based `rank` of a search for `query` shows its signature (D32). */
 function signed(query: string, rank: number): boolean {
   return query.length > 0 && rank < SIGNATURE_HITS;
+}
+
+/** Whether the hit at 0-based `rank` of a search for `query` glosses its required arguments (D33). */
+function glossed(query: string, rank: number): boolean {
+  return query.length > 0 && rank < GLOSS_HITS;
 }
 
 /**
@@ -168,7 +200,7 @@ export function searchTools(
     undefined,
     // First occurrence wins, as for `findTool` and typegen (S5).
     (q) => rankTools(dedupeTools(catalog.tools), q),
-    (entry, rank, q) => summarizeTool(entry, context, signed(q, rank)),
+    (entry, rank, q) => summarizeTool(entry, context, signed(q, rank), glossed(q, rank)),
   );
   return {
     content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
@@ -301,7 +333,7 @@ export function searchBoxes(
     tool,
     (q) => (q.length === 0 ? members : scoreBoxedTools(members, q, aliases).map((i) => i.member)),
     (member, rank, q): BoxedToolSummary => ({
-      ...summarizeTool(member.qualified, context, signed(q, rank)),
+      ...summarizeTool(member.qualified, context, signed(q, rank), glossed(q, rank)),
       box: member.alias,
     }),
   );
@@ -817,6 +849,8 @@ function renderEntries(
     lines.push(
       `Tools ${offset + 1}–${offset + page.tools.length} of ${page.total}${scope}${label}:`,
     );
+    // A gloss already on this page (same argument, same words) is not repeated (D33).
+    const shownGlosses = new Set<string>();
     for (const entry of page.tools) {
       // Names and purposes are S5-controlled: neutralize so a hostile value
       // cannot forge a line of its own (e.g. relabel a write as "runs
@@ -828,6 +862,15 @@ function renderEntries(
       // One line built by `callSignature` from the sanitized schema, under
       // the entry and indented: it cannot forge an entry or a posture.
       if (entry.signature !== undefined) lines.push(`  ${signatureLine(entry.signature)}`);
+      // The glosses are server text, each JSON-quoted on our own indented
+      // line (`glossLine`), so they cannot forge an entry either.
+      const fresh = (entry.glosses ?? []).filter((gloss) => {
+        const key = JSON.stringify([gloss.name, gloss.text]);
+        if (shownGlosses.has(key)) return false;
+        shownGlosses.add(key);
+        return true;
+      });
+      if (fresh.length > 0) lines.push(`  ${glossLine(fresh)}`);
     }
   }
   if (page.nextCursor !== undefined) {

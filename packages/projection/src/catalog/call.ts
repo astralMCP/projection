@@ -59,7 +59,13 @@ import {
 import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
 import { resultNotes } from './result-notes.js';
-import { callSignature, signatureLine } from './signature.js';
+import {
+  argGlosses,
+  callSignature,
+  glossLine,
+  MAX_HINT_GLOSS_CHARS,
+  signatureLine,
+} from './signature.js';
 import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
 
@@ -425,7 +431,8 @@ async function execute(
       phase: 'upstream',
       message: neutralizeControlChars(capLength(result.error.message, MAX_UPSTREAM_MESSAGE_CHARS)),
       diagnostics: [],
-      hint: result.inputRefused === true ? INPUT_REFUSED_HINT : rejectedHint(deps, name),
+      hint:
+        result.inputRefused === true ? INPUT_REFUSED_HINT : rejectedHint(deps, name, run.call.args),
       logs: [],
     });
   }
@@ -784,14 +791,23 @@ export function declinedText(tool: string, reason: string | undefined): string {
  * fields, formats, unknown names the schema does not forbid), so the hint
  * restates the tool's call signature (D32) — one retry instead of a
  * describe_tool turn and a retry when the arguments were the problem.
+ * It also glosses the arguments the call sent (D33): a value the server
+ * refused is most often one whose meaning the name did not give
+ * (`connectionId`, `sha`, `cursor`).
  */
-function rejectedHint(deps: CallToolDeps, name: string): string {
+function rejectedHint(deps: CallToolDeps, name: string, args: unknown): string {
   const entry = findTool(deps.catalog, name);
   if (entry === undefined) {
     return 'The wrapped server rejected this call. Check the arguments against describe_tool and try again, or report the error to the user.';
   }
   const takes = signatureLine(callSignature(entry.inputSchema));
-  return `The wrapped server rejected this call. If the arguments were wrong: ${inert(name)} takes ${takes}. Fix them and try again, or report the error to the user.`;
+  const sent = isRecord(args) ? Object.keys(args) : [];
+  const glosses = argGlosses(name, entry.inputSchema, {
+    names: sent,
+    maxChars: MAX_HINT_GLOSS_CHARS,
+  });
+  const meaning = glosses.length > 0 ? `, ${glossLine(glosses)}` : '';
+  return `The wrapped server rejected this call. If the arguments were wrong: ${inert(name)} takes ${takes}${meaning}. Fix them and try again, or report the error to the user.`;
 }
 
 function inert(text: string): string {

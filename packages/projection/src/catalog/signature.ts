@@ -23,7 +23,7 @@
  * line: nothing a server writes can open a line of its own.
  */
 
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { capLength, neutralizeControlChars, stripInvisible } from '../text-safety.js';
 import { isRecord } from '../types.js';
 import { safeDefault, sanitizeSchema } from './schema-safety.js';
 
@@ -244,4 +244,173 @@ export function signatureLine(signature: CallSignature): string {
   if (signature.complete) return `args: ${signature.text}`;
   if (signature.callable) return `args: ${signature.text} (describe_tool has the full schema)`;
   return `args: ${signature.text} (call describe_tool first: a required argument is nested or not shown)`;
+}
+
+/**
+ * One argument's meaning, from its description (D33): what a signature's
+ * `name: type` cannot say, such as where a `connectionId` comes from or
+ * that a `sha` may also be a branch name.
+ */
+export interface ArgGloss {
+  /** The argument's name, as the schema declares it. */
+  name: string;
+  /** Its description on one line: whitespace collapsed, invisible characters gone, neutralized, capped. */
+  text: string;
+}
+
+/**
+ * Longest gloss on a search page, in characters, before `…`. Sized on the
+ * eval fixtures (D33): it holds the median informative GitHub description
+ * whole (48 characters) and keeps the instruction in the first sentences
+ * of a longer one (Sentry's median is 124, MongoDB's `connectionId` 173);
+ * past it are option lists and examples that `describe_tool` serves.
+ */
+export const MAX_GLOSS_CHARS = 120;
+/**
+ * Longest gloss in an error hint (D33). A rejected call is rare and is
+ * where the meaning is missed, so the hint may show twice a search page's.
+ */
+export const MAX_HINT_GLOSS_CHARS = 2 * MAX_GLOSS_CHARS;
+/** Raw description read for a gloss: bounds the work a hostile description can cause. */
+const MAX_RAW_GLOSS_CHARS = 2_000;
+/**
+ * Words that carry no meaning of their own in an argument description:
+ * articles, prepositions and the nouns every identifier is ("name",
+ * "number", "id"). A description made only of these and of words from the
+ * tool's or its arguments' names ("Repository name", "The number of the
+ * issue") restates the signature, and gets no gloss.
+ */
+const FILLER_WORDS: ReadonlySet<string> = new Set([
+  'a',
+  'an',
+  'and',
+  'be',
+  'by',
+  'for',
+  'from',
+  'id',
+  'identifier',
+  'in',
+  'is',
+  'it',
+  'its',
+  'name',
+  'new',
+  'number',
+  'of',
+  'on',
+  'or',
+  'required',
+  'the',
+  'this',
+  'that',
+  'to',
+  'value',
+  'with',
+]);
+const WORD = /[\p{L}\p{N}]+/gu;
+
+/**
+ * The glosses of a tool's arguments (D33): by default its required ones (a
+ * call cannot go without them, and a model that cannot tell what one means
+ * invents a value), or the `names` given (the arguments a rejected call
+ * sent). An argument gets a gloss when the SANITIZED schema (S5) gives it a
+ * description that says something its name does not: one made only of
+ * filler words and words of the tool's or its arguments' names is skipped,
+ * and so is an `enum` or `const` argument, whose values the signature
+ * already lists (on the GitHub fixture its descriptions were a third of
+ * the gloss text and said "The method to execute" or listed the options
+ * again). Each gloss is one line cut at a word to `maxChars` (default
+ * {@link MAX_GLOSS_CHARS}), and a tool's glosses stop at twice that.
+ * Never throws.
+ */
+export function argGlosses(
+  toolName: string,
+  inputSchema: unknown,
+  options: { names?: readonly string[]; maxChars?: number } = {},
+): ArgGloss[] {
+  const { names, maxChars = MAX_GLOSS_CHARS } = options;
+  const schema = sanitizeSchema(inputSchema).schema;
+  const properties = isRecord(schema['properties']) ? schema['properties'] : {};
+  const wanted =
+    names ??
+    (Array.isArray(schema['required'])
+      ? schema['required'].filter((name): name is string => typeof name === 'string')
+      : []);
+  const known = [...nameWords(toolName), ...Object.keys(properties).flatMap(nameWords)];
+  const glosses: ArgGloss[] = [];
+  let length = 0;
+  for (const name of new Set(wanted)) {
+    if (!Object.hasOwn(properties, name) || renderName(name) === undefined) continue;
+    const property = properties[name];
+    if (!isRecord(property) || listsItsValues(property)) continue;
+    const description = property['description'];
+    if (typeof description !== 'string') continue;
+    const line = oneLine(capLength(description, MAX_RAW_GLOSS_CHARS));
+    if (line.length === 0 || restatesName(line, known)) continue;
+    const text = capAtWord(line, maxChars);
+    if (length + text.length > 2 * maxChars) break;
+    glosses.push({ name, text });
+    length += text.length;
+  }
+  return glosses;
+}
+
+/**
+ * Glosses as copy shows them, on one line: `where connectionId: "…"; sha:
+ * "…"`. Each gloss is JSON-quoted (S5): server text cannot end its own
+ * quote and pass for another argument's gloss, or open a line.
+ */
+export function glossLine(glosses: readonly ArgGloss[]): string {
+  return `where ${glosses.map((g) => `${renderName(g.name) ?? ''}: ${JSON.stringify(g.text)}`).join('; ')}`;
+}
+
+/** An `enum` or `const` argument: the signature shows its values. */
+function listsItsValues(property: Record<string, unknown>): boolean {
+  return Array.isArray(property['enum']) || Object.hasOwn(property, 'const');
+}
+
+/** Cut to `max` characters at a word boundary when one is near, then `…`. */
+function capAtWord(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/** Server text on one inert line: invisible characters gone, whitespace collapsed, neutralized. */
+function oneLine(text: string): string {
+  return neutralizeControlChars(stripInvisible(text).replace(/\s+/g, ' ').trim())
+    .replace(/�{2,}/g, '�')
+    .trim();
+}
+
+/** The lowercase words of an identifier: `issue_number`, `pullNumber`, `get-file`. */
+function nameWords(name: string): string[] {
+  return (
+    name
+      .replace(/(\p{Ll}|\p{N})(\p{Lu})/gu, '$1 $2')
+      .toLowerCase()
+      .match(WORD) ?? []
+  ).filter((word) => word.length >= 2);
+}
+
+/**
+ * Whether every word of `description` is filler or one of `known` (the
+ * tool's and its arguments' name words, matched as prefixes either way so
+ * `repo` covers "repository" and `newName` covers "new").
+ */
+function restatesName(description: string, known: readonly string[]): boolean {
+  const words = description.toLowerCase().match(WORD) ?? [];
+  return words.every(
+    (word) =>
+      word.length < 2 ||
+      FILLER_WORDS.has(word) ||
+      known.some(
+        (k) =>
+          word === k ||
+          (k.length >= 3 && word.startsWith(k)) ||
+          (word.length >= 3 && k.startsWith(word)),
+      ),
+  );
 }

@@ -151,6 +151,37 @@ describe('call_tool: validation (R35.1)', () => {
     expect(String(structured(result)['hint'])).toContain('"content"');
   });
 
+  it('the validate hint glosses the offending argument when its description says more than its name (D33)', async () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'count',
+          annotations: { readOnlyHint: true },
+          inputSchema: {
+            type: 'object',
+            properties: {
+              connectionId: { type: 'string', description: 'Use the id a connect tool returned.' },
+              database: { type: 'string', description: 'Database name' },
+            },
+            required: ['connectionId', 'database'],
+          },
+        }),
+      ],
+    };
+    const missing = async (args: Record<string, unknown>): Promise<string> =>
+      String(
+        structured(completed(await callTool({ name: 'count', args }, deps({ catalog }))))['hint'],
+      );
+    expect(await missing({ database: 'd' })).toBe(
+      '"count" takes args: {connectionId: string, database: string}, where connectionId: "Use the id a connect tool returned.". Fix argument "connectionId" and try again.',
+    );
+    // "Database name" restates the name: no gloss.
+    expect(await missing({ connectionId: 'c' })).toBe(
+      '"count" takes args: {connectionId: string, database: string}. Fix argument "database" and try again.',
+    );
+  });
+
   it('a non-object inputSchema ({} or type string) imposes nothing: the call reaches the executor', async () => {
     const loose: ServerCatalog = {
       ...CATALOG,
@@ -443,6 +474,39 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     // The server is the authority on what R35.1 lets through: the hint
     // restates the call signature (D32).
     expect(String(err['hint'])).toContain('If the arguments were wrong: "read_file" takes args: {');
+  });
+
+  it('an upstream rejection glosses the arguments the call sent (D33)', async () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'get_commit',
+          description: 'Get a commit.',
+          annotations: { readOnlyHint: true },
+          inputSchema: {
+            type: 'object',
+            properties: {
+              repo: { type: 'string', description: 'Repository name' },
+              sha: { type: 'string', description: 'Commit SHA, branch name, or tag name' },
+              after: { type: 'string', description: `The endCursor of the previous page.${ESC}` },
+              page: { type: 'integer', description: 'Page to fetch, from 1.' },
+            },
+            required: ['repo', 'sha'],
+          },
+        }),
+      ],
+    };
+    const d = deps({
+      catalog,
+      executor: new FakeExecutor({ get_commit: { ok: false, error: { message: 'No commit' } } }),
+    });
+    const result = completed(
+      await callTool({ name: 'get_commit', args: { repo: 'r', sha: 'main', after: 'x' } }, d),
+    );
+    expect(String(structured(result)['hint'])).toBe(
+      'The wrapped server rejected this call. If the arguments were wrong: "get_commit" takes args: {repo: string, sha: string, after?: string, page?: integer}, where sha: "Commit SHA, branch name, or tag name"; after: "The endCursor of the previous page.�". Fix them and try again, or report the error to the user.',
+    );
   });
 });
 

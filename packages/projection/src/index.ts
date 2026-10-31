@@ -67,6 +67,7 @@ export {
 
 // Catalog projection — search_tools / describe_tool / call_tool (PRD §6.8, R32–R38)
 export {
+  argGlosses,
   callSignature,
   callTool,
   canonicalJson,
@@ -82,9 +83,12 @@ export {
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
   MAX_SCHEMA_CHARS,
+  MAX_GLOSS_CHARS,
   MAX_SIGNATURE_CHARS,
+  GLOSS_HITS,
   SIGNATURE_HITS,
   SCHEMA_KEY_ALLOWLIST,
+  type ArgGloss,
   type CallSignature,
   type CallToolArgs,
   type CallToolDeps,

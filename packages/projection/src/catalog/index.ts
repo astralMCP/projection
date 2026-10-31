@@ -34,7 +34,14 @@ export {
   SCHEMA_KEY_ALLOWLIST,
   type SanitizedSchema,
 } from './schema-safety.js';
-export { callSignature, MAX_SIGNATURE_CHARS, type CallSignature } from './signature.js';
+export {
+  argGlosses,
+  callSignature,
+  MAX_GLOSS_CHARS,
+  MAX_SIGNATURE_CHARS,
+  type ArgGloss,
+  type CallSignature,
+} from './signature.js';
 export {
   searchBoxes,
   searchTools,
@@ -43,6 +50,7 @@ export {
   DEFAULT_QUERY_PAGE_SIZE,
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
+  GLOSS_HITS,
   SIGNATURE_HITS,
   type BoxedSearchPage,
   type BoxedToolSummary,

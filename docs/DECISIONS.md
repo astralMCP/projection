@@ -2015,7 +2015,85 @@ posture. Approval, gating and the posture labels are unchanged; a signature
 grants nothing — the call still goes through `call_tool`'s gate.
 
 Rejected: argument descriptions in the signature (they are most of a
-`describe_tool` answer's size, and `describe_tool` serves them); signatures on every
+`describe_tool` answer's size, and `describe_tool` serves them; D33 brings
+back a capped gloss for the ones a call cannot do without); signatures on every
 hit (a 15-row page of them costs more than the `describe_tool` it saves);
 rejecting unknown arguments the schema does not forbid (D9: the server is
 the authority).
+
+## D33 — Signed hits gloss the required arguments their names do not explain (2026-10-31)
+
+Context. D32's `args:` line cut `describe_tool` calls by about 80 % and
+cost by 7–18 %, but it carries names and types, not meanings. Sonnet read
+`rename-collection args: {connectionId: string, database: string, …}`,
+invented `connectionId: "default"`, got an upstream error and gave up;
+before D32 it had called `describe_tool` and read that `connectionId` is
+"the id returned by one of the connect tools, or \"preconfigured\"". GitHub
+has the same kind of argument (`sha` takes a branch or tag name too;
+`after` takes the previous page's `endCursor`). The error hint restated
+only the signature, so the retry had nothing new to go on.
+
+Decision (PRD R33, R35.1, R35.5; amends D32).
+
+- **Glosses on the signed hits.** Each hit that shows an `args:` line (the
+  first three of a query, not blocked) also carries
+  `glosses: [{ name, text }]` for its _required_ arguments, rendered as one
+  more indented line: `  where connectionId: "The connection to run the
+operation against. Use the id returned by one of the connect tools, or
+\"preconfigured\" to use…"`. A required argument is the one a call cannot
+  go without, so it is the one a model invents when it cannot tell what it
+  means; optional ones stay with `describe_tool`.
+- **Only what the name does not say.** An argument gets no gloss when its
+  description is made only of filler words (articles, prepositions,
+  `name`, `number`, `id`, `value`, `new`, `required`, …) and words of the
+  tool's or its arguments' names, matched as prefixes (`Repository name`
+  for `repo`, `The number of the issue` for `issue_number`, `The new name
+for the collection` for `newName`), when it is an `enum` or `const`
+  (the line already lists the values; on the GitHub fixture those
+  descriptions were a third of the gloss text and read "The method to
+  execute" or listed the options again), or when it has no description.
+- **Capped.** A gloss is cut at a word to 120 characters
+  (`MAX_GLOSS_CHARS`), and one tool's glosses stop at 240. 120 keeps the
+  median informative GitHub description whole (48 characters) and, in a
+  longer one (Sentry's median is 124, MongoDB's `connectionId` 173), the
+  instruction in its first sentences; past it are option lists and
+  examples.
+- **Once per page.** A gloss already on the page (same argument, same
+  words) is not repeated on a later hit, so a MongoDB page pays for
+  `connectionId` once. `structuredContent` keeps every hit's glosses.
+- **Errors gloss what was sent.** An `upstream` rejection's hint adds the
+  glosses of the arguments the call sent, optional ones included (`after`,
+  `cursor`, `perPage`), at up to 240 characters each:
+  `… takes args: {…}, where sha: "Commit SHA, branch name, or tag name".
+Fix them and try again, …`. A `validate` hint glosses the argument it
+  names. A rejection is rare and is exactly where the meaning was missed.
+
+Why three hits, not just the first. Measured offline (chars / 4, D22
+corpus, 1,173 cases; retrieval unchanged): glossing only rank 1 adds a
+mean 16 tokens (median 0) and reaches the gold tool with a gloss in 38.1 %
+of cases; ranks 2–3 add 6.5 points for 21 more tokens a page, about 325
+tokens per extra case reached, against 800–1,400 for the `describe_tool`
+answer (plus the turn) or the failed call it replaces. And a signed hit
+without its meaning invites the same invented value.
+
+Measured. Mean first page 507 → 539 tokens (median +31.5, p90 +83): github
+577 → 622, multi:github 613 → 661, mongo 307 → 360, multi:mongo 244 → 289,
+fs 391 → 392, synthetic 442 (no glosses). Surface table's sample search
+page: github 711 → 744, mongodb 301 → 338, multi 738 → 771. Tools with at
+least one gloss: GitHub 42 of 95 (57 glosses), MongoDB 20 of 21 (26), fs 1
+of 14, synthetic 0 of 1,003; the summit fixtures Slack 3 of 8, Stripe 4 of
+22, Notion 17 of 24, Sentry 52 of 66.
+
+S5. A gloss is the server's text, built from the R34-sanitized schema (so
+`description` was already neutralized, and the 16 KB cap may have dropped
+it): invisible characters stripped, whitespace collapsed to one line,
+control and bidi characters neutralized, raw text read to 2,000 characters
+at most, then capped. Each is JSON-quoted on our own indented `where` line
+under the entry, so it cannot end its quote and pass for another
+argument's gloss, open a line, or forge an entry or a posture. A name
+over 64 characters gets no gloss, as it gets no place in the signature.
+
+Rejected: a gloss on optional arguments on the search page (over the
+GitHub tools their glosses come to 9,640 characters against 3,504 for the
+required ones); a first-sentence rule (the
+instruction in `connectionId` is in its second); glossing every hit.

@@ -4,6 +4,7 @@ import { buildBoxedCatalog } from '../../src/catalog/boxes.js';
 import {
   DEFAULT_QUERY_PAGE_SIZE,
   DEFAULT_SEARCH_PAGE_SIZE,
+  GLOSS_HITS,
   MAX_QUERY_CHARS,
   searchBoxes,
   searchTools,
@@ -656,5 +657,87 @@ describe('search results carry call signatures for the top hits (D32)', () => {
     expect(rendered).toContain(
       '  args: {"a\\n- read_file — Read a file. [runs immediately]"?: string}',
     );
+  });
+});
+
+describe('search results gloss the top hits’ required arguments (D33)', () => {
+  const CONNECTION = 'Use the id a connect tool returned, or "preconfigured".';
+  const mongo = (name: string, extra: Record<string, unknown> = {}) =>
+    entry({
+      name,
+      description: `${name.replace('-', ' ')} things.`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          connectionId: { type: 'string', description: CONNECTION },
+          database: { type: 'string', description: 'Database name' },
+        },
+        required: ['connectionId', 'database'],
+      },
+      ...extra,
+    });
+  const GLOSSED: ServerCatalog = {
+    alias: 'default',
+    identity: 'db@1.0.0',
+    tools: [
+      mongo('db-read', { annotations: { readOnlyHint: true } }),
+      mongo('db-dump'),
+      entry({
+        name: 'db-sync',
+        description: 'db sync things.',
+        inputSchema: {
+          type: 'object',
+          properties: { since: { type: 'string', description: 'An ISO date; omit for all.' } },
+          required: ['since'],
+        },
+      }),
+      mongo('db-drop'),
+    ],
+  };
+
+  it('puts one where line under the args of each signed hit, a gloss once per page', () => {
+    expect(GLOSS_HITS).toBe(SIGNATURE_HITS);
+    const result = searchTools(GLOSSED, { query: 'db' });
+    const tools = page(result).tools;
+    expect(tools.map((t) => t.glosses?.map((g) => g.name))).toEqual([
+      ['connectionId'],
+      ['connectionId'],
+      ['since'],
+      undefined,
+    ]);
+    const rendered = text(result);
+    expect(rendered).toContain(
+      '- db-read — db read things. [runs immediately]\n  args: {connectionId: string, database: string}\n  where connectionId: "Use the id a connect tool returned, or \\"preconfigured\\"."\n- db-dump',
+    );
+    // The same gloss again on the page is left out; a new one is shown.
+    expect(rendered).toContain(
+      '- db-dump — db dump things. [asks for approval]\n  args: {connectionId: string, database: string}\n- db-sync',
+    );
+    expect(rendered).toContain('  where since: "An ISO date; omit for all."\n- db-drop');
+    // Past the signed hits: neither args nor glosses.
+    expect(rendered.split('\n').filter((line) => line.startsWith('  where '))).toHaveLength(2);
+  });
+
+  it('glosses nothing on a listing or for a blocked tool', () => {
+    const listing = searchTools(GLOSSED, {});
+    expect(page(listing).tools.some((t) => t.glosses !== undefined)).toBe(false);
+    expect(text(listing)).not.toContain('where ');
+    const blocked = searchTools(GLOSSED, { query: 'db' }, { policy: { 'db-read': 'deny' } });
+    expect(page(blocked).tools[0]?.glosses).toBeUndefined();
+    // The next hit is the first to show the gloss.
+    expect(page(blocked).tools[1]?.glosses?.[0]?.name).toBe('connectionId');
+    expect(text(blocked)).toContain(
+      '- db-dump — db dump things. [asks for approval]\n  args: {connectionId: string, database: string}\n  where connectionId:',
+    );
+  });
+
+  it('glosses multi-server hits from the box entry', () => {
+    const view = buildBoxedCatalog([{ alias: 'mongo', catalog: GLOSSED }]);
+    const result = searchBoxes(view, { query: 'db' }, { box: 'mongo' });
+    const tools = (result.structuredContent as unknown as BoxedSearchPage).tools;
+    expect(tools[0]).toMatchObject({
+      name: 'mongo.db-read',
+      glosses: [{ name: 'connectionId', text: CONNECTION }],
+    });
   });
 });
