@@ -1734,3 +1734,27 @@ Consequences.
   facade from direct listing to search. The listing is decided at wrap
   time, like the rest of the catalog (R47), so a facade does not switch
   mid-session.
+
+## D29 — Pass on the signals the server already sent: defaults, partial results, text as text (2026-10-30)
+
+Context. Live eval traces on Haiku 4.5 showed failures where the wrapped
+server had told the facade what the model needed and the facade dropped it
+before the model saw it. A search tool's `limit` defaulted to 10; the
+sanitizer removed `default`, the model omitted `limit`, received 10 of 40
+documents and acted on them as the whole set. Each mechanism below is
+general: it reads only the schema, the arguments and the result, and works
+for any MCP server.
+
+Decision 1 — keep scalar schema defaults (PRD R34). `default` joins the
+sanitizer's allowlist, as a scalar only: a finite number, a boolean,
+`null`, or a string of at most 64 characters with no control, bidi or
+invisible character. A string that would need neutralizing is dropped
+rather than shown altered, since the point is that the model reads the
+value the server applies. Object and array defaults stay dropped: they are
+free-form server data, and the scalar case is the one that changes what a
+call returns. `describe_tool` restates the top-level defaults on one line
+after the input schema (`Defaults the server applies when an argument is
+omitted: "limit" = 10.`), and typegen documents each kept default as
+`@default <JSON value>` on the property, through the same `safeDefault`
+rule. Directly listed tools carry the default in their sanitized
+`inputSchema`.

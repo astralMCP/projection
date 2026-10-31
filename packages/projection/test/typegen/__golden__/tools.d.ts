@@ -12,7 +12,10 @@
 export type GetWeatherInput = {
   /** City name */
   city: string;
-  /** Temperature units */
+  /**
+   * Temperature units
+   * @default "c"
+   */
   units?: "c" | "f";
 };
 
@@ -43,6 +46,7 @@ export type SearchInput = {
     text: string;
     fuzzy?: boolean;
   };
+  /** @default 10 */
   limit?: number;
   filters?: Record<string, string>;
   range?: [number, number];

@@ -224,6 +224,46 @@ describe('describe_tool (R34)', () => {
     }
   });
 
+  it('shows kept scalar defaults in the schema, restated on one line, and in the types (D29)', () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'find',
+          description: 'Find documents.',
+          annotations: { readOnlyHint: true },
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              limit: { type: 'integer', default: 10 },
+              sort: { type: 'string', default: 'asc' },
+              filter: { type: 'object', default: { open: true } },
+              [`odd${ESC}name`]: { type: 'boolean', default: true },
+            },
+          },
+        }),
+      ],
+    };
+    const result = describeTool(
+      catalog,
+      { name: 'find', types: true },
+      { toolTypes: generateToolTypes(catalog).toolTypes },
+    );
+    const props = described(result).inputSchema['properties'] as Record<string, unknown>;
+    expect(props['limit']).toEqual({ type: 'integer', default: 10 });
+    expect(props['filter']).toEqual({ type: 'object' });
+    const rendered = text(result);
+    expect(rendered).toContain('"default": 10');
+    expect(rendered).toContain(
+      'Defaults the server applies when an argument is omitted: "limit" = 10, "sort" = "asc", "odd�name" = true.',
+    );
+    expect(rendered).not.toContain(ESC);
+    expect(rendered).toContain('/** @default 10 */');
+    // No line for a tool without defaults.
+    expect(text(describeTool(RICH, { name: 'write_file' }))).not.toContain('Defaults the server');
+  });
+
   it('omits types unless asked for them (types: true), even when a typegen map is available', () => {
     const quiet = described(describeTool(RICH, { name: 'read_file' }, { toolTypes }));
     expect(quiet.types).toBeUndefined();

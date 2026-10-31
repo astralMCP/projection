@@ -27,6 +27,7 @@ import type { CallToolResult } from '../mrtr/protocol.js';
 import type { ToolTypeText } from '../typegen/index.js';
 import {
   findTool,
+  isRecord,
   type PolicyOptions,
   type ServerCatalog,
   type ToolAnnotations,
@@ -152,6 +153,8 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
   // it reads as data and cannot forge one of the labelled lines above.
   lines.push('What the server says it does:', indentBlock(tool.description ?? '(no description)'));
   lines.push('', 'Input schema (JSON Schema):', jsonBlock(tool.inputSchema));
+  const defaults = defaultsLine(tool.inputSchema);
+  if (defaults !== undefined) lines.push(defaults);
   if (tool.outputSchema !== undefined) {
     lines.push('', 'Output schema (JSON Schema):', jsonBlock(tool.outputSchema));
   } else {
@@ -193,6 +196,30 @@ function undeclaredOutput(tool: ToolDescription): string {
     return `${head} Before a machine reads its fields, call it once with call_tool and look at the result: event.result is that same value (call_tool prints an object as indented JSON, text as it is).`;
   }
   return `${head} Do not write code that depends on a result shape you have not seen.`;
+}
+
+const MAX_DEFAULTS_LISTED = 12;
+
+/**
+ * The top-level defaults the sanitizer kept (D29), restated on one line: an
+ * omitted argument silently takes its default, and a page-size default the
+ * model never noticed is how a page gets read as the whole set. Built from
+ * the sanitized schema only — every value already passed `safeDefault` —
+ * with each name neutralized, capped and quoted.
+ */
+function defaultsLine(schema: Record<string, unknown>): string | undefined {
+  const properties = schema['properties'];
+  if (!isRecord(properties)) return undefined;
+  const pairs: string[] = [];
+  for (const [name, property] of Object.entries(properties)) {
+    if (!isRecord(property) || !Object.hasOwn(property, 'default')) continue;
+    const key = JSON.stringify(capLength(neutralizeControlChars(name), 64));
+    pairs.push(`${key} = ${JSON.stringify(property['default'])}`);
+  }
+  if (pairs.length === 0) return undefined;
+  const listed = pairs.slice(0, MAX_DEFAULTS_LISTED);
+  const more = pairs.length > listed.length ? `, and ${pairs.length - listed.length} more` : '';
+  return `Defaults the server applies when an argument is omitted: ${listed.join(', ')}${more}.`;
 }
 
 /**
