@@ -268,7 +268,7 @@ resource stays complete either way.
 Small catalogs can also be listed directly (exploration, off by default):
 `projections: { direct: 'auto' }` registers one tool per wrapped tool —
 `<box>__<tool>` on a multi-server facade, the tool's own name otherwise —
-when their estimated definitions fit `directBudgetTokens` (default 12 000),
+when their estimated definitions fit `directBudgetTokens` (default 8 000),
 and falls back to the search tools when they do not. Each listed tool is a
 thin alias of `call_tool({ name, args })`: same validation, policy, approval
 prompt and sealed blob, forwarded server questions (below), decline copy,
