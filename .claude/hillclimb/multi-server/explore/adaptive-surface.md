@@ -145,8 +145,8 @@ discovery turns per task, and each saved turn re-reads a growing context. The cr
 depends on the model. For a facade that serves any client, **set `'auto'` at about 8k estimated
 tokens**, below the Sonnet break-even with margin for tokenizers that count more tokens per
 character. That lists filesystem- and workplace-sized catalogs (≤ ~40 tools of ordinary schemas)
-directly and leaves mongodb's large schemas to the catalog. The code ships 12k: change
-`DEFAULT_DIRECT_BUDGET_TOKENS` to 8,000 when this graduates. Confirm with 3 reps on a 6–10k
+directly and leaves mongodb's large schemas to the catalog. Round 2 changed
+`DEFAULT_DIRECT_BUDGET_TOKENS` to 8,000. Confirm with 3 reps on a 6–10k
 catalog first, since 1 rep is ±7 pp per task.
 
 ## Recommendation
@@ -161,16 +161,15 @@ flipping the default:
 2. Amend PRD R1, R32 and R43. R1 currently says the wrapped tools MUST NOT be exposed directly.
    The mediated aliases keep the intent of that rule, since nothing is a pass-through, but not its
    letter. Record the decision in DECISIONS.md.
-3. Fix the copy gaps listed under Risks.
+3. ~~Fix the copy gaps listed under Risks~~ (done in round 2).
 4. Minor version bump: a new public option and new prompt copy.
 
 ## Risks and gaps
 
 - **Spec drift.** See R1 above. R33 and R43 search copy still describes the search tools, which
   direct mode drops.
-- **Dangling copy.** In direct mode, the unknown-name hint of `describe_tool`/`call_tool` and the
-  R37 `discover_apis` pointer (above 40 tools) still name `search_tools`, which is not served.
-  These are rare, because the model sees every name, but they are wrong.
+- **Dangling copy.** Fixed in round 2. The unknown-name hint and the R37 `discover_apis`
+  pointer name only the search tools that are served, and say which boxes are listed directly.
 - **Hosts that gate on annotations.** A mediated read tool carries `readOnlyHint: true`, so such a
   host may auto-run it. That is safe, because Projection still gates every call (a `deny`/`ask`
   override still refuses or elicits). It is a change from `call_tool`, which carries no hints.
@@ -201,3 +200,125 @@ run was cached, so mixing batch and interactive records does not bias them.
 
 Raw results: `packages/harness/eval-results/2026-10-30T14-3*.json` and `2026-10-30T15-*.json`
 (gitignored). Aggregation: one record per (tier, model, mode, task), newest wins.
+
+## Round 2: per-box adaptive surface on multi-server facades
+
+Commit `b3aa143`. `origin/eval-world-fidelity` was merged first: the GitHub box now answers
+unmodeled reads with `[]` or a 404.
+
+### What changed
+
+- **Per-box `'auto'`.** `selectDirectBoxes` estimates each box's mediated definitions and fills
+  the budget smallest box first, ties broken by alias. A box that does not fit is skipped, and the
+  next one is tried. A box is listed whole or not at all, so the model never sees half a box.
+  Sorting by size lists the most boxes the budget allows. That is the goal, because every listed
+  box is one the model can find without searching. `direct: true` lists every box.
+  `facade.projections` reports `directBoxes`.
+- **Default budget 8k** (`DEFAULT_DIRECT_BUDGET_TOKENS = 8_000`), per the round-1 crossover. On
+  the multi world, `fs` (2.0k estimated tokens) is listed. `mongo` (10.8k) and `github` (30k) keep
+  the catalog.
+- **One source of truth for the served surface.** `BoxedCatalog` gained `directBoxes` and
+  `searchBoxes`, and its `globalSearch` now means "served":
+  - every box that is not listed keeps its `search_<box>`;
+  - a listed box keeps it only if its server sends guidance (R43 guidance-first listing);
+  - `search_tools` is served while at least one box is not listed.
+- **Copy for mixed facades.**
+  - The preamble names the listed boxes (`The fs box's tools are listed directly, named
+<box>__<tool> …`) and the boxes to search (`The github and mongo boxes are not listed: call
+search_github or search_mongo (or search_tools, which searches every box) …`).
+  - The shelf header explains the `listed directly` mark, and each listed box's line carries it.
+  - `describe_tool` says it is needed for the unlisted boxes and only for the output schema of a
+    listed box. `call_tool` says to call listed tools directly and to describe an unlisted box's
+    tools first.
+- **Stale copy fixed.** The unknown-name hint names `<alias>__<tool>` for a listed box and only
+  the served search tools otherwise. On a single-server direct facade it points at the listed
+  tools. The R37 `discover_apis` pointer uses the same sentence (`findToolsSentence`), and so
+  does the "not served" error from `facade.searchTools`.
+- **Tests.**
+  - The listing for a mixed facade, with a box that sends guidance and one that does not.
+  - A scan of every served text (instructions, tool descriptions, input schemas, three
+    unknown-name hints, the R37 pointer) for `search_*` names that are not served.
+  - Gating parity on a mixed facade: same elicitation, an fs approval cannot run
+    `github.write_file`, deny on a listed box.
+  - The selection rule.
+  - The single-server stale-copy fix.
+
+### (a) Probe: the three stuck/tracked tasks, 5 reps, box descriptions on, interactive
+
+Both modes were run in the same invocation, in the fixed world. `$` is list-price `standardUsd` per
+episode.
+
+| task                  | model      | projection: pass, $/ep, turns | projection-auto: pass, $/ep, turns | baseline you gave |
+| --------------------- | ---------- | ----------------------------- | ---------------------------------- | ----------------- |
+| global-csv-released   | haiku45    | 0/5, 0.0536, 21.6             | 1/5, 0.0452, 21.6                  | 2/5               |
+| global-csv-released   | sonnet-low | 0/5, 0.0220, 6.0              | 0/5, 0.0239, 5.4                   | 0/5               |
+| global-last-log-entry | haiku45    | 5/5, 0.0432, 7.0              | 5/5, **0.0156**, 6.6               | 5/5               |
+| global-last-log-entry | sonnet-low | 3/5, 0.0149, 6.0              | **5/5**, **0.0077**, 3.0           | 4/5               |
+| global-who-is-grace   | haiku45    | 5/5, 0.0335, 13.2             | 5/5, **0.0202**, 12.8              | 4/5               |
+| global-who-is-grace   | sonnet-low | 5/5, 0.0216, 8.0              | 5/5, 0.0259, 8.0                   | 5/5               |
+
+Pooled pass rates: Haiku 10/15 → 11/15, Sonnet 8/15 → 10/15. Cost per episode: Haiku −38 %,
+Sonnet −2 %. Sonnet's `who-is-grace` costs +20 % at the same 8 turns. It is a mongo task, so the
+listed fs tools are pure prefix: about 2.5k extra Sonnet tokens on every turn.
+
+**`global-csv-released` is not fixed by listing, and listing is not what was blocking it.** With
+fs listed, Sonnet still opens with `search_github`, checks releases, PRs and issues, and answers
+"no evidence". It never reads the CHANGELOG, though every fs tool is in its tool list. Three
+Sonnet diagnostics, 5 reps each:
+
+| surface                                         | box descriptions | pass |
+| ----------------------------------------------- | ---------------- | ---- |
+| projection-direct (all 130 tools listed)        | on               | 0/5  |
+| projection (catalog)                            | off              | 3/5  |
+| projection-auto (fs listed)                     | off              | 5/5  |
+| direct mode (earlier runs, no box descriptions) | n/a              | 3/3  |
+
+The cause is the **host box description**, `github — GitHub: issues, PRs and repos for
+acme/widgets`. To Sonnet it reads as the place where "released" is answered. With the
+descriptions on, no surface passes, including all 130 tools visible. With them off, the catalog
+passes 3/5 and the per-box surface 5/5. The prompt never names the project. The description is
+integrator text, so Projection cannot reword it. Promising levers, all untested:
+
+- an eval change: give fs a description as specific as GitHub's;
+- a preamble rule that a box description lists what the box mainly holds, not everything it
+  could answer. The earlier v5–v7 "look in other boxes" hints failed, so I'd expect little.
+
+### (b) Full multi tier, 1 rep, projection-auto, box descriptions on
+
+| run                 | model      | pass  | $/ep (actual)      | $/ep (std) | turns | calls | search+describe /ep |
+| ------------------- | ---------- | ----- | ------------------ | ---------- | ----- | ----- | ------------------- |
+| v4 rep 0 (wave1.md) | haiku45    | 16/17 | 0.0232             | –          | 7.18  | 7.00  | 3.59                |
+| projection-auto     | haiku45    | 16/17 | **0.0189** (−19 %) | 0.0143     | 7.29  | 6.76  | 2.47                |
+| v4 rep 0 (wave1.md) | sonnet-low | 15/17 | 0.0232             | –          | 4.76  | 4.88  | 2.12                |
+| projection-auto     | sonnet-low | 16/17 | 0.0266 (+15 %)     | 0.0154     | 4.29  | 4.24  | 1.71                |
+
+Both models now fail only `global-csv-released`. At v4 rep 0, Sonnet also failed
+`global-last-log-entry`. Caveats:
+
+- v4 ran in the world before the fidelity fix.
+- v4's records carry no `standardUsd`, so the comparison has to use actual spend, which depends on
+  caching. This run used concurrency 4 with cold caches. Its Sonnet actual $/ep is 1.7× its own
+  list price, which is where the +15 % comes from. Turns and calls fell (4.76 → 4.29, 4.88 → 4.24).
+- One rep is noisy (±6 pts per task).
+
+### Recommendation for the default
+
+Make `direct: 'auto'` the default, with the 8k per-box budget.
+
+- **Evidence.**
+  - Small catalogs: round-1 single-server tiers, 82/88 → 86/88, −49 %/−14 % cost.
+  - The three probe tasks: 18/30 → 21/30, Haiku −38 %, Sonnet −2 %.
+  - Full multi tier: pass equal or better, fewer turns and calls.
+  - Where every box is too big, `'auto'` reduces to today's catalog surface, unchanged.
+- **Cost.** The one cost regression is Sonnet on tasks that never touch the listed box (+10–20 %
+  from the prefix). The 8k budget bounds it.
+- **csv.** It needs a description-level fix, not a surface one.
+- **Before flipping:**
+  - 3-rep runs of the multi, guard and workplace tiers, about $10;
+  - PRD R1/R32/R43 amendments and a DECISIONS entry;
+  - a minor version bump.
+
+### Spend (round 2)
+
+**$3.05** recorded `estimatedUsd`, all interactive: (a) $1.65, (b) $0.77, diagnostics $0.62. Under
+the $5 cap.
