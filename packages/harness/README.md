@@ -245,7 +245,7 @@ whether the global search earns its place, which settles the
 totals; the report's per-tier blocks break each tier out on its own anyway.
 The approvals-mode comparison §13 also asks for is not run yet.
 
-The opt-in, held-out **summit-messy** tier (20 tasks, `messy-tasks.ts`)
+The opt-in, held-out **summit-messy** tier (21 tasks, `messy-tasks.ts`)
 measures robustness to other people's badly built servers, for comparing
 the facade against raw servers. Its **messy world** (`messy-world.ts`)
 opens up to four boxes, each a working server behind

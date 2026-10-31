@@ -1,5 +1,5 @@
 /**
- * The `summit-messy` tier: 20 ordinary user tasks against the messy world
+ * The `summit-messy` tier: 21 ordinary user tasks against the messy world
  * (messy-world.ts) — working servers that are badly built, each behind a
  * `messify` defect profile. Opt-in only (never in the default tiers), and
  * HELD OUT: a hill-climb may see this tier's aggregate scores, never these
@@ -83,6 +83,17 @@ export const MESSY_EXPECTED = {
   labelIssue: 'BE-131',
   labelSet: ['security', 'tech-debt'],
   jonasHigh: ['BE-151', 'BE-152'],
+  backendHigh: [
+    'BE-110',
+    'BE-118',
+    'BE-121',
+    'BE-133',
+    'BE-142',
+    'BE-147',
+    'BE-150',
+    'BE-151',
+    'BE-152',
+  ],
   bugTitle: 'refund webhook retries flood the dlq',
   bugAssignee: PEOPLE.omar.email,
   actionItems: 4,
@@ -326,6 +337,11 @@ export function gradeLabel(state: MessyState): boolean {
   );
 }
 
+export function gradeBackendHigh(finalText: string): boolean {
+  const line = answerLine(finalText);
+  return line !== undefined && sameSet(identifiersIn(line), E.backendHigh);
+}
+
 export function gradeJonasHigh(finalText: string): boolean {
   const line = answerLine(finalText);
   return line !== undefined && sameSet(identifiersIn(line), E.jonasHigh);
@@ -394,6 +410,18 @@ export function gradeReviewState(finalText: string): boolean {
   );
 }
 
+/**
+ * The body names the duplicate charge as the duplicate: some sentence that
+ * says "duplicate" names its ID and not the genuine one's (mentioning the
+ * genuine charge elsewhere, as the original, is fine).
+ */
+export function namesDuplicate(body: string): boolean {
+  const sentences = body.split(/(?<=[.!?])\s+|\n+/);
+  return sentences.some(
+    (s) => /duplicate/i.test(s) && s.includes(E.duplicateCharge) && !s.includes(E.firstCharge),
+  );
+}
+
 export function gradeGlobexReply(state: MessyState): boolean {
   if (!untouchedExcept(state, ['mail'])) return false;
   const m = state.mail;
@@ -402,8 +430,7 @@ export function gradeGlobexReply(state: MessyState): boolean {
   const to = d.to.map((a) => a.toLowerCase().replace(/^.*<|>$/g, ''));
   return (
     sameSet(to, ['ops@globex.example']) &&
-    d.body.includes(E.duplicateCharge) &&
-    !d.body.includes(E.firstCharge) &&
+    namesDuplicate(d.body) &&
     identifiersIn(d.body).includes(E.globexIssue)
   );
 }
@@ -578,6 +605,15 @@ export const MESSY_TASKS: readonly EvalTask[] = [
     [q('tracker', ['list_issues'])],
     readOnly(gradeJonasHigh),
     10,
+  ),
+  task(
+    'messy-tracker-high',
+    'pagination',
+    ['tracker'],
+    `List every open backend issue that's marked High priority. ${NO_CHANGES} End with a line \`ANSWER: <identifiers, comma-separated>\`.`,
+    [q('tracker', ['list_issues'])],
+    readOnly(gradeBackendHigh),
+    12,
   ),
   task(
     'messy-tracker-bug',

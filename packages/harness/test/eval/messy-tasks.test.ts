@@ -35,6 +35,7 @@ import {
   gradePastDue,
   gradeReviewState,
   gradeUnreadCustomers,
+  namesDuplicate,
 } from '../../src/eval/messy-tasks.js';
 import { NOW_EPOCH } from '../../src/eval/messy-billing.js';
 
@@ -175,12 +176,12 @@ async function mailIds(t: Tools, query: string): Promise<string[]> {
 // Registration
 
 describe('summit-messy registration', () => {
-  it('is opt-in and has 20 tasks over the messy world', () => {
+  it('is opt-in and has 21 tasks over the messy world', () => {
     expect(DEFAULT_TIERS).not.toContain('summit-messy');
     expect(resolveTiers('summit-messy')).toEqual(['summit-messy']);
     const tasks = resolveTasks(undefined, ['summit-messy']);
     expect(tasks.map((t) => t.name)).toEqual(MESSY_TASKS.map((t) => t.name));
-    expect(tasks).toHaveLength(20);
+    expect(tasks).toHaveLength(21);
   });
 
   it('every task names its boxes, a forbid and its own turn budget', () => {
@@ -374,6 +375,20 @@ describe('tracker tasks', () => {
     expect((await run('messy-tracker-jonas', answer(true))).success).toBe(true);
     // Urgent is not High.
     expect((await run('messy-tracker-jonas', answer(false))).success).toBe(false);
+  });
+
+  it('messy-tracker-high: every page, via the prose token; the first page alone is wrong', async () => {
+    const answer = (all: boolean) => async (t: Tools) => {
+      const issues = all
+        ? await allIssues(t, { team: 'BE' })
+        : (await t.json<{ issues: Issue[] }>('tracker.search', { team: 'BE' })).issues;
+      const hits = issues.filter(
+        (i) => !['Done', 'Canceled'].includes(i.state) && i.priority.value === 2,
+      );
+      return `ANSWER: ${hits.map((i) => i.identifier).join(', ')}`;
+    };
+    expect((await run('messy-tracker-high', answer(true))).success).toBe(true);
+    expect((await run('messy-tracker-high', answer(false))).success).toBe(false);
   });
 
   it('messy-tracker-bug: team, priority and assignee; a missing priority is refused as text', async () => {
@@ -681,6 +696,17 @@ describe('graders accept every correct phrasing and nothing else', () => {
     expect(gradeMustShip('ANSWER: BE-142=In Review; BE-147=In Progress')).toBe(false);
     expect(gradeReviewState('ANSWER: BE-142; In Review; Sam Rivera')).toBe(true);
     expect(gradeReviewState('ANSWER: BE-140; Done; Jonas Weber')).toBe(false);
+  });
+
+  it('globex reply: the duplicate named as such; the original may be mentioned too', () => {
+    const dup = E.duplicateCharge;
+    const first = E.firstCharge;
+    expect(
+      namesDuplicate(`The duplicate is charge ${dup}. The original charge, ${first}, stands.`),
+    ).toBe(true);
+    expect(namesDuplicate(`Charge ${dup} is a duplicate and will be refunded.`)).toBe(true);
+    expect(namesDuplicate(`The duplicate is ${first}.`)).toBe(false);
+    expect(namesDuplicate(`Charges ${first} and ${dup} include a duplicate.`)).toBe(false);
   });
 
   it('counts, dates and senders', () => {
