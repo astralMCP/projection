@@ -467,6 +467,12 @@ export type SegmentOutcome =
   | {
       status: 'error';
       error: StructuredError;
+      /**
+       * The workflow's audit trail up to the failure (earlier segments'
+       * included), so the result can say which approved calls already ran
+       * and which were refused. Absent when nothing was audited.
+       */
+      audit?: AuditEntry[];
     };
 
 export interface AuditEntry {

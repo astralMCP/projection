@@ -47,6 +47,7 @@ import { searchToolsPhrase } from '../catalog/search.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
+  assertApprovalPrompts,
   freezePolicySettings,
   resolveIntrospectTimeout,
   resolveProjections,
@@ -136,6 +137,7 @@ export async function wrapMcpServers(
   const aliases = new Set(resolved.map((source) => source.alias));
   assertPolicyKeys(options.policy, aliases);
   const approvals = assertApprovalsMode(options.approvals);
+  assertApprovalPrompts(options.approvalPrompts);
   const { globalSearch } = resolveCatalogOptions(options.catalog);
   const projections = resolveProjections(options.projections);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);

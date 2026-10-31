@@ -13,6 +13,7 @@ import type { TokenStore } from '../auth/token-store.js';
 import { DEFAULT_INTROSPECT_TIMEOUT_MS } from '../introspector/constants.js';
 import type { BlobKeyDomain } from '../blob/index.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
+import type { ApprovalPrompts } from '../mrtr/batch.js';
 import type {
   ApprovalsMode,
   PolicyOptions,
@@ -54,6 +55,17 @@ export interface WrapOptions {
    * apart; on `wrapMcpServer` it is the server's own tool name.
    */
   redact?: RedactionHook;
+  /**
+   * How a machine suspension holding several gated calls is put to the
+   * person (R15 amendment; DECISIONS D22). `'per-call'` (default) sends one
+   * elicitation per call. `'batched'` sends one elicitation listing every
+   * call in its full approval copy, with one pre-ticked boolean per call:
+   * each call still runs only if its own box comes back ticked, on the
+   * arguments sealed for it (S2). A client that answers the form without
+   * the booleans declines every call. Read once, at wrap time; any other
+   * value fails the wrap (`validate`).
+   */
+  approvalPrompts?: ApprovalPrompts;
   /**
    * Replaces the whole R29 preamble, whichever projections are on (the
    * code-mode, catalog or routing copy).
@@ -221,5 +233,16 @@ export function approvalGateDeps(input: {
     ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
     ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
     ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
+    ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   };
+}
+
+/** Validate `WrapOptions.approvalPrompts` at wrap time: absent, or one of the two layouts. */
+export function assertApprovalPrompts(value: unknown): ApprovalPrompts | undefined {
+  if (value === undefined || value === 'per-call' || value === 'batched') return value;
+  throw new ProjectionError(
+    'validate',
+    `approvalPrompts must be 'per-call' or 'batched', got ${JSON.stringify(value) ?? String(value)}`,
+    { hint: "Set approvalPrompts to 'per-call' (the default) or 'batched', or leave it out." },
+  );
 }

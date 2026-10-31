@@ -482,7 +482,22 @@ describe('call_tool: suspend and resume (R35.3–4, R36, S2)', () => {
     const declined = completed(await retry({ [CALL_KEY]: decline(`busy${ESC}`) }));
     expect(declined.isError).toBeUndefined();
     expect(outcome(declined)).toEqual({ status: 'declined', tool: 'write_file', reason: 'busy�' });
-    expect((declined.content[0] as { text: string }).text).toContain('Do not retry');
+    const text = (declined.content[0] as { text: string }).text;
+    // The note is quoted inert; the copy says the refusal is scoped to this
+    // call, forbids a repeat or a workaround, allows a changed call the
+    // note asks for, and asks for the rest of the task and a report.
+    expect(text).toContain('The user declined "write_file" with this note: "busy');
+    expect(text).not.toContain(ESC);
+    expect(text).toContain('covers only this call');
+    expect(text).toContain('If the note asks for a change, make the changed call instead');
+    expect(text).toContain('otherwise do not make this call again or reach its result another way');
+    expect(text).toContain('Carry on with any part of the task that does not depend on it');
+    expect(text).toContain('say in your final answer what was not done');
+    // Without a note there is no change to make.
+    const bare = (completed(await retry(undefined)).content[0] as { text: string }).text;
+    expect(bare).toBe(
+      'The user declined "write_file". Nothing was executed. The refusal covers only this call: do not make it again or reach its result another way. Carry on with any part of the task that does not depend on it, but skip anything that only makes sense if it had run (such as announcing it as done), and say in your final answer what was not done.',
+    );
 
     expect(outcome(completed(await retry(undefined)))).toEqual({
       status: 'declined',

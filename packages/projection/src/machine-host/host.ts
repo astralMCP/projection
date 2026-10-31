@@ -8,6 +8,7 @@ import { ProjectionError, toStructuredError } from '../errors.js';
 import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
 import { isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { didYouMeanHint } from '../catalog/search.js';
+import { validateArgsShape } from '../catalog/validate-args.js';
 import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
@@ -153,7 +154,11 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
 
     return await runner.run(options);
   } catch (err) {
-    return { status: 'error', error: toStructuredError(err, session?.getLogs() ?? []) };
+    return {
+      status: 'error',
+      error: toStructuredError(err, session?.getLogs() ?? []),
+      ...(audit.length > 0 ? { audit } : {}),
+    };
   } finally {
     await session?.dispose();
   }
@@ -387,6 +392,28 @@ class SegmentRunner {
       }
 
       if (resolved.decision === 'ask') {
+        // Never ask a person to approve a call that cannot run: arguments
+        // that miss a required property, have the wrong top-level type or
+        // name one the schema forbids (the same structural check call_tool
+        // makes before it suspends, R35.1) fail here as TOOL_ERROR, with the
+        // fix in the message, and no prompt is shown. Nothing executes
+        // either way; the wrapped server stays the authority on the rest.
+        const invalid = invalidArgs(request.name, request.args, resolved.entry.inputSchema);
+        if (invalid !== undefined) {
+          events.push({
+            type: 'TOOL_ERROR',
+            callId: request.id,
+            error: { message: invalid.message, detail: { phase: 'validate', hint: invalid.hint } },
+          });
+          this.deps.audit.push({
+            callId: request.id,
+            tool: request.name,
+            args: request.args,
+            decision: 'error',
+            reason: invalid.message,
+          });
+          continue;
+        }
         gated.push(call);
         continue;
       }
@@ -596,4 +623,19 @@ function describeState(value: unknown): string {
   };
   walk(value, '');
   return parts.length > 0 ? parts.join(' | ') : JSON.stringify(value);
+}
+
+/** The structural argument error for a gated call, or undefined when its arguments fit the schema. */
+function invalidArgs(
+  name: string,
+  args: Record<string, unknown>,
+  schema: Record<string, unknown>,
+): { message: string; hint: string } | undefined {
+  try {
+    validateArgsShape(name, args, schema, 'toolCall');
+    return undefined;
+  } catch (err) {
+    if (err instanceof ProjectionError) return { message: err.message, hint: err.hint ?? '' };
+    throw err;
+  }
 }

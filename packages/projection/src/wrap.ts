@@ -42,6 +42,7 @@ import { callTool, describeTool, searchTools, type CallToolArgs } from './catalo
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
+  assertApprovalPrompts,
   freezePolicySettings,
   resolveIntrospectTimeout,
   resolveProjections,
@@ -184,6 +185,7 @@ export async function wrapMcpServer(
   // server attached to a transport nobody will close.
   const projections = resolveProjections(options.projections);
   const approvals = assertApprovalsMode(options.approvals);
+  assertApprovalPrompts(options.approvalPrompts);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)

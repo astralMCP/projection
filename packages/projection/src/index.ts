@@ -39,6 +39,8 @@ export {
   type RegisterOptions,
   type WrapOptions,
 } from './wrap.js';
+// Batched approval prompts (WrapOptions.approvalPrompts; DECISIONS D22).
+export { BATCH_KEY, batchField, type ApprovalPrompts } from './mrtr/batch.js';
 export {
   wrapMcpServers,
   type MultiProjectionFacade,

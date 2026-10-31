@@ -103,6 +103,10 @@ const facade = await wrapMcpServer(myServer, {
   // Fails closed: if this throws, the prompt shows a placeholder, never args.
   redact: (tool, args) => (tool === 'send_email' ? { ...args, body: '[hidden]' } : args),
 
+  // Put a machine step's several gated calls to the person as ONE prompt
+  // (see "Batched approval prompts" below). Default 'per-call'.
+  // approvalPrompts: 'batched',
+
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
   // Bound on connecting to the server and reading its tools at wrap time;
@@ -150,6 +154,40 @@ places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come
 from the wrapped server, and a hostile or careless server can label a
 damaging tool non-destructive — enable the mode only for servers you trust,
 and pin anything you doubt with a per-tool `ask` or `deny`.
+
+### What the person and the model see around an approval
+
+- **Before asking.** A gated call whose arguments cannot fit the tool's
+  input schema (a required argument missing, a top-level value of the wrong
+  type, an argument the schema forbids) is never put to the person:
+  `call_tool` returns a `validate` error, and a machine step gets a
+  `TOOL_ERROR` naming the argument, without a prompt.
+- **After a decline.** `call_tool` tells the model the refusal covers only
+  that call; not to make it again or reach its result another way (unless
+  the person's note asks for a change, which it then makes as a new call
+  that asks again); to carry on with the parts of the task that do not
+  depend on it; and to say in its answer what was not done. A machine's
+  completed result restates every refused call after its output, with the
+  same guidance, so a machine that ignores `TOOL_DENIED` cannot hide a
+  refusal; a failed one also lists the approved calls that already ran.
+
+### Batched approval prompts
+
+When one machine step requests several gated calls at once (parallel
+regions, or several `toolCall`s in one action), the default
+`approvalPrompts: 'per-call'` sends one elicitation per call in a single
+round trip, and most hosts show one prompt per call.
+`approvalPrompts: 'batched'` sends one elicitation instead: a header, then
+each call's usual approval copy under `[1]`, `[2]`, … and a form with one
+pre-ticked boolean per call (`approve_1`, …) plus the optional `reason`.
+
+What runs does not change. Each call is still sealed on its own in the
+blob, and runs only if its own boolean comes back exactly `true` in an
+accepted answer; a declined, cancelled or missing answer, or one without
+the booleans, declines every call in it. A blob minted under one setting
+and resumed under the other declines everything. `call_tool` and a step
+with one gated call keep the per-call prompt. Enable it when your clients
+render boolean form fields; any other value fails the wrap.
 
 ## What your metadata becomes
 
