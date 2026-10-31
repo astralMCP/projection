@@ -1437,5 +1437,24 @@ byte-exact.
 
 **Machines.** A step whose server asks is held: the actor keeps waiting for
 that call's event, the segment settles everything else, then suspends. On
-resume the held call is re-issued before the machine continues. Progress and
-cancellation are still not relayed for machines (G3).
+resume the held call is re-issued before the machine continues. A question
+that cannot be forwarded is refused when the call is held, so the machine's
+own `TOOL_ERROR` handling runs; at most four questions are held per
+suspension across calls (a machine could otherwise fan one state out into
+hundreds of prompts). A machine that finishes with only held calls left
+completes without asking. Progress and cancellation are still not relayed
+for machines (G3).
+
+**Review follow-ups.** Two rules came out of the adversarial review. (1) A
+held `auto` call whose tool now asks is not re-issued: before forwarding, a
+call that needed no approval never crossed a round trip, so a new `ask`
+override always applied, and a blob minted earlier must not outlive that.
+(2) A long quoted line is hard-wrapped with each piece prefixed, and form
+labels that mimic approval copy are prefixed `The server's text:`. The
+in-process `serveStdio` path leaves the caller's `McpServer` with the
+2026-07-28 handlers installed after `close()`; re-wrapping works, hand-
+connecting it to a 2025-era client does not. That is documented rather than
+worked around (a per-connection instance would need a factory from the
+integrator). MRTR's state-only "call me again" is re-issued at once, at most
+eight times, as the SDK's own driver would have done for the 2025-era
+client Projection used to be.

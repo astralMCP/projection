@@ -323,8 +323,19 @@ async function resumeQuestion(
   const entry = findTool(deps.catalog, hold.name);
   if (entry === undefined) throw unknownToolError(deps.catalog, hold.name, 'call_tool');
   // Policy outranks the call's earlier authorization (D9): a tool now
-  // `deny` is not re-issued, whatever the human answered.
-  if (decidePolicy(entry, policy) === 'deny') return denied(entry);
+  // `deny` is not re-issued, whatever the human answered; nor is a call that
+  // ran without approval and now needs one.
+  const decision = decidePolicy(entry, policy);
+  if (decision === 'deny') return denied(entry);
+  if (decision === 'ask' && hold.decision === 'auto') {
+    return errorResult({
+      phase: 'blob_verification',
+      message: `${inert(hold.name)} now needs approval under this server's policy, so it was not re-issued with the user's answer`,
+      diagnostics: [],
+      hint: 'Call it again: the user will be asked to approve it first.',
+      logs: [],
+    });
+  }
   const responses = answersFor(hold, args.inputResponses);
   return await execute(
     { call: callOf(hold.name, hold.args), decision: hold.decision, request, trip: payload.trip },
@@ -454,9 +465,9 @@ function askQuestion(
   if (trip > caps.maxRoundTrips) {
     return errorResult({
       phase: 'terminal',
-      message: `${inert(run.call.name)} kept asking the user questions, past the limit of ${caps.maxRoundTrips} round trips for one call`,
+      message: `${inert(run.call.name)} asked the user a question, but this call already reached the limit of ${caps.maxRoundTrips} round trips (its approval and the server's questions count)`,
       diagnostics: [],
-      hint: 'Tell the user the tool could not finish here and has to be run another way.',
+      hint: 'Tell the user the tool could not finish here and has to be run another way; retrying asks again.',
       logs: [],
     });
   }

@@ -513,3 +513,55 @@ describe('Introspector output-schema validation', () => {
     }
   });
 });
+
+describe('Introspector on 2026-07-28 (G2, manual MRTR mode)', () => {
+  it('a tool whose outputSchema cannot compile fails before it runs, as through the SDK', async () => {
+    let ran = 0;
+    const mcp = new McpServer({ name: 'bad-schema', version: '1.0.0' });
+    mcp.registerTool('report', { inputSchema: z.object({}) }, () => {
+      ran += 1;
+      return { content: [], structuredContent: { a: 1 } };
+    });
+    mcp.server.setRequestHandler('tools/list', () => ({
+      tools: [
+        {
+          name: 'report',
+          inputSchema: { type: 'object' as const },
+          outputSchema: { type: 'object' as const, properties: { a: { type: 'no-such-type' } } },
+        },
+      ],
+    }));
+    const introspector = await createIntrospector({ default: mcp });
+    try {
+      const outcome = await introspector.callTool('default', 'report', {});
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error.message).toContain('invalid outputSchema');
+      expect(ran).toBe(0);
+    } finally {
+      await introspector.close();
+    }
+  });
+
+  it('non-conforming structured content is refused with the SDK wording', async () => {
+    const mcp = new McpServer({ name: 'liar', version: '1.0.0' });
+    mcp.registerTool(
+      'count',
+      { inputSchema: z.object({}), outputSchema: z.object({ n: z.number() }) },
+      () => ({ content: [], structuredContent: { n: 1 } }),
+    );
+    mcp.server.setRequestHandler('tools/call', () => ({
+      content: [],
+      structuredContent: { n: 'many' },
+    }));
+    const introspector = await createIntrospector({ default: mcp });
+    try {
+      const outcome = await introspector.callTool('default', 'count', {});
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error.message).toContain("does not match the tool's output schema");
+      }
+    } finally {
+      await introspector.close();
+    }
+  });
+});

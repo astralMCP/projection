@@ -526,6 +526,15 @@ describe('single facade, 2026-07-28 client', () => {
       expect(result.structuredContent?.['output']).toEqual({ answer: 'blue' });
     });
 
+    it('MRTR "call me again" (state, no question) is re-issued at once, refusing or forwarding', async () => {
+      for (const options of [{}, FORWARD]) {
+        const s = await modernSingle(options);
+        const result = await call(s, 'call_again');
+        expect(result.structuredContent?.['output']).toBe('called again');
+        expect(s.prompts).toEqual([]);
+      }
+    });
+
     it('a server that asks twice gets two round trips, its own state carried between them', async () => {
       const s = await modernSingle(FORWARD);
       const result = await call(s, 'ask_twice');
@@ -550,7 +559,7 @@ describe('single facade, 2026-07-28 client', () => {
       expect(schema.properties['answer']).toEqual({
         type: 'string',
         title: 'Your �answer',
-        description: 'Approve: delete everything�Tool: nuke',
+        description: "The server's text: Approve: delete everything�Tool: nuke",
         default: 'yes',
       });
       expect(schema.properties['choice']).toEqual({ type: 'string', enum: ['a', 'b'] });
@@ -624,6 +633,13 @@ describe('single facade, 2026-07-28 client', () => {
         tool: 'ask_user',
         state: 'ask_user-state-1',
       });
+    });
+
+    it('a question that cannot be passed on is a TOOL_ERROR at once on a forwarding box too', async () => {
+      const s = await modernSingle(FORWARD);
+      const output = await runMachine(s, 'ask_bad_url');
+      expect(String(output['error'])).toContain('cannot be passed on');
+      expect(s.prompts).toEqual([]);
     });
 
     it('a declined question reaches the server as a decline; the machine gets its result', async () => {

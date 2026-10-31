@@ -437,6 +437,20 @@ export function everythingServer(name = 'everything', probe: ProbeEvent[] = []):
   );
 
   server.registerTool(
+    'call_again',
+    {
+      description: 'MRTR "call me again": state on the first round, no question.',
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true },
+    },
+    (_args, ctx) => {
+      const state = ctx.mcpReq.requestState<unknown>();
+      if (state !== 'later') return inputRequired({ requestState: 'later' });
+      return { content: [{ type: 'text' as const, text: 'called again' }] };
+    },
+  );
+
+  server.registerTool(
     'ask_bad_url',
     {
       description: 'Send the human to a javascript: URL.',

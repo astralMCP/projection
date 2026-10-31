@@ -57,7 +57,9 @@ export const MAX_FORWARDED_QUESTIONS = 4;
 export const MAX_UPSTREAM_STATE_CHARS = 16 * 1024;
 
 const MAX_MESSAGE_CHARS = 1_000;
-const MAX_MESSAGE_LINES = 12;
+const MAX_MESSAGE_LINES = 16;
+/** Longest quoted line; longer lines are hard-wrapped. */
+const MAX_LINE_CHARS = 100;
 const MAX_FIELDS = 12;
 const MAX_TITLE_CHARS = 100;
 const MAX_DESCRIPTION_CHARS = 300;
@@ -102,7 +104,34 @@ export function forwardQuestions(
   context: QuestionContext,
   keys: { first?: number; taken?: ReadonlySet<string> } = {},
 ): ForwardedRound {
-  const entries = Object.entries(input.requests);
+  assertForwardable(input, context);
+  const questions: Record<string, ForwardedQuestion> = {};
+  const inputRequests: InputRequests = {};
+  let index = keys.first ?? 1;
+  for (const [key, request] of Object.entries(input.requests)) {
+    // A machine's call ids are model-chosen and key its approvals: never
+    // reuse one of them.
+    while (keys.taken?.has(`${UPSTREAM_KEY_PREFIX}${index}`) === true) index += 1;
+    const facadeKey = `${UPSTREAM_KEY_PREFIX}${index}`;
+    index += 1;
+    const built = forwardOne(request as Record<string, unknown>, context);
+    questions[facadeKey] = { key, ...built.question };
+    inputRequests[facadeKey] = built.request;
+  }
+  const hold: UpstreamHold = { ...call, decision, questions };
+  if (input.requestState !== undefined) hold.requestState = input.requestState;
+  return { hold, inputRequests };
+}
+
+/**
+ * Throw the `upstream`-phase refusal when `input` cannot be forwarded: no
+ * question, more than {@link MAX_FORWARDED_QUESTIONS}, an oversized server
+ * state, sampling or roots, a request that is not an elicitation, or a
+ * link that is not a plain `https:` address. Checked when a call is held,
+ * so a machine gets its `TOOL_ERROR` at once (R64.1, R64.8).
+ */
+export function assertForwardable(input: UpstreamInputRequest, context: QuestionContext): void {
+  const entries = Object.values(input.requests);
   if (entries.length === 0) throw notForwardable(context, 'it sent no question');
   if (entries.length > MAX_FORWARDED_QUESTIONS) {
     throw notForwardable(
@@ -113,22 +142,26 @@ export function forwardQuestions(
   if (input.requestState !== undefined && input.requestState.length > MAX_UPSTREAM_STATE_CHARS) {
     throw notForwardable(context, 'its request state is too large to carry');
   }
-  const questions: Record<string, ForwardedQuestion> = {};
-  const inputRequests: InputRequests = {};
-  let index = keys.first ?? 1;
-  for (const [key, request] of entries) {
-    // A machine's call ids are model-chosen and key its approvals: never
-    // reuse one of them.
-    while (keys.taken?.has(`${UPSTREAM_KEY_PREFIX}${index}`) === true) index += 1;
-    const facadeKey = `${UPSTREAM_KEY_PREFIX}${index}`;
-    index += 1;
-    const built = forwardOne(request, context);
-    questions[facadeKey] = { key, ...built.question };
-    inputRequests[facadeKey] = built.request;
+  for (const request of entries) {
+    if (!isRecord(request) || request['method'] !== 'elicitation/create') {
+      const method =
+        isRecord(request) && typeof request['method'] === 'string' ? request['method'] : '';
+      if (method === 'sampling/createMessage') {
+        throw notForwardable(context, 'it asked for a model completion (sampling)', true);
+      }
+      if (method === 'roots/list') {
+        throw notForwardable(context, "it asked for the client's roots", true);
+      }
+      throw notForwardable(context, 'it sent a request that is not a question');
+    }
+    const params = isRecord(request['params']) ? request['params'] : {};
+    if (params['mode'] === 'url' && safeLink(params['url']) === undefined) {
+      throw notForwardable(
+        context,
+        'it asked the user to open a link that is not a plain https: address',
+      );
+    }
   }
-  const hold: UpstreamHold = { ...call, decision, questions };
-  if (input.requestState !== undefined) hold.requestState = input.requestState;
-  return { hold, inputRequests };
 }
 
 /** The server's answers for a held call, from the retry's `inputResponses`. */
@@ -137,22 +170,34 @@ export function answersFor(
   inputResponses: RetryEnvelope['inputResponses'],
 ): Record<string, unknown> {
   const responses: Record<string, unknown> = {};
+  // The server's keys are its own strings (`__proto__` included): always
+  // own data properties, never a prototype assignment.
+  const answer = (key: string, value: unknown): void => {
+    Object.defineProperty(responses, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  };
   for (const [facadeKey, question] of Object.entries(hold.questions)) {
     const view = inputResponse(inputResponses, facadeKey);
     // A missing answer, or an answer of another kind, means the human did
     // not answer: the server is told the question was cancelled.
     if (view.kind !== 'elicit') {
-      responses[question.key] = { action: 'cancel' };
+      answer(question.key, { action: 'cancel' });
       continue;
     }
     if (view.action !== 'accept') {
-      responses[question.key] = { action: view.action === 'decline' ? 'decline' : 'cancel' };
+      answer(question.key, { action: view.action === 'decline' ? 'decline' : 'cancel' });
       continue;
     }
-    responses[question.key] =
+    answer(
+      question.key,
       question.mode === 'form' && question.schema !== undefined
         ? { action: 'accept', content: checkedAnswer(question.schema, view.content) }
-        : { action: 'accept' };
+        : { action: 'accept' },
+    );
   }
   return responses;
 }
@@ -161,31 +206,15 @@ export function answersFor(
 // One request
 // ---------------------------------------------------------------------------
 
+/** One request that {@link assertForwardable} accepted. */
 function forwardOne(
-  request: unknown,
+  request: Record<string, unknown>,
   context: QuestionContext,
 ): { question: Omit<ForwardedQuestion, 'key'>; request: InputRequest } {
-  if (!isRecord(request) || request['method'] !== 'elicitation/create') {
-    const method =
-      isRecord(request) && typeof request['method'] === 'string' ? request['method'] : '';
-    if (method === 'sampling/createMessage') {
-      throw notForwardable(context, 'it asked for a model completion (sampling)', true);
-    }
-    if (method === 'roots/list') {
-      throw notForwardable(context, "it asked for the client's roots", true);
-    }
-    throw notForwardable(context, 'it sent a request that is not a question');
-  }
   const params = isRecord(request['params']) ? request['params'] : {};
   const message = typeof params['message'] === 'string' ? params['message'] : '';
-  if (params['mode'] === 'url') {
-    const link = safeLink(params['url']);
-    if (link === undefined) {
-      throw notForwardable(
-        context,
-        'it asked the user to open a link that is not a plain https: address',
-      );
-    }
+  const link = params['mode'] === 'url' ? safeLink(params['url']) : undefined;
+  if (link !== undefined) {
     const copy = linkCopy(context, message, link);
     if (context.clientUrl) {
       return {
@@ -256,7 +285,17 @@ export function quoteServerText(message: string): string {
     allowNewline: true,
   });
   const capped = capLength(cleaned.trim(), MAX_MESSAGE_CHARS);
-  let lines = capped.split('\n');
+  // Hard-wrap long lines, each piece prefixed: a client that soft-wraps a
+  // long line would otherwise show its tail as an unprefixed line.
+  let lines = capped
+    .split('\n')
+    .flatMap((line) =>
+      line.length <= MAX_LINE_CHARS
+        ? [line]
+        : Array.from({ length: Math.ceil(line.length / MAX_LINE_CHARS) }, (_, i) =>
+            line.slice(i * MAX_LINE_CHARS, (i + 1) * MAX_LINE_CHARS),
+          ),
+    );
   if (lines.length > MAX_MESSAGE_LINES) lines = [...lines.slice(0, MAX_MESSAGE_LINES), '…'];
   const body = lines.length === 1 && lines[0] === '' ? ['(no message)'] : lines;
   return body.map((line) => `${QUOTE}${line}`).join('\n');
@@ -316,6 +355,23 @@ function prose(value: unknown, max: number): string | undefined {
   return text.length > 0 ? text : undefined;
 }
 
+/**
+ * Form labels that read like Projection's approval copy (S6): the `⚠`
+ * glyph, an `Approve` heading, the `Tool:` footer, the purpose line, or the
+ * approval form's own field text.
+ */
+const APPROVAL_LIKE = /^(?:⚠|approve\b|tool\s*:|what .{0,40} says it does)/iu;
+const APPROVAL_FIELD_TEXT = 'Optional note shown to the model when declining.';
+
+/** A title or description: inert, capped, and marked as the server's when it mimics approval copy. */
+function label(value: unknown, max: number): string | undefined {
+  const text = prose(value, max);
+  if (text === undefined) return undefined;
+  return APPROVAL_LIKE.test(text) || text === APPROVAL_FIELD_TEXT
+    ? capLength(`The server's text: ${text}`, max)
+    : text;
+}
+
 function finite(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -343,15 +399,15 @@ function titledOptions(value: unknown): { const: string; title: string }[] | und
     if (!isRecord(option)) continue;
     const constant = prose(option['const'], MAX_ENUM_CHARS);
     if (constant === undefined || out.some((o) => o.const === constant)) continue;
-    out.push({ const: constant, title: prose(option['title'], MAX_TITLE_CHARS) ?? constant });
+    out.push({ const: constant, title: label(option['title'], MAX_TITLE_CHARS) ?? constant });
   }
   return out.length > 0 ? out : undefined;
 }
 
 function labels(field: Record<string, unknown>, out: Record<string, unknown>): void {
-  const title = prose(field['title'], MAX_TITLE_CHARS);
+  const title = label(field['title'], MAX_TITLE_CHARS);
   if (title !== undefined) out['title'] = title;
-  const description = prose(field['description'], MAX_DESCRIPTION_CHARS);
+  const description = label(field['description'], MAX_DESCRIPTION_CHARS);
   if (description !== undefined) out['description'] = description;
 }
 
@@ -379,7 +435,7 @@ function sanitizeField(field: unknown): Record<string, unknown> | undefined {
           sent.length === members.length &&
           sent.every((member, i) => member === members[i])
         ) {
-          out['enumNames'] = names.map((name) => prose(name, MAX_TITLE_CHARS) ?? '');
+          out['enumNames'] = names.map((name) => label(name, MAX_TITLE_CHARS) ?? '');
         }
       } else {
         const minLength = count(field['minLength']);

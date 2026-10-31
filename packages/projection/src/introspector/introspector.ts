@@ -390,6 +390,19 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Bound on MRTR "call me again" rounds (state, no question) within one call. */
+const MAX_STATE_ONLY_ROUNDS = 8;
+
+function hasInputRequests(raw: { inputRequests?: unknown }): boolean {
+  return isRecordValue(raw.inputRequests) && Object.keys(raw.inputRequests).length > 0;
+}
+
+/** The server's state when `raw` is an `input_required` that asks nothing. */
+function stateOnly(raw: unknown): string | undefined {
+  if (!isInputRequiredResult(raw) || hasInputRequests(raw)) return undefined;
+  return typeof raw.requestState === 'string' ? raw.requestState : undefined;
+}
+
 /**
  * The SDK's text when a server asked a client for input it did not declare
  * it could give (`Cannot request input 'q' (elicitation/create): …`), or
@@ -720,16 +733,37 @@ export class Introspector implements ToolExecutor {
     try {
       // The SDK's return type is a union that includes a legacy
       // `{ toolResult }` compatibility shape; narrow to the modern fields.
-      const raw: unknown = manual
-        ? await this.#callManual(connection.client, alias, name, params, toolDefinition, {
-            ...requestOptions,
-            allowInputRequired: true,
-          })
-        : await connection.client.callTool(params, {
-            ...(toolDefinition !== undefined ? { toolDefinition } : {}),
-            ...requestOptions,
-          });
-      if (isInputRequiredResult(raw)) return this.#inputOutcome(connection, name, raw);
+      let raw: unknown;
+      let call = params;
+      for (let round = 0; ; round += 1) {
+        // eslint-disable-next-line no-await-in-loop -- each round needs the previous round's state
+        raw = manual
+          ? await this.#callManual(connection.client, alias, name, call, toolDefinition, {
+              ...requestOptions,
+              allowInputRequired: true,
+            })
+          : await connection.client.callTool(call, {
+              ...(toolDefinition !== undefined ? { toolDefinition } : {}),
+              ...requestOptions,
+            });
+        // MRTR's "call me again": state and no question. Nobody is asked
+        // anything, so the call is re-issued with the state at once, as the
+        // SDK's own driver would, a bounded number of times.
+        const again = stateOnly(raw);
+        if (again === undefined || round >= MAX_STATE_ONLY_ROUNDS) break;
+        call = { name, arguments: args, requestState: again };
+      }
+      if (isInputRequiredResult(raw)) {
+        if (stateOnly(raw) !== undefined || !hasInputRequests(raw)) {
+          return {
+            ok: false,
+            error: {
+              message: `Tool "${name}" kept asking to be called again without finishing (${MAX_STATE_ONLY_ROUNDS} rounds).`,
+            },
+          };
+        }
+        return this.#inputOutcome(connection, name, raw);
+      }
       const result = raw as { content?: unknown; structuredContent?: unknown; isError?: unknown };
       if (result.isError === true) {
         const message =
@@ -774,7 +808,9 @@ export class Introspector implements ToolExecutor {
    * `tools/call` in manual MRTR mode. The SDK checks a tool's output schema
    * on whatever comes back, an `input_required` included, so it is handed
    * the definition without `outputSchema` and the check runs here, on
-   * complete results only, with the SDK's own validator and wording.
+   * complete results only, with the SDK's default validator and wording. (A
+   * caller's `Client` configured with its own `jsonSchemaValidator` is
+   * checked with the default one on a forwarding box.)
    */
   async #callManual(
     client: Client,
@@ -788,11 +824,15 @@ export class Introspector implements ToolExecutor {
       name,
       inputSchema: { type: 'object' as const },
     };
+    // Compiled before the call, as the SDK does: a tool whose output schema
+    // cannot compile must fail before it runs, not after a write.
+    const validator =
+      outputSchema !== undefined ? this.#outputValidator(alias, name, outputSchema) : undefined;
     const result = (await client.callTool(params, {
       ...requestOptions,
       toolDefinition: withoutOutput,
     })) as unknown;
-    if (outputSchema === undefined || isInputRequiredResult(result)) return result;
+    if (validator === undefined || isInputRequiredResult(result)) return result;
     const complete = result as { structuredContent?: unknown; isError?: unknown };
     if (complete.isError === true) return result;
     if (complete.structuredContent === undefined) {
@@ -801,9 +841,15 @@ export class Introspector implements ToolExecutor {
         `Tool ${name} has an output schema but did not return structured content`,
       );
     }
-    const verdict = await this.#outputValidator(alias, name, outputSchema)['~standard'].validate(
-      complete.structuredContent,
-    );
+    let verdict: Awaited<ReturnType<(typeof validator)['~standard']['validate']>>;
+    try {
+      verdict = await validator['~standard'].validate(complete.structuredContent);
+    } catch (err) {
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
+        `Failed to validate structured content: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if ('issues' in verdict && verdict.issues !== undefined) {
       throw new ProtocolError(
         ProtocolErrorCode.InvalidParams,

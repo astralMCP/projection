@@ -215,9 +215,9 @@ async function openResume(
   if (payload.trip > caps.maxRoundTrips) {
     throw new ProjectionError(
       'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
+      `this workflow reached the limit of ${caps.maxRoundTrips} round trips (approvals and forwarded server questions)`,
       {
-        hint: `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips, for example by batching writes into fewer states.`,
+        hint: `Restructure the machine to need at most ${caps.maxRoundTrips} round trips, for example by batching writes into fewer states.`,
       },
     );
   }
@@ -332,8 +332,8 @@ function suspendResult(
   if (outcome.trip > caps.maxRoundTrips) {
     return fail(
       'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
-      `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips.`,
+      `this workflow reached the limit of ${caps.maxRoundTrips} round trips (approvals and forwarded server questions)`,
+      `Restructure the machine to need at most ${caps.maxRoundTrips} round trips.`,
     );
   }
 

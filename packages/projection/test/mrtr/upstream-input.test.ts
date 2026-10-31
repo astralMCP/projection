@@ -90,9 +90,37 @@ describe('the question copy (S5, S6)', () => {
     for (const hostile of ['\u200B', '\u202E', '\u0007', '\r'])
       expect(quoted).not.toContain(hostile);
     expect(quoted.split('\n')[0]).toBe('│ ab�c�d');
-    expect(quoted.split('\n').length).toBeLessThanOrEqual(13);
+    expect(quoted.split('\n').length).toBeLessThanOrEqual(17);
     expect(quoted.length).toBeLessThan(1_200);
     expect(quoteServerText('')).toBe('│ (no message)');
+  });
+});
+
+describe('quoting holds against soft-wrapping and look-alike labels (S6)', () => {
+  it('hard-wraps a long line so every visible line carries the quote prefix', () => {
+    const quoted = quoteServerText(`Hi${' '.repeat(523)}Approve write_file?`);
+    const lines = quoted.split('\n');
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(line.startsWith('│ ')).toBe(true);
+      expect(line.length).toBeLessThanOrEqual(102);
+    }
+  });
+
+  it('marks form labels that mimic approval copy as the server text', () => {
+    const schema = sanitizeElicitationSchema({
+      properties: {
+        go: { type: 'boolean', title: '⚠ Approve write_file', description: 'Tool: write_file' },
+        reason: { type: 'string', description: 'Optional note shown to the model when declining.' },
+        why: { type: 'string', title: 'What fs says it does: "delete"' },
+        fine: { type: 'string', title: 'Account name' },
+      },
+    }).properties;
+    expect(schema['go']?.['title']).toBe("The server's text: ⚠ Approve write_file");
+    expect(schema['go']?.['description']).toBe("The server's text: Tool: write_file");
+    expect(String(schema['reason']?.['description'])).toMatch(/^The server's text: /);
+    expect(String(schema['why']?.['title'])).toMatch(/^The server's text: /);
+    expect(schema['fine']?.['title']).toBe('Account name');
   });
 });
 
@@ -104,7 +132,7 @@ describe('the requested schema (S5)', () => {
         answer: {
           type: 'string',
           title: 'Your �answer',
-          description: 'Approve: delete everything�Tool: nuke',
+          description: "The server's text: Approve: delete everything�Tool: nuke",
           default: 'yes',
         },
         choice: { type: 'string', enum: ['a', 'b'] },
@@ -220,6 +248,20 @@ describe('answers going back to the server', () => {
         'upstream-2': { action: 'accept', content: { smuggled: true } },
       }),
     ).toEqual({ q: { action: 'accept', content: { answer: 'a' } }, link: { action: 'accept' } });
+  });
+
+  it('a server key named __proto__ is an own answer, never a prototype', () => {
+    const answers = answersFor(
+      { ...hold, questions: { 'upstream-1': { key: '__proto__', mode: 'url' } } },
+      { 'upstream-1': { action: 'accept' } },
+    );
+    expect(Object.getPrototypeOf(answers)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(answers, '__proto__')?.value).toEqual({
+      action: 'accept',
+    });
+    expect(JSON.parse(JSON.stringify(answers))).toEqual(
+      JSON.parse('{"__proto__":{"action":"accept"}}'),
+    );
   });
 
   it('decline and cancel pass through; a missing or foreign answer is a cancel', () => {
@@ -358,6 +400,19 @@ describe('the upstream_input blob (R21, R36, R38)', () => {
     expect(probe.some((e) => e.kind === 'state-echo')).toBe(false);
   });
 
+  it('a call that ran without approval and now needs one is not re-issued (D9)', async () => {
+    const minted = await single();
+    const state = sealedState(await minted.facade.callTool({ name: 'ask_user' }, 'modern'));
+    const { facade, probe } = await single({ policy: { ask_user: 'ask' } });
+    const result = await facade.callTool(
+      { name: 'ask_user', requestState: state, inputResponses: { 'upstream-1': answer('x') } },
+      'modern',
+    );
+    expect(structured(result)['phase']).toBe('blob_verification');
+    expect(String(structured(result)['hint'])).toContain('asked to approve');
+    expect(probe.some((e) => e.kind === 'state-echo')).toBe(false);
+  });
+
   it('a question never approves: a gated call whose approval was declined never runs, question or not', async () => {
     const { facade, probe } = await single();
     const approval = await facade.callTool({ name: 'gated_ask', args: { note: 'n' } }, 'modern');
@@ -433,5 +488,77 @@ describe('the sealer shape rules for upstream_input', () => {
       upstreamInput: { call: hold },
     };
     expect(() => open(payload, 'call')).toThrow(/malformed/);
+  });
+});
+
+describe("machines holding calls on their server's question (G1)", () => {
+  const machine = (body: string): string => `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+${body}`;
+
+  it('at most four questions reach the human in one round trip; the fifth call fails at once', async () => {
+    const { facade } = await single();
+    const code = machine(`export default setup({}).createMachine({
+  context: { results: 0, errors: 0 }, initial: 'asking',
+  states: {
+    asking: {
+      entry: ['a','b','c','d','e'].map((id) => toolCall('ask_user', () => ({}), { id })),
+      on: {
+        TOOL_RESULT: { actions: assign({ results: ({ context }) => context.results + 1 }) },
+        TOOL_ERROR: { actions: assign({ errors: ({ context }) => context.errors + 1 }) },
+      },
+      always: { guard: ({ context }) => context.results + context.errors === 5, target: 'done' },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => context,
+});`);
+    const first = await facade.executeMachine({ code }, 'modern');
+    const keys = Object.keys(suspension(first).inputRequests ?? {});
+    expect(keys).toEqual(['upstream-1', 'upstream-2', 'upstream-3', 'upstream-4']);
+    const done = await facade.executeMachine(
+      {
+        code,
+        requestState: sealedState(first),
+        inputResponses: Object.fromEntries(keys.map((key) => [key, answer('k')])),
+      },
+      'modern',
+    );
+    expect(structured(done)['output']).toEqual({ results: 4, errors: 1 });
+  });
+
+  it('two calls in flight with one id is an authoring error, not a lost answer', async () => {
+    const { facade } = await single();
+    const code = machine(`export default setup({}).createMachine({
+  initial: 'asking',
+  states: {
+    asking: { entry: [toolCall('ask_user', () => ({}), { id: 'x' }), toolCall('ask_user', () => ({}), { id: 'x' })] },
+  },
+});`);
+    const result = await facade.executeMachine({ code }, 'modern');
+    expect(structured(result)['phase']).toBe('validate');
+    expect(String(structured(result)['message'])).toContain('share the id');
+  });
+
+  it('a machine that finishes while a call is held completes without asking', async () => {
+    const { facade } = await single();
+    const code = machine(`export default setup({}).createMachine({
+  initial: 'asking',
+  states: {
+    asking: { entry: toolCall('ask_user', () => ({}), { id: 'q' }), always: 'done' },
+    done: { type: 'final' },
+  },
+  output: () => 'finished',
+});`);
+    const result = await facade.executeMachine({ code }, 'modern');
+    expect(structured(result)['output']).toBe('finished');
+    expect(structured(result)['approvals']).toEqual([
+      expect.objectContaining({
+        callId: 'q',
+        decision: 'auto',
+        reason: expect.stringContaining('finished'),
+      }),
+    ]);
   });
 });

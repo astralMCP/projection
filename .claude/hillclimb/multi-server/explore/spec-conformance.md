@@ -2,7 +2,7 @@
 
 Target: MCP 2026-07-28 through SDK v2.4.0 (`@modelcontextprotocol/{client,server}`).
 Evidence: `packages/projection/test/conformance/everything-server.ts` (the
-upstream fake), `spec-conformance.test.ts` (53 passing, 5 `it.todo` gaps),
+upstream fake), `spec-conformance.test.ts` (55 passing, 5 `it.todo` gaps),
 `upstream-era.test.ts` (G2 over HTTP) and `test/mrtr/upstream-input.test.ts`
 (G1 security). Zero API spend: everything runs in-process.
 
@@ -251,7 +251,10 @@ describes it.
 
 4. **G2** (R63): owned upstream clients negotiate 2026-07-28.
 5. **G1** (R64): upstream questions forwarded per box, or refused with a
-   correct hint; `call_tool` and `execute_machine`.
+   correct hint; `call_tool` and `execute_machine`. Review follow-ups: a held
+   `auto` call is not re-issued once its tool asks (D9); at most 4 questions
+   per machine suspension; long quoted lines hard-wrapped; approval-like form
+   labels marked as the server's; MRTR state-only rounds re-issued (max 8).
 
 ## PRD proposals (not edited)
 
