@@ -24,9 +24,15 @@ import {
   type WrapOptions,
   type WrapServersOptions,
 } from '../../src/index.js';
-import { planDirectTools } from '../../src/facade/direct.js';
+import { planDirectTools, selectDirectBoxes } from '../../src/facade/direct.js';
 import { MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
-import { fsServer, githubServer, KEY, type RecordedCall } from '../multi/helpers.js';
+import {
+  fsServer,
+  githubServer,
+  KEY,
+  recordingServer,
+  type RecordedCall,
+} from '../multi/helpers.js';
 
 const ENDPOINT = new URL('http://direct.projection.test/mcp');
 const WRITE_ARGS = { path: '/notes.txt', content: 'via the fs box' };
@@ -162,7 +168,7 @@ describe('direct listing on a multi-server facade', () => {
     );
     expect(c.getInstructions()).toContain('listed directly, named <box>__<tool>');
     expect(c.getInstructions()).toContain(
-      "To read a box's own guidance, call search_fs or search_github without a query.",
+      "To read a listed box's own guidance, call search_fs or search_github without a query.",
     );
     expect(tools.find((tool) => tool.name === 'call_tool')?.description).toContain(
       'prefer calling it that way',
@@ -492,5 +498,212 @@ describe("projections.direct: 'auto' and validation", () => {
     expect(directToolName('a'.repeat(70))).toBe(directToolName('a'.repeat(70)));
     expect(directToolName('a'.repeat(70))).toMatch(/^a{55}_[0-9a-f]{8}$/);
     expect(directToolName('a'.repeat(70))).not.toBe(directToolName(`${'a'.repeat(69)}b`));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mixed facades: 'auto' lists the boxes that fit, the rest keep the catalog.
+
+/** A big box: 30 tools with long descriptions, far over a small budget. */
+function bigGithub(calls: RecordedCall[]): McpServer {
+  return githubServer(
+    calls,
+    Array.from({ length: 30 }, (_, i) => ({
+      name: `extra_${i}`,
+      description: `Extra GitHub tool ${i}. ${'Lots of words about pull requests. '.repeat(15)}`,
+      readOnly: true,
+    })),
+  );
+}
+
+async function wrapMixed(options: Partial<WrapServersOptions> = {}) {
+  log = [];
+  const f = await wrapMcpServers(
+    {
+      db: recordingServer(
+        { name: 'db-server', version: '1.0.0' },
+        [
+          { name: 'find', description: 'Find documents.', readOnly: true },
+          { name: 'insert', description: 'Insert a document.' },
+        ],
+        log,
+      ),
+      fs: fsServer(log),
+      github: bigGithub(log),
+    },
+    {
+      blob: { key: KEY },
+      projections: { direct: 'auto', directBudgetTokens: 1_000 },
+      ...options,
+    },
+  );
+  facade = f;
+  return f;
+}
+
+/** Every `search_*` tool a text names (the `search_<box>` placeholder aside). */
+function searchToolsNamed(text: string): string[] {
+  return [...text.matchAll(/\bsearch_[a-z][a-z0-9]*\b/g)].map((m) => m[0]);
+}
+
+/** A planned mediated tool of `chars` description characters, for the selection rule. */
+function sizedTool(alias: string, chars: number) {
+  return {
+    name: `${alias}__t`,
+    target: `${alias}.t`,
+    alias,
+    description: 'x'.repeat(chars),
+    inputSchema: {},
+    annotations: {},
+    posture: 'runs immediately' as const,
+  };
+}
+
+describe("direct: 'auto' per box on a multi-server facade", () => {
+  it('lists the boxes that fit, smallest first, and keeps the catalog for the rest', async () => {
+    const f = await wrapMixed();
+    expect(f.projections).toEqual({
+      codeMode: true,
+      catalog: true,
+      direct: true,
+      directBoxes: ['db', 'fs'],
+    });
+    const c = await connect(f);
+    const names = (await c.listTools()).tools.map((tool) => tool.name);
+    expect(names.slice(0, 7)).toEqual([
+      'execute_machine',
+      'discover_apis',
+      // fs is listed but sends guidance: its search stays, to read it.
+      'search_fs',
+      'search_github',
+      'search_tools',
+      'describe_tool',
+      'call_tool',
+    ]);
+    expect(names).not.toContain('search_db');
+    expect(names.slice(7)).toEqual([
+      'db__find',
+      'db__insert',
+      'fs__read_file',
+      'fs__write_file',
+      'fs__delete_file',
+    ]);
+    expect(names.some((name) => name.startsWith('github__'))).toBe(false);
+  });
+
+  it('says which boxes are listed and which to search, everywhere, naming only served tools', async () => {
+    const f = await wrapMixed();
+    const c = await connect(f);
+    const tools = (await c.listTools()).tools;
+    const served = new Set(tools.map((tool) => tool.name));
+    const instructions = c.getInstructions() ?? '';
+    expect(instructions).toContain(
+      'The tools of the db and fs boxes are listed directly, named <box>__<tool>',
+    );
+    expect(instructions).toContain(
+      'The github box is not listed: call search_github (or search_tools, which searches every box) to find a tool there',
+    );
+    expect(instructions).toContain("To read a listed box's own guidance, call search_fs");
+    expect(instructions).toContain(
+      '- fs — "FS-SERVER-INSTRUCTIONS: read me first." (server\'s words) (3 tools, listed directly)',
+    );
+    expect(instructions).toMatch(/- github — .*\(34 tools\)$/m);
+    const callCopy = tools.find((tool) => tool.name === 'call_tool')?.description ?? '';
+    expect(callCopy).toContain('The tools of db and fs are listed directly as <box>__<tool>.');
+    expect(callCopy).toContain('For a tool of the github box, call describe_tool first');
+    const describeCopy = tools.find((tool) => tool.name === 'describe_tool')?.description ?? '';
+    expect(describeCopy).toContain(
+      "Call it before call_tool for a tool of the github box. The db and fs boxes' tools are listed directly as <box>__<tool> with their input schemas",
+    );
+
+    // No copy names a search tool the facade does not serve.
+    const texts = [
+      instructions,
+      ...tools.map((tool) => tool.description ?? ''),
+      ...tools.map((tool) => JSON.stringify(tool.inputSchema)),
+    ];
+    for (const text of texts) {
+      for (const named of searchToolsNamed(text)) expect(served).toContain(named);
+    }
+
+    // The hints and the R37 pointer too.
+    const hints = [
+      await c.callTool({ name: 'describe_tool', arguments: { name: 'nope' } }),
+      await c.callTool({ name: 'describe_tool', arguments: { name: 'db.nope' } }),
+      await c.callTool({ name: 'call_tool', arguments: { name: 'zz.nope', args: {} } }),
+    ].map((result) =>
+      JSON.stringify((result as { structuredContent?: unknown }).structuredContent),
+    );
+    expect(hints[1]).toContain('db__<tool>');
+    expect(hints[0]).toContain('The tools of db and fs are listed directly');
+    for (const hint of hints) {
+      for (const named of searchToolsNamed(hint)) expect(served).toContain(named);
+    }
+    const notServed = f.searchTools({}, 'db');
+    expect(notServed.isError).toBe(true);
+    for (const named of searchToolsNamed(JSON.stringify(notServed))) {
+      if (named !== 'search_db') expect(served).toContain(named);
+    }
+    await f.close();
+    const deferred = await wrapMixed({ catalogInlineThreshold: 1 });
+    const pointer = JSON.stringify(deferred.discoverApis().content);
+    expect(pointer).toContain('The tools of db and fs are listed directly as <box>__<tool>.');
+    for (const named of searchToolsNamed(pointer)) expect(served).toContain(named);
+  });
+
+  it('gates a listed box exactly like call_tool, and the catalog box as before', async () => {
+    const c = await connect(await wrapMixed());
+    const viaDirect = await suspend(c, 'fs__write_file', WRITE_ARGS);
+    const viaCall = await suspend(c, 'call_tool', { name: 'fs.write_file', args: WRITE_ARGS });
+    expect(viaDirect.message).toBe(viaCall.message);
+    const github = await suspend(c, 'call_tool', { name: 'github.write_file', args: WRITE_ARGS });
+    expect(github.message.split('\n')[0]).toBe('Approve (github): write file');
+    // The fs approval cannot run the github tool through call_tool.
+    const replayed = await retry(
+      c,
+      'call_tool',
+      { name: 'github.write_file', args: WRITE_ARGS },
+      viaDirect.requestState,
+    );
+    expect(replayed.structuredContent?.['phase']).toBe('blob_verification');
+    const done = await retry(c, 'fs__write_file', WRITE_ARGS, viaDirect.requestState);
+    expect(done.structuredContent?.['status']).toBe('ok');
+    expect(log).toEqual([{ server: 'files', tool: 'write_file', args: WRITE_ARGS }]);
+  });
+
+  it('a deny on a listed box still refuses, and the posture line says so', async () => {
+    const c = await connect(await wrapMixed({ policy: { 'db.insert': 'deny' } }));
+    const result = await call(c, 'db__insert', { path: '/x' });
+    expect(result.structuredContent?.['status']).toBe('denied_by_policy');
+    expect(log).toEqual([]);
+  });
+
+  it('selects boxes smallest first, skipping one that does not fit', () => {
+    // Sizes in tokens ≈ (chars + name + "{}") / 3.5.
+    const plan = [sizedTool('aa', 3_500), sizedTool('bb', 700), sizedTool('cc', 2_100)];
+    expect([...selectDirectBoxes({ mode: 'auto', budgetTokens: 1_000 }, plan)]).toEqual([
+      'bb',
+      'cc',
+    ]);
+    expect([...selectDirectBoxes({ mode: 'auto', budgetTokens: 400 }, plan)]).toEqual(['bb']);
+    expect(selectDirectBoxes({ mode: 'on', budgetTokens: 0 }, plan).size).toBe(3);
+    expect(selectDirectBoxes({ mode: 'off', budgetTokens: 1e9 }, plan).size).toBe(0);
+  });
+});
+
+describe('direct listing on a single-server facade: no stale search_tools', () => {
+  it('the unknown-name hint and the R37 pointer point at the listed tools', async () => {
+    const f = await wrapMcpServer(hostileServer([]), {
+      blob: { key: KEY },
+      projections: { direct: true },
+      catalogInlineThreshold: 1,
+    });
+    facade = f;
+    const hint = JSON.stringify(f.describeTool({ name: 'nope' }));
+    expect(hint).toContain('listed directly');
+    expect(hint).not.toContain('search_tools');
+    const pointer = JSON.stringify(f.discoverApis().content);
+    expect(pointer).toContain("This server's tools are listed directly");
+    expect(pointer).not.toContain('search_tools');
   });
 });

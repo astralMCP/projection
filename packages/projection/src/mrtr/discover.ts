@@ -273,6 +273,14 @@ export interface DiscoverApisOptions {
    */
   searchPhrase?: string;
   /**
+   * Direct listing (`projections.direct`): the full sentence(s) telling the
+   * model where tools are, replacing the R37 pointer's "Call <search tools>
+   * to find tools …" — the served search tools and the boxes listed
+   * directly, so the pointer never names a search tool the facade does not
+   * serve.
+   */
+  findTools?: string;
+  /**
    * The resources the facade serves, when they go beyond
    * {@link buildResources} (a multi-server facade's box overviews, R45):
    * every one but the `ui://` dashboard is linked.
@@ -315,10 +323,15 @@ export function discoverApis(
   const deferred = options.catalog === true && toolCount > threshold;
   let toolsSection = overview;
   if (deferred) {
+    const find = options.findTools;
     toolsSection =
       subject.view !== undefined
-        ? deferredBoxesSection(subject.view, toolCount, options.searchPhrase ?? 'search_tools')
-        : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
+        ? find !== undefined
+          ? `Tools: ${toolCount} across ${boxesLabel(subject.view)} — too many to list here (${boxCounts(subject.view)}). ${find} Call describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`
+          : deferredBoxesSection(subject.view, toolCount, options.searchPhrase ?? 'search_tools')
+        : find !== undefined
+          ? `Tools: ${toolCount} on this server — too many to list here. ${find} Call describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`
+          : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
   }
   const inline = [
     `Projection code mode over ${subject.label}.`,
@@ -349,8 +362,12 @@ export function discoverApis(
  * R37 on a multi-server facade (R45): the count across every box, the
  * per-box counts, and a pointer at the search tools the facade serves.
  */
+function boxCounts(view: BoxedCatalog): string {
+  return [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
+}
+
 function deferredBoxesSection(view: BoxedCatalog, toolCount: number, search: string): string {
-  const counts = [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
+  const counts = boxCounts(view);
   return `Tools: ${toolCount} across ${boxesLabel(view)} — too many to list here (${counts}). Call ${search} to find tools by name or purpose and describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`;
 }
 
@@ -364,6 +381,11 @@ export interface ProjectionSelection {
    * means not listed.
    */
   direct?: boolean;
+  /**
+   * Multi-server facade under direct listing: the boxes listed directly, in
+   * sorted alias order (the others keep the catalog path).
+   */
+  directBoxes?: readonly string[];
 }
 
 /**

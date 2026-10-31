@@ -50,6 +50,8 @@ export interface DirectTool {
   name: string;
   /** The catalog name `call_tool` is called with (qualified on a multi-server facade). */
   target: string;
+  /** The box the tool lives in (multi-server facade only). */
+  alias?: string;
   title?: string;
   description: string;
   /** The R34-sanitized input schema, always `type: "object"` at the root. */
@@ -98,6 +100,7 @@ export function planDirectTools(catalog: ServerCatalog, options: DirectPlanOptio
     tools.push({
       name,
       target: entry.name,
+      ...(member !== undefined ? { alias: member.alias } : {}),
       ...(annotations.title !== undefined ? { title: annotations.title } : {}),
       description: directDescription(entry.description, posture, {
         destructive: entry.annotations?.destructiveHint === true,
@@ -187,6 +190,40 @@ export function estimateDirectTokens(tools: readonly DirectTool[]): number {
       JSON.stringify(tool.inputSchema).length;
   }
   return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+/**
+ * Which boxes of a multi-server facade are listed directly. `'on'`: every
+ * box. `'auto'`: the budget is filled box by box, smallest estimated size
+ * first (ties by alias), skipping a box that does not fit and trying the
+ * next — which lists the most boxes the budget allows (sorting by size is
+ * optimal for maximising the count), and a box is listed whole or not at
+ * all, so the model never meets half a box. `'off'`: none.
+ */
+export function selectDirectBoxes(
+  setting: DirectSetting,
+  tools: readonly DirectTool[],
+): Set<string> {
+  const byBox = new Map<string, DirectTool[]>();
+  for (const tool of tools) {
+    if (tool.alias === undefined) continue;
+    byBox.set(tool.alias, [...(byBox.get(tool.alias) ?? []), tool]);
+  }
+  if (setting.mode === 'off') return new Set();
+  if (setting.mode === 'on') return new Set(byBox.keys());
+  const sized = [...byBox].map(([alias, boxTools]) => ({
+    alias,
+    tokens: estimateDirectTokens(boxTools),
+  }));
+  sized.sort((a, b) => a.tokens - b.tokens || (a.alias < b.alias ? -1 : 1));
+  const listed = new Set<string>();
+  let used = 0;
+  for (const box of sized) {
+    if (used + box.tokens > setting.budgetTokens) continue;
+    used += box.tokens;
+    listed.add(box.alias);
+  }
+  return listed;
 }
 
 /** Whether a facade lists its tools directly, given its setting and plan. */

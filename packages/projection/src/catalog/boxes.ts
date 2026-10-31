@@ -76,6 +76,18 @@ export interface BoxedCatalog extends ServerCatalog {
    * served.
    */
   readonly globalSearch: boolean;
+  /**
+   * Direct listing (`projections.direct`): the boxes whose tools are listed
+   * as mediated `<alias>__<tool>` facade tools, in sorted alias order.
+   * Empty when nothing is listed.
+   */
+  readonly directBoxes: readonly string[];
+  /**
+   * The boxes whose `search_<alias>` tool the facade serves, in sorted
+   * alias order: every box, unless direct listing drops the search tool of
+   * a listed box that sends no guidance.
+   */
+  readonly searchBoxes: readonly string[];
 }
 
 /**
@@ -90,6 +102,10 @@ export const ALIAS_PATTERN = /^[a-z][a-z0-9]{0,23}$/;
 export interface BoxedCatalogOptions {
   /** Serve the global `search_tools` (R43). Default `true`. */
   globalSearch?: boolean;
+  /** Boxes listed directly (see {@link BoxedCatalog.directBoxes}). Default none. */
+  directBoxes?: Iterable<string>;
+  /** Boxes whose search tool is served. Default every box. */
+  searchBoxes?: Iterable<string>;
 }
 
 /**
@@ -161,9 +177,22 @@ export function buildBoxedCatalog(
     members,
     counts,
     globalSearch: options.globalSearch ?? true,
+    directBoxes: sortedKnown(options.directBoxes, counts, []),
+    searchBoxes: sortedKnown(options.searchBoxes, counts, [...counts.keys()]),
   };
   boxedViews.add(view);
   return view;
+}
+
+/** `aliases` restricted to the view's boxes, in sorted alias order; `fallback` when absent. */
+function sortedKnown(
+  aliases: Iterable<string> | undefined,
+  known: ReadonlyMap<string, number>,
+  fallback: string[],
+): string[] {
+  if (aliases === undefined) return fallback;
+  const wanted = new Set(aliases);
+  return [...known.keys()].filter((alias) => wanted.has(alias));
 }
 
 /**

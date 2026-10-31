@@ -378,6 +378,16 @@ export function unknownToolError(
 ): ProjectionError {
   const didYouMean = didYouMeanHint(catalog, name);
   if (isBoxedCatalog(catalog)) return unknownBoxedToolError(catalog, name, via, didYouMean);
+  if (directListed.has(catalog)) {
+    // Direct listing serves no search tool: point at the listed tools.
+    return new ProjectionError(
+      'validate',
+      `Unknown tool ${inertName(name)}: the wrapped server does not declare it`,
+      {
+        hint: `${didYouMean}This server's tools are listed directly as tools of their own: call one of those, or ${via} with one of their names exactly.`,
+      },
+    );
+  }
   return new ProjectionError(
     'validate',
     `Unknown tool ${inertName(name)}: the wrapped server does not declare it`,
@@ -400,17 +410,79 @@ function unknownBoxedToolError(
   let search: string;
   if (split !== undefined && catalog.boxes.has(split.alias)) {
     why = `the ${split.alias} box does not declare it`;
+    if (catalog.directBoxes.includes(split.alias)) {
+      return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
+        hint: `${didYouMean}The ${split.alias} box's tools are listed directly as ${split.alias}__<tool>: call one of those, or ${via} with its qualified name (${split.alias}.<tool>) exactly.`,
+      });
+    }
     search = `Call ${boxSearchTool(split.alias)} to list the tools the ${split.alias} box declares`;
   } else {
     why =
       split === undefined
         ? `tool names here are qualified as <box>.<tool> (boxes: ${boxes})`
         : `there is no box ${inertName(split.alias)} (boxes: ${boxes})`;
-    search = `Call ${searchToolsPhrase(catalog)} to list the tools the boxes declare`;
+    const phrase = searchToolsPhrase(catalog);
+    const listed = listedBoxesSentence(catalog);
+    if (listed !== undefined) {
+      const find = phrase !== undefined ? ` Call ${phrase} to list the other boxes' tools.` : '';
+      return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
+        hint: `${didYouMean}${listed}${find} Pass ${via} a qualified name exactly.`,
+      });
+    }
+    search = `Call ${phrase ?? 'search_tools'} to list the tools the boxes declare`;
   }
   return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
     hint: `${didYouMean}${search}, then ${via} with one of those qualified names exactly.`,
   });
+}
+
+/** Single-server catalogs whose facade lists every tool directly (no search tool served). */
+const directListed = new WeakSet<ServerCatalog>();
+
+/**
+ * Mark a single-server catalog as listed directly, so the unknown-name hint
+ * points at the listed tools instead of a search tool the facade does not
+ * serve. The catalog is the facade's own introspected one.
+ */
+export function markDirectListed(catalog: ServerCatalog): void {
+  directListed.add(catalog);
+}
+
+/** Aliases in prose: `fs`, `fs and mongo`, `fs, git and mongo`. */
+export function aliasList(aliases: readonly string[]): string {
+  if (aliases.length <= 1) return aliases.join('');
+  return `${aliases.slice(0, -1).join(', ')} and ${aliases.at(-1) ?? ''}`;
+}
+
+/**
+ * The sentence naming the boxes listed directly (`projections.direct`), or
+ * `undefined` when none is: `The tools of fs and mongo are listed directly
+ * as <box>__<tool>.` (every box: `Every box's tools are …`).
+ */
+export function listedBoxesSentence(catalog: BoxedCatalog): string | undefined {
+  const listed = catalog.directBoxes;
+  if (listed.length === 0) return undefined;
+  const whose =
+    listed.length === catalog.boxes.size
+      ? "Every box's tools are"
+      : listed.length === 1
+        ? `The ${listed[0] ?? ''} box's tools are`
+        : `The tools of ${aliasList(listed)} are`;
+  return `${whose} listed directly as <box>__<tool>.`;
+}
+
+/**
+ * How copy points a model at a tool it has to find (R37, R43): the served
+ * search tools, then the boxes listed directly. `find` completes "Call
+ * <search tools> …" (e.g. `to find tools by name or purpose`).
+ */
+export function findToolsSentence(catalog: BoxedCatalog, find: string): string {
+  const phrase = searchToolsPhrase(catalog);
+  const listed = listedBoxesSentence(catalog);
+  return [
+    ...(phrase !== undefined ? [`Call ${phrase} ${find}.`] : []),
+    ...(listed !== undefined ? [listed] : []),
+  ].join(' ');
 }
 
 /**
@@ -422,13 +494,17 @@ function unknownBoxedToolError(
  * code-mode projection (the R37 pointer in `discover_apis`, R45), so every
  * surface names the same tools.
  */
-export function searchToolsPhrase(catalog: BoxedCatalog): string {
-  const [only, ...others] = [...catalog.boxes.keys()].map(boxSearchTool);
+export function searchToolsPhrase(catalog: BoxedCatalog): string | undefined {
+  const names = catalog.searchBoxes.map(boxSearchTool);
+  const [only, ...others] = names;
   const perBox =
-    only !== undefined && others.length === 0
-      ? only
-      : `the search_<box> tool of a box (${[only, ...others].join(', ')})`;
-  return catalog.globalSearch ? `search_tools (every box) or ${perBox}` : perBox;
+    only === undefined
+      ? undefined
+      : others.length === 0
+        ? only
+        : `the search_<box> tool of a box (${names.join(', ')})`;
+  if (!catalog.globalSearch) return perBox;
+  return perBox === undefined ? 'search_tools' : `search_tools (every box) or ${perBox}`;
 }
 
 /**

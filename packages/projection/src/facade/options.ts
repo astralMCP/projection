@@ -118,7 +118,9 @@ export interface ProjectionsOptions {
    * `call_tool({ name, args })` under exactly the same gate, so the model
    * sees every tool's name, description and schema without searching.
    * `true` always lists them; `'auto'` lists them when their estimated
-   * definitions fit `directBudgetTokens`; `false` (default) never. Needs the
+   * definitions fit `directBudgetTokens` (on a multi-server facade box by
+   * box, smallest box first; the other boxes keep the catalog path);
+   * `false` (default) never. Needs the
    * catalog projection: `true` with `catalog: false` fails the wrap
    * (`validate`); `'auto'` then stays off.
    */
@@ -132,11 +134,12 @@ export interface ProjectionsOptions {
 }
 
 /**
- * Default `projections.directBudgetTokens`: about 12k tokens of tool
- * definitions — every single box in the eval worlds but the 95-tool GitHub
- * one fits, and the multi world (130 tools, ~42k tokens) does not.
+ * Default `projections.directBudgetTokens`: about 8k estimated tokens of
+ * tool definitions. Measured (explore/adaptive-surface.md): listing wins
+ * clearly at 2k and 5.4k estimated tokens and breaks even on Sonnet 5.5 at
+ * about 11k, whose tokenizer counts ~1.3–1.4× the estimate.
  */
-export const DEFAULT_DIRECT_BUDGET_TOKENS = 12_000;
+export const DEFAULT_DIRECT_BUDGET_TOKENS = 8_000;
 
 /** The validated direct-listing settings (see {@link ProjectionsOptions.direct}). */
 export interface DirectSetting {

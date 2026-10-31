@@ -43,7 +43,12 @@ import {
   type ToolBox,
 } from '../catalog/boxes.js';
 import { callTool, describeTool, searchBoxes, type CallToolArgs } from '../catalog/index.js';
-import { searchToolsPhrase } from '../catalog/search.js';
+import {
+  aliasList,
+  findToolsSentence,
+  listedBoxesSentence,
+  searchToolsPhrase,
+} from '../catalog/search.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
@@ -65,8 +70,8 @@ import {
 } from '../facade/server.js';
 import {
   DIRECT_BOX_SEPARATOR,
-  decideDirect,
   planDirectTools,
+  selectDirectBoxes,
   reservedToolNames,
   type DirectTool,
 } from '../facade/direct.js';
@@ -172,7 +177,7 @@ export async function wrapMcpServers(
     });
     assertToolTotal(boxes);
 
-    const view = buildBoxedCatalog(boxes, { globalSearch });
+    const planned = buildBoxedCatalog(boxes, { globalSearch });
     const sourceModes = new Map<string, ApprovalsMode>();
     for (const source of resolved) {
       if (source.approvals !== undefined) sourceModes.set(source.alias, source.approvals);
@@ -180,8 +185,38 @@ export async function wrapMcpServers(
     const policySettings = freezePolicySettings({
       policy: options.policy,
       approvals,
-      toolApprovals: toolApprovalsFor(view, sourceModes),
+      toolApprovals: toolApprovalsFor(planned, sourceModes),
     });
+
+    // Direct listing, per box: `<alias>__<tool>` aliases of call_tool,
+    // planned under the frozen policy, never shadowing a Projection tool or
+    // a search_<alias>. 'auto' fills the budget smallest box first; a box
+    // that does not fit keeps its search tool and the catalog path.
+    const plan =
+      direct.mode === 'off'
+        ? []
+        : planDirectTools(planned, {
+            ...policySettings,
+            reserved: reservedToolNames([...planned.boxes.keys()].map(boxSearchTool)),
+          });
+    const directBoxes = selectDirectBoxes(direct, plan);
+    // The served surface lives on the view, so every piece of copy that
+    // names a search tool or a listed box reads one source of truth: a
+    // listed box keeps its search tool only to read its guidance, and the
+    // global search is served while some box is still searched for.
+    const view =
+      directBoxes.size === 0
+        ? planned
+        : buildBoxedCatalog(boxes, {
+            globalSearch: globalSearch && directBoxes.size < planned.boxes.size,
+            directBoxes,
+            searchBoxes: [...planned.boxes]
+              .filter(
+                ([alias, box]) =>
+                  !directBoxes.has(alias) || boxOverview(box.catalog.instructions) !== undefined,
+              )
+              .map(([alias]) => alias),
+          });
 
     const upstreams = new Map<string, UpstreamConnector>();
     for (const source of resolved) {
@@ -191,19 +226,10 @@ export async function wrapMcpServers(
     // postures in the .d.ts and the overview are the ones the gate decides.
     const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(view, policySettings);
 
-    // Direct listing: `<alias>__<tool>` aliases of call_tool, planned under
-    // the frozen policy; never shadowing a Projection tool or search_<alias>.
-    const plan =
-      direct.mode === 'off'
-        ? []
-        : planDirectTools(view, {
-            ...policySettings,
-            reserved: reservedToolNames([...view.boxes.keys()].map(boxSearchTool)),
-          });
-    const listed = decideDirect(direct, plan);
-    const projections: Readonly<ProjectionSelection> = listed
-      ? Object.freeze({ ...selected, direct: true })
-      : selected;
+    const projections: Readonly<ProjectionSelection> =
+      directBoxes.size > 0
+        ? Object.freeze({ ...selected, direct: true, directBoxes: view.directBoxes })
+        : selected;
 
     return new MultiFacade({
       introspector,
@@ -219,7 +245,7 @@ export async function wrapMcpServers(
       options,
       policySettings,
       projections,
-      directTools: listed ? plan : [],
+      directTools: plan.filter((tool) => tool.alias !== undefined && directBoxes.has(tool.alias)),
     });
   } catch (err) {
     await introspector.close();
@@ -300,11 +326,12 @@ export interface MultiPreambleOptions {
   /** Whether the global `search_tools` is served (R43). */
   globalSearch: boolean;
   /**
-   * Direct listing: the boxes whose server gives guidance, which keep their
-   * `search_<alias>` tool (its empty-query first page is the overview). No
-   * other search tool is served then.
+   * Direct listing: the boxes listed directly as `<box>__<tool>` (none when
+   * absent), and the boxes whose `search_<alias>` is served (every box when
+   * absent): every box not listed, plus a listed box that sends guidance.
    */
-  guidanceBoxes?: readonly string[];
+  directBoxes?: readonly string[];
+  searchBoxes?: readonly string[];
 }
 
 /**
@@ -315,14 +342,27 @@ export interface MultiPreambleOptions {
  */
 export function defaultMultiPreamble(options: MultiPreambleOptions): string {
   const { projections, globalSearch } = options;
-  if (projections.direct === true && projections.catalog) {
-    const boxes = options.guidanceBoxes ?? [];
+  const listed = options.directBoxes ?? [];
+  if (listed.length > 0 && projections.catalog) {
+    const searched = options.searchBoxes ?? [];
+    const unlisted = searched.filter((alias) => !listed.includes(alias));
+    const guidance = searched.filter((alias) => listed.includes(alias));
+    const which =
+      unlisted.length === 0
+        ? "Every box's tools are"
+        : listed.length === 1
+          ? `The ${listed[0] ?? ''} box's tools are`
+          : `The tools of the ${aliasList(listed)} boxes are`;
+    const direct = `${which} listed directly, named <box>${DIRECT_BOX_SEPARATOR}<tool>: call them by name like any other tool, with no need to search or describe them first.`;
     const read =
-      boxes.length === 0
+      guidance.length === 0
         ? ''
-        : ` To read a box's own guidance, call ${boxes.map(boxSearchTool).join(' or ')} without a query.`;
-    const guidance = `Every box's tools are listed directly, named <box>${DIRECT_BOX_SEPARATOR}<tool>: call them by name like any other tool, with no need to search or describe them first.${read}`;
-    const head = `This server fronts several toolboxes, each wrapping another server. ${guidance}`;
+        : ` To read a listed box's own guidance, call ${guidance.map(boxSearchTool).join(' or ')} without a query.`;
+    const others =
+      unlisted.length === 0
+        ? ''
+        : ` ${unlisted.length === 1 ? `The ${unlisted[0] ?? ''} box is` : `The ${aliasList(unlisted)} boxes are`} not listed: call ${unlisted.map(boxSearchTool).join(' or ')}${globalSearch ? ' (or search_tools, which searches every box)' : ''} to find a tool there — without a query, a box's search lists the box and leads with its own guidance — then describe_tool to see its arguments and call_tool to run it.`;
+    const head = `This server fronts several toolboxes, each wrapping another server. ${direct}${read}${others}`;
     if (!projections.codeMode) return `${head} ${DIRECT_LISTING_SENTENCE}`;
     return `${head} For a single action or a short chain where you look something up and then act on it, call the tools one at a time, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). ${DIRECT_LISTING_SENTENCE}`;
   }
@@ -353,9 +393,17 @@ export const SHELF_HEADER =
  * The shelf header for a projection selection (R44, R45): the
  * qualified-name rule, worded for the tools that take a qualified name.
  */
-export function shelfHeader(projections: Readonly<ProjectionSelection>): string {
-  if (projections.direct === true && projections.catalog) {
-    return `Toolboxes — tools are listed as <box>${DIRECT_BOX_SEPARATOR}<tool>; describe_tool, call_tool${projections.codeMode ? ' and toolCall' : ''} take the qualified name <box>.<tool>:`;
+export function shelfHeader(
+  projections: Readonly<ProjectionSelection>,
+  everyBoxListed = false,
+): string {
+  const listed = projections.directBoxes ?? [];
+  if (listed.length > 0 && projections.catalog) {
+    const takers = `describe_tool, call_tool${projections.codeMode ? ' and toolCall' : ''}`;
+    if (everyBoxListed) {
+      return `Toolboxes — tools are listed as <box>${DIRECT_BOX_SEPARATOR}<tool>; ${takers} take the qualified name <box>.<tool>:`;
+    }
+    return `Toolboxes — tools are named <box>.<tool>; a box marked "listed directly" has its tools listed as <box>${DIRECT_BOX_SEPARATOR}<tool>, any other box is searched with its search_<box> tool; ${takers} take the qualified name <box>.<tool>:`;
   }
   if (!projections.catalog) {
     return 'Toolboxes — tools are named <box>.<tool>; pass the full name to toolCall in a machine:';
@@ -378,10 +426,13 @@ export function buildMultiInstructions(
   projections: Readonly<ProjectionSelection>,
   preamble?: string,
 ): string {
-  const lines = [shelfHeader(projections)];
+  const lines = [shelfHeader(projections, view.directBoxes.length === view.boxes.size)];
   for (const [alias, box] of view.boxes) {
     const about = boxAbout(box);
-    const tools = toolCount(view.counts.get(alias) ?? 0);
+    // Marked only on a mixed facade: when every box is listed the header says so.
+    const mixed = view.directBoxes.length > 0 && view.directBoxes.length < view.boxes.size;
+    const listed = mixed && view.directBoxes.includes(alias) ? ', listed directly' : '';
+    const tools = `${toolCount(view.counts.get(alias) ?? 0)}${listed}`;
     lines.push(about !== undefined ? `- ${alias} — ${about} (${tools})` : `- ${alias} (${tools})`);
   }
   const copy =
@@ -389,7 +440,8 @@ export function buildMultiInstructions(
     defaultMultiPreamble({
       projections,
       globalSearch: view.globalSearch,
-      guidanceBoxes: guidanceBoxes(view),
+      directBoxes: view.directBoxes,
+      searchBoxes: view.searchBoxes,
     });
   return `${copy}\n\n${lines.join('\n')}`;
 }
@@ -455,18 +507,29 @@ function boxSearchCopy(view: BoxedCatalog, alias: string, box: ToolBox): SearchT
 }
 
 /**
- * Direct listing: the boxes whose server sends guidance (an R43 overview),
- * in sorted alias order. Only they keep a search tool, as the way to read it.
+ * describe_tool and call_tool under direct listing: what they are for when
+ * some (or every) box is listed directly as `<box>__<tool>`.
  */
-export function guidanceBoxes(view: BoxedCatalog): string[] {
-  return [...view.boxes]
-    .filter(([, box]) => boxOverview(box.catalog.instructions) !== undefined)
-    .map(([alias]) => alias);
+function directDescribeDescription(view: BoxedCatalog): string {
+  const head = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>).`;
+  const unlisted = view.boxes.size - view.directBoxes.length;
+  if (unlisted === 0) {
+    return `${head} Every tool is already listed directly with its input schema; call this only to see a tool's output schema.`;
+  }
+  const others = [...view.boxes.keys()].filter((alias) => !view.directBoxes.includes(alias));
+  const listed = view.directBoxes;
+  return `${head} Call it before call_tool for a tool of the ${aliasList(others)} ${others.length === 1 ? 'box' : 'boxes'}. The ${aliasList(listed)} ${listed.length === 1 ? "box's tools are" : "boxes' tools are"} listed directly as <box>${DIRECT_BOX_SEPARATOR}<tool> with their input schemas: describe one of those only for its output schema.`;
 }
 
-const DIRECT_DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Every tool is already listed directly with its input schema; call this only to see a tool's output schema.`;
-
-const DIRECT_CALL_TOOL_DESCRIPTION = `Run one tool by its qualified name (<box>.<tool>) with a JSON object of arguments. Every tool is also listed directly as <box>${DIRECT_BOX_SEPARATOR}<tool>, taking the same arguments: prefer calling it that way. Approvals, "declined" and "denied_by_policy" results work the same either way.`;
+function directCallDescription(view: BoxedCatalog, codeMode: boolean): string {
+  const others = [...view.boxes.keys()].filter((alias) => !view.directBoxes.includes(alias));
+  const listed =
+    others.length === 0
+      ? `Every tool is also listed directly as <box>${DIRECT_BOX_SEPARATOR}<tool>, taking the same arguments: prefer calling it that way.`
+      : `${listedBoxesSentence(view) ?? ''} Call those that way, with the same arguments. For a tool of the ${aliasList(others)} ${others.length === 1 ? 'box' : 'boxes'}, call describe_tool first to see its arguments.`;
+  const outcome = `A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool.`;
+  return `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. ${listed} ${outcome}${codeMode ? CALL_TOOL_CODE_MODE_POINTER : ''}`;
+}
 
 /** The global `search_tools` copy (R43). */
 const GLOBAL_SEARCH_COPY: SearchToolCopy = {
@@ -485,18 +548,26 @@ function catalogToolCopy(
   view: BoxedCatalog,
   projections: Readonly<ProjectionSelection>,
 ): CatalogToolCopy {
-  if (projections.direct === true) {
-    // Every tool is listed: search only survives as the way to read a
-    // box's guidance (its overview), for the boxes that have one.
+  if (view.directBoxes.length > 0) {
+    // Listed boxes need no search: theirs survives only to read the box's
+    // guidance. Unlisted boxes keep theirs, and the global search while any
+    // box is unlisted — exactly the view's served set.
+    const phrase = searchToolsPhrase(view);
     return {
-      searches: guidanceBoxes(view).map((alias) =>
-        boxSearchCopy(view, alias, view.boxes.get(alias) as ToolBox),
-      ),
+      searches: [
+        ...view.searchBoxes.map((alias) =>
+          boxSearchCopy(view, alias, view.boxes.get(alias) as ToolBox),
+        ),
+        ...(view.globalSearch ? [GLOBAL_SEARCH_COPY] : []),
+      ],
       describeDescription: projections.codeMode
-        ? `${DIRECT_DESCRIBE_TOOL_DESCRIPTION}${DESCRIBE_TOOL_TYPES_POINTER}`
-        : DIRECT_DESCRIBE_TOOL_DESCRIPTION,
-      callDescription: DIRECT_CALL_TOOL_DESCRIPTION,
-      toolName: 'Qualified tool name (<box>.<tool>).',
+        ? `${directDescribeDescription(view)}${DESCRIBE_TOOL_TYPES_POINTER}`
+        : directDescribeDescription(view),
+      callDescription: directCallDescription(view, projections.codeMode),
+      toolName:
+        view.directBoxes.length === view.boxes.size || phrase === undefined
+          ? 'Qualified tool name (<box>.<tool>).'
+          : `Qualified tool name (<box>.<tool>): a directly listed tool's, or one listed by ${phrase}.`,
       describeTypes:
         'Also return the generated TypeScript for this tool: its member of tools.<box> and its type aliases (for authoring a machine).',
     };
@@ -580,8 +651,13 @@ class MultiFacade implements MultiProjectionFacade {
     const { catalogInlineThreshold } = this.deps.options;
     return discoverApis(this.deps.view, this.deps.overview, {
       catalog: this.projections.catalog,
-      // R37 pointer: the search tools actually served (R43).
-      searchPhrase: searchToolsPhrase(this.deps.view),
+      // R37 pointer: the search tools actually served (R43), and under
+      // direct listing the boxes listed directly instead.
+      ...(this.deps.view.directBoxes.length > 0
+        ? {
+            findTools: findToolsSentence(this.deps.view, 'to find tools by name or purpose'),
+          }
+        : { searchPhrase: searchToolsPhrase(this.deps.view) ?? 'search_tools' }),
       // Links every resource but the dashboard, box overviews included (R45).
       resources: this.resources,
       // The samples are picked under the facade's policy (R45).
@@ -593,7 +669,7 @@ class MultiFacade implements MultiProjectionFacade {
   searchTools(args: { query?: string; cursor?: string }, alias?: string): CallToolResult {
     const view = this.deps.view;
     try {
-      if (alias !== undefined ? !view.boxes.has(alias) : !view.globalSearch) {
+      if (alias !== undefined ? !view.searchBoxes.includes(alias) : !view.globalSearch) {
         // Quoted either way: an unknown alias is caller input, rendered inert.
         const tool = JSON.stringify(
           alias !== undefined
@@ -601,7 +677,7 @@ class MultiFacade implements MultiProjectionFacade {
             : 'search_tools',
         );
         throw new ProjectionError('validate', `${tool} is not served by this facade`, {
-          hint: `Call ${searchToolsPhrase(view)} instead.`,
+          hint: findToolsSentence(view, 'instead'),
         });
       }
       return searchBoxes(view, args, {

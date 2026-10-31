@@ -39,6 +39,7 @@ import {
   type UpstreamSpec,
 } from './auth/index.js';
 import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
+import { markDirectListed } from './catalog/search.js';
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
@@ -246,6 +247,9 @@ export async function wrapMcpServer(
       ? []
       : planDirectTools(catalog, { ...policySettings, reserved: reservedToolNames([]) });
   const listed = decideDirect(direct, plan);
+  // The unknown-name hint must not point at search_tools, which direct
+  // listing does not serve.
+  if (listed) markDirectListed(catalog);
   const projections: Readonly<ProjectionSelection> = listed
     ? Object.freeze({ ...selected, direct: true })
     : selected;
@@ -356,6 +360,10 @@ class Facade implements ProjectionFacade {
     const { catalogInlineThreshold } = this.deps.options;
     return discoverApis(this.deps.catalog, this.deps.overview, {
       catalog: this.projections.catalog,
+      // R37 pointer: direct listing serves no search_tools.
+      ...(this.projections.direct === true
+        ? { findTools: "This server's tools are listed directly as tools of their own." }
+        : {}),
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
     });
   }
