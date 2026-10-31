@@ -60,7 +60,7 @@ export const MULTI_DIRECT_SYSTEM_PROMPT =
  */
 export const MULTI_BOX_DESCRIPTIONS: Readonly<Record<MultiBoxAlias, string>> = {
   github: 'GitHub: issues, PRs and repos for acme/widgets',
-  fs: "The user's project files",
+  fs: "The user's local checkout of the widgets project: source, docs, CHANGELOG, notes and logs",
   mongo: 'The shop MongoDB deployment',
 };
 

@@ -243,8 +243,14 @@ export function buildTurnRequest(
   return {
     model: preset.model,
     max_tokens: maxTokens,
+    // Two breakpoints, as a host with a long-lived tool list places them:
+    // one on the system prompt, so the static prefix (tools + system) is
+    // read across conversations, and the automatic one on the growing
+    // conversation tail. With only the tail breakpoint, one episode read
+    // another's prefix only when their first prompts were byte-identical,
+    // which skewed cost by mode (cost-anatomy.md).
     cache_control: { type: 'ephemeral' },
-    system,
+    system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
     tools,
     messages,
     ...preset.params,

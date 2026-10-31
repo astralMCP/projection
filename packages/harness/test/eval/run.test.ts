@@ -99,6 +99,12 @@ const preset: ModelPreset = { name: 'scripted', model: 'scripted-model', params:
 const tmp = mkdtempSync(join(tmpdir(), 'tool-choice-eval-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
+/** The system prompt's text, whether the request sent a string or text blocks. */
+function systemText(system: string | readonly { text: string }[] | undefined): string {
+  if (system === undefined) return '';
+  return typeof system === 'string' ? system : system.map((block) => block.text).join('');
+}
+
 describe('tool-choice eval plumbing (offline)', () => {
   let records: EpisodeRecord[];
   const seen: Anthropic.MessageStreamParams[] = [];
@@ -149,7 +155,7 @@ describe('tool-choice eval plumbing (offline)', () => {
       expect(record.servedModel).toBe('scripted');
       const transcript = record.transcript;
       expect(transcript?.system).toBe(
-        String(
+        systemText(
           seen.find((p) => toolNames(p.tools).includes('call_tool') === (record.mode !== 'direct'))
             ?.system,
         ),
@@ -194,10 +200,10 @@ describe('tool-choice eval plumbing (offline)', () => {
     const directRequest = seen.find((p) => toolNames(p.tools).includes('get_me'));
     const projectionRequest = seen.find((p) => toolNames(p.tools).includes('call_tool'));
     expect(directRequest?.tools).toHaveLength(95);
-    expect(String(directRequest?.system)).toContain(
+    expect(systemText(directRequest?.system)).toContain(
       'You operate GitHub through the tools provided.',
     );
-    expect(String(directRequest?.system)).toContain('Tool selection guidance');
+    expect(systemText(directRequest?.system)).toContain('Tool selection guidance');
 
     const projectionNames = toolNames(projectionRequest?.tools).toSorted();
     expect(projectionNames).toEqual([
@@ -207,12 +213,20 @@ describe('tool-choice eval plumbing (offline)', () => {
       'execute_machine',
       'search_tools',
     ]);
-    expect(String(projectionRequest?.system)).toContain('Tool selection guidance');
+    expect(systemText(projectionRequest?.system)).toContain('Tool selection guidance');
     // The host's framing comes first in every mode; then the facade's instructions.
-    expect(String(projectionRequest?.system).startsWith(GITHUB_DIRECT_SYSTEM_PROMPT)).toBe(true);
+    expect(systemText(projectionRequest?.system).startsWith(GITHUB_DIRECT_SYSTEM_PROMPT)).toBe(
+      true,
+    );
 
     // The request shape: streaming params with the cache marker and no forced tool_choice.
     expect(directRequest?.cache_control).toEqual({ type: 'ephemeral' });
+    // A second breakpoint on the system prompt caches the static prefix (tools + system).
+    expect(
+      Array.isArray(directRequest?.system) && directRequest.system.at(-1)?.cache_control,
+    ).toEqual({
+      type: 'ephemeral',
+    });
     expect(directRequest?.tool_choice).toBeUndefined();
     expect(directRequest?.max_tokens).toBe(16000);
   });
