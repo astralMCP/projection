@@ -2,7 +2,7 @@
   "name": "@astral-mcp/harness",
   "version": "0.1.0",
   "private": true,
-  "description": "Scenario-driven test harness for Projection: drives execute_machine through scripted approval scenarios and asserts the S1–S6 invariants.",
+  "description": "Scenario-driven test harness for Projection: drives execute_machine through scripted approval scenarios and asserts the S1\u2013S6 invariants.",
   "type": "module",
   "exports": {
     ".": {
@@ -17,6 +17,7 @@
     "test": "vitest run",
     "rescore": "unrun scripts/rescore.ts",
     "setup:mongodb": "npm ci --prefix vendor/mongodb-mcp-server --no-audit --no-fund --ignore-scripts",
+    "setup:servers-real": "sh scripts/setup-servers-real.sh",
     "eval:offline": "unrun scripts/offline-eval.ts",
     "snapshot:catalogs": "unrun scripts/snapshot-catalogs.ts"
   },

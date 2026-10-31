@@ -240,6 +240,7 @@ export {
   type BoxedWorldName,
   type MultiBoxAlias,
   type WorkplaceBoxAlias,
+  type SummitBoxAlias,
   type EvalWorld,
   type MultiWorld,
   type ServerWorld,
@@ -338,6 +339,25 @@ export {
   HITL_EXPECTED,
   HITL_TASKS,
 } from './eval/hitl-tasks.js';
+export {
+  buildCheckout,
+  fastImportStream,
+  gitBinary,
+  openSummitLocalWorld,
+  sqliteRun,
+  sqliteTable,
+  startIntranet,
+  summitHostSystemPrompt,
+  summitServerPaths,
+  summitServersInstalled,
+  SUMMIT_BOX_DESCRIPTIONS,
+  SUMMIT_BOXES,
+  SUMMIT_EXPECTED_TOOLS,
+  SUMMIT_LOCAL_TIMEZONE,
+  SUMMIT_SERVER_VERSIONS,
+  SUMMIT_WRITE_TOOLS,
+} from './eval/summit-local-world.js';
+export { SUMMIT_LOCAL_EXPECTED, SUMMIT_LOCAL_TASKS } from './eval/summit-local-tasks.js';
 export {
   filesystemServerEntry,
   openFilesystemWorld,

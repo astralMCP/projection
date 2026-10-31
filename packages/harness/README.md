@@ -245,6 +245,49 @@ whether the global search earns its place, which settles the
 totals; the report's per-tier blocks break each tier out on its own anyway.
 The approvals-mode comparison §13 also asks for is not run yet.
 
+The opt-in, held-out **summit-local** tier (24 tasks, `summit-local-tasks.ts`)
+runs against six **real** MCP servers that run locally for free, each a box
+on one seeded company (a billing service called tidepool) in the
+`summit-local` world (`summit-local-world.ts`, fixtures in
+`summit-local-fixtures.ts`):
+
+| Box      | Server (pinned)                                                    | Seeded with                                                                                                    |
+| -------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `fs`     | `@modelcontextprotocol/server-filesystem` 1.0.0 (devDependency)    | the tidepool checkout                                                                                          |
+| `git`    | `mcp-server-git` 2026.10.19 (Python)                               | the same checkout: 27 commits on main, a revert, 5 branches, 4 tags, a dirty working tree                      |
+| `memory` | `@modelcontextprotocol/server-memory` 2.0.0                        | the team knowledge graph (people, teams, services, a former contractor)                                        |
+| `sqlite` | `mcp-server-sqlite` 2025.4.25 (Python, the archived reference one) | the support database: agents, customers, tickets, comments, invoices, deploys                                  |
+| `fetch`  | `mcp-server-fetch` 2026.10.19 (Python)                             | a loopback HTTP intranet: status, team page, on-call rota, releases, a paged incidents API, an incident report |
+| `time`   | `mcp-server-time` 2026.10.19 (Python)                              | (IANA time zone data)                                                                                          |
+
+Install them once with `pnpm run setup:servers-real` in `packages/harness`
+(needs npm and [uv](https://docs.astral.sh/uv/); uv fetches Python 3.12 if
+needed): the memory server from `vendor/servers-real/package-lock.json`, the
+Python servers from hash-pinned `requirements*.txt` into two venvs (the
+archived SQLite server needs the 1.x Python MCP SDK, the others 2.x).
+Without them the world's tests skip with that message and a live run that
+selects the tier fails before spending anything. The world checks each
+server's reported name and version and its exact tool list. It is offline
+by construction: the fetch server runs behind an unreachable proxy for
+everything but the loopback intranet, and without Node on its PATH (so its
+HTML extraction never runs `npm install`); git runs with a private HOME and
+no global config; the git history is built with `git fast-import` from fixed
+identities and dates, so its hashes are the same in every episode. Ten tasks
+need one box and fourteen need two or three; they mix lookups, counted and
+aggregated bulk reads, bulk and branching writes, cross-box chains, paging
+(git's default 10-commit log, fetch's 5000-character pages, the incidents
+API's pages) and tasks where the obvious tool or query is wrong (`git_diff`
+takes no range and a commit in the range is reverted; there is no tag
+listing; `not_contains: main` also lists branches already fast-forwarded
+into main; the time tool converts on today's date, not the ticket's; rows
+from an old helpdesk sort wrong as strings; `append_insight` is not a ticket
+comment). Answers are read from an `ANSWER:` line or row by row; writes are
+graded on the real end state (database, graph file, repository) and forbid
+harmful writes; each task's budget is 2N + 10 action turns. Box descriptions
+(`SUMMIT_BOX_DESCRIPTIONS`) are one line each. Calibrated in `direct` mode
+only (the tier is held out: never tune the facade on it); latest
+calibration, 2 runs: Sonnet (`sonnet-low`) 47/48, Haiku (`haiku45`) 35/48.
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -255,7 +298,8 @@ Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haik
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection,projection-boxes`,
 the default), `PROJ_EVAL_TIERS`
 (`basic,hard,filesystem,mongodb,multi`, the default; `mongodb` and `multi` need
-`pnpm run setup:mongodb`), `PROJ_EVAL_TASKS` (comma list of task names
+`pnpm run setup:mongodb`; the opt-in `multi-hard`, `workplace`, `hitl` and
+`summit-local`, which needs `pnpm run setup:servers-real`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4), `PROJ_EVAL_BOX_DESCRIPTIONS=1` (multi
 tier: host box descriptions; default off), `PROJ_EVAL_FORCE_CODE_MODE=1`

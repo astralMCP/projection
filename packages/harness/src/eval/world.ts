@@ -16,7 +16,10 @@
  *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts);
  * - **workplace**: five in-process fakes of other popular servers (chat,
  *   docs, errors, mail, tracker) as boxes, stateful per episode
- *   (workplace-world.ts) — the opt-in `workplace` tier's world.
+ *   (workplace-world.ts) — the opt-in `workplace` tier's world;
+ * - **summit-local**: six real servers (filesystem, git, memory, SQLite,
+ *   fetch, time) as boxes on one seeded company (summit-local-world.ts) —
+ *   the opt-in, held-out `summit-local` tier's world.
  *
  * Real-server effects land for real; tasks verify the end state (on disk,
  * in the database) as well as the recorded calls.
@@ -28,19 +31,24 @@ import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
 import { openMultiWorld } from './multi-world.js';
+import { openSummitLocalWorld } from './summit-local-world.js';
 import { openWorkplaceWorld, type WorkplaceState } from './workplace-world.js';
 
-export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace';
+export type WorldName =
+  'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace' | 'summit-local';
 /** The worlds made of several boxes. */
-export type BoxedWorldName = 'multi' | 'workplace';
+export type BoxedWorldName = 'multi' | 'workplace' | 'summit-local';
 /** The workplace world's boxes (each a server world named by its alias). */
 export type WorkplaceBoxAlias = 'chat' | 'docs' | 'errors' | 'mail' | 'tracker';
-/** The worlds that are one upstream server (a workplace box is one too, though never opened alone). */
-export type ServerWorldName = Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias;
+/** The summit-local world's boxes: real servers, each named by its alias (`fs` is the filesystem world). */
+export type SummitBoxAlias = 'fetch' | 'fs' | 'git' | 'memory' | 'sqlite' | 'time';
+/** The worlds that are one upstream server (a workplace or summit-local box is one too, though never opened alone). */
+export type ServerWorldName =
+  Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias | Exclude<SummitBoxAlias, 'fs'>;
 
 /** Whether a world name is a boxed (multi-server) world. */
 export function isBoxedWorldName(name: WorldName): name is BoxedWorldName {
-  return name === 'multi' || name === 'workplace';
+  return name === 'multi' || name === 'workplace' || name === 'summit-local';
 }
 
 /** One tool as a world serves it (the model sees name, description, schema). */
@@ -72,11 +80,21 @@ export interface WorldFacts {
   mongoUri?: string;
   /** workplace: every box's live state, for `verify` to read the end state. */
   workplace?: WorkplaceState;
+  /** summit-local: the intranet's base URL (`http://127.0.0.1:<port>`). */
+  intranet?: string;
+  /** summit-local: the memory server's graph file (JSONL). */
+  memoryFile?: string;
+  /** summit-local: the SQLite server's database file. */
+  sqliteDb?: string;
+  /** summit-local: the private HOME every git command runs with. */
+  gitHome?: string;
+  /** summit-local: every fixture commit's full hash, by its key (summit-local-fixtures.ts). */
+  commits?: Readonly<Record<string, string>>;
 }
 
 interface WorldBase {
-  /** A world's name; a workplace box (never opened alone) is named by its alias. */
-  name: WorldName | WorkplaceBoxAlias;
+  /** A world's name; a workplace or summit-local box (never opened alone) is named by its alias. */
+  name: WorldName | ServerWorldName;
   readonly tools: readonly WorldTool[];
   /** The `instructions` the upstream advertises (undefined when none). */
   readonly instructions: string | undefined;
@@ -103,8 +121,8 @@ export interface ServerWorld extends WorldBase {
 
 /** The aliases of the multi world's boxes. */
 export type MultiBoxAlias = 'github' | 'fs' | 'mongo';
-/** Any box alias, multi or workplace. */
-export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias;
+/** Any box alias: multi, workplace or summit-local. */
+export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias | SummitBoxAlias;
 export const BOX_ALIASES: readonly BoxAlias[] = [
   'github',
   'fs',
@@ -114,6 +132,11 @@ export const BOX_ALIASES: readonly BoxAlias[] = [
   'errors',
   'mail',
   'tracker',
+  'fetch',
+  'git',
+  'memory',
+  'sqlite',
+  'time',
 ];
 
 /** One box of a boxed world: a single-server world under its alias. */
@@ -169,5 +192,7 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
       return openMultiWorld(options);
     case 'workplace':
       return Promise.resolve(openWorkplaceWorld(options));
+    case 'summit-local':
+      return openSummitLocalWorld(options);
   }
 }

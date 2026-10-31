@@ -56,10 +56,23 @@ export type TaskKind =
  * `hitl` against the same workplace world, each task paired with an
  * approver persona that declines, cancels or edits part of the work
  * (hitl-tasks.ts) — opt-in only, and NOT held out: it is the target the
- * approval UX is tuned on.
+ * approval UX is tuned on;
+ * `summit-local` against six real servers that run locally — filesystem,
+ * git, memory, SQLite, fetch (on a loopback intranet) and time — seeded
+ * with one company's data (summit-local-world.ts, summit-local-tasks.ts):
+ * opt-in only, needs `pnpm run setup:servers-real`, and held out like
+ * `workplace` (calibrated in `direct` mode only).
  */
 export type TaskTier =
-  'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard' | 'workplace' | 'hitl';
+  | 'basic'
+  | 'hard'
+  | 'filesystem'
+  | 'mongodb'
+  | 'multi'
+  | 'multi-hard'
+  | 'workplace'
+  | 'hitl'
+  | 'summit-local';
 export const TASK_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -69,8 +82,9 @@ export const TASK_TIERS: readonly TaskTier[] = [
   'multi-hard',
   'workplace',
   'hitl',
+  'summit-local',
 ];
-/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace` and `hitl`. */
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace`, `hitl` and `summit-local`. */
 export const DEFAULT_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -89,6 +103,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   'multi-hard': 'multi',
   workplace: 'workplace',
   hitl: 'workplace',
+  'summit-local': 'summit-local',
 };
 
 export function worldOf(tier: TaskTier): WorldName {
