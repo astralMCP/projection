@@ -263,7 +263,7 @@ block (compact or Python `repr`) with no `structuredContent`; output
 schemas that drifted from the payload; 100 KB+ results; the next page
 mentioned only in prose; no or rambling `instructions`; slow tools. The
 boxes are `tracker` (terse, generic names), `chat` (verbose, camelCase
-mix, 110 KB history), `mail` (Pydantic schemas, `repr` results) and
+mix, 100 KB history), `mail` (Pydantic schemas, `repr` results) and
 `billing`, a 315-tool catalog generated from a payments-style OpenAPI
 document (`messy-billing.ts`: operationId names, HTML or empty
 descriptions, a nested `requestBody`, cursor, page-number and offset

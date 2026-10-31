@@ -462,7 +462,7 @@ describe('chat tasks', () => {
     expect(wrong.success).toBe(false);
   });
 
-  it('messy-chat-freeze: the 2.9 announcement, out of a 110 KB page', async () => {
+  it('messy-chat-freeze: the 2.9 announcement, out of a 100 KB page', async () => {
     const ok = await run('messy-chat-freeze', async (t) => {
       const text = await t.call('chat.get_channel_history', {
         channelId: await channelId(t, 'release-train'),

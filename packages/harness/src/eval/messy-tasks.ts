@@ -10,7 +10,7 @@
  * servers — finding the refund operation among 315 generated ones, a
  * camelCase argument on one chat tool and snake_case on the next, a 404
  * that arrives as an ordinary result, a next-page token mentioned only in
- * prose, a `search` tool in two boxes, a 110 KB channel history.
+ * prose, a `search` tool in two boxes, a 100 KB channel history.
  *
  * Defects real servers ship, and what the profiles model (sources in the
  * `summit-messy` write-up):
@@ -556,7 +556,7 @@ export const MESSY_TASKS: readonly EvalTask[] = [
     'messy-tracker-done',
     'multi',
     ['tracker'],
-    'BE-127 is fixed and verified. Please move it to Done.',
+    'BE-127 is fixed and verified. Please get it to Done, through whatever workflow steps it takes.',
     [q('tracker', ['get_transitions']), q('tracker', ['transition_issue'])],
     endState(gradeDone, trackerWrite(['transition_issue'], E.doneIssue)),
     10,
@@ -588,7 +588,7 @@ export const MESSY_TASKS: readonly EvalTask[] = [
     endState(gradeBug, trackerWrite(['create_issue'])),
     8,
   ),
-  // --- chat alone: verbose, camelCase/snake_case, 110 KB history -----------
+  // --- chat alone: verbose, camelCase/snake_case, 100 KB history -----------
   task(
     'messy-chat-migration',
     'single',

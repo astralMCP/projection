@@ -503,8 +503,8 @@ export function verboseFields(seed: string, bytes: number): Schema {
         {
           type: 'rich_text_section',
           elements: [
-            { type: 'text', text: `${seed} `, style: { bold: false, italic: false, code: false } },
-            { type: 'link', url: `https://app.example.net/r/${h}/${i}`, text: 'details' },
+            { type: 'text', text: `${seed} ` },
+            { type: 'text', text: 'Sent from the mobile app.', style: { italic: true } },
           ],
         },
       ],
@@ -531,7 +531,10 @@ export function inflate(value: unknown, bytes: number): unknown {
       if (objects.length > 0) {
         const per = Math.ceil((bytes - size) / objects.length) + 64;
         objects.forEach((o, i) => {
-          Object.assign(o, verboseFields(`${JSON.stringify(o).slice(0, 80)}#${i}`, per));
+          const label = ['text', 'title', 'name', 'subject']
+            .map((k) => o[k])
+            .find((v) => typeof v === 'string');
+          Object.assign(o, verboseFields(typeof label === 'string' ? label : `item ${i}`, per));
         });
         return value;
       }

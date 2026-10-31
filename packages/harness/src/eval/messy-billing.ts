@@ -585,7 +585,7 @@ interface Resource {
   bare?: boolean;
 }
 
-const STR = { type: 'string', maxLength: 5000 } as const;
+const STR = { type: 'string' } as const;
 const META = {
   anyOf: [
     { type: 'object', additionalProperties: { type: 'string' } },

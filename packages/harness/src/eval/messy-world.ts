@@ -133,7 +133,7 @@ export const MESSY_PROFILES: Readonly<Record<MessyBoxAlias, MessyProfile>> = {
       { kind: 'rename', names: { list_channels: 'list' } },
       { kind: 'arg-case', style: 'camel', tools: ['get_channel_history', 'get_thread_replies'] },
       { kind: 'loose-args' },
-      { kind: 'huge-results', bytes: 110_000, tools: ['get_channel_history'] },
+      { kind: 'huge-results', bytes: 100_000, tools: ['get_channel_history'] },
       { kind: 'latency', ms: 300, tools: ['get_channel_history', 'get_thread_replies'] },
     ],
   },
