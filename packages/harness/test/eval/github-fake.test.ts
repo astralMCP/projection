@@ -115,6 +115,28 @@ describe('github fake', () => {
     }
   });
 
+  it('answers unmodeled reads like the real server when asked to', async () => {
+    const fake = createGithubFake({ unmodeled: 'realistic' });
+    const client = await connect(fake);
+    try {
+      const call = async (name: string, args: Record<string, unknown>) =>
+        await client.callTool({ name, arguments: args });
+      expect(toolResultText(await call('list_releases', ACME))).toEqual({ text: '[]' });
+      const latest = await call('get_latest_release', ACME);
+      expect(toolResultText(latest)).toEqual({ text: '404 Not Found', isError: true });
+      expect(toolResultText(await call('search_code', { query: 'csv' }))).toEqual({
+        text: '{"total_count":0,"incomplete_results":false,"items":[]}',
+      });
+      // Writes keep the default; canned answers still win.
+      expect(toolResultText(await call('star_repository', { owner: 'a', repo: 'b' }))).toEqual({
+        text: '{"ok":true}',
+      });
+      expect(toolResultText(await call('get_me', {}))).toEqual({ text: '{"login":"vibdev"}' });
+    } finally {
+      await client.close();
+    }
+  });
+
   it('rejects schema-invalid arguments without recording a call', async () => {
     const fake = createGithubFake();
     const client = await connect(fake);
