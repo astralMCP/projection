@@ -16,7 +16,10 @@
  *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts);
  * - **workplace**: five in-process fakes of other popular servers (chat,
  *   docs, errors, mail, tracker) as boxes, stateful per episode
- *   (workplace-world.ts) — the opt-in `workplace` tier's world.
+ *   (workplace-world.ts) — the opt-in `workplace` tier's world;
+ * - **summit**: high-fidelity fakes of the Notion, Sentry, Slack and
+ *   Stripe MCP servers plus the real filesystem server, as boxes
+ *   (summit-world.ts) — the opt-in, held-out `summit-saas` tier's world.
  *
  * Real-server effects land for real; tasks verify the end state (on disk,
  * in the database) as well as the recorded calls.
@@ -28,19 +31,23 @@ import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
 import { openMultiWorld } from './multi-world.js';
+import { openSummitWorld, type SummitState } from './summit-world.js';
 import { openWorkplaceWorld, type WorkplaceState } from './workplace-world.js';
 
-export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace';
+export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace' | 'summit';
 /** The worlds made of several boxes. */
-export type BoxedWorldName = 'multi' | 'workplace';
+export type BoxedWorldName = 'multi' | 'workplace' | 'summit';
 /** The workplace world's boxes (each a server world named by its alias). */
 export type WorkplaceBoxAlias = 'chat' | 'docs' | 'errors' | 'mail' | 'tracker';
+/** The summit world's boxes: four SaaS fakes and the real filesystem server. */
+export type SummitBoxAlias = 'fs' | 'notion' | 'sentry' | 'slack' | 'stripe';
 /** The worlds that are one upstream server (a workplace box is one too, though never opened alone). */
-export type ServerWorldName = Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias;
+export type ServerWorldName =
+  Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias | SummitBoxAlias;
 
 /** Whether a world name is a boxed (multi-server) world. */
 export function isBoxedWorldName(name: WorldName): name is BoxedWorldName {
-  return name === 'multi' || name === 'workplace';
+  return name === 'multi' || name === 'workplace' || name === 'summit';
 }
 
 /** One tool as a world serves it (the model sees name, description, schema). */
@@ -72,11 +79,13 @@ export interface WorldFacts {
   mongoUri?: string;
   /** workplace: every box's live state, for `verify` to read the end state. */
   workplace?: WorkplaceState;
+  /** summit: the four SaaS fakes' live state (plus `root`, the fs box's directory). */
+  summit?: SummitState;
 }
 
 interface WorldBase {
   /** A world's name; a workplace box (never opened alone) is named by its alias. */
-  name: WorldName | WorkplaceBoxAlias;
+  name: WorldName | WorkplaceBoxAlias | SummitBoxAlias;
   readonly tools: readonly WorldTool[];
   /** The `instructions` the upstream advertises (undefined when none). */
   readonly instructions: string | undefined;
@@ -103,8 +112,8 @@ export interface ServerWorld extends WorldBase {
 
 /** The aliases of the multi world's boxes. */
 export type MultiBoxAlias = 'github' | 'fs' | 'mongo';
-/** Any box alias, multi or workplace. */
-export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias;
+/** Any box alias, multi, workplace or summit. */
+export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias | SummitBoxAlias;
 export const BOX_ALIASES: readonly BoxAlias[] = [
   'github',
   'fs',
@@ -114,6 +123,10 @@ export const BOX_ALIASES: readonly BoxAlias[] = [
   'errors',
   'mail',
   'tracker',
+  'notion',
+  'sentry',
+  'slack',
+  'stripe',
 ];
 
 /** One box of a boxed world: a single-server world under its alias. */
@@ -169,5 +182,7 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
       return openMultiWorld(options);
     case 'workplace':
       return Promise.resolve(openWorkplaceWorld(options));
+    case 'summit':
+      return openSummitWorld(options);
   }
 }

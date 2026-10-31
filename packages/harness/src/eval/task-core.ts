@@ -56,10 +56,21 @@ export type TaskKind =
  * `hitl` against the same workplace world, each task paired with an
  * approver persona that declines, cancels or edits part of the work
  * (hitl-tasks.ts) — opt-in only, and NOT held out: it is the target the
- * approval UX is tuned on.
+ * approval UX is tuned on;
+ * `summit-saas` against high-fidelity fakes of the Notion, Sentry, Slack and
+ * Stripe MCP servers plus the real filesystem server (summit-world.ts,
+ * summit-tasks.ts) — opt-in only, and held out like `workplace`.
  */
 export type TaskTier =
-  'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard' | 'workplace' | 'hitl';
+  | 'basic'
+  | 'hard'
+  | 'filesystem'
+  | 'mongodb'
+  | 'multi'
+  | 'multi-hard'
+  | 'workplace'
+  | 'hitl'
+  | 'summit-saas';
 export const TASK_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -69,8 +80,9 @@ export const TASK_TIERS: readonly TaskTier[] = [
   'multi-hard',
   'workplace',
   'hitl',
+  'summit-saas',
 ];
-/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace` and `hitl`. */
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace`, `hitl` and `summit-saas`. */
 export const DEFAULT_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -89,6 +101,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   'multi-hard': 'multi',
   workplace: 'workplace',
   hitl: 'workplace',
+  'summit-saas': 'summit',
 };
 
 export function worldOf(tier: TaskTier): WorldName {

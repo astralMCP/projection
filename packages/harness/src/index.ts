@@ -267,6 +267,16 @@ export {
   type WorkplaceState,
 } from './eval/workplace-world.js';
 export {
+  openSummitWorld,
+  seedSummit,
+  SUMMIT_BOX_DESCRIPTIONS,
+  SUMMIT_BOXES,
+  SUMMIT_DIRECT_SYSTEM_PROMPT,
+  SUMMIT_WRITE_TOOLS,
+  type SummitState,
+} from './eval/summit-world.js';
+export { SUMMIT_EXPECTED, SUMMIT_TASKS } from './eval/summit-tasks.js';
+export {
   changes as workplaceChanges,
   gradeActionItems,
   gradeChainThread,
