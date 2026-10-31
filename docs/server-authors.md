@@ -199,6 +199,21 @@ normal result (`{ status: "declined" }`), so the model does not retry it; a
 `deny` policy comes back as `{ status: "denied_by_policy" }`; a failure from
 your tool is an `isError` result with phase `upstream`.
 
+What your tool returns reaches the client through `call_tool` as follows.
+`structuredContent` becomes `output`; a single text block becomes `output` as
+a string. Any other content array is rendered block by block in the text —
+text as text, an embedded text resource under its URI — and image, audio and
+embedded binary resources are attached as native content blocks after it, so
+base64 never lands in the model's text. A `resource_link` is described, not
+attached: the facade does not serve your resources. `structuredContent.output`
+always carries the array verbatim. When the client asks for progress on a
+`call_tool`, your `notifications/progress` reports are relayed under the
+client's token, the message prefixed with the tool name (`<alias>.<tool>` on a
+multi-server facade), neutralized and capped at 200 characters; cancelling the
+`call_tool` cancels your call. Machine steps relay neither yet, and log
+messages, resources, prompts and completions of the wrapped server are not
+projected.
+
 For servers with many tools, `describe_tool` is how the model learns a
 schema without paying for the whole catalog up front. With the catalog
 projection on, above 40 tools (`catalogInlineThreshold`) `discover_apis`

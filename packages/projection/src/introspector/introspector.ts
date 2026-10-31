@@ -16,7 +16,7 @@
  *   its lifecycle; `close()` will not touch it.
  */
 
-import { Client } from '@modelcontextprotocol/client';
+import { Client, type Progress } from '@modelcontextprotocol/client';
 import {
   InMemoryTransport,
   McpServer,
@@ -36,6 +36,8 @@ import type {
   ToolCatalog,
   ToolCatalogEntry,
   ToolExecutor,
+  UpstreamCallOptions,
+  UpstreamProgress,
 } from '../types.js';
 
 /** A wrapped-server source: an in-process instance or a connected client. */
@@ -332,6 +334,31 @@ function pickResultValue(result: { structuredContent?: unknown; content?: unknow
 }
 
 /**
+ * The SDK request options that forward an upstream's progress reports to
+ * `onProgress` (none without one: no progress token is sent). A report
+ * also resets the request timeout, as a long call that keeps reporting is
+ * alive.
+ */
+function progressOptions(
+  onProgress: ((progress: UpstreamProgress) => void) | undefined,
+  connector: UpstreamConnector | undefined,
+): { onprogress?: (progress: Progress) => void; resetTimeoutOnProgress?: boolean } {
+  if (onProgress === undefined) return {};
+  return {
+    resetTimeoutOnProgress: true,
+    onprogress: (report) => {
+      const forwarded: UpstreamProgress = { progress: report.progress };
+      if (report.total !== undefined) forwarded.total = report.total;
+      if (report.message !== undefined) {
+        forwarded.message =
+          connector !== undefined ? connector.redact(report.message) : report.message;
+      }
+      onProgress(forwarded);
+    },
+  };
+}
+
+/**
  * Holds one MCP client per wrapped-server alias, exposes the aggregated
  * {@link ToolCatalog}, and executes tool calls (implements
  * {@link ToolExecutor}). Construct with {@link createIntrospector}.
@@ -522,11 +549,16 @@ export class Introspector implements ToolExecutor {
    * - `isError` result or transport/protocol failure → `{ ok: false, error }`.
    *
    * An unknown alias is a wiring bug, not a tool failure, and throws.
+   *
+   * `options` are host-side: `signal` cancels the upstream request, and
+   * `onProgress` asks the upstream for progress and receives each report
+   * (redacted first for a source given by URL, S1).
    */
   async callTool(
     alias: ServerAlias,
     name: string,
     args: Record<string, unknown>,
+    options: UpstreamCallOptions = {},
   ): Promise<ToolCallOutcome> {
     const connection = this.#connections.get(alias);
     if (connection === undefined) {
@@ -544,7 +576,11 @@ export class Introspector implements ToolExecutor {
       // `{ toolResult }` compatibility shape; narrow to the modern fields.
       const result = (await connection.client.callTool(
         { name, arguments: args },
-        toolDefinition !== undefined ? { toolDefinition } : undefined,
+        {
+          ...(toolDefinition !== undefined ? { toolDefinition } : {}),
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          ...progressOptions(options.onProgress, connector),
+        },
       )) as {
         content?: unknown;
         structuredContent?: unknown;
@@ -564,7 +600,10 @@ export class Introspector implements ToolExecutor {
       }
       const value = pickResultValue(result);
       // S1: a server given by URL must not hand the model the token it saw.
-      return { ok: true, result: connector !== undefined ? connector.redact(value) : value };
+      const redacted = connector !== undefined ? connector.redact(value) : value;
+      return value === result.content && Array.isArray(value)
+        ? { ok: true, result: redacted, rawContent: true }
+        : { ok: true, result: redacted };
     } catch (err) {
       // A source given by URL: an auth failure is its own outcome (R25
       // `auth`), and no error text reaches the model unredacted.

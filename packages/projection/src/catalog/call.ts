@@ -50,6 +50,7 @@ import {
   type PendingToolCall,
   type ResourceCaps,
   type ToolCatalogEntry,
+  type UpstreamCallOptions,
 } from '../types.js';
 import { approvalSubject, blobKeyDomain, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
@@ -72,6 +73,12 @@ export interface CallToolArgs extends RetryEnvelope {
   name: string;
   /** Arguments for the tool; absent means `{}`. */
   args?: unknown;
+  /**
+   * Host-side options for the upstream call this request runs, if it runs
+   * one: the facade request's cancellation signal and a progress sink.
+   * Never populated from tool arguments.
+   */
+  upstream?: UpstreamCallOptions;
 }
 
 /** `call_tool` needs exactly the dependencies every gated tool shares (R35, R38). */
@@ -122,7 +129,7 @@ export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<
 
     switch (decidePolicy(entry, policyContext(deps))) {
       case 'auto':
-        return await execute(entry.name, toolArgs, deps, caps);
+        return await execute(entry.name, toolArgs, deps, caps, args.upstream);
       case 'deny':
         return denied(entry);
       case 'ask':
@@ -271,7 +278,7 @@ async function resume(
   }
 
   // S2: the approval authorized the RECORDED args.
-  return await execute(recorded.name, recorded.args, deps, caps);
+  return await execute(recorded.name, recorded.args, deps, caps, args.upstream);
 }
 
 // ---------------------------------------------------------------------------
@@ -283,10 +290,11 @@ async function execute(
   toolArgs: Record<string, unknown>,
   deps: CallToolDeps,
   caps: ResourceCaps,
+  upstream: UpstreamCallOptions | undefined,
 ): Promise<CallToolResult> {
   // A multi-server facade routes the qualified name to its box (R40).
   const target = routeCall(deps.catalog, name);
-  const result = await deps.executor.callTool(target.alias, target.name, toolArgs);
+  const result = await deps.executor.callTool(target.alias, target.name, toolArgs, upstream);
   if (!result.ok && result.auth !== undefined) {
     // R25 `auth`: upstream authorization failed (a source given by URL).
     // Library copy throughout; the model cannot fix this by rewriting the call.
@@ -317,7 +325,10 @@ async function execute(
   const json = jsonText(result.result);
   const outputBytes = json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
   if (json === undefined || outputBytes <= caps.maxResultBytes) {
-    return outcome({ status: 'ok', tool: name, output: result.result });
+    const value: CallToolOutcome = { status: 'ok', tool: name, output: result.result };
+    return result.rawContent === true && Array.isArray(result.result)
+      ? contentOutcome(value, name, result.result)
+      : outcome(value);
   }
   return outcome({
     status: 'ok',
@@ -350,6 +361,88 @@ function outcome(value: CallToolOutcome): CallToolResult {
     content: [{ type: 'text', text: renderOutcome(value) }],
     structuredContent: { ...value },
   };
+}
+
+/** A content block the facade hands on natively: media and embedded resources. */
+type NativeBlock = CallToolResult['content'][number];
+
+/**
+ * An `ok` result whose output is the upstream's raw content array (no
+ * structured content, not a single text block). The text rendering reads
+ * block by block — text as text, an embedded text resource under its URI —
+ * instead of a JSON dump, so base64 never lands in the model's text. Image
+ * and audio blocks and embedded resources are handed on as native content
+ * blocks after the text, for hosts that render them. A `resource_link` is
+ * described, not passed on: its URI names the wrapped server's resource,
+ * which this facade does not serve. Everything server-authored stays S5
+ * text: neutralized, and `structuredContent.output` still carries the
+ * array verbatim (R35.5).
+ */
+function contentOutcome(value: CallToolOutcome, tool: string, blocks: unknown[]): CallToolResult {
+  const lines: string[] = [];
+  const native: NativeBlock[] = [];
+  for (const block of blocks) {
+    const rendered = renderBlock(block);
+    lines.push(rendered.text);
+    if (rendered.native !== undefined) native.push(rendered.native);
+  }
+  const head = `call_tool ${inert(tool)}: ok`;
+  const body = neutralizeControlChars(lines.join('\n\n'), { allowNewline: true });
+  return {
+    content: [{ type: 'text', text: `${head}\n\n${body}` }, ...native],
+    structuredContent: { ...value },
+  };
+}
+
+function renderBlock(block: unknown): { text: string; native?: NativeBlock } {
+  if (!isRecord(block)) return { text: JSON.stringify(block) ?? 'null' };
+  const mime = typeof block['mimeType'] === 'string' ? block['mimeType'] : 'unknown type';
+  switch (block['type']) {
+    case 'text':
+      if (typeof block['text'] === 'string') return { text: block['text'] };
+      break;
+    case 'image':
+    case 'audio':
+      if (typeof block['data'] === 'string' && typeof block['mimeType'] === 'string') {
+        return {
+          text: `[${block['type']} ${inert(mime)}, attached as a content block]`,
+          native: { type: block['type'], data: block['data'], mimeType: block['mimeType'] },
+        };
+      }
+      break;
+    case 'resource': {
+      const resource = block['resource'];
+      if (!isRecord(resource) || typeof resource['uri'] !== 'string') break;
+      const rmime = typeof resource['mimeType'] === 'string' ? resource['mimeType'] : undefined;
+      const label = `[embedded resource ${inert(resource['uri'])}${rmime !== undefined ? ` (${inert(rmime)})` : ''}`;
+      if (typeof resource['text'] === 'string') {
+        return { text: `${label}]\n${resource['text']}` };
+      }
+      if (typeof resource['blob'] === 'string') {
+        return {
+          text: `${label}, binary, attached as a content block]`,
+          native: {
+            type: 'resource',
+            resource: {
+              uri: resource['uri'],
+              blob: resource['blob'],
+              ...(rmime !== undefined ? { mimeType: rmime } : {}),
+            },
+          },
+        };
+      }
+      break;
+    }
+    case 'resource_link':
+      if (typeof block['uri'] === 'string') {
+        const named = typeof block['name'] === 'string' ? ` ${inert(block['name'])}` : '';
+        return {
+          text: `[resource link${named} ${inert(block['uri'])} (${inert(mime)}) — a resource of the wrapped server, not readable through this facade]`,
+        };
+      }
+      break;
+  }
+  return { text: JSON.stringify(block, null, 2) ?? 'null' };
 }
 
 function renderOutcome(value: CallToolOutcome): string {

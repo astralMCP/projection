@@ -8,7 +8,7 @@
  * exactly like a single-server one.
  */
 
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { DASHBOARD_RESOURCE_URI } from '../apps/dashboard.js';
 import { boxSearchTool } from '../catalog/boxes.js';
@@ -21,7 +21,8 @@ import type {
   ToolCallResult,
 } from '../mrtr/index.js';
 import { WORKFLOW_PROMPTS } from '../prompts/workflow-prompts.js';
-import { clampCaps, type ServerCatalog } from '../types.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { clampCaps, type ServerCatalog, type UpstreamCallOptions } from '../types.js';
 import type { WrapOptions } from './options.js';
 
 /** The model-facing copy of the catalog tools: what differs between facade kinds. */
@@ -176,11 +177,50 @@ export function registerCatalogTools(
           ...(ctx.mcpReq.inputResponses !== undefined
             ? { inputResponses: ctx.mcpReq.inputResponses }
             : {}),
+          upstream: upstreamCallOptions(args.name, ctx),
         },
         era,
         clientCanElicit(server),
       ),
   );
+}
+
+/** Upstream progress messages are server prose (S5): inert and bounded. */
+const MAX_PROGRESS_MESSAGE_CHARS = 200;
+
+/**
+ * The upstream half of a `call_tool` request: cancelling the facade request
+ * cancels the upstream call, and when the client asked for progress (a
+ * `progressToken` in `_meta`), the upstream's progress reports are relayed
+ * under the client's own token. A relayed message is the wrapped server's
+ * text (S5): attributed to the tool (`<tool>: <message>`; a qualified name
+ * on a multi-server facade names the box, R40), control and bidi characters
+ * neutralized, capped. `name` only reaches a report once the catalog has
+ * accepted it — an unknown tool never runs.
+ */
+function upstreamCallOptions(name: string, ctx: ServerContext): UpstreamCallOptions {
+  const token = ctx.mcpReq._meta?.progressToken;
+  if (token === undefined) return { signal: ctx.mcpReq.signal };
+  return {
+    signal: ctx.mcpReq.signal,
+    onProgress: (report) => {
+      const params: {
+        progressToken: string | number;
+        progress: number;
+        total?: number;
+        message?: string;
+      } = { progressToken: token, progress: report.progress };
+      if (report.total !== undefined) params.total = report.total;
+      if (report.message !== undefined) {
+        params.message = neutralizeControlChars(
+          capLength(`${name}: ${report.message}`, MAX_PROGRESS_MESSAGE_CHARS),
+        );
+      }
+      // Best effort: a client that went away misses a progress report, and
+      // the call itself carries on.
+      ctx.mcpReq.notify({ method: 'notifications/progress', params }).catch(() => undefined);
+    },
+  };
 }
 
 /** One search tool (R33, R43): `{ query?, cursor? }`, read-only. */

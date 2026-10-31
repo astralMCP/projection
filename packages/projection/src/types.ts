@@ -105,17 +105,50 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return proto === Object.prototype || proto === null;
 }
 
+/**
+ * One wrapped-server progress report (MCP `notifications/progress`), as the
+ * upstream sent it: `message` is server-authored text (S5), not yet
+ * neutralized.
+ */
+export interface UpstreamProgress {
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+/**
+ * Host-side options for one upstream call: never model-authored. `signal`
+ * cancels the upstream request (MCP `notifications/cancelled`) when the
+ * facade's own request is cancelled; `onProgress` receives the upstream's
+ * progress reports, and its presence asks the upstream for them.
+ */
+export interface UpstreamCallOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: UpstreamProgress) => void;
+}
+
 /** Executes a tool call against the wrapped server. Implemented by the introspector. */
 export interface ToolExecutor {
   callTool(
     alias: ServerAlias,
     name: string,
     args: Record<string, unknown>,
+    options?: UpstreamCallOptions,
   ): Promise<ToolCallOutcome>;
 }
 
 export type ToolCallOutcome =
-  | { ok: true; result: unknown }
+  | {
+      ok: true;
+      result: unknown;
+      /**
+       * Set when `result` is the upstream's raw `content` array (no
+       * `structuredContent`, not a single text block), so a renderer can
+       * tell content blocks from structured data that happens to be an
+       * array.
+       */
+      rawContent?: true;
+    }
   | {
       ok: false;
       error: { message: string; detail?: unknown };

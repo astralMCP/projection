@@ -1343,3 +1343,22 @@ harness classifies and prices what that tier provokes.
   prior, except `multi-hard`, which takes a conservative $1/episode at list
   price. Batch `latency_s` spans lockstep ticks and is not comparable with
   interactive latency.
+
+## D22 — call_tool relays content blocks, progress and cancellation (2026-10-30)
+
+The spec-conformance audit (`packages/projection/test/conformance/`) wrapped
+an upstream using the whole 2026-07-28 surface. Three cheap gaps were closed
+on the `call_tool` path only: (1) a raw content array is rendered block by
+block, with image, audio and embedded binary resources attached as native
+content blocks instead of base64 JSON in the text — `structuredContent.output`
+is unchanged (R35.5) and `resource_link` blocks are described, never attached,
+because the facade cannot serve the upstream URI; (2) when the client sends a
+`progressToken`, upstream `notifications/progress` are relayed under the
+client's token, the message attributed `<tool>: …` (qualified on a
+multi-server facade) and neutralized and capped at 200 characters (S5), and
+each report resets the upstream request timeout; (3) the facade request's
+abort signal is passed to the upstream call, so cancelling `call_tool`
+cancels the wrapped tool. The `ToolExecutor` contract gains an optional
+host-side `UpstreamCallOptions` argument; nothing model-authored reaches it.
+Machines relay neither progress nor cancellation yet: a segment can span
+many calls and resumes on another instance, so that needs its own design.
