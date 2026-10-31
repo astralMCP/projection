@@ -1898,3 +1898,41 @@ so the reader knows `result.key` is one string.
 Consequences. The contract grows by about 280 tokens. A machine that
 already used parallel regions is unchanged. Tests that matched the old
 round-trip copy match the new one.
+
+## D31 — Every tool event carries its call's `args` (2026-10-30)
+
+Context. In a live eval a model used `toolCalls` and mapped each answer
+back to its item with `nums[Number(callId.split('#')[1]) - 1]`, taking the
+ids for 1-based (they are 0-based), and posted 9 comments on the wrong pull
+requests. D30 had rejected an index field because the index is in the id;
+the trace shows that index arithmetic on ids is the footgun.
+
+Decision (PRD R7, R15; amends D30). `TOOL_RESULT`, `TOOL_ERROR` and
+`TOOL_DENIED` each carry `args`: the arguments of the call they answer.
+For a gated call they are the sealed `pending` arguments (S2), so the
+event names what actually ran or was declined, not what the restored
+machine might compute now. Every site that answers a specific call sets
+them: a read run at once, an approved call run on resume, a decline, a
+policy denial (first segment, resume, and a re-issued held call), an
+R15a validation error, a refused forwarded question, and an upstream
+failure. Errors that abort the workflow (caps, unknown tool) answer no
+call and send no event, as before.
+
+Contract rule 4 lists the field with one clause: match a result to its
+item by `args`, not by order or id. Rule 5 drops "call k gets the id
+'<id>#k'" and its example records `event.args.path` per answer; the
+contract is a few characters shorter than before. The `tools.d.ts` header
+says the same in its `toolCalls` lines. Ids are unchanged.
+
+Order. Events need not arrive in list order: within one segment the host
+answers calls in the order they were queued, but a `toolCalls` item that
+fails the R15a check answers in the first segment while its siblings
+answer after the round trip, and a call held for a forwarded server
+question (G1) answers after the calls that did not need one. Matching by
+`args` is correct under any order; `fan-out.test.ts` covers the first case.
+
+Size. Nothing new is sealed: the blob stores `pending` (with its args) and
+the machine snapshot, never events, and resume builds each event from the
+sealed record. An event's `args` are the request's own object sent back
+into the VM, bounded as the request was (sandbox memory, and for a gated
+call the R23 blob ceiling).

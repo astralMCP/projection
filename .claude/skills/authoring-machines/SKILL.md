@@ -69,12 +69,13 @@ export default setup({}).createMachine({
   `packages/projection/test/multi/code-mode.test.ts` and the recording
   servers in `test/multi/helpers.ts`.
 - After a `toolCall`, wait in a state for one of these events, each carrying
-  the `callId` of the call it answers:
-  - `TOOL_RESULT { callId, result, notes? }` — the call succeeded; `notes`
+  the `callId` and the `args` of the call it answers (for an approved call,
+  the sealed arguments that ran or were declined; D31):
+  - `TOOL_RESULT { callId, args, result, notes? }` — the call succeeded; `notes`
     (D29), when present, are one-line remarks such as "Partial result: …"
     or "Page full: …", also restated after a completed run's output
-  - `TOOL_ERROR { callId, error }` — the call failed
-  - `TOOL_DENIED { callId, reason }` — the user declined, or policy denies it
+  - `TOOL_ERROR { callId, args, error }` — the call failed
+  - `TOOL_DENIED { callId, args, reason }` — the user declined, or policy denies it
 
   `toolCall(name, args, { id })` sets the id; the default is `name#N`. If
   more than one call is outstanding at once (parallel regions), give each
@@ -86,8 +87,9 @@ export default setup({}).createMachine({
   one action queues a call per item (ids `<id>#0`, `<id>#1`, …), so all
   of them share one approval round trip, where a call per state costs one
   each and stops unfinished at `caps.maxRoundTrips` (8). Guard with
-  `whenCallIn(id)` and count answers until every call has one (contract
-  rule 5, D30).
+  `whenCallIn(id)`, match each answer to its item by `event.args` (not by
+  parsing the index out of the id, nor by arrival order, which can differ),
+  and finish once every call has one (contract rule 5, D30, D31).
 
 - `event.result` on `TOOL_RESULT` is the tool's `structuredContent` when the
   server returns one (see its Output type in `tools.d.ts`); otherwise the

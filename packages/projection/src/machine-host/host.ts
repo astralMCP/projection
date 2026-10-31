@@ -414,7 +414,7 @@ class SegmentRunner {
 
       if (resolved.decision === 'deny') {
         const reason = policyDeniedReason(request.name);
-        events.push({ type: 'TOOL_DENIED', callId: request.id, reason });
+        events.push({ type: 'TOOL_DENIED', callId: request.id, args: request.args, reason });
         this.deps.audit.push({
           callId: request.id,
           tool: request.name,
@@ -437,6 +437,7 @@ class SegmentRunner {
           events.push({
             type: 'TOOL_ERROR',
             callId: request.id,
+            args: request.args,
             error: { message: invalid.message, detail: { phase: 'validate', hint: invalid.hint } },
           });
           this.deps.audit.push({
@@ -508,7 +509,12 @@ class SegmentRunner {
         decision: 'error',
         reason: refused,
       });
-      return { type: 'TOOL_ERROR', callId: request.id, error: { message: refused } };
+      return {
+        type: 'TOOL_ERROR',
+        callId: request.id,
+        args: request.args,
+        error: { message: refused },
+      };
     }
     this.tally(request.name, outcome.ok ? undefined : outcome.error.message);
     if (outcome.ok) {
@@ -534,6 +540,7 @@ class SegmentRunner {
       return {
         type: 'TOOL_RESULT',
         callId: request.id,
+        args: request.args,
         result: parsed !== undefined ? parsed.value : outcome.result,
         ...(parsed !== undefined ? { text: outcome.result as string } : {}),
         ...(notes.length > 0 ? { notes } : {}),
@@ -546,7 +553,7 @@ class SegmentRunner {
       decision: 'error',
       reason: outcome.error.message,
     });
-    return { type: 'TOOL_ERROR', callId: request.id, error: outcome.error };
+    return { type: 'TOOL_ERROR', callId: request.id, args: request.args, error: outcome.error };
   }
 
   /**
@@ -575,7 +582,7 @@ class SegmentRunner {
       if (!resolved.ok) throw resolved.error;
       if (resolved.decision === 'deny') {
         const reason = policyDeniedReason(call.name);
-        events.push({ type: 'TOOL_DENIED', callId: call.id, reason });
+        events.push({ type: 'TOOL_DENIED', callId: call.id, args: call.args, reason });
         this.deps.audit.push({
           callId: call.id,
           tool: call.name,
@@ -592,6 +599,7 @@ class SegmentRunner {
         events.push({
           type: 'TOOL_DENIED',
           callId: call.id,
+          args: call.args,
           ...(reason !== undefined ? { reason } : {}),
         });
         this.deps.audit.push({
@@ -676,7 +684,7 @@ class SegmentRunner {
         const reason = regated
           ? `${call.name} now needs approval under this server's policy; run it again to ask for it.`
           : policyDeniedReason(call.name);
-        events.push({ type: 'TOOL_DENIED', callId: call.id, reason });
+        events.push({ type: 'TOOL_DENIED', callId: call.id, args: call.args, reason });
         this.deps.audit.push({
           callId: call.id,
           tool: call.name,

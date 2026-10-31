@@ -8,7 +8,8 @@
 // (banned pattern R7) — emit toolCall(name, args) and handle the
 // TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead. For one call per
 // item, toolCalls(name, argsList, { id }) requests them all in one step
-// (ids '<id>#0', '<id>#1', …; guard with whenCallIn(id)).
+// (guard with whenCallIn(id)). Every event carries `event.args`, its
+// call's own arguments: match a result to its item by them.
 //
 // A TOOL_RESULT's `result` is the tool's structuredContent (its Output
 // type below), else its single text block's text, parsed when that text

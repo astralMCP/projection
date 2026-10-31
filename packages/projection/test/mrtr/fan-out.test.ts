@@ -10,7 +10,8 @@ import type { ExecuteMachineDeps } from '../../src/mrtr/index.js';
 import { BATCH_KEY, MAX_BATCH_CALLS } from '../../src/mrtr/batch.js';
 import { authoringContract } from '../../src/machine-host/index.js';
 import { openBlob } from '../../src/blob/index.js';
-import type { AuditEntry, BlobSealerConfig } from '../../src/types.js';
+import type { AuditEntry, BlobSealerConfig, ServerCatalog } from '../../src/types.js';
+import { generateToolTypes } from '../../src/typegen/index.js';
 import { BRIDGE_SOURCE, CATALOG, FakeExecutor } from '../machine-host/fixtures.js';
 import {
   ACCEPT,
@@ -36,7 +37,7 @@ function deps(overrides: Partial<ExecuteMachineDeps> = {}): ExecuteMachineDeps {
   };
 }
 
-/** The contract's rule 5 example as a whole module, recording which items ran. */
+/** The contract's rule 5 example as a whole module, recording which items ran by event.args. */
 const FAN_OUT = `
 import { setup, assign } from 'xstate';
 import { toolCalls, whenCallIn } from '@astral-mcp/tools';
@@ -50,8 +51,8 @@ export default setup({
       entry: toolCalls('write_file', ({ context }) => context.paths.map((path) => ({ path, content: 'hello' })), { id: 'w' }),
       always: { guard: ({ context }) => context.answered === context.paths.length, target: 'done' },
       on: {
-        TOOL_RESULT: { guard: whenCallIn('w'), actions: ['answered', assign({ written: ({ context, event }) => [...context.written, context.paths[Number(event.callId.slice(2))]] })] },
-        TOOL_DENIED: { guard: whenCallIn('w'), actions: ['answered', assign({ refused: ({ context, event }) => [...context.refused, context.paths[Number(event.callId.slice(2))]] })] },
+        TOOL_RESULT: { guard: whenCallIn('w'), actions: ['answered', assign({ written: ({ context, event }) => [...context.written, event.args.path] })] },
+        TOOL_DENIED: { guard: whenCallIn('w'), actions: ['answered', assign({ refused: ({ context, event }) => [...context.refused, event.args.path] })] },
         TOOL_ERROR: { guard: whenCallIn('w'), actions: 'answered' },
       },
     },
@@ -234,6 +235,117 @@ export default setup({}).createMachine({
     const result = completed(await executeMachine({ code }, deps({ executor })));
     expect(structured(result)['output']).toEqual(['read_file#0', 'read_file#1']);
     expect(executor.calls.map((c) => c.args['path'])).toEqual(['/x', '/y']);
+  });
+});
+
+describe("every event carries its call's own args", () => {
+  /** Records each event's type, callId and args; finishes once `n` have come. */
+  const recorder = (entry: string, n: number): string => `
+import { setup, assign } from 'xstate';
+import { toolCall, toolCalls, whenCallIn } from '@astral-mcp/tools';
+const record = assign({ seen: ({ context, event }) => [...context.seen, { type: event.type, callId: event.callId, args: event.args }] });
+export default setup({}).createMachine({
+  context: { seen: [] },
+  initial: 'go',
+  states: {
+    go: {
+      entry: ${entry},
+      always: { guard: ({ context }) => context.seen.length === ${n}, target: 'done' },
+      on: { TOOL_RESULT: { actions: record }, TOOL_ERROR: { actions: record }, TOOL_DENIED: { actions: record } },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => context.seen,
+});
+`;
+  const seen = (result: Awaited<ReturnType<typeof executeMachine>>) =>
+    structured(result)['output'] as { type: string; callId: string; args: unknown }[];
+
+  it('on reads that run at once, and on a read that fails', async () => {
+    const code = recorder(
+      `[toolCalls('read_file', [{ path: '/x' }, { path: '/y' }], { id: 'r' }), toolCall('list_dir', { dir: '/' }, { id: 'l' })]`,
+      3,
+    );
+    const executor = new FakeExecutor({
+      list_dir: { ok: false, error: { message: 'no such dir' } },
+    });
+    const result = completed(await executeMachine({ code }, deps({ executor })));
+    expect(seen(result)).toEqual([
+      { type: 'TOOL_RESULT', callId: 'r#0', args: { path: '/x' } },
+      { type: 'TOOL_RESULT', callId: 'r#1', args: { path: '/y' } },
+      { type: 'TOOL_ERROR', callId: 'l', args: { dir: '/' } },
+    ]);
+  });
+
+  it('on a policy-denied call', async () => {
+    const code = recorder(`toolCall('delete_file', { path: '/z' }, { id: 'd' })`, 1);
+    const result = completed(
+      await executeMachine({ code }, deps({ policy: { delete_file: 'deny' } })),
+    );
+    expect(seen(result)).toEqual([{ type: 'TOOL_DENIED', callId: 'd', args: { path: '/z' } }]);
+  });
+
+  it('on resume: the sealed args of approved, declined and newly policy-denied calls', async () => {
+    const code = recorder(
+      `[toolCalls('write_file', [{ path: '/a' }, { path: '/b' }], { id: 'w' }), toolCall('delete_file', { path: '/c' }, { id: 'd' })]`,
+      3,
+    );
+    const first = await executeMachine({ code }, deps());
+    const { result } = await resumeWith(
+      code,
+      first,
+      { 'w#0': ACCEPT, 'w#1': decline('no'), d: ACCEPT },
+      deps({ policy: { delete_file: 'deny' } }),
+    );
+    expect(seen(result)).toEqual([
+      { type: 'TOOL_RESULT', callId: 'w#0', args: { path: '/a' } },
+      { type: 'TOOL_DENIED', callId: 'w#1', args: { path: '/b' } },
+      { type: 'TOOL_DENIED', callId: 'd', args: { path: '/c' } },
+    ]);
+  });
+
+  it('maps a fan-out by event.args when answers arrive out of list order', async () => {
+    // write_file#1 fails the structural check (R15a), so its TOOL_ERROR comes
+    // in the first segment; #0 and #2 answer only after the round trip.
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: CATALOG.tools.map((tool) =>
+        tool.name === 'write_file'
+          ? { ...tool, inputSchema: { type: 'object', required: ['path'] } }
+          : tool,
+      ),
+    };
+    const d = deps({ catalog, bridgeSource: generateToolTypes(catalog).bridgeSource });
+    const code = `
+import { setup, assign } from 'xstate';
+import { toolCalls, whenCallIn } from '@astral-mcp/tools';
+const items = [{ path: '/a', tag: 'A' }, { tag: 'B' }, { path: '/c', tag: 'C' }];
+const record = assign({ by: ({ context, event }) => ({ ...context.by, [event.args.tag]: event.type }), order: ({ context, event }) => [...context.order, event.callId] });
+export default setup({}).createMachine({
+  context: { by: {}, order: [] },
+  initial: 'writing',
+  states: {
+    writing: {
+      entry: toolCalls('write_file', items, { id: 'w' }),
+      always: { guard: ({ context }) => context.order.length === items.length, target: 'done' },
+      on: {
+        TOOL_RESULT: { guard: whenCallIn('w'), actions: record },
+        TOOL_DENIED: { guard: whenCallIn('w'), actions: record },
+        TOOL_ERROR: { guard: whenCallIn('w'), actions: record },
+      },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => context,
+});
+`;
+    const first = await executeMachine({ code }, d);
+    expect(requestKeys(first).toSorted()).toEqual(['w#0', 'w#2']);
+    const { result } = await resumeWith(code, first, { 'w#0': ACCEPT, 'w#2': decline() }, d);
+    expect(structured(result)['output']).toEqual({
+      order: ['w#1', 'w#0', 'w#2'],
+      by: { A: 'TOOL_RESULT', B: 'TOOL_ERROR', C: 'TOOL_DENIED' },
+    });
   });
 });
 

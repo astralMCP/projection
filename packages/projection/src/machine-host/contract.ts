@@ -90,7 +90,8 @@ export function toolCall(name, args, options) {
  *   entry: toolCalls('write_file', ({ context }) => context.paths.map((path) => ({ path })), { id: 'w' })
  *
  * Call k (0-based, in list order) gets the id '<id>#k', '<id>' defaulting
- * to the tool name; guard the waiting state with whenCallIn(id). An empty
+ * to the tool name; guard the waiting state with whenCallIn(id), and match
+ * each event to its item by event.args, not the id. An empty
  * list requests nothing, so no event will come: check the list before
  * entering the state (or leave it with an 'always' transition, as the
  * contract's example does). Every item is checked before any is queued.
@@ -149,10 +150,10 @@ export function whenCall(id) {
 
 /**
  * Guard matching the events of every call one toolCalls(name, list, { id })
- * made: their callIds are '<id>#0', '<id>#1', … The item's index is
- * Number(event.callId.slice(id.length + 1)).
+ * made: their callIds are '<id>#0', '<id>#1', … Each event's args are its
+ * call's own arguments: match the item by those, not by the id.
  *
- *   on: { TOOL_RESULT: { guard: whenCallIn('w'), actions: 'answered' } }
+ *   on: { TOOL_RESULT: { guard: whenCallIn('w'), actions: 'seen' } }
  */
 export function whenCallIn(id) {
   const prefix = String(id) + '#';
@@ -239,10 +240,11 @@ Rules:
    fromPromise/invoke — restored snapshots restart invoked actors, which
    would re-execute an approved write. Machines using invoke are rejected.
 4. After a toolCall, wait in a state for one of these events:
-     TOOL_RESULT { callId, result, notes? }  the call succeeded; notes, if
-                                             any, say the result looks partial
-     TOOL_ERROR  { callId, error }           the call failed
-     TOOL_DENIED { callId, reason }          the user declined, or policy denies it
+     TOOL_RESULT { callId, args, result, notes? }  succeeded
+     TOOL_ERROR  { callId, args, error }           failed
+     TOOL_DENIED { callId, args, reason }          the user declined, or policy denies it
+   args: the call's own arguments — match a result to its item by them, not
+   by order or id. notes, if any, say the result looks partial.
    Denial is not an abort: handle TOOL_DENIED and continue or finish.
    IMPORTANT: if your machine has more than one call outstanding at the same
    time (parallel regions), give each toolCall an explicit id and guard every
@@ -257,20 +259,19 @@ Rules:
    moment are the arguments that execute. Each pause is one approval round
    trip and a workflow gets at most ${maxRoundTrips}: one gated call per item, each in
    its own state, stops unfinished past ${maxRoundTrips} items. Make them together with
-   toolCalls (one round trip for all): call k gets the id '<id>#k'; count
-   the answers guarded by whenCallIn(id) until all have one. An empty list
-   makes no calls; the always transition below then leaves at once:
+   toolCalls (one round trip for all), guarded by whenCallIn(id). An empty
+   list makes no calls; the always transition below leaves at once:
 
      import { toolCalls, whenCallIn } from '@astral-mcp/tools';
-     setup({ actions: { answered: assign({ answered: ({ context }) => context.answered + 1 }) } })
-     // context: ({ input }) => ({ paths: input.paths, answered: 0 })
+     setup({ actions: { seen: assign({ seen: ({ context, event }) => [...context.seen, [event.args.path, event.type]] }) } })
+     // context: ({ input }) => ({ paths: input.paths, seen: [] })
      writing: {
        entry: toolCalls('${gated.name}', ({ context }) => context.paths.map((path) => ({ path, content: 'hello' })), { id: 'w' }),${sampleNote(gated)}
-       always: { guard: ({ context }) => context.answered === context.paths.length, target: 'done' },
+       always: { guard: ({ context }) => context.seen.length === context.paths.length, target: 'done' },
        on: {
-         TOOL_RESULT: { guard: whenCallIn('w'), actions: 'answered' },
-         TOOL_DENIED: { guard: whenCallIn('w'), actions: 'answered' },
-         TOOL_ERROR: { guard: whenCallIn('w'), actions: 'answered' },
+         TOOL_RESULT: { guard: whenCallIn('w'), actions: 'seen' },
+         TOOL_DENIED: { guard: whenCallIn('w'), actions: 'seen' },
+         TOOL_ERROR: { guard: whenCallIn('w'), actions: 'seen' },
        },
      },
 6. Only 'xstate' and '@astral-mcp/tools' resolve as imports. There is no

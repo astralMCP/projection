@@ -302,6 +302,8 @@ export type HostEvent =
   | {
       type: 'TOOL_RESULT';
       callId: string;
+      /** The call's own arguments — as sealed, for an approved call (S2). */
+      args: Record<string, unknown>;
       result: unknown;
       /**
        * The upstream's text, when `result` is that text parsed: a single
@@ -311,8 +313,13 @@ export type HostEvent =
       /** The facade's notes on the result (R35.6, D29); absent when there are none. */
       notes?: string[];
     }
-  | { type: 'TOOL_ERROR'; callId: string; error: { message: string; detail?: unknown } }
-  | { type: 'TOOL_DENIED'; callId: string; reason?: string };
+  | {
+      type: 'TOOL_ERROR';
+      callId: string;
+      args: Record<string, unknown>;
+      error: { message: string; detail?: unknown };
+    }
+  | { type: 'TOOL_DENIED'; callId: string; args: Record<string, unknown>; reason?: string };
 
 // ---------------------------------------------------------------------------
 // Structured errors and logs (PRD R25, R31)
