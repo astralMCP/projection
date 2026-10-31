@@ -326,6 +326,22 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     expect((out as { notes?: string[] }).notes).toEqual([lines[1], lines[2]]);
   });
 
+  it('holds the rendered body to maxResultBytes: deep nesting cannot blow up pretty-printing (R12)', async () => {
+    let deep: unknown = 'x';
+    for (let i = 0; i < 2_000; i++) deep = [deep];
+    // About 8 KB of compact JSON, but about 8 MB pretty-printed.
+    const d = deps({
+      caps: { maxResultBytes: 64 * 1_024 },
+      executor: new FakeExecutor({ read_file: { ok: true, result: { a: deep } } }),
+    });
+    const result = completed(await callTool({ name: 'read_file', args: { path: '/deep' } }, d));
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.split('\n')[0]).toBe('call_tool "read_file": ok (result truncated)');
+    expect(text.length).toBeLessThan(4 * 1_024);
+    expect(outcome(result)).toMatchObject({ truncated: true });
+    expect((outcome(result) as { outputBytes: number }).outputBytes).toBeGreaterThan(64 * 1_024);
+  });
+
   it('notes a full page from the default page size, even on a truncated preview (D29)', async () => {
     const catalog: ServerCatalog = {
       ...CATALOG,

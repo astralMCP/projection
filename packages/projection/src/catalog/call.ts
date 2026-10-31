@@ -437,7 +437,16 @@ async function execute(
   // side effect has already happened, so this stays a normal `ok` result (an
   // error would read as "retry") carrying a bounded preview of the output.
   const json = jsonText(result.result);
-  const outputBytes = json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
+  // The cap holds the rendered body, not the compact JSON: pretty-printing
+  // indents by depth, so a small deeply nested result renders to a very
+  // large one (quadratic in its depth).
+  const outputBytes =
+    json === undefined
+      ? 0
+      : Math.max(
+          Buffer.byteLength(json, 'utf8'),
+          renderedSize(result.result, caps.maxResultBytes + 1),
+        );
   // R35.6: computed on the full result, so a preview carries them too.
   const notes = resultNotes({
     value: result.result,
@@ -672,6 +681,39 @@ function renderOutcome(value: CallToolOutcome): string {
     case 'denied_by_policy':
       return `${inert(value.tool)} is blocked by this server's policy. Nothing was executed; the policy is not something you can change.`;
   }
+}
+
+/**
+ * An upper estimate, in characters, of {@link structuredBody}'s rendering of
+ * `value` (a string result is printed as-is), walked without recursion and
+ * abandoned once it reaches `stopAt` — so a hostile deeply nested result is
+ * measured, never pretty-printed, and costs at most `stopAt` steps.
+ */
+export function renderedSize(value: unknown, stopAt: number): number {
+  if (typeof value === 'string') return value.length;
+  let size = 0;
+  const stack: [unknown, number][] = [[value, 0]];
+  while (stack.length > 0 && size < stopAt) {
+    const [item, depth] = stack.pop() as [unknown, number];
+    // A line of its own: indent, then the trailing comma and newline.
+    size += 2 * depth + 2;
+    if (Array.isArray(item)) {
+      size += 2;
+      for (const element of item) stack.push([element, depth + 1]);
+    } else if (isRecord(item)) {
+      size += 2;
+      for (const [key, field] of Object.entries(item)) {
+        size += key.length + 4;
+        stack.push([field, depth + 1]);
+      }
+    } else if (typeof item === 'string') {
+      // Printed as indented text lines when long enough: 5 per line break.
+      size += item.length + 2 + 5 * (item.match(/[\r\n]/g)?.length ?? 0);
+    } else {
+      size += String(item).length;
+    }
+  }
+  return size;
 }
 
 /** A top-level string with at least this many lines is printed as text, not JSON (D29). */
