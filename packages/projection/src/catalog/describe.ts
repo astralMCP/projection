@@ -181,9 +181,9 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
 /**
  * The output line for a tool that declares no `outputSchema`. Such a tool's
  * result is not necessarily text: servers often return `structuredContent`
- * without declaring a schema, and JSON text arrives as a string, so the
- * `TOOL_RESULT.result` a machine receives (R35.5) can be an object or a
- * string the model has never seen. A model told "text" writes
+ * without declaring a schema, and JSON text for an object or array reaches
+ * a machine parsed (D29), so the `TOOL_RESULT.result` a machine receives
+ * (R35.5) can be an object or a string the model has never seen. A model told "text" writes
  * `parseInt(event.result)` against `{ count: 4 }`. The line says the shape
  * is unknown and, for a tool that only reads and runs without approval,
  * says how to see it before code depends on it. Library copy; the posture
@@ -191,9 +191,9 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
  */
 function undeclaredOutput(tool: ToolDescription): string {
   const head =
-    'Output schema: none declared — the result may be a structured object or text (sometimes JSON text, which a machine receives as a string).';
+    'Output schema: none declared — the result may be a structured object or text (JSON text for an object or array reaches a machine parsed).';
   if (tool.posture === 'runs immediately' && tool.annotations.readOnlyHint === true) {
-    return `${head} Before a machine reads its fields, call it once with call_tool and look at the result: event.result is that same value (call_tool prints an object as indented JSON, text as it is).`;
+    return `${head} Before a machine reads its fields, call it once with call_tool and look at the result: event.result is that same value, JSON text parsed (call_tool prints an object as indented JSON, text as it is).`;
   }
   return `${head} Do not write code that depends on a result shape you have not seen.`;
 }

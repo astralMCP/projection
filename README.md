@@ -17,7 +17,7 @@ Projection wraps an existing MCP server and exposes two projections of it — fi
 
 Alongside the tools it serves `projection://` resources (generated types, the authoring contract, example machines), a `ui://projection/dashboard.html` MCP App that app-capable hosts render for `execute_machine` results, and, with code mode on, the `/save-workflow` and `/visualize-workflow` prompts.
 
-The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
+The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, computing over a list (counting, filtering, summing, checking every item), or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
 
 When the wrapped tools' definitions are small (about 8k estimated tokens, `projections.directBudgetTokens`), each is also listed under its own name (`<box>__<tool>` on a multi-server facade) as a thin alias of `call_tool` under the same approval gate, and `search_tools` is dropped: the model calls them without searching first. This is the default (`projections.direct: 'auto'`); `projections: { direct: false }` keeps the five-tool surface whatever the size.
 

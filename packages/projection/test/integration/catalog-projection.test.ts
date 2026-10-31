@@ -152,6 +152,9 @@ describe('projections switch (R1, R32)', () => {
     expect(tools.find((t) => t.name === 'call_tool')?.description).not.toContain(
       'successive call_tool calls',
     );
+    expect(tools.find((t) => t.name === 'call_tool')?.description).toContain(
+      'computing over a list (counting, filtering, summing, comparing or checking every item)',
+    );
     expect(facade?.instructions).not.toContain('short chain');
     // The catalog tools are reads: annotated so hosts never prompt for them.
     for (const name of ['search_tools', 'describe_tool']) {

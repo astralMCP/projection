@@ -453,6 +453,7 @@ describe('direct listing on a single-server facade', () => {
     expect(f.projections).toEqual({ codeMode: true, catalog: true, direct: true });
     expect(f.instructions).toContain("This server's tools are listed directly");
     expect(f.instructions).toContain('execute_machine only when the work loops or branches');
+    expect(f.instructions).toContain('computes over a list (counting, filtering, summing');
   });
 });
 

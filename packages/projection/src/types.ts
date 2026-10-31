@@ -303,6 +303,11 @@ export type HostEvent =
       type: 'TOOL_RESULT';
       callId: string;
       result: unknown;
+      /**
+       * The upstream's text, when `result` is that text parsed: a single
+       * text block holding JSON for an object or an array (D29).
+       */
+      text?: string;
       /** The facade's notes on the result (R35.6, D29); absent when there are none. */
       notes?: string[];
     }

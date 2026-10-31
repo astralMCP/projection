@@ -84,11 +84,12 @@ export default setup({}).createMachine({
 
 - `event.result` on `TOOL_RESULT` is the tool's `structuredContent` when the
   server returns one (see its Output type in `tools.d.ts`); otherwise the
-  text of its single text block, `null` for an empty result, or the raw
-  content array for anything else. Tools without an Output type are typed
+  text of its single text block — parsed when it is JSON for an object or
+  an array, with the raw text on `event.text` (D29) — `null` for an empty
+  result, or the raw content array for anything else. Tools without an Output type are typed
   `unknown` — not necessarily a string: many servers return
   `structuredContent` without declaring a schema (the MongoDB server's
-  `count` returns `{ count: 4 }`), and JSON text arrives as a string. A
+  `count` returns `{ count: 4 }`). A
   tool returning `isError` arrives as `TOOL_ERROR`.
 - Contract item 5: tools marked "asks for approval" suspend the machine for
   approval; tools marked "runs immediately" (read-only, `auto` by policy, or,

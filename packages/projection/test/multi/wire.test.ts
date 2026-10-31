@@ -128,6 +128,15 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
     expect(c.getInstructions()).toContain(
       'call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results',
     );
+    // D29: computation over a list is a reason for a machine, in every copy
+    // that routes between call_tool and execute_machine.
+    const computes =
+      'computes over a list (counting, filtering, summing, comparing or checking every item)';
+    const computing =
+      'computing over a list (counting, filtering, summing, comparing or checking every item)';
+    expect(c.getInstructions()).toContain(computes);
+    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).toContain(computing);
+    expect(tools.find((tool) => tool.name === 'call_tool')?.description).toContain(computing);
     const prompts = await c.listPrompts();
     expect(prompts.prompts.map((prompt) => prompt.name).toSorted()).toEqual([
       'save-workflow',

@@ -126,3 +126,121 @@ describe('result notes reach the machine and the model (R35.6, D29)', () => {
     expect(structured(result)).not.toHaveProperty('notes');
   });
 });
+
+/** Returns what the machine saw: the result's type, a loop over it, and event.text. */
+const SHAPE_MACHINE = `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'shape',
+  context: { seen: null },
+  initial: 'finding',
+  states: {
+    finding: {
+      entry: toolCall('find', () => ({ query: 'q' })),
+      on: {
+        TOOL_RESULT: {
+          target: 'done',
+          actions: assign({
+            seen: ({ event }) => ({
+              type: Array.isArray(event.result) ? 'array' : typeof event.result,
+              ids: Array.isArray(event.result) ? event.result.map((d) => d.id) : null,
+              text: event.text ?? null,
+            }),
+          }),
+        },
+      },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => context.seen,
+});
+`;
+
+async function seen(result: unknown, rawContent?: true): Promise<unknown> {
+  const outcome = await runSegment({
+    ...OPTIONS,
+    code: SHAPE_MACHINE,
+    executor: new FakeExecutor({
+      find: { ok: true, result, ...(rawContent !== undefined ? { rawContent } : {}) },
+    }),
+  });
+  expect(outcome.status).toBe('completed');
+  return outcome.status === 'completed' ? outcome.output : undefined;
+}
+
+describe('JSON text results reach a machine parsed (D29)', () => {
+  it('parses a single text block holding a JSON array, keeping the text on event.text', async () => {
+    const text = '[{"id":1},{"id":2}]';
+    expect(await seen(text)).toEqual({ type: 'array', ids: [1, 2], text });
+    expect(await seen(' {"id":1} ')).toEqual({ type: 'object', ids: null, text: ' {"id":1} ' });
+  });
+
+  it('leaves plain text, JSON scalars, invalid JSON and raw content arrays as they are', async () => {
+    expect(await seen('hello')).toEqual({ type: 'string', ids: null, text: null });
+    expect(await seen('42')).toEqual({ type: 'string', ids: null, text: null });
+    expect(await seen('[not json')).toEqual({ type: 'string', ids: null, text: null });
+    expect(await seen({ id: 1 })).toEqual({ type: 'object', ids: null, text: null });
+    const blocks = [{ type: 'text', text: '[{"id":9}]' }];
+    expect(await seen(blocks, true)).toEqual({ type: 'array', ids: [undefined], text: null });
+  });
+});
+
+describe('the call cap says what the calls did (D29)', () => {
+  const LOOP = `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+
+export default setup({}).createMachine({
+  id: 'loop',
+  context: { n: 0 },
+  initial: 'finding',
+  states: {
+    finding: {
+      entry: toolCall('find', ({ context }) => ({ query: 'q' + context.n })),
+      on: {
+        TOOL_RESULT: { target: 'finding', reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
+        TOOL_ERROR: { target: 'finding', reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
+      },
+    },
+  },
+});
+`;
+
+  it('breaks the calls down by tool, with the first error inert and capped', async () => {
+    const outcome = await runSegment({
+      ...OPTIONS,
+      code: LOOP,
+      caps: { maxReadCallsPerSegment: 4 },
+      executor: new FakeExecutor({
+        find: { ok: false, error: { message: `limit must be <= 5${ESC}[31m\n${'x'.repeat(400)}` } },
+      }),
+    });
+    expect(outcome.status).toBe('error');
+    if (outcome.status !== 'error') return;
+    expect(outcome.error.phase).toBe('cap_exceeded');
+    const message = outcome.error.message;
+    expect(message).toMatch(
+      /^the machine made more than 4 tool calls that run without approval in one segment — so far: 4 calls to "find" \(all failed, first error: "limit must be <= 5�\[31m�x+…"\)$/,
+    );
+    expect(message).not.toContain(ESC);
+    expect(message.length).toBeLessThan(400);
+    expect(outcome.error.hint).toContain(
+      'Every call to "find" failed, so repeating it will not get further',
+    );
+  });
+
+  it('reports succeeding calls without blaming them', async () => {
+    const outcome = await runSegment({
+      ...OPTIONS,
+      code: LOOP,
+      caps: { maxReadCallsPerSegment: 3 },
+      executor: new FakeExecutor({ find: { ok: true, result: { docs: [] } } }),
+    });
+    expect(outcome.status).toBe('error');
+    if (outcome.status !== 'error') return;
+    expect(outcome.error.message).toContain('— so far: 3 calls to "find" (all succeeded)');
+    expect(outcome.error.hint).not.toContain('Every call');
+  });
+});

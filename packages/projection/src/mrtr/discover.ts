@@ -68,8 +68,9 @@ export default setup({}).createMachine({
           target: 'done',
           // event.result is the tool's structuredContent when the server
           // returns one (see its Output type in tools.d.ts); otherwise the
-          // text of its single text block, null when empty, or the raw
-          // content array. isError results arrive as TOOL_ERROR instead.
+          // text of its single text block (parsed when it is JSON for an
+          // object or array), null when empty, or the raw content array.
+          // isError results arrive as TOOL_ERROR instead.
           actions: assign({ result: ({ event }) => event.result }),
         },
         TOOL_ERROR: {
@@ -417,7 +418,7 @@ export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instea
 export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** Preamble when both projections are on: the routing rule (R29). */
-export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, computing over a list (counting, filtering, summing, comparing or checking every item), or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /**
  * The sentence every direct-listing preamble carries: what a mediated tool
@@ -429,7 +430,7 @@ export const DIRECT_LISTING_SENTENCE = `Each tool's description starts with its 
 export const DEFAULT_DIRECT_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. ${DIRECT_LISTING_SENTENCE}`;
 
 /** Preamble when the catalog is listed directly beside code mode. */
-export const DEFAULT_DIRECT_ROUTING_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. For a single action or a short chain where you look something up and then act on it, call the tools one at a time, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for the tool types, the authoring contract, and worked examples). ${DIRECT_LISTING_SENTENCE}`;
+export const DEFAULT_DIRECT_ROUTING_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. For a single action or a short chain where you look something up and then act on it, call the tools one at a time, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving (call discover_apis first for the tool types, the authoring contract, and worked examples). ${DIRECT_LISTING_SENTENCE}`;
 
 /** The R29 preamble variant for a projection selection. */
 export function defaultPreamble(projections: ProjectionSelection): string {

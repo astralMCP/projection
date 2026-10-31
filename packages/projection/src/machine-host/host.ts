@@ -9,7 +9,7 @@ import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
 import { isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { assertForwardable, MAX_FORWARDED_QUESTIONS } from '../mrtr/upstream-input.js';
 import { didYouMeanHint } from '../catalog/search.js';
-import { resultNotes } from '../catalog/result-notes.js';
+import { parseJsonContainer, resultNotes } from '../catalog/result-notes.js';
 import { validateArgsShape } from '../catalog/validate-args.js';
 import { RESERVED_ID_PREFIX } from '../mrtr/batch.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
@@ -291,6 +291,8 @@ class SegmentRunner {
   private eventsProcessed = 0;
   /** Calls that ran and are waiting on their server's question (G1). */
   private readonly heldBatch: HeldCall[] = [];
+  /** Per tool, this segment's executed calls: how many, how many failed, the first error (D29). */
+  private readonly outcomes = new Map<string, { calls: number; failed: number; first?: string }>();
   /** This segment's result notes, tool-prefixed, for the completed output (D29). */
   private readonly notes: string[] = [];
   private notesDropped = 0;
@@ -452,11 +454,14 @@ class SegmentRunner {
 
       this.readCalls += 1;
       if (this.readCalls > this.deps.caps.maxReadCallsPerSegment) {
+        const max = this.deps.caps.maxReadCallsPerSegment;
+        const tally = this.tallyText();
+        const stuck = this.allFailed();
         throw new ProjectionError(
           'cap_exceeded',
-          `the machine made more than ${this.deps.caps.maxReadCallsPerSegment} tool calls that run without approval in one segment`,
+          `the machine made more than ${max} tool calls that run without approval in one segment${tally}`,
           {
-            hint: `Batch the work or reduce the number of calls that run without approval to at most ${this.deps.caps.maxReadCallsPerSegment} per segment.`,
+            hint: `Batch the work or reduce the number of calls that run without approval to at most ${max} per segment.${stuck !== undefined ? ` Every call to ${stuck} failed, so repeating it will not get further: fix its arguments (see the first error) before looping.` : ''}`,
           },
         );
       }
@@ -505,6 +510,7 @@ class SegmentRunner {
       });
       return { type: 'TOOL_ERROR', callId: request.id, error: { message: refused } };
     }
+    this.tally(request.name, outcome.ok ? undefined : outcome.error.message);
     if (outcome.ok) {
       this.deps.audit.push({
         callId: request.id,
@@ -519,10 +525,17 @@ class SegmentRunner {
         ...(outcome.serverNote !== undefined ? { serverNote: outcome.serverNote } : {}),
       });
       this.noteResult(request.name, notes);
+      // D29: a text result that is JSON for an object or an array arrives
+      // parsed, so a machine can loop over it; the text stays on `text`.
+      const parsed =
+        typeof outcome.result === 'string' && outcome.rawContent !== true
+          ? parseJsonContainer(outcome.result)
+          : undefined;
       return {
         type: 'TOOL_RESULT',
         callId: request.id,
-        result: outcome.result,
+        result: parsed !== undefined ? parsed.value : outcome.result,
+        ...(parsed !== undefined ? { text: outcome.result as string } : {}),
         ...(notes.length > 0 ? { notes } : {}),
       };
     }
@@ -766,6 +779,47 @@ class SegmentRunner {
     };
   }
 
+  /** Count one executed call's outcome for the call-cap error (D29). */
+  private tally(tool: string, error: string | undefined): void {
+    const entry = this.outcomes.get(tool) ?? { calls: 0, failed: 0 };
+    entry.calls += 1;
+    if (error !== undefined) {
+      entry.failed += 1;
+      entry.first ??= error;
+    }
+    this.outcomes.set(tool, entry);
+  }
+
+  /**
+   * The call-cap error's breakdown (D29): per tool, most-called first, how
+   * many calls ran and how many failed, with the first error — the reason
+   * a loop never finished is usually a call that fails every time. Tool
+   * names are catalog names; the error is the server's text (S5), so it is
+   * neutralized, capped and quoted. At most {@link MAX_TALLY_TOOLS} tools.
+   */
+  private tallyText(): string {
+    const rows = [...this.outcomes.entries()].toSorted((a, b) => b[1].calls - a[1].calls);
+    if (rows.length === 0) return '';
+    const listed = rows.slice(0, MAX_TALLY_TOOLS).map(([tool, { calls, failed, first }]) => {
+      const outcome =
+        failed === 0
+          ? 'all succeeded'
+          : `${failed === calls ? 'all' : failed} failed, first error: ${inertText(first ?? '', MAX_TALLY_ERROR_CHARS)}`;
+      return `${calls} ${calls === 1 ? 'call' : 'calls'} to ${inertText(tool, 200)} (${outcome})`;
+    });
+    const more =
+      rows.length > listed.length ? `; and ${rows.length - listed.length} more tools` : '';
+    return ` — so far: ${listed.join('; ')}${more}`;
+  }
+
+  /** The most-called tool when every one of its calls failed (quoted), else undefined. */
+  private allFailed(): string | undefined {
+    const top = [...this.outcomes.entries()].toSorted((a, b) => b[1].calls - a[1].calls)[0];
+    return top !== undefined && top[1].calls > 1 && top[1].failed === top[1].calls
+      ? inertText(top[0], 200)
+      : undefined;
+  }
+
   /**
    * Keep a result's notes for the completed output, prefixed with the tool
    * (a catalog name, quoted inert) — the machine may drop `event.notes`,
@@ -778,7 +832,7 @@ class SegmentRunner {
         this.notesDropped += 1;
         continue;
       }
-      this.notes.push(`${JSON.stringify(neutralizeControlChars(capLength(tool, 200)))}: ${note}`);
+      this.notes.push(`${inertText(tool, 200)}: ${note}`);
     }
   }
 
@@ -830,6 +884,16 @@ function withSuggestions(
     diagnostics: error.diagnostics,
     hint: `${didYouMean}${error.hint}`,
   });
+}
+
+/** Tools listed in the call-cap breakdown. */
+const MAX_TALLY_TOOLS = 5;
+/** Characters of a tool's first error quoted in the call-cap breakdown. */
+const MAX_TALLY_ERROR_CHARS = 200;
+
+/** Untrusted text as one inert, bounded, JSON-quoted line (S5). */
+function inertText(text: string, max: number): string {
+  return JSON.stringify(neutralizeControlChars(capLength(text, max)));
 }
 
 /** Render an XState state value as a readable path for elicitation copy (R16). */

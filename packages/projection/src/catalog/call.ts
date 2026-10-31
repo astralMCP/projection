@@ -45,7 +45,7 @@ import {
   policyContext,
   policyDeniedReason,
 } from '../policy/index.js';
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { capLength, indentBlock, neutralizeControlChars } from '../text-safety.js';
 import {
   clampCaps,
   findTool,
@@ -659,9 +659,7 @@ function renderOutcome(value: CallToolOutcome): string {
         value.truncated === true ? ' (result truncated)' : '',
       );
       const body = neutralizeControlChars(
-        typeof value.output === 'string'
-          ? value.output
-          : (JSON.stringify(value.output, null, 2) ?? 'null'),
+        typeof value.output === 'string' ? value.output : structuredBody(value.output),
         { allowNewline: true },
       );
       if (value.truncated === true) {
@@ -674,6 +672,45 @@ function renderOutcome(value: CallToolOutcome): string {
     case 'denied_by_policy':
       return `${inert(value.tool)} is blocked by this server's policy. Nothing was executed; the policy is not something you can change.`;
   }
+}
+
+/** A top-level string with at least this many lines is printed as text, not JSON (D29). */
+const MIN_TEXT_FIELD_LINES = 3;
+/** Most top-level fields printed as text blocks. */
+const MAX_TEXT_FIELDS = 5;
+
+/**
+ * A structured result as pretty JSON — except that a top-level string of
+ * several lines (a file's contents, a document body) is printed below the
+ * JSON as its own lines, under its quoted key and indented like any
+ * untrusted block, with a marker in its place in the JSON. As a JSON
+ * string it is one line of `\n` escapes the model has to unescape to read,
+ * count or quote. `structuredContent.output` still carries the value
+ * verbatim, and the caller neutralizes the whole body (S5).
+ */
+function structuredBody(output: unknown): string {
+  if (!isRecord(output)) return JSON.stringify(output, null, 2) ?? 'null';
+  const texts: [string, string[]][] = [];
+  const shown: [string, unknown][] = [];
+  for (const key of Object.keys(output)) {
+    const field = output[key];
+    const lines = typeof field === 'string' ? field.replace(/\r\n?/g, '\n').split('\n') : [];
+    if (lines.length >= MIN_TEXT_FIELD_LINES && texts.length < MAX_TEXT_FIELDS) {
+      texts.push([key, lines]);
+      shown.push([key, `[${lines.length} lines, shown as text below]`]);
+    } else {
+      shown.push([key, field]);
+    }
+  }
+  // `Object.fromEntries` defines each key as an own property: keys are
+  // server data, and `__proto__` must stay a key, not a prototype.
+  const json = JSON.stringify(Object.fromEntries(shown), null, 2) ?? 'null';
+  if (texts.length === 0) return json;
+  const blocks = texts.map(
+    ([key, lines]) =>
+      `${JSON.stringify(capLength(key, 200))} (${lines.length} lines):\n${indentBlock(lines.join('\n'))}`,
+  );
+  return [json, ...blocks].join('\n\n');
 }
 
 /**

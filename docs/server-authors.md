@@ -246,7 +246,11 @@ your tool is an `isError` result with phase `upstream`.
 
 What your tool returns reaches the client through `call_tool` as follows.
 `structuredContent` becomes `output`; a single text block becomes `output` as
-a string. Any other content array is rendered block by block in the text —
+a string (a machine receives it parsed when it is JSON for an object or an
+array, with the text on `event.text`). In the text the model reads, a
+top-level string field of three or more lines (a file's contents, say) is
+printed as its own indented lines below the JSON rather than as an escaped
+one-liner; `output` keeps it as it is. Any other content array is rendered block by block in the text —
 text as text, an embedded text resource under its URI — and image, audio and
 embedded binary resources are attached as native content blocks after it, so
 base64 never lands in the model's text. A `resource_link` is described, not
@@ -461,7 +465,7 @@ the **shelf**, one line per box in sorted alias order. The servers' own
 instructions are not forwarded; each is its box's overview:
 
 ```text
-This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call search_tools to find a tool in any box, … Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving … each tool's listing says whether it runs immediately or asks for approval.
+This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call search_tools to find a tool in any box, … Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving … each tool's listing says whether it runs immediately or asks for approval.
 
 Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:
 - fs — "Read and write files under /srv." (server's words) (3 tools)

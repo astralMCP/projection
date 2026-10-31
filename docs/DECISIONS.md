@@ -1782,3 +1782,43 @@ already sees them in the body, and their naming varies too much to quote
 reliably); and passing on every side text (a prose summary like "Oslo:
 21C, clear" beside `{ city, tempC, sky }` is a mirror, and on every call
 it would cost tokens and teach the model to skip notes).
+
+Decision 3 — text as text, and computation to machines.
+
+- `call_tool` prints a top-level string of three or more lines in a
+  structured result as its own lines, indented under its quoted key below
+  the JSON, with `[N lines, shown as text below]` in its place (at most
+  five fields). As a JSON string a file's contents was one line of `\n`
+  escapes, which the model had to unescape to count or quote lines.
+  `structuredContent.output` is unchanged.
+- A machine receives a single text block holding JSON for an object or an
+  array parsed, as `TOOL_RESULT.result`, with the text on
+  `TOOL_RESULT.text`. Many servers return their data only as JSON text, and
+  machines looped over the characters of a string. This changes what an
+  existing machine sees: one that called `JSON.parse(event.result)` now
+  throws. The alternatives were a second field (`event.json`), which the
+  traces suggest models would not find, or parsing in the introspector,
+  which would also change `call_tool`'s `output` and its raw text
+  rendering, which models read well. The raw text stays available, scalars
+  and invalid JSON stay strings, and raw content arrays are untouched.
+  The authoring contract, the generated `.d.ts` header, the example and
+  `describe_tool`'s undeclared-output line say so.
+- The routing copy (single- and multi-server preambles, the direct-listing
+  preamble, `call_tool`'s pointer and the routed `execute_machine`
+  description) names computing over a list — counting, filtering, summing,
+  comparing or checking every item — as a reason for a machine. Traces
+  showed the model adding up a long result by hand and getting it wrong.
+  One clause, about 95 characters, in each.
+- The auto-run call cap's error breaks the segment's executed calls down
+  by tool (`— so far: 50 calls to "<tool>" (all failed, first error:
+"…")`), and when every call to the most-called tool failed, its hint
+  says retrying will not get further. The bare "more than 50 calls…
+  batch the work" sent the model to batch a loop whose every call was
+  being rejected.
+
+Consequences. The routing copy grows by about 20 tokens per sentence that
+carries it; the prefix stays below Haiku's 4 096-token cache minimum, as
+before. The `tools.d.ts` header gains five comment lines. `call_tool` results and completed
+`execute_machine` results may carry `notes`; a machine's `TOOL_RESULT` may
+carry `notes` and `text`. Machines that parsed JSON text themselves must
+drop the `JSON.parse` — a minor-version change.
