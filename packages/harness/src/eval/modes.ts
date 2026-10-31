@@ -44,6 +44,24 @@
  * - **projection-boxes**: the same with `catalog: { globalSearch: false }`,
  *   so the only search tools are the per-box `search_<alias>` ones.
  *
+ * The opt-in **native** baselines are direct mode with the same tools, the
+ * same system prompt and the same host gate, offered through Anthropic's own
+ * server tools instead of inline ({@link nativeToolsOf}; agent.ts
+ * `NativeTools`):
+ *
+ * - **native-search**: every tool `defer_loading: true` behind the tool
+ *   search tool (BM25 by default, regex with PROJ_EVAL_TOOL_SEARCH=regex).
+ * - **native-ptc**: the code execution tool, every tool callable from code
+ *   (`allowed_callers`); programmatic calls reach the host as ordinary
+ *   `tool_use` blocks and pass the same gate. Not on Haiku 4.5
+ *   ({@link modeSupportsModel}).
+ *
+ * The opt-in **ablations** are `projection` minus one feature, through
+ * public `WrapOptions` only ({@link projectionWrapOptions}):
+ * `projection-search` (never list tools directly), `projection-nocode`
+ * (catalog only), `projection-codeonly` (code mode only) and
+ * `projection-nopreamble` (no routing preamble).
+ *
  * Both Projection modes pass no box `description`s by default; the
  * `boxDescriptions` session option (PROJ_EVAL_BOX_DESCRIPTIONS=1) passes
  * each box's host description (MULTI_BOX_DESCRIPTIONS, WORKPLACE_BOX_DESCRIPTIONS) instead.
@@ -67,7 +85,15 @@ import {
   wrapMcpServers,
   type ApprovalPrompts,
 } from '@astral-mcp/projection';
-import type { AgentRuntime, AgentTool, AgentToolResult } from './agent.js';
+import {
+  PTC_MODELS,
+  type AgentRuntime,
+  type AgentTool,
+  type AgentToolResult,
+  type NativeTools,
+  type PtcCallers,
+  type ToolSearchVariant,
+} from './agent.js';
 import {
   createApprover,
   elicitationRecord,
@@ -81,7 +107,17 @@ import {
 import { isBoxedWorldName, type EvalWorld, type MultiWorld, type WorldName } from './world.js';
 
 export type EvalMode =
-  'direct' | 'projection' | 'projection-boxes' | 'projection-direct' | 'projection-auto';
+  | 'direct'
+  | 'native-search'
+  | 'native-ptc'
+  | 'projection'
+  | 'projection-boxes'
+  | 'projection-direct'
+  | 'projection-auto'
+  | 'projection-search'
+  | 'projection-nocode'
+  | 'projection-codeonly'
+  | 'projection-nopreamble';
 /** The modes a run plans by default (the opt-in exploration modes are not among them). */
 export const EVAL_MODES: readonly EvalMode[] = ['direct', 'projection', 'projection-boxes'];
 /**
@@ -95,11 +131,85 @@ export const KNOWN_EVAL_MODES: readonly EvalMode[] = [
   ...EVAL_MODES,
   'projection-direct',
   'projection-auto',
+  'native-search',
+  'native-ptc',
+  'projection-search',
+  'projection-nocode',
+  'projection-codeonly',
+  'projection-nopreamble',
 ];
 
-/** The `projections.direct` setting a Projection mode wraps with. */
+/**
+ * The `projections.direct` setting a Projection mode passes explicitly;
+ * `false` here means "not passed" (the library default, `'auto'`), except
+ * for `projection-search`, which {@link projectionWrapOptions} passes as an
+ * explicit `false`.
+ */
 export function directSettingOf(mode: EvalMode): 'auto' | boolean {
   return mode === 'projection-direct' ? true : mode === 'projection-auto' ? 'auto' : false;
+}
+
+/**
+ * The public `WrapOptions` a Projection mode sets on top of the defaults —
+ * the ablations take one feature away each, through options only:
+ *
+ * - `projection-search`: `projections.direct: false` (never list the tools
+ *   directly; always search).
+ * - `projection-nocode`: `projections.codeMode: false` (catalog only, so
+ *   no `execute_machine` / `discover_apis`).
+ * - `projection-codeonly`: `projections.catalog: false` (code mode only;
+ *   no search/describe/call, and so no direct listing).
+ * - `projection-nopreamble`: `codeModePreamble: ''` (no routing preamble in
+ *   the instructions; the server's own instructions and, on a multi-server
+ *   facade, the box list stay).
+ */
+export function projectionWrapOptions(mode: EvalMode): {
+  projections?: { direct?: 'auto' | boolean; codeMode?: boolean; catalog?: boolean };
+  codeModePreamble?: string;
+} {
+  switch (mode) {
+    case 'projection-direct':
+      return { projections: { direct: true } };
+    case 'projection-auto':
+      return { projections: { direct: 'auto' } };
+    case 'projection-search':
+      return { projections: { direct: false } };
+    case 'projection-nocode':
+      return { projections: { codeMode: false } };
+    case 'projection-codeonly':
+      return { projections: { catalog: false } };
+    case 'projection-nopreamble':
+      return { codeModePreamble: '' };
+    default:
+      return {};
+  }
+}
+
+/** The modes that offer the raw tools through Anthropic's server tools. */
+export function isNativeMode(mode: EvalMode): mode is 'native-search' | 'native-ptc' {
+  return mode === 'native-search' || mode === 'native-ptc';
+}
+
+/**
+ * Whether `mode` can run on model `modelId`: programmatic tool calling
+ * (`native-ptc`) is not available on Haiku 4.5 (or any model outside
+ * {@link PTC_MODELS}); `anthropic` is false for a preset served by another
+ * provider, which has none of the native server tools.
+ */
+export function modeSupportsModel(mode: EvalMode, modelId: string, anthropic = true): boolean {
+  if (isNativeMode(mode) && !anthropic) return false;
+  return mode !== 'native-ptc' || PTC_MODELS.has(modelId);
+}
+
+/** The server-tool configuration of a native mode. */
+export function nativeToolsOf(
+  mode: EvalMode,
+  options: Pick<SessionOptions, 'toolSearch' | 'ptcCallers'> = {},
+): NativeTools | undefined {
+  if (mode === 'native-search')
+    return { kind: 'tool-search', variant: options.toolSearch ?? 'bm25' };
+  if (mode === 'native-ptc') return { kind: 'ptc', callers: options.ptcCallers ?? 'code' };
+  return undefined;
 }
 
 /** Resolve a comma list of modes (PROJ_EVAL_MODES); unknown names throw. */
@@ -129,7 +239,7 @@ export function modeApplies(mode: EvalMode, world: WorldName): boolean {
 
 /** Whether `mode` reaches the world through a Projection facade. */
 export function isProjectionMode(mode: EvalMode): boolean {
-  return mode !== 'direct';
+  return mode.startsWith('projection');
 }
 
 /** The Messages API's rule for a tool name. */
@@ -178,6 +288,17 @@ export interface SessionOptions {
    * (PROJ_EVAL_APPROVAL_PROMPTS). Absent: the facade's default (per-call).
    */
   approvalPrompts?: ApprovalPrompts;
+  /** `native-search`: the tool search variant (PROJ_EVAL_TOOL_SEARCH). Default `bm25`. */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc`: each tool's `allowed_callers` (PROJ_EVAL_PTC_CALLERS). Default `code`. */
+  ptcCallers?: PtcCallers;
+  /**
+   * Every mode: a host system prompt put before the session's own system
+   * prompt (PROJ_EVAL_HOST_PROMPT=realistic; host-prompt.ts), as a host's
+   * own prompt precedes whatever its servers contribute. It joins the same
+   * system block, so the one system breakpoint caches it with the rest.
+   */
+  hostPrompt?: string;
 }
 
 /**
@@ -421,12 +542,22 @@ function hostGate(
   };
 }
 
-/** Direct: the world's tools verbatim over an in-memory MCP connection. */
+/**
+ * Direct: the world's tools verbatim over an in-memory MCP connection. With
+ * a native `mode`, the same tools and the same host gate, offered through
+ * that mode's server tool ({@link nativeToolsOf}): only how the model
+ * reaches the definitions changes. A call made from code execution reaches
+ * the host as an ordinary `tool_use`, so it passes the same gate; a refusal
+ * is returned to the running code, which sees the host's refusal text as
+ * the tool's result.
+ */
 export async function openDirectSession(
   world: EvalWorld,
   options: SessionOptions = {},
+  mode: 'direct' | 'native-search' | 'native-ptc' = 'direct',
 ): Promise<ModeSession> {
-  if ('boxes' in world) return openMultiDirectSession(world, options);
+  if ('boxes' in world) return openMultiDirectSession(world, options, mode);
+  const native = nativeToolsOf(mode, options);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client(CLIENT_INFO, { capabilities: {} });
   await world.server.connect(serverTransport);
@@ -444,7 +575,7 @@ export async function openDirectSession(
 
   const host = hostGate(world, options.approver);
   return {
-    mode: 'direct',
+    mode,
     world,
     get approvals() {
       return host.approvals();
@@ -455,6 +586,7 @@ export async function openDirectSession(
     runtime: {
       system,
       tools,
+      ...(native !== undefined ? { native } : {}),
       call: (name, input) =>
         host.gate(name, name, input, async () =>
           toolResultText(await client.callTool({ name, arguments: input })),
@@ -626,14 +758,13 @@ export async function openProjectionSession(
  */
 async function openSingleProjectionSession(
   world: EvalWorld,
-  mode: Exclude<EvalMode, 'direct'>,
+  mode: Exclude<EvalMode, 'direct' | 'native-search' | 'native-ptc'>,
   options: SessionOptions = {},
 ): Promise<ModeSession> {
   if ('boxes' in world) return openMultiProjectionSession(world, mode, options);
-  const direct = directSettingOf(mode);
   const facade = await wrapMcpServer(world.server, {
     blob: { key: randomBytes(32) },
-    ...(direct !== false ? { projections: { direct } } : {}),
+    ...projectionWrapOptions(mode),
     ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   });
   return connectFacade(mode, world, facade, () => PROJECTION_DISCOVERY_TOOLS, options);
@@ -647,7 +778,7 @@ async function openSingleProjectionSession(
  */
 export async function openMultiProjectionSession(
   world: MultiWorld,
-  mode: Exclude<EvalMode, 'direct'>,
+  mode: Exclude<EvalMode, 'direct' | 'native-search' | 'native-ptc'>,
   options: SessionOptions = {},
 ): Promise<ModeSession> {
   const sources: Record<string, McpServer | { source: McpServer; description: string }> =
@@ -659,11 +790,10 @@ export async function openMultiProjectionSession(
           : box.world.server,
       ]),
     );
-  const direct = directSettingOf(mode);
   const facade = await wrapMcpServers(sources, {
     blob: { key: randomBytes(32) },
     ...(mode === 'projection-boxes' ? { catalog: { globalSearch: false } } : {}),
-    ...(direct !== false ? { projections: { direct } } : {}),
+    ...projectionWrapOptions(mode),
     ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   });
   return connectFacade(
@@ -686,7 +816,9 @@ export async function openMultiProjectionSession(
 export async function openMultiDirectSession(
   world: MultiWorld,
   options: SessionOptions = {},
+  mode: 'direct' | 'native-search' | 'native-ptc' = 'direct',
 ): Promise<ModeSession> {
+  const native = nativeToolsOf(mode, options);
   const clients: Client[] = [];
   const closeAll = async (): Promise<void> => {
     await Promise.all(clients.map((client) => client.close().catch(() => {})));
@@ -716,7 +848,7 @@ export async function openMultiDirectSession(
 
   const host = hostGate(world, options.approver);
   return {
-    mode: 'direct',
+    mode,
     world,
     get approvals() {
       return host.approvals();
@@ -727,6 +859,7 @@ export async function openMultiDirectSession(
     runtime: {
       system: multiDirectSystemPrompt(world),
       tools,
+      ...(native !== undefined ? { native } : {}),
       call: async (name, input) => {
         const route = routes.get(name);
         if (route === undefined) return { text: `Tool ${name} not found`, isError: true };
@@ -739,14 +872,28 @@ export async function openMultiDirectSession(
   };
 }
 
-export function openSession(
+export async function openSession(
   mode: EvalMode,
   world: EvalWorld,
   options: SessionOptions = {},
 ): Promise<ModeSession> {
+  const session = await openModeSession(mode, world, options);
+  if (options.hostPrompt !== undefined && options.hostPrompt !== '') {
+    session.runtime.system = `${options.hostPrompt}\n\n${session.runtime.system}`;
+  }
+  return session;
+}
+
+function openModeSession(
+  mode: EvalMode,
+  world: EvalWorld,
+  options: SessionOptions,
+): Promise<ModeSession> {
   switch (mode) {
     case 'direct':
-      return openDirectSession(world, options);
+    case 'native-search':
+    case 'native-ptc':
+      return openDirectSession(world, options, mode);
     case 'projection':
       return openProjectionSession(world, options);
     case 'projection-boxes':
@@ -758,6 +905,10 @@ export function openSession(
       return openMultiProjectionSession(world, mode, options);
     case 'projection-direct':
     case 'projection-auto':
+    case 'projection-search':
+    case 'projection-nocode':
+    case 'projection-codeonly':
+    case 'projection-nopreamble':
       return openSingleProjectionSession(world, mode, options);
   }
 }

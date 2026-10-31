@@ -11,7 +11,7 @@
  *   discount: it is a host-cost metric, not an eval-spend one.
  */
 
-import type { EpisodeUsage, TurnUsage } from './agent.js';
+import type { EpisodeUsage, ServerToolUse, TurnUsage } from './agent.js';
 
 /** A rate card: USD per million input and output tokens. */
 export interface RateCard {
@@ -26,6 +26,13 @@ export interface RateCard {
  */
 export interface ModelPrice extends RateCard {
   longContext?: RateCard & { aboveTokens: number };
+  /**
+   * USD per million cache-read tokens, when not {@link CACHE_READ_FACTOR}
+   * of `input` (the non-Anthropic models' own cache-read prices).
+   */
+  cacheRead?: number;
+  /** USD per million cache-write tokens, when not {@link CACHE_WRITE_FACTOR} of `input`. */
+  cacheWrite?: number;
 }
 
 /**
@@ -42,6 +49,12 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   },
   'claude-haiku-4-5': { input: 1, output: 5 },
   'claude-sonnet-5-5': { input: 2, output: 10 },
+  // OpenRouter list prices (openrouter.ai/api/v1/models, fetched
+  // 2026-10-31: `pricing.prompt`, `.completion`, `.input_cache_read`, USD
+  // per token × 1e6). Automatic caching, no write fee: a reported cache
+  // write is billed as plain input.
+  'meta/muse-spark-1.3': { input: 1.25, output: 4.25, cacheRead: 0.15, cacheWrite: 1.25 },
+  'moonshotai/kimi-k2.5': { input: 0.5, output: 2.5, cacheRead: 0.15, cacheWrite: 0.5 },
 };
 
 /** The rate card one request with `promptTokens` of prompt is billed on. */
@@ -75,13 +88,17 @@ export const MIN_CACHEABLE_TOKENS: Readonly<Record<string, number>> = {
   'claude-sonnet-5-5': 512,
 };
 
-/** USD for usage billed at one rate card. */
-function usdAt(rate: RateCard, usage: EpisodeUsage): number {
-  const input =
-    usage.inputTokens +
-    usage.cacheReadInputTokens * CACHE_READ_FACTOR +
-    usage.cacheCreationInputTokens * CACHE_WRITE_FACTOR;
-  return (input * rate.input + usage.outputTokens * rate.output) / 1_000_000;
+/** USD for usage billed at one rate card (`price` supplies any own cache prices). */
+function usdAt(rate: RateCard, usage: EpisodeUsage, price?: ModelPrice): number {
+  const read = price?.cacheRead ?? rate.input * CACHE_READ_FACTOR;
+  const write = price?.cacheWrite ?? rate.input * CACHE_WRITE_FACTOR;
+  return (
+    (usage.inputTokens * rate.input +
+      usage.cacheReadInputTokens * read +
+      usage.cacheCreationInputTokens * write +
+      usage.outputTokens * rate.output) /
+    1_000_000
+  );
 }
 
 /**
@@ -103,8 +120,8 @@ export function estimateUsd(
   if (price === undefined) return 0;
   const usd =
     turns !== undefined && turns.length > 0
-      ? turns.reduce((sum, turn) => sum + usdAt(rateFor(price, promptOf(turn)), turn), 0)
-      : usdAt(price, usage);
+      ? turns.reduce((sum, turn) => sum + usdAt(rateFor(price, promptOf(turn)), turn, price), 0)
+      : usdAt(price, usage, price);
   return batch ? usd * BATCH_PRICE_FACTOR : usd;
 }
 
@@ -154,4 +171,44 @@ export function standardCost(turns: readonly TurnUsage[], model: string): number
     usd += (input * rate.input + turn.outputTokens * rate.output) / 1_000_000;
   }
   return usd;
+}
+
+/**
+ * Code execution's list price beyond the organisation's free hours: USD per
+ * container-hour, with a 5-minute minimum per container (the code execution
+ * tool docs, "Usage and pricing", read 2026-10-31: 1,550 free hours a month
+ * per organisation, then $0.05 per hour per container; free when the request
+ * also carries web search or web fetch, which the eval never sends).
+ * Programmatic tool calling bills the same. Tool search is not metered (its
+ * docs: no `server_tool_use` usage field; the definitions it loads are
+ * ordinary input tokens).
+ */
+export const CODE_EXECUTION_USD_PER_HOUR = 0.05;
+/** The minimum billed execution time per container. */
+export const CODE_EXECUTION_MIN_MS = 5 * 60_000;
+
+/**
+ * Server tool fees for one episode, at list price as if the free hours were
+ * spent: each container billed for the longer of its observed span and the
+ * 5-minute minimum. An upper bound on the real fee (the container time the
+ * API meters is not reported per response), and $0 without containers.
+ */
+export function serverToolUsd(use: Pick<ServerToolUse, 'containers'> | undefined): number {
+  if (use === undefined) return 0;
+  return use.containers.reduce(
+    (sum, container) =>
+      sum +
+      (Math.max(CODE_EXECUTION_MIN_MS, container.spanMs) / 3_600_000) * CODE_EXECUTION_USD_PER_HOUR,
+    0,
+  );
+}
+
+/**
+ * Whether {@link standardCost} models `model`: the Anthropic models with a
+ * known minimum cacheable prefix. The OpenAI-compatible models cache
+ * automatically on the provider's terms, so their host cost is the
+ * reported usage at list price (`estimateUsd`), not this model.
+ */
+export function hasStandardCost(model: string): boolean {
+  return MODEL_PRICES[model] !== undefined && MIN_CACHEABLE_TOKENS[model] !== undefined;
 }

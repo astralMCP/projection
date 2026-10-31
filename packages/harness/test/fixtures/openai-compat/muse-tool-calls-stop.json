@@ -1,0 +1,31 @@
+{
+  "id": "gen-1761900200-muse02",
+  "provider": "Meta",
+  "model": "meta/muse-spark-1.3",
+  "object": "chat.completion",
+  "created": 1761900200,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "tool_calls": [
+          {
+            "id": "call_9f2c1",
+            "type": "function",
+            "function": {
+              "name": "fs__read_text_file",
+              "arguments": "{\"path\": \"/tmp/x/CHANGELOG.md\""
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": { "prompt_tokens": 900, "completion_tokens": 30, "total_tokens": 930, "cost": 0.0012525 }
+}

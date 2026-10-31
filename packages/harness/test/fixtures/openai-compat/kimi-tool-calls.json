@@ -1,0 +1,59 @@
+{
+  "id": "gen-1761900000-kimi01",
+  "provider": "Moonshot AI",
+  "model": "moonshotai/kimi-k2.5",
+  "object": "chat.completion",
+  "created": 1761900000,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "tool_calls",
+      "native_finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I'll look up both repositories.",
+        "refusal": null,
+        "reasoning": "The user wants open issues in two repos; I can list them in parallel.",
+        "reasoning_details": [
+          {
+            "type": "reasoning.text",
+            "text": "The user wants open issues in two repos; I can list them in parallel.",
+            "format": "unknown",
+            "index": 0
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "functions.github__list_issues:0",
+            "index": 0,
+            "type": "function",
+            "function": {
+              "name": "github__list_issues",
+              "arguments": "{\"owner\":\"acme\",\"repo\":\"widgets\",\"state\":\"OPEN\"}"
+            }
+          },
+          {
+            "id": "functions.github__list_issues:1",
+            "index": 1,
+            "type": "function",
+            "function": {
+              "name": "github__list_issues",
+              "arguments": "{\"owner\":\"acme\",\"repo\":\"gadgets\",\"state\":\"OPEN\"}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 51234,
+    "completion_tokens": 96,
+    "total_tokens": 51330,
+    "cost": 0.0102435,
+    "is_byok": false,
+    "prompt_tokens_details": { "cached_tokens": 49152, "audio_tokens": 0 },
+    "cost_details": { "upstream_inference_cost": null },
+    "completion_tokens_details": { "reasoning_tokens": 18, "image_tokens": 0 }
+  }
+}

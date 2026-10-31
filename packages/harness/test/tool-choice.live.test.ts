@@ -13,8 +13,20 @@
  * Explicit opt-in only: PROJ_LIVE_EVAL=1 AND a non-empty ANTHROPIC_API_KEY
  * (which may live in the repo-root env file). Knobs:
  *
- *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
- *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
+ *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low;
+ *                          muse-spark and kimi-k25 run through OpenRouter and need OPENROUTER_API_KEY, else they are
+ *                          skipped with a message — no native modes, no batch)
+ *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the boxed tiers only);
+ *                          opt-in: native-search, native-ptc (Anthropic's tool search / programmatic tool
+ *                          calling over the raw tools; native-ptc is skipped on models without it, e.g. Haiku
+ *                          4.5), projection-direct, projection-auto, and the ablations projection-search
+ *                          (projections.direct false), projection-nocode (codeMode false), projection-codeonly
+ *                          (catalog false), projection-nopreamble (codeModePreamble '')
+ *   PROJ_EVAL_HOST_PROMPT=realistic  every mode: put a ~12k-token generic agent-host system prompt
+ *                          (src/eval/host-prompt.ts) before the session's own (default: the one-line framing only)
+ *   PROJ_EVAL_TIMEOUT_MIN  interactive runs: the test's timeout in minutes (default 30)
+ *   PROJ_EVAL_TOOL_SEARCH  native-search: bm25 or regex (default bm25)
+ *   PROJ_EVAL_PTC_CALLERS  native-ptc: code (tools callable from code only) or both (also directly; default code)
  *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl,summit-local,summit-saas,
  *                          summit-messy (default all but the opt-in multi-hard, workplace, hitl and the summit-*
  *                          tiers; workplace is the held-out world, in-process, no mongod; hitl runs approval-persona
@@ -64,10 +76,12 @@ import {
   formatToolChoiceReport,
   loadNearestDotEnv,
   modeApplies,
+  modeSupportsModel,
   mongodbServerInstalled,
   summitServersInstalled,
   resolveModelPresets,
   resolveApproverPersona,
+  resolveHostPrompt,
   resolveModes,
   resolveTasks,
   resolveTiers,
@@ -79,7 +93,10 @@ import {
 
 loadNearestDotEnv();
 
-const hasKey = (process.env['ANTHROPIC_API_KEY'] ?? '') !== '';
+// Either provider's key will do: presets whose provider has no key are skipped below.
+const hasKey =
+  (process.env['ANTHROPIC_API_KEY'] ?? '') !== '' ||
+  (process.env['OPENROUTER_API_KEY'] ?? '') !== '';
 const optedIn = process.env['PROJ_LIVE_EVAL'] === '1';
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -95,9 +112,24 @@ const DEFAULT_BATCH_WIDTH = 24;
 describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projection)', () => {
   it(
     'runs the matrix and reports',
-    { timeout: batchMode ? BATCH_TIMEOUT_MS : 1_800_000 },
+    {
+      timeout: batchMode
+        ? BATCH_TIMEOUT_MS
+        : positiveInt(process.env['PROJ_EVAL_TIMEOUT_MIN'], 30) * 60_000,
+    },
     async () => {
-      const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']);
+      const models = resolveModelPresets(process.env['PROJ_EVAL_MODELS']).filter((model) => {
+        const keyEnv = model.provider?.apiKeyEnv ?? 'ANTHROPIC_API_KEY';
+        if ((process.env[keyEnv] ?? '') !== '') return true;
+        // eslint-disable-next-line no-console
+        console.info(`skipping ${model.name}: ${keyEnv} is not set`);
+        return false;
+      });
+      if (models.length === 0) {
+        // eslint-disable-next-line no-console
+        console.info('no model preset has an API key; nothing to run');
+        return;
+      }
       const modes = resolveModes(process.env['PROJ_EVAL_MODES']);
       const tiers = resolveTiers(process.env['PROJ_EVAL_TIERS']);
       // Fail before spending anything: without the vendored server every
@@ -133,6 +165,25 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       }
       const approvalPrompts =
         promptsEnv === 'per-call' || promptsEnv === 'batched' ? promptsEnv : undefined;
+      const searchEnv = process.env['PROJ_EVAL_TOOL_SEARCH'] ?? '';
+      if (searchEnv !== '' && searchEnv !== 'bm25' && searchEnv !== 'regex') {
+        throw new Error(`PROJ_EVAL_TOOL_SEARCH must be bm25 or regex, got ${searchEnv}`);
+      }
+      const toolSearch = searchEnv === 'regex' ? ('regex' as const) : ('bm25' as const);
+      const callersEnv = process.env['PROJ_EVAL_PTC_CALLERS'] ?? '';
+      if (callersEnv !== '' && callersEnv !== 'code' && callersEnv !== 'both') {
+        throw new Error(`PROJ_EVAL_PTC_CALLERS must be code or both, got ${callersEnv}`);
+      }
+      const ptcCallers = callersEnv === 'both' ? ('both' as const) : ('code' as const);
+      const hostPrompt = resolveHostPrompt(process.env['PROJ_EVAL_HOST_PROMPT']);
+      for (const model of models) {
+        for (const mode of modes) {
+          if (!modeSupportsModel(mode, model.model, model.provider === undefined)) {
+            // eslint-disable-next-line no-console
+            console.info(`skipping ${model.name}/${mode}: the model does not support it`);
+          }
+        }
+      }
       const systemSuffix =
         process.env['PROJ_EVAL_FORCE_CODE_MODE'] === '1' ? FORCE_CODE_MODE_LINE : undefined;
       const batchWidth = positiveInt(process.env['PROJ_EVAL_BATCH_WIDTH'], DEFAULT_BATCH_WIDTH);
@@ -158,6 +209,9 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
             tasks.flatMap((t) => (t.maxTurns !== undefined ? [[t.name, t.maxTurns]] : [])),
           ),
           boxDescriptions,
+          ...(modes.includes('native-search') ? { toolSearch } : {}),
+          ...(modes.includes('native-ptc') ? { ptcCallers } : {}),
+          ...(hostPrompt !== undefined ? { hostPrompt } : {}),
           ...(approver !== undefined ? { approver } : {}),
           ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
           outputSchemas: true,
@@ -181,6 +235,9 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         maxTotalTurns,
         concurrency,
         boxDescriptions,
+        toolSearch,
+        ptcCallers,
+        ...(hostPrompt !== undefined ? { hostPrompt } : {}),
         ...(approver !== undefined ? { approver } : {}),
         ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
         ...(systemSuffix !== undefined ? { systemSuffix } : {}),
@@ -220,11 +277,20 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       // eslint-disable-next-line no-console
       console.info(`results written to ${results.path}`);
 
-      const planned = modes.reduce(
-        (n, mode) => n + tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length,
+      const planned = models.reduce(
+        (n, model) =>
+          n +
+          modes.reduce(
+            (m, mode) =>
+              m +
+              (modeSupportsModel(mode, model.model, model.provider === undefined)
+                ? tasks.filter((t) => modeApplies(mode, worldOf(t.tier))).length
+                : 0),
+            0,
+          ),
         0,
       );
-      expect(records).toHaveLength(models.length * planned * runs);
+      expect(records).toHaveLength(planned * runs);
     },
   );
 });

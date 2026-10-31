@@ -66,6 +66,9 @@ import {
   type ModelPreset,
   type PrefixCounter,
   type PrefixSource,
+  type PtcCallers,
+  type ServerToolUse,
+  type ToolSearchVariant,
   type ToolUseRecord,
   type TurnUsage,
 } from './agent.js';
@@ -73,12 +76,15 @@ import {
   EVAL_MODES,
   isProjectionMode,
   modeApplies,
+  modeSupportsModel,
   openSession,
   type EvalMode,
   type ModeSession,
 } from './modes.js';
 import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
-import { estimateUsd, standardCost } from './cost.js';
+import { estimateUsd, hasStandardCost, MODEL_PRICES, serverToolUsd, standardCost } from './cost.js';
+import { openAiCompatCaller } from './openai-compat.js';
+import { hostPromptPrefix, type HostPromptKind } from './host-prompt.js';
 import {
   episodeApprover,
   hitlMetrics,
@@ -204,6 +210,19 @@ export interface EpisodeRecord {
   projection?: ProjectionUse;
   /** Multi tier only: how the episode moved between boxes. */
   boxes?: BoxRouting;
+  /** Native modes: the Anthropic server tools the episode used. */
+  serverTools?: ServerToolUse;
+  /**
+   * Native modes: server tool fees at list price ({@link serverToolUsd}),
+   * included in `estimatedUsd` and `standardUsd`. Absent when zero.
+   */
+  serverToolUsd?: number;
+  /**
+   * OpenAI-compatible providers: the sum of what the provider reported each
+   * call cost (OpenRouter's `usage.cost`), next to the list-price
+   * `estimatedUsd`. Absent on the Anthropic API.
+   */
+  providerUsd?: number;
   /**
    * Every approval prompt and its answer (Projection's elicitations, or
    * direct mode's simulated host gate); absent when there were none.
@@ -318,6 +337,12 @@ export interface ToolChoiceEvalOptions {
   approver?: ApproverPersona;
   /** Projection modes: `WrapOptions.approvalPrompts` (PROJ_EVAL_APPROVAL_PROMPTS). */
   approvalPrompts?: ApprovalPrompts;
+  /** `native-search`: the tool search variant (PROJ_EVAL_TOOL_SEARCH). Default `bm25`. */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc`: each tool's `allowed_callers` (PROJ_EVAL_PTC_CALLERS). Default `code`. */
+  ptcCallers?: PtcCallers;
+  /** Every mode: the host system prompt put first (PROJ_EVAL_HOST_PROMPT). Default none. */
+  hostPrompt?: HostPromptKind;
 }
 
 export interface BatchEvalOptions {
@@ -415,7 +440,8 @@ function countedPrefix(
   model: ModelPreset,
   runtime: AgentRuntime,
 ): Promise<number | undefined> {
-  if (counter === undefined) return Promise.resolve(undefined);
+  // The counting endpoint is Anthropic's: other providers' prefixes are estimated.
+  if (counter === undefined || model.provider !== undefined) return Promise.resolve(undefined);
   const tools = agentTools(runtime);
   const key = createHash('sha256')
     .update(JSON.stringify([model.model, runtime.system, tools]))
@@ -508,6 +534,7 @@ async function scoreEpisode(
       ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world, roundTrips) }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(episode.serverTools !== undefined ? { serverTools: episode.serverTools } : {}),
     ...(elicitations.length > 0 ? { elicitations } : {}),
     ...(hitl !== undefined ? { hitl } : {}),
     usage: episode.usage,
@@ -570,6 +597,7 @@ function harnessFailureRecord(
         }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(episode?.serverTools !== undefined ? { serverTools: episode.serverTools } : {}),
     ...(session !== undefined && session.elicitations.length > 0
       ? { elicitations: session.elicitations.slice() }
       : {}),
@@ -633,6 +661,11 @@ async function runPlanned(
         ...(options.approvalPrompts !== undefined
           ? { approvalPrompts: options.approvalPrompts }
           : {}),
+        ...(options.toolSearch !== undefined ? { toolSearch: options.toolSearch } : {}),
+        ...(options.ptcCallers !== undefined ? { ptcCallers: options.ptcCallers } : {}),
+        ...(options.hostPrompt !== undefined
+          ? { hostPrompt: hostPromptPrefix(options.hostPrompt) }
+          : {}),
       });
       try {
         const prefixTokens = await countedPrefix(
@@ -690,7 +723,27 @@ export async function runToolChoiceEval(
   const tasks = options.tasks ?? TOOL_CHOICE_TASKS.filter((t) => DEFAULT_TIERS.includes(t.tier));
   const runs = options.runs ?? DEFAULT_RUNS;
   const batch = options.batch;
-  const caller = batch === undefined ? (options.caller ?? anthropicCaller()) : undefined;
+  if (batch !== undefined && modes.includes('native-ptc')) {
+    // A paused programmatic call times out in ~4 minutes and an idle
+    // container is reclaimed in ~5 (the PTC docs): a batch tick is longer.
+    throw new Error('native-ptc cannot run through the Message Batches API (PROJ_EVAL_BATCH=1)');
+  }
+  if (batch !== undefined && models.some((model) => model.provider !== undefined)) {
+    throw new Error('OpenAI-compatible presets cannot run through the Message Batches API');
+  }
+  // One caller per provider: the injected one for everything, else the
+  // Anthropic API, or the preset's OpenAI-compatible endpoint.
+  const callers = new Map<string, ModelCaller>();
+  const callerFor = (model: ModelPreset): ModelCaller => {
+    if (options.caller !== undefined) return options.caller;
+    const key = model.provider?.name ?? 'anthropic';
+    let found = callers.get(key);
+    if (found === undefined) {
+      found = model.provider === undefined ? anthropicCaller() : openAiCompatCaller(model.provider);
+      callers.set(key, found);
+    }
+    return found;
+  };
 
   // Slots in result order (model → mode → task → run) ...
   const slots: Slot[] = [];
@@ -698,6 +751,7 @@ export async function runToolChoiceEval(
     modes.forEach((mode, modeAt) => {
       tasks.forEach((task, taskAt) => {
         if (!modeApplies(mode, worldOf(task.tier))) return;
+        if (!modeSupportsModel(mode, model.model, model.provider === undefined)) return;
         for (let run = 0; run < runs; run += 1) {
           slots.push({ model, mode, task, run, index: slots.length, modelAt, modeAt, taskAt });
         }
@@ -734,7 +788,7 @@ export async function runToolChoiceEval(
       if (slot === undefined) return;
       let record: EpisodeRecord;
       if (batcher === undefined) {
-        record = await runPlanned(slot, caller as ModelCaller, options, prefixCounts);
+        record = await runPlanned(slot, callerFor(slot.model), options, prefixCounts);
       } else {
         // Enter the lockstep before the world opens, so no tick runs without
         // this episode's first request; leave it however the episode ends
@@ -769,7 +823,10 @@ export async function runToolChoiceEval(
 
 /** The eval's actual spend on a record: list price, halved for a batch episode. */
 function recordEstimatedUsd(record: EpisodeRecord): number {
-  return estimateUsd(record.modelId, record.usage, record.batch === true, record.turns);
+  return (
+    estimateUsd(record.modelId, record.usage, record.batch === true, record.turns) +
+    serverToolUsd(record.serverTools)
+  );
 }
 
 /**
@@ -779,7 +836,12 @@ function recordEstimatedUsd(record: EpisodeRecord): number {
  */
 function recordStandardUsd(record: EpisodeRecord): number | undefined {
   if (record.turns === undefined) return record.apiTurns === 0 ? 0 : undefined;
-  return standardCost(record.turns, record.modelId);
+  // A non-Anthropic model caches on its provider's terms: its host cost is
+  // what it was billed at list price, without a batch discount.
+  if (!hasStandardCost(record.modelId) && MODEL_PRICES[record.modelId] !== undefined) {
+    return estimateUsd(record.modelId, record.usage, false, record.turns);
+  }
+  return standardCost(record.turns, record.modelId) + serverToolUsd(record.serverTools);
 }
 
 /** The sum, or undefined when any term is not measured. */
@@ -795,8 +857,14 @@ function sumMeasured(values: (number | undefined)[]): number | undefined {
 /** The record with its actual spend and standard host cost attached. */
 function withCosts(record: EpisodeRecord): EpisodeRecord {
   const standard = recordStandardUsd(record);
+  const fees = serverToolUsd(record.serverTools);
+  const reported = (record.turns ?? []).flatMap((turn) =>
+    turn.providerCostUsd !== undefined ? [turn.providerCostUsd] : [],
+  );
   return {
     ...record,
+    ...(fees > 0 ? { serverToolUsd: fees } : {}),
+    ...(reported.length > 0 ? { providerUsd: reported.reduce((a, b) => a + b, 0) } : {}),
     estimatedUsd: recordEstimatedUsd(record),
     ...(standard !== undefined ? { standardUsd: standard } : {}),
   };
@@ -1307,7 +1375,7 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
           ? routing === undefined
             ? ['-', '-', '-']
             : [
-                cell.mode === 'direct'
+                !isProjectionMode(cell.mode)
                   ? '-'
                   : `${routing.usedGlobalSearch}/${routing.scored} (${routing.successWithGlobalSearch} ok)`,
                 `${routing.firstCallRightBox}/${routing.scored}`,
@@ -1511,6 +1579,15 @@ export interface ResultsMeta {
    * (PROJ_EVAL_FORCE_CODE_MODE=1); absent when none was.
    */
   systemSuffix?: string;
+  /** `native-search` runs: the tool search variant (PROJ_EVAL_TOOL_SEARCH). */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc` runs: the tools' `allowed_callers` (PROJ_EVAL_PTC_CALLERS). */
+  ptcCallers?: PtcCallers;
+  /**
+   * The host system prompt every mode's system prompt started with
+   * (PROJ_EVAL_HOST_PROMPT); absent when none was (the one-line framing only).
+   */
+  hostPrompt?: HostPromptKind;
   modes?: EvalMode[];
   tiers?: TaskTier[];
   tasks?: string[];
