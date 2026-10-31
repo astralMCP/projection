@@ -96,6 +96,8 @@ export interface StripeSubscription {
   current_period_end: number;
   canceled_at: number | null;
   latest_invoice: string | null;
+  /** A coupon currently applied to the whole subscription. */
+  discount?: { id: string; coupon: string; start: number; end: number | null };
 }
 
 export interface StripePaymentIntent {
@@ -922,6 +924,9 @@ export const PI = {
   bigQuarryOct25: 'pi_3QJa7GLkdIwHu7ix0Ng7Dd8r',
   bigAfterWeek: 'pi_3QJa8HLkdIwHu7ix1Oh8Ee9s',
   bigBeforeWeek: 'pi_3QJa9ILkdIwHu7ix0Pi9Ff0t',
+  bigLateSundayUtc: 'pi_3QJaAJLkdIwHu7ix0Qj1Gg1u',
+  bigEarlyMondayNy: 'pi_3QJaBKLkdIwHu7ix1Rk2Hh2v',
+  bigNextMondayNy: 'pi_3QJaCLLkdIwHu7ix0Sl3Ii3w',
 } as const;
 
 export const REFUND_IDS = {
@@ -1213,6 +1218,47 @@ export function seedStripe(): StripeState {
     'succeeded',
     'Invoice FERN-1296 (sandbox workspace)',
   );
+  // Around the New York week boundaries (EDT, UTC−4).
+  extraPi(
+    PI.bigLateSundayUtc,
+    C('sable'),
+    520000,
+    '2026-10-19T03:30:00Z',
+    'succeeded',
+    'Invoice FERN-1272 (SSO rollout)',
+  );
+  extraPi(
+    PI.bigEarlyMondayNy,
+    C('beacon'),
+    610000,
+    '2026-10-19T04:10:00Z',
+    'succeeded',
+    'Invoice FERN-1273 (data migration)',
+  );
+  extraPi(
+    PI.bigNextMondayNy,
+    C('velvet'),
+    700000,
+    '2026-10-26T04:30:00Z',
+    'succeeded',
+    'Invoice FERN-1297 (property rollout)',
+  );
+
+  // Coupons on two past-due subscriptions: one running, one that has ended.
+  const subOf = (key: string): StripeSubscription =>
+    subscriptions.find((s) => s.customer === C(key)) as StripeSubscription;
+  subOf('keystone').discount = {
+    id: 'di_1QF2kLLkdIwHu7ixWb25Kst',
+    coupon: 'WINBACK25',
+    start: T('2026-08-22T09:00:00Z'),
+    end: T('2027-02-22T09:00:00Z'),
+  };
+  subOf('juniper').discount = {
+    id: 'di_1Q7mPqLkdIwHu7ixEdu50Jnp',
+    coupon: 'EDU50',
+    start: T('2025-06-17T09:00:00Z'),
+    end: null,
+  };
 
   // A few older one-off and canceled intents (noise, beyond the 100 most recent).
   for (let i = 0; i < 30; i++) {
@@ -1522,6 +1568,41 @@ function renderPlan(p: StripePrice): Record<string, unknown> {
   };
 }
 
+function renderDiscount(state: StripeState, s: StripeSubscription): Record<string, unknown> {
+  const d = s.discount as NonNullable<StripeSubscription['discount']>;
+  const c = state.coupons.find((x) => x.id === d.coupon) as StripeState['coupons'][number];
+  return {
+    id: d.id,
+    object: 'discount',
+    checkout_session: null,
+    coupon: {
+      id: c.id,
+      object: 'coupon',
+      amount_off: c.amount_off,
+      created: c.created,
+      currency: c.amount_off === null ? null : 'usd',
+      duration: c.duration,
+      duration_in_months: c.duration === 'repeating' ? 6 : null,
+      livemode: true,
+      max_redemptions: null,
+      metadata: {},
+      name: c.name,
+      percent_off: c.percent_off,
+      redeem_by: null,
+      times_redeemed: 3,
+      valid: true,
+    },
+    customer: s.customer,
+    end: d.end,
+    invoice: null,
+    invoice_item: null,
+    promotion_code: null,
+    start: d.start,
+    subscription: s.id,
+    subscription_item: null,
+  };
+}
+
 function renderSubscription(state: StripeState, s: StripeSubscription): Record<string, unknown> {
   const priceOf = (id: string): StripePrice => state.prices.find((p) => p.id === id) as StripePrice;
   const first = s.items[0];
@@ -1554,8 +1635,8 @@ function renderSubscription(state: StripeState, s: StripeSubscription): Record<s
     default_source: null,
     default_tax_rates: [],
     description: null,
-    discount: null,
-    discounts: [],
+    discount: s.discount === undefined ? null : renderDiscount(state, s),
+    discounts: s.discount === undefined ? [] : [s.discount.id],
     ended_at: s.status === 'canceled' ? s.canceled_at : null,
     invoice_settings: { account_tax_ids: null, issuer: { type: 'self' } },
     items: {
@@ -2556,4 +2637,12 @@ export function monthlyCents(state: StripeState, s: StripeSubscription): number 
     const p = state.prices.find((x) => x.id === it.price) as StripePrice;
     return n + (p.unit_amount * it.quantity) / (p.interval === 'year' ? 12 : 1);
   }, 0);
+}
+
+/** {@link monthlyCents} after the subscription's percent-off coupon, if one is applied. */
+export function netMonthlyCents(state: StripeState, s: StripeSubscription): number {
+  const gross = monthlyCents(state, s);
+  const coupon =
+    s.discount === undefined ? undefined : state.coupons.find((c) => c.id === s.discount?.coupon);
+  return coupon?.percent_off != null ? gross * (1 - coupon.percent_off / 100) : gross;
 }

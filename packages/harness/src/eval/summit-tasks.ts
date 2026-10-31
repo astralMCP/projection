@@ -39,6 +39,7 @@ import { seedSentryIssues, sentryIssue, type SentryIssue } from './summit-sentry
 import { CHANNELS, THREADS, type SlackMessage } from './summit-slack.js';
 import {
   monthlyCents,
+  netMonthlyCents,
   PI,
   seedStripe,
   stripeCustomerIds,
@@ -90,7 +91,7 @@ export function summitExpected() {
   const overdue = overdueUsdInvoices(stripe);
   return {
     pastDueMrr:
-      Math.round(pastDueUsd.reduce((n, s) => n + Math.round(monthlyCents(stripe, s)), 0)) / 100,
+      Math.round(pastDueUsd.reduce((n, s) => n + Math.round(netMonthlyCents(stripe, s)), 0)) / 100,
     legacyCancel: legacy.map((s) => s.id).toSorted(),
     duplicateRefund: { pi: PI.lumoraOctDuplicate, amount: 34800 },
     extensionIssues: [
@@ -123,10 +124,12 @@ export function summitExpected() {
       [PI.reqSableCredit, 12000],
     ] as [string, number][],
     largePayments: [
+      [PI.bigEarlyMondayNy, 610000],
       [PI.bigQuillAnnual, 1160000],
       [PI.bigOrbitalAnnual, 2990000],
       [PI.bigExactly5000, 500000],
       [PI.bigQuarryOct25, 500000],
+      [PI.bigAfterWeek, 650000],
     ] as [string, number][],
     renewalPings: [
       ['Orbital Freight', PEOPLE.sam.slackId, '2026-11-21'],
@@ -453,6 +456,30 @@ export function gradeLogIncident(state: SummitState, calls: readonly SideEffect[
   );
 }
 
+/**
+ * Whether every reference in `text` outside `expected` sits in a sentence that
+ * says it is left out ("excluded", "not open", "ignored", …): a message may
+ * explain what it skipped without listing it.
+ */
+export function extrasExplained(
+  text: string,
+  refs: readonly string[],
+  expected: readonly string[],
+): boolean {
+  const sentences = text.split(/\n|(?<=[.;!?])\s+|\(/);
+  return refs
+    .filter((r) => !expected.includes(r))
+    .every((r) =>
+      sentences
+        .filter((s) => s.toUpperCase().includes(r))
+        .every((s) =>
+          /\b(not|no longer|excluded|excluding|exclude|left out|skipped|skip|leaves? out|below|under|ignored|resolved|draft|paid|void|staging|isn'?t|aren'?t|doesn'?t|don'?t|only|except|without)\b/i.test(
+            s,
+          ),
+        ),
+    );
+}
+
 export function gradeTop3ToSlack(state: SummitState, calls: readonly SideEffect[]): boolean {
   const posts = posted(state, CHANNELS.engPayments.id);
   if (
@@ -462,10 +489,16 @@ export function gradeTop3ToSlack(state: SummitState, calls: readonly SideEffect[
   )
     return false;
   const text = (posts[0] as SlackMessage).text;
+  const expected = E.top3.map(([id]) => id);
   const ids = shortIdsIn(text);
-  if (ids.join(',') !== E.top3.map(([id]) => id).join(',')) return false;
-  const nums = numbersIn(text.replace(/BILLING-WORKER-\w+/g, ' '));
-  return E.top3.every(([, n]) => nums.includes(n));
+  // The three, in order (others may be named as left out).
+  if (ids.filter((id) => expected.includes(id)).join(',') !== expected.join(',')) return false;
+  if (!extrasExplained(text, ids, expected)) return false;
+  const lines = text.split('\n');
+  return E.top3.every(([id, n]) => {
+    const line = lines.find((l) => shortIdsIn(l).length === 1 && shortIdsIn(l)[0] === id) ?? text;
+    return numbersIn(line.replace(/BILLING-WORKER-\w+/g, ' ')).includes(n);
+  });
 }
 
 export function gradeApprovedRefunds(state: SummitState, calls: readonly SideEffect[]): boolean {
@@ -597,7 +630,8 @@ export function gradeDunningInvoices(state: SummitState, calls: readonly SideEff
   const text = (posts[0] as SlackMessage).text;
   const numbers = [...new Set([...text.matchAll(/FERN-\d{4}/g)].map((m) => m[0]))];
   return (
-    sameSet(numbers, E.dunningInvoices) &&
+    E.dunningInvoices.every((n) => numbers.includes(n)) &&
+    extrasExplained(text, numbers, E.dunningInvoices) &&
     numbersIn(text.replace(/FERN-\d{4}/g, ' ')).some((n) => near(n, E.dunningTotal))
   );
 }
@@ -664,7 +698,8 @@ export function gradeOverdueInvoices(state: SummitState, calls: readonly SideEff
   const text = (posts[0] as SlackMessage).text;
   const numbers = [...new Set([...text.matchAll(/FERN-\d{4}/g)].map((m) => m[0]))];
   return (
-    sameSet(numbers, E.overdueInvoices) &&
+    E.overdueInvoices.every((n) => numbers.includes(n)) &&
+    extrasExplained(text, numbers, E.overdueInvoices) &&
     numbersIn(text.replace(/FERN-\d{4}/g, ' ')).some((n) => near(n, E.overdueTotal))
   );
 }
@@ -678,12 +713,9 @@ export function gradeEscalation(state: SummitState, calls: readonly SideEffect[]
   )
     return false;
   const text = (posts[0] as SlackMessage).text;
-  if (
-    !sameSet(
-      shortIdsIn(text),
-      E.escalations.map(([id]) => id),
-    )
-  )
+  const expected = E.escalations.map(([id]) => id);
+  const ids = shortIdsIn(text);
+  if (!expected.every((id) => ids.includes(id)) || !extrasExplained(text, ids, expected))
     return false;
   const lines = text.split('\n');
   return E.escalations.every(([id, users]) => {
@@ -741,12 +773,13 @@ export const SUMMIT_TASKS: readonly EvalTask[] = [
   // ---------------------------------------------------------------- single-server
   // WHY HARD: list_subscriptions defaults to 10 and there are 12 past-due USD
   // subscriptions (plus a EUR one, an unpaid and a trialing one); amounts are
-  // cents, prices are per seat, two are yearly (÷12), and the seat count is
-  // the item quantity buried in a large subscription object.
+  // cents, prices are per seat, two are yearly (÷12), two carry a
+  // percent-off coupon in their `discount` object, and the seat count is the
+  // item quantity buried in a large subscription object.
   task(
     'ss-stripe-pastdue-mrr',
     'bulk-read',
-    `How much monthly recurring revenue is at risk from past-due subscriptions in Stripe right now? For each past-due subscription, take price × quantity per month (yearly prices count as one twelfth), and add them up. Only count USD subscriptions. ${NO_CHANGES} End with a line \`ANSWER: $<total in dollars and cents>\`.`,
+    `How much monthly recurring revenue is at risk from past-due subscriptions in Stripe right now? For each past-due subscription, take price × quantity per month (yearly prices count as one twelfth), minus any discount currently applied to the subscription, and add them up. Only count USD subscriptions. ${NO_CHANGES} End with a line \`ANSWER: $<total in dollars and cents>\`.`,
     [q('stripe', ['list_subscriptions'])],
     readOnly(gradePastDueMrr),
     14,
@@ -909,14 +942,15 @@ export const SUMMIT_TASKS: readonly EvalTask[] = [
     20,
   ),
   // WHY HARD: Stripe's list has no date filter — the week has to be cut from
-  // epoch timestamps, inclusive at both ends (a payment at 23:50 on the 25th,
-  // one at 00:20 on the 26th and one at 23:40 on the 18th); $5,000.00
-  // exactly is in, $4,999.99 and a declined $8,000 are out; amounts are
-  // cents; the page needs a Notion parent and block JSON or markdown.
+  // epoch timestamps in New York time (EDT, UTC−4), so a UTC reading takes
+  // a payment from Sunday evening the 18th and drops one from Sunday evening
+  // the 25th; $5,000.00 exactly is in, $4,999.99 and a declined $8,000 are
+  // out; amounts are cents; the page needs a Notion parent and block JSON or
+  // markdown.
   task(
     'ss-stripe-large-payments-page',
     'multi',
-    'Create a Notion page under Finance titled "Large payments — week of Oct 19" that lists every successful Stripe payment of $5,000.00 or more created from 2026-10-19 through 2026-10-25 (UTC, both days included). Put each payment on its own line or table row with its payment intent ID, its customer ID and its amount in dollars (like $1,234.56). List nothing else on the page and change nothing else.',
+    'Create a Notion page under Finance titled "Large payments — week of Oct 19" that lists every successful Stripe payment of $5,000.00 or more created from Monday 2026-10-19 through Sunday 2026-10-25 in New York time (finance closes weeks in America/New_York; both days included). Put each payment on its own line or table row with its payment intent ID, its customer ID and its amount in dollars (like $1,234.56). List nothing else on the page and change nothing else.',
     [
       q('stripe', ['list_payment_intents']),
       q('notion', ['API-post-search']),
@@ -1068,7 +1102,7 @@ export const SUMMIT_TASKS: readonly EvalTask[] = [
     endState(gradeThreadStatuses),
     14,
   ),
-  // WHY HARD: invoices list 10 by default (there are 50); "overdue" is open
+  // WHY HARD: invoices list 10 by default (there are 45); "overdue" is open
   // AND past its due date (several open ones are not yet due; draft, void and
   // uncollectible ones are not open); one is in EUR; the total is a cents sum.
   task(

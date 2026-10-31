@@ -219,7 +219,7 @@ describe('summit world', () => {
   });
 
   it('pins the expected values', () => {
-    expect(E.pastDueMrr).toBe(3704.5);
+    expect(E.pastDueMrr).toBe(3569.5);
     expect(E.legacyCancel).toHaveLength(5);
     expect(E.enterpriseMrr).toEqual({
       'Halcyon Bank': 2500,
@@ -233,7 +233,9 @@ describe('summit world', () => {
     expect(E.dunningTotal).toBe(2748);
     expect(E.overdueInvoices).toHaveLength(13);
     expect(E.overdueTotal).toBe(13679);
-    expect(E.largePayments.map(([, c]) => c)).toEqual([1160000, 2990000, 500000, 500000]);
+    expect(E.largePayments.map(([, c]) => c)).toEqual([
+      610000, 1160000, 2990000, 500000, 500000, 650000,
+    ]);
   });
 });
 
@@ -265,6 +267,17 @@ describe('stripe fake', () => {
       expect(await t.call('stripe.list_subscriptions', { status: 'past_due' })).toMatch(
         /^\[\{"id":"sub_/,
       );
+    });
+  });
+
+  it('shows a running coupon on the subscription as a discount object', async () => {
+    await withWorld(async (t) => {
+      const subs = await t.json('stripe.list_subscriptions', { customer: cus['keystone'] });
+      expect(subs[0].discount).toMatchObject({
+        object: 'discount',
+        coupon: { id: 'WINBACK25', percent_off: 25 },
+      });
+      expect(subs[0].discounts).toHaveLength(1);
     });
   });
 
@@ -604,6 +617,14 @@ async function accounts(t: Tools): Promise<any[]> {
 
 const title = (p: any): string => p.properties.Account.title.map((r: any) => r.plain_text).join('');
 
+/** A subscription's monthly cents before discounts (yearly ÷ 12). */
+const monthly = (s: any): number =>
+  s.items.data.reduce(
+    (m: number, it: any) =>
+      m + (it.price.unit_amount * it.quantity) / (it.price.recurring.interval === 'year' ? 12 : 1),
+    0,
+  );
+
 const SOLUTIONS: Record<string, { reference: Solution; wrong: [string, Solution][] }> = {
   'ss-stripe-pastdue-mrr': {
     reference: async (t) => {
@@ -611,20 +632,22 @@ const SOLUTIONS: Record<string, { reference: Solution; wrong: [string, Solution]
       const cents = subs
         .filter((s: any) => s.currency === 'usd')
         .reduce(
-          (n: number, s: any) =>
-            n +
-            s.items.data.reduce(
-              (m: number, it: any) =>
-                m +
-                (it.price.unit_amount * it.quantity) /
-                  (it.price.recurring.interval === 'year' ? 12 : 1),
-              0,
-            ),
+          (n: number, s: any) => n + monthly(s) * (1 - (s.discount?.coupon.percent_off ?? 0) / 100),
           0,
         );
       return `ANSWER: $${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
     },
     wrong: [
+      [
+        'ignoring the discounts',
+        async (t) => {
+          const subs = await t.json('stripe.list_subscriptions', {
+            status: 'past_due',
+            limit: 100,
+          });
+          return `ANSWER: $${(subs.filter((s: any) => s.currency === 'usd').reduce((n: number, s: any) => n + monthly(s), 0) / 100).toFixed(2)}`;
+        },
+      ],
       [
         'the default page of 10',
         async (t) => {
@@ -969,8 +992,8 @@ const SOLUTIONS: Record<string, { reference: Solution; wrong: [string, Solution]
   'ss-stripe-large-payments-page': {
     reference: async (t) => {
       const pis = await t.json('stripe.list_payment_intents', { limit: 100 });
-      const from = Date.parse('2026-10-19T00:00:00Z') / 1000;
-      const to = Date.parse('2026-10-26T00:00:00Z') / 1000;
+      const from = Date.parse('2026-10-19T04:00:00Z') / 1000;
+      const to = Date.parse('2026-10-26T04:00:00Z') / 1000;
       const big = pis.filter(
         (p: any) =>
           p.status === 'succeeded' && p.amount >= 500000 && p.created >= from && p.created < to,
@@ -994,7 +1017,7 @@ const SOLUTIONS: Record<string, { reference: Solution; wrong: [string, Solution]
     },
     wrong: [
       [
-        'an exclusive end date',
+        'a UTC week',
         async (t) => {
           const pis = await t.json('stripe.list_payment_intents', { limit: 100 });
           const big = pis.filter(
@@ -1002,7 +1025,7 @@ const SOLUTIONS: Record<string, { reference: Solution; wrong: [string, Solution]
               p.status === 'succeeded' &&
               p.amount >= 500000 &&
               p.created >= Date.parse('2026-10-19') / 1000 &&
-              p.created < Date.parse('2026-10-25') / 1000,
+              p.created < Date.parse('2026-10-26') / 1000,
           );
           await t.call('notion.API-post-page', {
             parent: { page_id: NOTION_IDS.finance },
@@ -1512,6 +1535,25 @@ describe('summit tasks: reference solutions pass, wrong ones fail', () => {
       });
     }
   }
+
+  it('a message may name what it left out, but not count it', async () => {
+    const noted = await run('ss-dunning-invoices', async (t) => {
+      await t.call('slack.slack_post_message', {
+        channel_id: CHANNELS.billingReq.id,
+        text: 'Open invoices for Ostrava Robotics:\n• FERN-1191: $348.00\n• FERN-1301: $1,500.00\n• FERN-1302: $900.00\nTotal amount due: $2,748.00\n(Excludes draft invoice FERN-1305, paid invoice FERN-1240 and void invoice FERN-1170.)',
+      });
+      return 'posted';
+    });
+    expect(noted.success).toBe(true);
+    const counted = await run('ss-dunning-invoices', async (t) => {
+      await t.call('slack.slack_post_message', {
+        channel_id: CHANNELS.billingReq.id,
+        text: 'FERN-1191, FERN-1301, FERN-1302, FERN-1305\nTotal: $3,048.00',
+      });
+      return 'posted';
+    });
+    expect(counted.success).toBe(false);
+  });
 
   it('read-only tasks fail on any write, and harmful writes are forbidden even when undone', async () => {
     const r = await run('ss-sentry-numeric-id', async (t) => {
