@@ -161,7 +161,24 @@ export async function executeMachine(
     assertCodeSize(args.code, caps);
     assertInputSize(args.input, caps);
 
-    const resume = args.requestState !== undefined ? await openResume(args, deps, caps) : undefined;
+    const resume = args.requestState !== undefined ? await openResume(args, deps) : undefined;
+
+    // R18: the trip cap bounds a workflow's total round trips. The counter is
+    // authenticated inside the blob, so a client cannot wind it back.
+    //
+    // `trip` is 1 on the first suspension, so a blob carrying trip === N is
+    // the Nth round trip and must be allowed; only N+1 is over the cap. The
+    // cap is also enforced at suspension time, which is what actually refuses
+    // the workflow — this arm only catches a blob minted before a cap change.
+    // Nothing from this blob runs; what earlier round trips ran is listed.
+    if (resume !== undefined && resume.trip > caps.maxRoundTrips) {
+      const limit = roundTripLimit(caps);
+      return withApprovalOutcomes(
+        errorResult({ phase: 'terminal', ...limit, diagnostics: [], logs: [] }),
+        resume.audit,
+        deps.redact,
+      );
+    }
 
     const outcome = await runSegment({
       code: args.code,
@@ -208,7 +225,6 @@ interface ResumeState {
 async function openResume(
   args: ExecuteMachineArgs,
   deps: ExecuteMachineDeps,
-  caps: ResourceCaps,
 ): Promise<ResumeState> {
   const payload = openBlob(args.requestState as string, {
     expectedKind: 'machine',
@@ -218,23 +234,6 @@ async function openResume(
     domain: blobKeyDomain(deps.catalog, deps.blobDomain),
   });
   await assertNotReplayed(payload, deps.replayCache);
-
-  // R18: the trip cap bounds a workflow's total round trips. The counter is
-  // authenticated inside the blob, so a client cannot wind it back.
-  //
-  // `trip` is 1 on the first suspension, so a blob carrying trip === N is
-  // the Nth round trip and must be allowed; only N+1 is over the cap. The
-  // cap is also enforced at suspension time, which is what actually refuses
-  // the workflow — this arm only catches a blob minted before a cap change.
-  if (payload.trip > caps.maxRoundTrips) {
-    throw new ProjectionError(
-      'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} round trips (approvals and forwarded server questions)`,
-      {
-        hint: `Restructure the machine to need at most ${caps.maxRoundTrips} round trips, for example by batching writes into fewer states.`,
-      },
-    );
-  }
 
   // A batched prompt (batch.ts) is answered by the layout SEALED in the
   // blob, never by this instance's option or anything the client sends:
@@ -384,11 +383,8 @@ function suspendResult(
   // R18: refuse to suspend again once the cap is reached, rather than
   // minting a blob the retry would reject.
   if (outcome.trip > caps.maxRoundTrips) {
-    return fail(
-      'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} round trips (approvals and forwarded server questions)`,
-      `Restructure the machine to need at most ${caps.maxRoundTrips} round trips.`,
-    );
+    const limit = roundTripLimit(caps);
+    return fail('terminal', limit.message, limit.hint);
   }
 
   const keys = batchOrder(outcome.pending);
@@ -488,6 +484,19 @@ function suspendResult(
   // by S6, and logs are model-authored. Every other response (completion,
   // `isError`, and each resumed segment) still carries its own logs.
   return inputRequired({ inputRequests, requestState });
+}
+
+/**
+ * The R18 `terminal` error. The bare "reached the limit" read as a finished
+ * workflow: a model that saw it, with the calls already run listed below,
+ * told the user the task was done (D30). So it says the workflow did not
+ * finish, that the calls not yet made were not made, and how to finish.
+ */
+export function roundTripLimit(caps: ResourceCaps): { message: string; hint: string } {
+  return {
+    message: `this workflow stopped unfinished: it reached the limit of ${caps.maxRoundTrips} ${caps.maxRoundTrips === 1 ? 'round trip' : 'round trips'} (approvals and forwarded server questions), so the machine did not reach its final state`,
+    hint: `The calls the machine had not made yet were not made. Tell the user the task is incomplete, or finish it: issue the remaining gated calls together with toolCalls (one round trip for all of them), leaving out the ones listed as already done, or make them with call_tool.`,
+  };
 }
 
 /**

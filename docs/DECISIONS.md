@@ -1870,5 +1870,24 @@ already, a field would have to be parsed from ids the host does not
 otherwise interpret, and plain `toolCall` ids of the form `name#N` would
 grow an index that means nothing.
 
+The round-trip limit's copy (PRD R18). The `terminal` error read
+`this workflow reached the limit of 8 round trips …` with the hint
+`Restructure the machine …`, followed by the R15b list of calls that had
+already run. The model took the list for the work and the error for a
+detail. Both sites (`mrtr/adapter.ts`: refusing the next suspension, and
+resuming a blob minted under a higher cap) now share one text:
+
+- message: `this workflow stopped unfinished: it reached the limit of N
+round trips (approvals and forwarded server questions), so the machine
+did not reach its final state`
+- hint: `The calls the machine had not made yet were not made. Tell the
+user the task is incomplete, or finish it: issue the remaining gated
+calls together with toolCalls (one round trip for all of them), leaving
+out the ones listed as already done, or make them with call_tool.`
+
+The resume site used to throw before the audit was read, so it listed
+nothing; it now carries the same "Already done before this error" list.
+
 Consequences. The contract grows by about 280 tokens. A machine that
-already used parallel regions is unchanged.
+already used parallel regions is unchanged. Tests that matched the old
+round-trip copy match the new one.

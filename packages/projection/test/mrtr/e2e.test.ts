@@ -677,7 +677,7 @@ export default setup({}).createMachine({
 
     const error = structuredError(retry);
     expect(error.phase).toBe('terminal');
-    expect(error.message).toContain('round trips');
+    expect(error.message).toContain('this workflow stopped unfinished');
   });
 });
 

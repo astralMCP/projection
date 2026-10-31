@@ -127,7 +127,7 @@ R16. Each elicitation MUST present a CONCISE, human-readable summary aimed at a 
 
 R17. On retry, an approved request executes the tool call and delivers `TOOL_RESULT` (or `TOOL_ERROR` if the underlying call fails) to the rehydrated machine. A declined request delivers `TOOL_DENIED` with the decline reason if provided (client-supplied text, neutralized and capped at 500 characters). A request missing from `inputResponses` is treated as declined. The workflow then continues; denial is not an automatic abort.
 
-R18. Exceeding the round-trip cap is a `terminal` error; a retry after blob expiry is a `blob_verification` error. Both are structured (R25) and name their cause.
+R18. Exceeding the round-trip cap is a `terminal` error; a retry after blob expiry is a `blob_verification` error. Both are structured (R25) and name their cause. The round-trip error says the workflow stopped unfinished, without reaching its final state, and its hint says the calls the machine had not made were not made: tell the user the task is incomplete, or finish it by issuing the remaining gated calls together with `toolCalls` (one round trip), leaving out the ones listed as already done (R15b), or with `call_tool` (D30). A blob minted before the cap was lowered fails the same way on resume, with the same list, and nothing from it runs.
 
 ### 6.5 Suspension blob (`requestState`)
 
