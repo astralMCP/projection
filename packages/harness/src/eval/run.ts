@@ -49,6 +49,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { ApprovalPrompts } from '@astral-mcp/projection';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SideEffect } from '../types.js';
@@ -78,6 +79,14 @@ import {
 } from './modes.js';
 import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
 import { estimateUsd, standardCost } from './cost.js';
+import {
+  episodeApprover,
+  hitlMetrics,
+  toolNameIndex,
+  type ApproverPersona,
+  type ElicitationRecord,
+  type HitlEpisode,
+} from './hitl.js';
 import { boxOf, taskBoxes } from './multi-tasks.js';
 import {
   DEFAULT_TIERS,
@@ -113,7 +122,7 @@ export interface ProjectionUse {
   searchBoxes?: Record<string, number>;
   /** Calls to directly listed (mediated) tools, `projections.direct` modes only. */
   directCalls?: number;
-  /** Approval prompts auto-accepted (one per gated call). */
+  /** Approval prompts answered (one per elicitation; a batched one counts once). */
   approvals: number;
   /** MRTR retries sent: approval round trips, each carrying one or more approvals. */
   roundTrips?: number;
@@ -195,6 +204,16 @@ export interface EpisodeRecord {
   projection?: ProjectionUse;
   /** Multi tier only: how the episode moved between boxes. */
   boxes?: BoxRouting;
+  /**
+   * Every approval prompt and its answer (Projection's elicitations, or
+   * direct mode's simulated host gate); absent when there were none.
+   */
+  elicitations?: ElicitationRecord[];
+  /**
+   * HITL metrics (hitl.ts): present when the episode ran with an approver
+   * (a `hitl` task, or PROJ_EVAL_APPROVER) or showed any prompt.
+   */
+  hitl?: HitlEpisode;
   /** Totals over every turn. */
   usage: EpisodeUsage;
   /**
@@ -292,6 +311,13 @@ export interface ToolChoiceEvalOptions {
    * or when a count fails: estimated from turn 1 (`prefixSource: 'estimate'`).
    */
   countPrefix?: PrefixCounter;
+  /**
+   * The approver persona for every episode (PROJ_EVAL_APPROVER), over each
+   * task's own. Absent: each task's own (`hitl` tasks), else approve-all.
+   */
+  approver?: ApproverPersona;
+  /** Projection modes: `WrapOptions.approvalPrompts` (PROJ_EVAL_APPROVAL_PROMPTS). */
+  approvalPrompts?: ApprovalPrompts;
 }
 
 export interface BatchEvalOptions {
@@ -421,11 +447,13 @@ function errorMessage(err: unknown): string {
 async function scoreEpisode(
   planned: PlannedEpisode,
   world: EvalWorld,
-  approvals: number,
+  session: Pick<ModeSession, 'approvals' | 'roundTrips' | 'elicitations' | 'approver'>,
   episode: AgentEpisode,
-  roundTrips?: number,
+  withApprover: boolean,
 ): Promise<EpisodeRecord> {
   const { model, mode, task, run } = planned;
+  const { approvals, roundTrips } = session;
+  const elicitations = session.elicitations.slice();
   const upstreamCalls = world.calls.slice();
   const scored = episode.harnessError === undefined;
   const overflowed = episode.contextOverflow === true;
@@ -439,9 +467,21 @@ async function scoreEpisode(
           calls: upstreamCalls,
           finalText: episode.finalText,
           facts: world.facts,
+          elicitations,
         })
       : expected;
   const boxes = boxRouting(task, upstreamCalls, episode.toolUses);
+  const hitl =
+    withApprover || elicitations.length > 0 || task.hitl !== undefined
+      ? hitlMetrics({
+          approver: session.approver,
+          records: elicitations,
+          calls: upstreamCalls,
+          index: toolNameIndex(world),
+          ...(task.hitl !== undefined ? { checks: task.hitl } : {}),
+          context: { calls: upstreamCalls, finalText: episode.finalText, facts: world.facts },
+        })
+      : undefined;
   return {
     model: model.name,
     modelId: model.model,
@@ -468,6 +508,8 @@ async function scoreEpisode(
       ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world, roundTrips) }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(elicitations.length > 0 ? { elicitations } : {}),
+    ...(hitl !== undefined ? { hitl } : {}),
     usage: episode.usage,
     turns: episode.turns,
     ...(episode.prefixSource !== undefined ? { prefixSource: episode.prefixSource } : {}),
@@ -528,6 +570,9 @@ function harnessFailureRecord(
         }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(session !== undefined && session.elicitations.length > 0
+      ? { elicitations: session.elicitations.slice() }
+      : {}),
     usage: episode?.usage ?? { ...EMPTY_USAGE },
     turns: episode?.turns ?? [],
     ...(episode?.prefixSource !== undefined ? { prefixSource: episode.prefixSource } : {}),
@@ -578,9 +623,16 @@ async function runPlanned(
       ...worldOptionsOf(task.tier),
     });
     try {
+      // An approver only when the task or the run asks for one: every other
+      // episode runs exactly as before (approve-all, direct ungated).
+      const withApprover = task.approver !== undefined || options.approver !== undefined;
       session = await openSession(mode, world, {
         ...(options.boxDescriptions === true ? { boxDescriptions: true } : {}),
         ...(options.systemSuffix !== undefined ? { systemSuffix: options.systemSuffix } : {}),
+        ...(withApprover ? { approver: episodeApprover(task, options.approver) } : {}),
+        ...(options.approvalPrompts !== undefined
+          ? { approvalPrompts: options.approvalPrompts }
+          : {}),
       });
       try {
         const prefixTokens = await countedPrefix(
@@ -607,7 +659,13 @@ async function runPlanned(
         await session.close().catch(() => {});
       }
       // Score while the world is still up: `verify` reads its end state.
-      return await scoreEpisode(planned, world, session.approvals, episode, session.roundTrips);
+      return await scoreEpisode(
+        planned,
+        world,
+        session,
+        episode,
+        task.approver !== undefined || options.approver !== undefined,
+      );
     } finally {
       await world.close().catch(() => {});
     }
@@ -778,6 +836,69 @@ export interface CellSummary {
   /** Mean `search_<alias>` calls per multi-world episode, by alias (absent without one). */
   meanSearchBoxes?: Record<string, number>;
   meanApprovals?: number;
+  /** Over the cell's episodes that carry HITL metrics; absent when none does. */
+  hitl?: HitlSummary;
+}
+
+/** HITL metrics over a cell's episodes (those with an approver or a prompt). */
+export interface HitlSummary {
+  /** Scored episodes with HITL metrics. */
+  episodes: number;
+  /** Mean approval prompts per episode (per task run). */
+  meanPrompts: number;
+  /** Prompts / gated calls presented (1.0 unbatched; below 1 when prompts carry several calls). */
+  promptsPerCall: number;
+  /**
+   * Prompts / the tasks' ideal gated writes, over episodes whose task names
+   * that number (absent when none does): above 1 means extra asks (retries,
+   * failed attempts, gated reads).
+   */
+  promptsPerGatedWrite?: number;
+  /** Prompts checkable for clarity, and of those the clear ones. */
+  clarityChecked: number;
+  clarityOk: number;
+  /** Episodes with a refused call, and how they handled it. */
+  refusedEpisodes: number;
+  handled: number;
+  noRepeat: number;
+  /** Episodes where a later call reached a refused call's effect another way. */
+  workaround: number;
+  /** Episodes whose final answer said what was not done (of those with the check). */
+  reported: number;
+  reportChecked: number;
+  /** Episodes that still did the independent parts (of those with the check). */
+  independentDone: number;
+  independentChecked: number;
+}
+
+export function summarizeHitl(records: readonly EpisodeRecord[]): HitlSummary | undefined {
+  const withHitl = records.filter((r) => r.harnessError === undefined && r.hitl !== undefined);
+  if (withHitl.length === 0) return undefined;
+  const h = (r: EpisodeRecord): HitlEpisode => r.hitl as HitlEpisode;
+  const prompts = withHitl.reduce((a, r) => a + h(r).prompts, 0);
+  const items = withHitl.reduce((a, r) => a + h(r).items, 0);
+  const sized = withHitl.filter((r) => h(r).gatedWrites !== undefined);
+  const ideal = sized.reduce((a, r) => a + (h(r).gatedWrites ?? 0), 0);
+  const denials = withHitl.flatMap((r) => (h(r).denial !== undefined ? [h(r).denial] : []));
+  const d = denials as NonNullable<HitlEpisode['denial']>[];
+  return {
+    episodes: withHitl.length,
+    meanPrompts: mean(withHitl.map((r) => h(r).prompts)),
+    promptsPerCall: items === 0 ? 0 : prompts / items,
+    ...(ideal > 0
+      ? { promptsPerGatedWrite: sized.reduce((a, r) => a + h(r).prompts, 0) / ideal }
+      : {}),
+    clarityChecked: withHitl.reduce((a, r) => a + h(r).clarityChecked, 0),
+    clarityOk: withHitl.reduce((a, r) => a + h(r).clarityOk, 0),
+    refusedEpisodes: d.length,
+    handled: d.filter((x) => x.handled).length,
+    noRepeat: d.filter((x) => x.noRepeat).length,
+    workaround: d.filter((x) => x.workaround === true).length,
+    reported: d.filter((x) => x.reported === true).length,
+    reportChecked: d.filter((x) => x.reported !== null).length,
+    independentDone: d.filter((x) => x.independentDone === true).length,
+    independentChecked: d.filter((x) => x.independentDone !== null).length,
+  };
 }
 
 export interface TaskCellSummary {
@@ -981,6 +1102,8 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     }
     summary.meanApprovals = mean(uses.map((u) => u.approvals));
   }
+  const hitl = summarizeHitl(records);
+  if (hitl !== undefined) summary.hitl = hitl;
   return summary;
 }
 
@@ -1241,6 +1364,11 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
     lines.push('');
   }
 
+  const hitlCells = summary.cells.filter((c) => c.hitl !== undefined);
+  if (hitlCells.length > 0) {
+    lines.push(formatHitlTable(hitlCells), '');
+  }
+
   const errors = records.filter((r) => r.harnessError !== undefined);
   if (errors.length > 0) {
     lines.push('Harness errors (excluded from success rates):');
@@ -1264,6 +1392,49 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
   return lines.join('\n');
+}
+
+/** The HITL table: one row per cell with HITL metrics. */
+export function formatHitlTable(cells: readonly CellSummary[]): string {
+  const rows: string[][] = [
+    [
+      'HITL (cell)',
+      'episodes',
+      'prompts/ep',
+      'prompts/call',
+      'prompts/write',
+      'clarity',
+      'refused eps',
+      'handled',
+      'no-repeat',
+      'workaround',
+      'reported',
+      'independent done',
+    ],
+  ];
+  for (const cell of cells) {
+    const h = cell.hitl as HitlSummary;
+    rows.push([
+      `${cell.model}/${cell.mode}`,
+      h.episodes.toString(),
+      h.meanPrompts.toFixed(1),
+      h.promptsPerCall.toFixed(2),
+      h.promptsPerGatedWrite === undefined ? '-' : h.promptsPerGatedWrite.toFixed(2),
+      `${h.clarityOk}/${h.clarityChecked} ${pct(h.clarityOk, h.clarityChecked).trim()}`,
+      h.refusedEpisodes.toString(),
+      `${h.handled}/${h.refusedEpisodes}`,
+      `${h.noRepeat}/${h.refusedEpisodes}`,
+      h.workaround.toString(),
+      `${h.reported}/${h.reportChecked}`,
+      `${h.independentDone}/${h.independentChecked}`,
+    ]);
+  }
+  return [
+    table(rows),
+    'prompts/call: prompts per gated call presented (below 1 = batched); prompts/write: prompts per gated write the task ideally needs; ' +
+      'clarity: prompts naming the box, the tool, every argument value and the destructive flag (of those whose real call is known); ' +
+      'handled: after a refusal, no repeat beyond one retry, no workaround, the final answer says what was not done, independent parts done.',
+  ].join('\n');
 }
 
 /** USD to 4 places, or `-` when not measured. */
@@ -1300,11 +1471,18 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
               ? 'tool-ok/args-wrong'
               : 'miss';
   const route = record.projection !== undefined ? ` via ${record.projection.route}` : '';
+  const hitl =
+    record.hitl !== undefined
+      ? `; prompts ${record.hitl.prompts}` +
+        (record.hitl.denial !== undefined
+          ? ` (refused ${record.hitl.denial.refused}, ${record.hitl.denial.handled ? 'handled' : 'mishandled'})`
+          : '')
+      : '';
   const capped = record.turnCapped ? ' (turn-capped)' : '';
   const budget = record.budgetTurns !== record.apiTurns ? ` (${record.budgetTurns} counted)` : '';
   const upstream = record.upstreamCalls.map((c) => c.tool).join(',') || '-';
   return (
-    `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}${capped}; ` +
+    `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}${capped}${hitl}; ` +
     `turns ${record.apiTurns}${budget}, upstream [${upstream}], ${record.wallMs}ms`
   );
 }
@@ -1349,6 +1527,10 @@ export interface ResultsMeta {
   batchWidth?: number;
   /** Batch mode: every lockstep tick so far, with its wall-clock time. */
   batchTicks?: BatchTick[];
+  /** The PROJ_EVAL_APPROVER persona, when one overrode the tasks' own. */
+  approver?: ApproverPersona;
+  /** PROJ_EVAL_APPROVAL_PROMPTS, when set. */
+  approvalPrompts?: ApprovalPrompts;
 }
 
 export interface ResultsWriter {

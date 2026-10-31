@@ -13,6 +13,7 @@ import type { TokenStore } from '../auth/token-store.js';
 import { DEFAULT_INTROSPECT_TIMEOUT_MS } from '../introspector/constants.js';
 import type { BlobKeyDomain } from '../blob/index.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
+import type { ApprovalPrompts } from '../mrtr/batch.js';
 import type {
   ApprovalsMode,
   PolicyOptions,
@@ -55,6 +56,19 @@ export interface WrapOptions {
    * apart; on `wrapMcpServer` it is the server's own tool name.
    */
   redact?: RedactionHook;
+  /**
+   * How a machine suspension holding several gated calls is put to the
+   * person (R15 amendment; DECISIONS D25). `'per-call'` (default) sends one
+   * elicitation per call. `'batched'` sends one elicitation listing every
+   * call in its full approval copy, with one unticked boolean per call (no
+   * default): each call still runs only if its own box comes back ticked,
+   * on the arguments sealed for it (S2). A client that answers the form
+   * without the booleans declines every call. The layout is sealed in the
+   * blob; a batch is capped at 10 calls and 20 000 characters, falling back
+   * to per-call prompts above that. Read once, at wrap time; any other
+   * value fails the wrap (`validate`).
+   */
+  approvalPrompts?: ApprovalPrompts;
   /**
    * Replaces the whole R29 preamble, whichever projections are on (the
    * code-mode, catalog or routing copy).
@@ -310,6 +324,7 @@ export function approvalGateDeps(input: {
     ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
     ...(clientUrlElicitation !== undefined ? { clientUrlElicitation } : {}),
     ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
+    ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   };
 }
 
@@ -325,4 +340,14 @@ export function assertUpstreamElicitationMode(
   throw new ProjectionError('validate', `${label} must be "forward" or "refuse"`, {
     hint: "Pass upstreamElicitation: 'forward' to pass a trusted server's own questions on to the user, or omit it to refuse them (the default).",
   });
+}
+
+/** Validate `WrapOptions.approvalPrompts` at wrap time: absent, or one of the two layouts. */
+export function assertApprovalPrompts(value: unknown): ApprovalPrompts | undefined {
+  if (value === undefined || value === 'per-call' || value === 'batched') return value;
+  throw new ProjectionError(
+    'validate',
+    `approvalPrompts must be 'per-call' or 'batched', got ${JSON.stringify(value) ?? String(value)}`,
+    { hint: "Set approvalPrompts to 'per-call' (the default) or 'batched', or leave it out." },
+  );
 }

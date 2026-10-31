@@ -1517,3 +1517,127 @@ worked around (a per-connection instance would need a factory from the
 integrator). MRTR's state-only "call me again" is re-issued at once, at most
 eight times, as the SDK's own driver would have done for the 2025-era
 client Projection used to be.
+
+## D25 — Approval UX: no prompts for calls that cannot run, refusals the model can see, opt-in batched prompts (2026-10-31)
+
+Measured on the `hitl` eval tier (D26). What is gated did not change: tool
+annotations plus the integrator's `policy` / `approvals` still decide, and
+every approval stays sealed to its call (S1–S6 unchanged). What changed is
+how approvals are presented and recovered from.
+
+- **Decline copy (R15b).** `call_tool`'s declined result said only "Do not
+  retry this call unless the user asks for it". Models filled the gap by
+  abandoning the whole task, independent writes included (3 of 4 baseline
+  fan-out episodes), or by asking the user to confirm a change the user had
+  just asked for in the decline note. The copy now scopes the refusal to
+  that call, forbids a repeat or a workaround, makes a note that asks for a
+  change actionable, asks for the independent rest, and asks for a report.
+  A first version said only "carry on with the rest"; models then announced
+  a cancelled step as done, so it now says to skip what only makes sense if
+  the call had run. Pass on the tier went from 15/20 to 18/20 on the default
+  routing, at the same cost per episode.
+- **Refusals restated on machine results (R15b).** A completed
+  `execute_machine` result showed only the machine's output, which is
+  model-authored: a machine that dropped `TOOL_DENIED` (or returned `null`)
+  hid the refusal, and the model told the user an email was sent that the
+  user had declined. Refused calls now follow the output as a text block.
+  The audit already rode in `structuredContent`, but many hosts never show
+  that to the model. The same reasoning covers `isError` results of a
+  resumed workflow, which now list the approved calls that already ran, so
+  the model does not ask the person for the same write again.
+- **No prompt for a call that cannot run (R15a).** `call_tool` already
+  checked argument shape before suspending; a machine's gated `toolCall`
+  did not, and one Haiku episode put 20 calls with `"[undefined]"`
+  arguments to the person, each approved and then refused by the server.
+  The same structural check now fails such a call as `TOOL_ERROR` before
+  any prompt. Nothing executes either way, so S2 is untouched.
+- **Batched prompts, opt-in (R15).** `approvalPrompts: 'batched'` puts a
+  suspension's several gated calls to the person as one elicitation with
+  one unticked boolean per call. `pending` stays the only source of
+  executable calls, one sealed entry each, and only an exact `true` in an
+  accepted answer runs a call. No crypto change; one optional blob field.
+  Amended after an adversarial review (same date):
+  - **The layout is sealed** (`prompts: 'batched'` in the payload, absent
+    for per-call, never on a `call` blob; any other value is malformed) and
+    the resume answers by the sealed value. The first version re-derived it
+    from the resuming instance's option, and the batch key `approvals`
+    could equal a model-chosen call id: a blob minted batched and resumed
+    per-call read the batched answer as that call's own approval and ran a
+    call the person had unticked.
+  - **The batch key is namespaced** (`projection:approvals`), and a machine
+    `toolCall` id starting with `projection:` is a `validate` error, so no
+    call can be keyed where a Projection answer lives.
+  - **No `default` on the checkboxes.** With `default: true`, a client that
+    applies form defaults (the SDK's `elicitation.form.applyDefaults`)
+    turned an empty accept into "approve all". The fields carry neither
+    `default` nor `required`; an empty accept declines everything.
+  - **Capped.** At most 10 calls and 20 000 characters per batched message;
+    above either, the suspension falls back to per-call prompts (sealed as
+    such).
+  - **Refusal and already-ran blocks** render the sealed arguments through
+    the integrator's redaction hook (failing closed to `[redaction failed]`),
+    neutralize control, C1, separator and bidi characters (S5), and cut on
+    a code-point boundary.
+    The blob schema version stays 1: the field is optional, and the exact
+    `libv` match already fences blobs across releases.
+    It stays opt-in, not the default, because a client that accepts the form
+    without the booleans declines every call (fail-closed, but a regression
+    for such clients), and because on the tier models rarely request several
+    gated calls in one step (default routing used `call_tool` in 19 of 20
+    episodes; under forced code mode about one Haiku fan-out in three did).
+    Offline it turns six prompts into one; its live effect is still
+    unmeasured.
+
+Alternatives not taken: **editable approval forms** (accept with changed
+arguments) would make the approval authorize something other than the
+sealed call, and so break S2's "the approval authorizes the recorded args";
+a person asks for an edit through the decline `reason`, which the copy now
+makes actionable. **Distinguishing cancel from decline** in the copy: R17
+treats them alike, and nothing measured suggested the model should.
+
+Update (integration with D24 and direct listing, 2026-10-30): `prompts`
+is sealed only on a `machine` blob with two or more pending calls; the
+sealer rejects it on `call` and `upstream_input` blobs (both minted by
+`call_tool`, which never batches; an `upstream_input` blob has nothing
+pending to lay out) and on a machine blob with fewer than two pending.
+A machine suspension may hold a batched approval and forwarded server
+questions together: the questions stay their own elicitations under
+`upstream-<n>`, the resume reads both (the batch by the sealed layout, the
+questions by their sealed holds), and no question answer approves a call.
+Directly listed tools (`projections.direct`) call `call_tool`'s handler
+with the same upstream options and client capabilities, so they inherit
+forwarding, progress, cancellation, the decline copy and audit redaction.
+
+## D26 — A HITL layer for the tool-choice eval: personas, prompt records, HITL metrics, the `hitl` tier (2026-10-31)
+
+The harness approved everything and only counted prompts, so nothing
+measured approval UX. Now:
+
+- **Personas** (`PROJ_EVAL_APPROVER`, or a task's own): `approve-all`
+  (default), `deny-destructive`, `deny-matching`, `cancel` (after N
+  approvals), `edit`. A persona reads only the prompt text and schema, as a
+  person would: the tool and arguments it judges are parsed from the text.
+  `edit` accepts with changed content when the schema has the field;
+  Projection's schema carries only `reason` (S2), so it declines with the
+  requested change as the reason.
+- **Direct mode gets a simulated host gate** when an approver is set: every
+  call that is not `readOnlyHint: true` is shown to the same persona first,
+  with a host-style prompt (tool, server, arguments, destructive marker) and
+  a host-style refusal text. Without it direct mode would execute every
+  refused write and could not be compared. It is generous to direct mode: a
+  real host may not mark destructive tools.
+- **Every prompt and answer is recorded** on the episode
+  (`elicitations`), and **HITL metrics** are computed per episode and
+  summarised per cell: prompts per task, per gated call (batching) and per
+  ideal gated write; clarity (the text names the box and the tool, shows
+  every argument value the call sends, or a faithful prefix with a
+  truncation marker, and flags destructiveness exactly when the tool
+  declares it), checked only where the real call is known (the host gate,
+  a `call_tool` request, or an approved code-mode call matched to its
+  execution by agreeing arguments); and denial handling (no repeat of a
+  refused call beyond one retry, no workaround through another call, the
+  final answer says what was not done, the independent parts got done).
+- **The `hitl` tier** (opt-in, not held out): five workplace-world write
+  tasks, each with a persona. Success needs the end state and the denial
+  handling. Offline tests run a reference, a naive retry, a workaround and a
+  silent final answer for each, in direct and Projection modes.

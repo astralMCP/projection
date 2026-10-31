@@ -24,10 +24,11 @@ export function validateArgsShape(
   toolName: string,
   args: Record<string, unknown>,
   schema: Record<string, unknown>,
+  caller: 'call_tool' | 'toolCall' = 'call_tool',
 ): void {
   const safeTool = inert(toolName);
   const fail = (property: string, why: string): ProjectionError =>
-    new ProjectionError('validate', `call_tool ${safeTool}: argument ${inert(property)} ${why}`, {
+    new ProjectionError('validate', `${caller} ${safeTool}: argument ${inert(property)} ${why}`, {
       hint: `Call describe_tool with name ${safeTool} and fix argument ${inert(property)} to match its input schema.`,
     });
 

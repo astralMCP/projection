@@ -22,6 +22,7 @@
 import { buildBlobPayload, DEFAULT_CALL_TTL_MS, openBlob, sealBlob } from '../blob/index.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
+  AFTER_REFUSAL,
   assertNotReplayed,
   errorResult,
   readReason,
@@ -624,10 +625,33 @@ function renderOutcome(value: CallToolOutcome): string {
       return `${head}\n\n${body}`;
     }
     case 'declined':
-      return `The user declined ${inert(value.tool)}${value.reason !== undefined ? ` — ${JSON.stringify(value.reason)}` : ''}. Nothing was executed. Do not retry this call unless the user asks for it.`;
+      return declinedText(value.tool, value.reason);
     case 'denied_by_policy':
       return `${inert(value.tool)} is blocked by this server's policy. Nothing was executed; the policy is not something you can change.`;
   }
+}
+
+/**
+ * What the model reads after a decline. The bare "do not retry" this
+ * replaced left the next step open, and models filled it by abandoning the
+ * whole task — independent writes included — or by asking the user to
+ * confirm a change the user had just asked for in the decline note (the
+ * `hitl` eval tier). So it says what the refusal covers (this call only),
+ * what not to do (repeat it, or reach its result another way), what to do
+ * (carry on with the independent rest, act on a note that asks for a
+ * change — the changed call asks for approval again) and what to tell the
+ * user. The reason is the approver's own text: quoted and inert, as before.
+ */
+export function declinedText(tool: string, reason: string | undefined): string {
+  const head =
+    reason !== undefined
+      ? `The user declined ${inert(tool)} with this note: ${JSON.stringify(reason)}. Nothing was executed.`
+      : `The user declined ${inert(tool)}. Nothing was executed.`;
+  const next =
+    reason !== undefined
+      ? 'The refusal covers only this call. If the note asks for a change, make the changed call instead (it asks for approval again); otherwise do not make this call again or reach its result another way.'
+      : 'The refusal covers only this call: do not make it again or reach its result another way.';
+  return `${head} ${next} ${AFTER_REFUSAL}`;
 }
 
 function inert(text: string): string {

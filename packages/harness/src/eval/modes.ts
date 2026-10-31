@@ -18,11 +18,13 @@
  *   are whatever the facade lists (`search_tools`, `describe_tool`,
  *   `call_tool`, `discover_apis`, `execute_machine`), and the framing is
  *   followed by the facade's `instructions` (the server's own, then
- *   Projection's preamble — R29). A 2026-07-28 client with a scripted approve-all
- *   `elicitation/create` handler auto-fulfils every MRTR round trip inside
- *   one `callTool`, so the model sees only the final result. Approving
- *   everything is safe: the GitHub fake has no side effects and the real
- *   servers act on a throwaway sandbox.
+ *   Projection's preamble — R29). A 2026-07-28 client whose
+ *   `elicitation/create` handler is an approver persona (hitl.ts; approve-all
+ *   unless the task or PROJ_EVAL_APPROVER says otherwise) auto-fulfils
+ *   every MRTR round trip inside one `callTool`, so the model sees only the
+ *   final result; every prompt and answer is recorded on the session.
+ *   Approving everything is safe: the GitHub fake has no side effects and
+ *   the real servers act on a throwaway sandbox.
  *
  * On the **multi** world (three boxes — see multi-world.ts) the modes are:
  *
@@ -58,8 +60,23 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler, InMemoryTransport, type McpServer } from '@modelcontextprotocol/server';
-import { MRTR_PROTOCOL_REVISION, wrapMcpServer, wrapMcpServers } from '@astral-mcp/projection';
+import {
+  MRTR_PROTOCOL_REVISION,
+  wrapMcpServer,
+  wrapMcpServers,
+  type ApprovalPrompts,
+} from '@astral-mcp/projection';
 import type { AgentRuntime, AgentTool, AgentToolResult } from './agent.js';
+import {
+  createApprover,
+  elicitationRecord,
+  mediatedToolTarget,
+  parseApprovalItems,
+  toolNameIndex,
+  type ApproverPersona,
+  type ElicitationRecord,
+  type TaskApprover,
+} from './hitl.js';
 import { isBoxedWorldName, type EvalWorld, type MultiWorld, type WorldName } from './world.js';
 
 export type EvalMode =
@@ -146,7 +163,35 @@ export interface SessionOptions {
    * {@link FORCE_CODE_MODE_LINE}). The task prompt is unchanged.
    */
   systemSuffix?: string;
+  /**
+   * Who answers approval prompts (hitl.ts). Absent: approve-all, and direct
+   * mode runs every call ungated as it always did. Present: Projection's
+   * prompts go to this persona, and direct mode puts a simulated host
+   * approval gate in front of every call that is not `readOnlyHint: true`
+   * (the same rule as Projection's default policy), so both modes face the
+   * same person.
+   */
+  approver?: TaskApprover;
+  /**
+   * Projection modes: `WrapOptions.approvalPrompts`
+   * (PROJ_EVAL_APPROVAL_PROMPTS). Absent: the facade's default (per-call).
+   */
+  approvalPrompts?: ApprovalPrompts;
 }
+
+/**
+ * The simulated host gate's form: like a host's "tell the assistant what to
+ * do instead" box, a refusal may carry a note.
+ */
+export const HOST_APPROVAL_SCHEMA = {
+  type: 'object',
+  properties: { reason: { type: 'string', description: 'Optional note for the assistant.' } },
+} as const;
+
+/** What direct mode's simulated host gate tells the model when a call is refused. */
+export const HOST_DECLINED_TEXT = 'The user declined this tool call, so it was not run.';
+export const HOST_CANCELLED_TEXT =
+  'The user dismissed the approval prompt for this tool call, so it was not run.';
 
 /** The system-prompt line PROJ_EVAL_FORCE_CODE_MODE=1 appends (Projection modes only). */
 export const FORCE_CODE_MODE_LINE = 'Use code mode (discover_apis, execute_machine) for this task.';
@@ -187,8 +232,15 @@ export interface ModeSession {
   runtime: AgentRuntime;
   /** The world behind this session; `world.calls` is what the tasks score. */
   world: EvalWorld;
-  /** Approval prompts answered (projection only; always 0 for direct). */
+  /**
+   * Approval prompts answered: Projection's elicitations, or direct mode's
+   * simulated host gate (0 for direct without an approver).
+   */
   readonly approvals: number;
+  /** Every approval prompt and its answer, in order (hitl.ts). */
+  readonly elicitations: readonly ElicitationRecord[];
+  /** The persona that answered them. */
+  readonly approver: ApproverPersona;
   /**
    * MRTR retries sent (projection only): one per approval round trip, however
    * many approvals it carried. Absent for direct.
@@ -261,9 +313,104 @@ export function toolResultText(result: ToolCallResultView): AgentToolResult {
   return { text, ...(result.isError === true ? { isError: true } : {}) };
 }
 
+/** A gated call's rendering in direct mode's simulated host approval prompt. */
+export function hostPromptText(
+  hostName: string,
+  box: string | undefined,
+  destructive: boolean,
+  args: Record<string, unknown>,
+): string {
+  return [
+    `Allow tool call: ${hostName}${box !== undefined ? ` (server: ${box})` : ''}`,
+    ...(destructive ? ['⚠ The server marks this tool as destructive.'] : []),
+    '',
+    'Arguments:',
+    JSON.stringify(args, null, 2),
+  ].join('\n');
+}
+
+/**
+ * Direct mode's simulated host approval gate: with an approver, every call
+ * to a tool that is not `readOnlyHint: true` is shown to it first; a
+ * refused call is not run and the model gets the host's refusal text.
+ * Without one, `run` is called straight through.
+ */
+function hostGate(
+  world: EvalWorld,
+  approverSpec: TaskApprover | undefined,
+): {
+  elicitations: ElicitationRecord[];
+  approvals: () => number;
+  gate(
+    hostName: string,
+    qualified: string,
+    args: Record<string, unknown>,
+    run: () => Promise<AgentToolResult>,
+  ): Promise<AgentToolResult>;
+} {
+  const elicitations: ElicitationRecord[] = [];
+  if (approverSpec === undefined) {
+    return { elicitations, approvals: () => 0, gate: (_h, _q, _a, run) => run() };
+  }
+  const approver = createApprover(approverSpec);
+  const index = toolNameIndex(world);
+  let toolCalls = 0;
+  return {
+    elicitations,
+    approvals: () => elicitations.length,
+    async gate(hostName, qualified, args, run) {
+      const at = toolCalls;
+      toolCalls += 1;
+      const tool = index.tools.get(qualified);
+      if (tool?.annotations?.readOnlyHint === true) return run();
+      const message = hostPromptText(
+        hostName,
+        tool?.box,
+        tool?.annotations?.destructiveHint === true,
+        args,
+      );
+      const items = parseApprovalItems(message, HOST_APPROVAL_SCHEMA, index);
+      const decision = approver.decide(items, HOST_APPROVAL_SCHEMA);
+      elicitations.push(
+        elicitationRecord({
+          seq: elicitations.length,
+          source: 'host',
+          toolCall: { index: at, name: hostName },
+          call: { tool: qualified, args },
+          key: 'host',
+          mode: 'form',
+          message,
+          requestedSchema: HOST_APPROVAL_SCHEMA,
+          items,
+          decision,
+          worldCallsAtAnswer: world.calls.length,
+        }),
+      );
+      switch (decision.response.action) {
+        case 'accept':
+          return run();
+        case 'decline': {
+          const reason = decision.response.content?.['reason'];
+          return {
+            text:
+              typeof reason === 'string'
+                ? `${HOST_DECLINED_TEXT} Their note: ${JSON.stringify(reason)}`
+                : HOST_DECLINED_TEXT,
+          };
+        }
+        case 'cancel':
+          return { text: HOST_CANCELLED_TEXT };
+      }
+    },
+  };
+}
+
 /** Direct: the world's tools verbatim over an in-memory MCP connection. */
-export async function openDirectSession(world: EvalWorld): Promise<ModeSession> {
-  if ('boxes' in world) return openMultiDirectSession(world);
+export async function openDirectSession(
+  world: EvalWorld,
+  options: SessionOptions = {},
+): Promise<ModeSession> {
+  if ('boxes' in world) return openMultiDirectSession(world, options);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client(CLIENT_INFO, { capabilities: {} });
   await world.server.connect(serverTransport);
@@ -279,16 +426,23 @@ export async function openDirectSession(world: EvalWorld): Promise<ModeSession> 
     inputSchema: tool.inputSchema,
   }));
 
+  const host = hostGate(world, options.approver);
   return {
     mode: 'direct',
     world,
-    approvals: 0,
+    get approvals() {
+      return host.approvals();
+    },
+    elicitations: host.elicitations,
+    approver: options.approver?.persona ?? 'approve-all',
     budgetFreeTools: new Set(),
     runtime: {
       system,
       tools,
-      call: async (name, input) =>
-        toolResultText(await client.callTool({ name, arguments: input })),
+      call: (name, input) =>
+        host.gate(name, name, input, async () =>
+          toolResultText(await client.callTool({ name, arguments: input })),
+        ),
     },
     close: async () => {
       await client.close();
@@ -313,18 +467,69 @@ async function connectFacade(
   world: EvalWorld,
   facade: FacadeLike,
   budgetFree: (tools: AgentTool[]) => ReadonlySet<string>,
-  systemSuffix?: string,
+  options: SessionOptions = {},
 ): Promise<ModeSession> {
+  const { systemSuffix } = options;
   const handler = createMcpHandler(facade.serverFactory);
-  const state = { approvals: 0, roundTrips: 0 };
+  const state = { approvals: 0, roundTrips: 0, toolCalls: 0 };
+  const approverSpec = options.approver ?? { persona: 'approve-all' as const };
+  const approver = createApprover(approverSpec);
+  const index = toolNameIndex(world);
+  const elicitations: ElicitationRecord[] = [];
+  /** The model's tool call in flight: prompts arrive inside it. */
+  let inflight: { index: number; name: string; input: Record<string, unknown> } | undefined;
 
   const client = new Client(CLIENT_INFO, {
     capabilities: { elicitation: {} },
     versionNegotiation: { mode: { pin: MRTR_PROTOCOL_REVISION } },
   });
-  client.setRequestHandler('elicitation/create', () => {
+  client.setRequestHandler('elicitation/create', (request, ctx) => {
     state.approvals += 1;
-    return { action: 'accept' as const, content: {} };
+    const params = (request.params ?? {}) as {
+      message?: unknown;
+      requestedSchema?: unknown;
+      mode?: unknown;
+    };
+    const message = typeof params.message === 'string' ? params.message : '';
+    const schema = params.requestedSchema;
+    const items = parseApprovalItems(message, schema, index);
+    const decision = approver.decide(items, schema);
+    const input = inflight?.input;
+    const callArgs = input?.['args'];
+    // A mediated tool (`projections.direct`) is call_tool under the
+    // catalog name, its input the call's args: attribute it the same way.
+    const mediated =
+      inflight !== undefined && inflight.name !== 'call_tool'
+        ? mediatedToolTarget(inflight.name, index)
+        : undefined;
+    elicitations.push(
+      elicitationRecord({
+        seq: elicitations.length,
+        source: 'projection',
+        toolCall: { index: inflight?.index ?? -1, name: inflight?.name ?? '' },
+        ...(inflight?.name === 'call_tool' && typeof input?.['name'] === 'string'
+          ? {
+              call: {
+                tool: input['name'],
+                args:
+                  typeof callArgs === 'object' && callArgs !== null && !Array.isArray(callArgs)
+                    ? (callArgs as Record<string, unknown>)
+                    : {},
+              },
+            }
+          : mediated !== undefined && input !== undefined
+            ? { call: { tool: mediated, args: input } }
+            : {}),
+        key: String((ctx as { mcpReq?: { id?: unknown } } | undefined)?.mcpReq?.id ?? ''),
+        mode: typeof params.mode === 'string' ? params.mode : 'form',
+        message,
+        requestedSchema: schema,
+        items,
+        decision,
+        worldCallsAtAnswer: world.calls.length,
+      }),
+    );
+    return { ...decision.response };
   });
   let tools: AgentTool[];
   let system: string;
@@ -366,12 +571,21 @@ async function connectFacade(
     get roundTrips() {
       return state.roundTrips;
     },
+    elicitations,
+    approver: approverSpec.persona,
     budgetFreeTools: budgetFree(tools),
     runtime: {
       system,
       tools,
-      call: async (name, input) =>
-        toolResultText(await client.callTool({ name, arguments: input })),
+      call: async (name, input) => {
+        inflight = { index: state.toolCalls, name, input };
+        state.toolCalls += 1;
+        try {
+          return toolResultText(await client.callTool({ name, arguments: input }));
+        } finally {
+          inflight = undefined;
+        }
+      },
     },
     close: async () => {
       await client.close();
@@ -404,8 +618,9 @@ async function openSingleProjectionSession(
   const facade = await wrapMcpServer(world.server, {
     blob: { key: randomBytes(32) },
     ...(direct !== false ? { projections: { direct } } : {}),
+    ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   });
-  return connectFacade(mode, world, facade, () => PROJECTION_DISCOVERY_TOOLS, options.systemSuffix);
+  return connectFacade(mode, world, facade, () => PROJECTION_DISCOVERY_TOOLS, options);
 }
 
 /**
@@ -433,6 +648,7 @@ export async function openMultiProjectionSession(
     blob: { key: randomBytes(32) },
     ...(mode === 'projection-boxes' ? { catalog: { globalSearch: false } } : {}),
     ...(direct !== false ? { projections: { direct } } : {}),
+    ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   });
   return connectFacade(
     mode,
@@ -443,7 +659,7 @@ export async function openMultiProjectionSession(
         ...PROJECTION_DISCOVERY_TOOLS,
         ...tools.filter((tool) => tool.name.startsWith('search_')).map((tool) => tool.name),
       ]),
-    options.systemSuffix,
+    options,
   );
 }
 
@@ -451,12 +667,15 @@ export async function openMultiProjectionSession(
  * Direct on the multi world: one in-memory connection per box, every tool
  * offered under its {@link hostToolName} and routed back to its box.
  */
-export async function openMultiDirectSession(world: MultiWorld): Promise<ModeSession> {
+export async function openMultiDirectSession(
+  world: MultiWorld,
+  options: SessionOptions = {},
+): Promise<ModeSession> {
   const clients: Client[] = [];
   const closeAll = async (): Promise<void> => {
     await Promise.all(clients.map((client) => client.close().catch(() => {})));
   };
-  const routes = new Map<string, { client: Client; name: string }>();
+  const routes = new Map<string, { client: Client; name: string; alias: string }>();
   const tools: AgentTool[] = [];
   try {
     for (const box of world.boxes) {
@@ -470,7 +689,7 @@ export async function openMultiDirectSession(world: MultiWorld): Promise<ModeSes
         if (routes.has(name)) {
           throw new Error(`direct mode: two tools map to the host name "${name}"`);
         }
-        routes.set(name, { client, name: tool.name });
+        routes.set(name, { client, name: tool.name, alias: box.alias });
         tools.push({ name, description: tool.description, inputSchema: tool.inputSchema });
       }
     }
@@ -479,10 +698,15 @@ export async function openMultiDirectSession(world: MultiWorld): Promise<ModeSes
     throw err;
   }
 
+  const host = hostGate(world, options.approver);
   return {
     mode: 'direct',
     world,
-    approvals: 0,
+    get approvals() {
+      return host.approvals();
+    },
+    elicitations: host.elicitations,
+    approver: options.approver?.persona ?? 'approve-all',
     budgetFreeTools: new Set(),
     runtime: {
       system: multiDirectSystemPrompt(world),
@@ -490,7 +714,9 @@ export async function openMultiDirectSession(world: MultiWorld): Promise<ModeSes
       call: async (name, input) => {
         const route = routes.get(name);
         if (route === undefined) return { text: `Tool ${name} not found`, isError: true };
-        return toolResultText(await route.client.callTool({ name: route.name, arguments: input }));
+        return host.gate(name, `${route.alias}.${route.name}`, input, async () =>
+          toolResultText(await route.client.callTool({ name: route.name, arguments: input })),
+        );
       },
     },
     close: closeAll,
@@ -504,7 +730,7 @@ export function openSession(
 ): Promise<ModeSession> {
   switch (mode) {
     case 'direct':
-      return openDirectSession(world);
+      return openDirectSession(world, options);
     case 'projection':
       return openProjectionSession(world, options);
     case 'projection-boxes':

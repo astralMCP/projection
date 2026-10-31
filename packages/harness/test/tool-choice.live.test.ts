@@ -15,8 +15,9 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
- *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace (default all but the opt-in
- *                          multi-hard and workplace; workplace is the held-out world, in-process, no mongod)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl (default all but the
+ *                          opt-in multi-hard, workplace and hitl; workplace is the held-out world, in-process, no
+ *                          mongod; hitl runs approval-persona tasks in the same world)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)
@@ -27,6 +28,12 @@
  *   PROJ_EVAL_BATCH_WIDTH  batch mode: episodes live (world open) at once (default 24: a multi world
  *                          holds ~400 MB of mongod + server processes)
  *   PROJ_EVAL_FORCE_CODE_MODE=1   Projection modes: append FORCE_CODE_MODE_LINE to the system prompt (default off)
+ *   PROJ_EVAL_APPROVER     who answers approval prompts, over every task's own persona: approve-all,
+ *                          deny-destructive, deny-matching, cancel, edit (default: each task's own — the
+ *                          opt-in hitl tier's — else approve-all). With an approver, direct mode puts a
+ *                          simulated host approval gate in front of every non-read-only call.
+ *   PROJ_EVAL_APPROVAL_PROMPTS  Projection modes: WrapOptions.approvalPrompts, per-call or batched (default: the
+ *                          facade's, per-call)
  *
  * Decision runs (the globalSearch default, prompt changes) use
  * PROJ_EVAL_TIERS=multi, so no other tier's episodes mix into the numbers.
@@ -55,6 +62,7 @@ import {
   modeApplies,
   mongodbServerInstalled,
   resolveModelPresets,
+  resolveApproverPersona,
   resolveModes,
   resolveTasks,
   resolveTiers,
@@ -101,6 +109,20 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
       const runs = positiveInt(process.env['PROJ_EVAL_RUNS'], 3);
       const concurrency = positiveInt(process.env['PROJ_EVAL_CONCURRENCY'], 4);
       const boxDescriptions = process.env['PROJ_EVAL_BOX_DESCRIPTIONS'] === '1';
+      const approver = resolveApproverPersona(process.env['PROJ_EVAL_APPROVER']);
+      const promptsEnv = process.env['PROJ_EVAL_APPROVAL_PROMPTS'];
+      if (
+        promptsEnv !== undefined &&
+        promptsEnv !== '' &&
+        promptsEnv !== 'per-call' &&
+        promptsEnv !== 'batched'
+      ) {
+        throw new Error(
+          `PROJ_EVAL_APPROVAL_PROMPTS must be per-call or batched, got ${promptsEnv}`,
+        );
+      }
+      const approvalPrompts =
+        promptsEnv === 'per-call' || promptsEnv === 'batched' ? promptsEnv : undefined;
       const systemSuffix =
         process.env['PROJ_EVAL_FORCE_CODE_MODE'] === '1' ? FORCE_CODE_MODE_LINE : undefined;
       const batchWidth = positiveInt(process.env['PROJ_EVAL_BATCH_WIDTH'], DEFAULT_BATCH_WIDTH);
@@ -126,6 +148,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
             tasks.flatMap((t) => (t.maxTurns !== undefined ? [[t.name, t.maxTurns]] : [])),
           ),
           boxDescriptions,
+          ...(approver !== undefined ? { approver } : {}),
+          ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
           outputSchemas: true,
           hostFraming: true,
           ...(systemSuffix !== undefined ? { systemSuffix } : {}),
@@ -147,6 +171,8 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         maxTotalTurns,
         concurrency,
         boxDescriptions,
+        ...(approver !== undefined ? { approver } : {}),
+        ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
         ...(systemSuffix !== undefined ? { systemSuffix } : {}),
         // Static prefix (tools + system) via the free token-counting endpoint,
         // once per distinct prefix; a failed count falls back to an estimate.

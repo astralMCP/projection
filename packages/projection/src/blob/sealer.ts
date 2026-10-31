@@ -348,9 +348,22 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
   }
   const held = payload['upstreamInput'];
   if (held !== undefined) assertHolds(held);
+  // R15 (batched approval prompts): `prompts` records how the pending
+  // approvals were put to the person. Only `'batched'` is ever sealed, and
+  // only on a `machine` blob holding at least two pending calls — the only
+  // suspension the batched layout is chosen for. A `call` blob holds one
+  // call and an `upstream_input` blob none, so neither may carry it (both
+  // are minted by `call_tool`, which never batches).
+  if ('prompts' in payload) {
+    if (payload['prompts'] !== 'batched') throw malformed('prompts');
+    if (kind === 'call') throw malformed('prompts (call blob)');
+    if (kind === 'upstream_input') throw malformed('prompts (upstream_input blob)');
+    if (Object.keys(pending).length < 2) throw malformed('prompts (fewer than two pending)');
+  }
   // G1: an `upstream_input` blob is one call_tool call waiting on its
   // server's question: nothing pending approval, exactly one hold keyed
-  // `call`, no snapshot, no audit. Its trip counts the questions asked.
+  // `call`, no snapshot, no audit, no prompt layout. Its trip counts the
+  // questions asked.
   if (kind === 'upstream_input') {
     if (Object.keys(pending).length !== 0) throw malformed('pending (upstream_input blob)');
     const keys = isRecord(held) ? Object.keys(held) : [];
@@ -382,6 +395,9 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
     }
     if ((payload['audit'] as unknown[]).length !== 0) {
       throw malformed('audit (call blob)');
+    }
+    if ('prompts' in payload) {
+      throw malformed('prompts (call blob)');
     }
     if (payload['trip'] !== 1) {
       throw malformed('trip (call blob)');
@@ -418,6 +434,8 @@ export interface BuildBlobPayloadInput {
   pending: Record<string, PendingToolCall>;
   /** Approval audit accumulated so far in this workflow (PRD §8). */
   audit?: AuditEntry[] | undefined;
+  /** `'batched'` when the suspension was one batched prompt (R15, D25). */
+  prompts?: 'batched' | undefined;
   /** Round-trip counter (R18). */
   trip: number;
   /** Calls waiting on their own server's question (G1); see `BlobPayload.upstreamInput`. */
@@ -445,6 +463,7 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
     snapshot: input.snapshot,
     pending: input.pending,
     audit: input.audit ?? [],
+    ...(input.prompts === 'batched' ? { prompts: 'batched' as const } : {}),
     trip: input.trip,
     ...(input.upstreamInput !== undefined && Object.keys(input.upstreamInput).length > 0
       ? { upstreamInput: input.upstreamInput }

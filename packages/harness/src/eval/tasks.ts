@@ -8,6 +8,7 @@
  */
 
 import { FILESYSTEM_TASKS } from './filesystem-tasks.js';
+import { HITL_TASKS } from './hitl-tasks.js';
 import { BASIC_TASKS, HARD_TASKS } from './github-tasks.js';
 import { MONGODB_TASKS } from './mongodb-tasks.js';
 import { MULTI_HARD_TASKS } from './multi-hard-tasks.js';
@@ -37,6 +38,7 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
   ...MULTI_TASKS,
   ...MULTI_HARD_TASKS,
   ...WORKPLACE_TASKS,
+  ...HITL_TASKS,
 ];
 
 /**

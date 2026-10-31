@@ -475,6 +475,16 @@ export interface BlobPayload {
    * of its final segment.
    */
   audit: AuditEntry[];
+  /**
+   * How this suspension was put to the person (R15): present, and
+   * `'batched'`, only when it was one batched elicitation; absent means
+   * one elicitation per pending call. Sealed so the resume answers the
+   * prompt that was actually shown, whatever the resuming instance's
+   * option (D25). Only on `machine` blobs with two or more pending calls;
+   * never on `call` or `upstream_input` blobs (both minted by `call_tool`,
+   * which never batches).
+   */
+  prompts?: 'batched';
   /** Round-trip counter (R18). */
   trip: number;
   /**
@@ -603,6 +613,12 @@ export type SegmentOutcome =
   | {
       status: 'error';
       error: StructuredError;
+      /**
+       * The workflow's audit trail up to the failure (earlier segments'
+       * included), so the result can say which approved calls already ran
+       * and which were refused. Absent when nothing was audited.
+       */
+      audit?: AuditEntry[];
     };
 
 /** A call whose server answered `input_required` on a box that forwards (G1). */

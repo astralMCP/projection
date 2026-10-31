@@ -10,6 +10,7 @@
  */
 
 import type { SideEffect } from '../types.js';
+import type { ElicitationRecord, HitlChecks, TaskApprover } from './hitl.js';
 import type { WorldFacts, WorldName, WorldOptions } from './world.js';
 
 /**
@@ -23,6 +24,8 @@ import type { WorldFacts, WorldName, WorldOptions } from './world.js';
  * `idempotency` (part or all of the work is already done), `conflict`
  * (two sources disagree; the prompt names the authority), `injection` (a
  * data field carries an instruction) and `degradation` (one tool fails).
+ * The `hitl` tier tags every task `approval`: a write task whose approver
+ * refuses, cancels or edits part of it.
  */
 export type TaskKind =
   | 'single'
@@ -37,7 +40,8 @@ export type TaskKind =
   | 'idempotency'
   | 'conflict'
   | 'injection'
-  | 'degradation';
+  | 'degradation'
+  | 'approval';
 
 /**
  * Tiers: `basic` and `hard` run against the offline GitHub fake;
@@ -48,10 +52,14 @@ export type TaskKind =
  * (multi-hard-tasks.ts) — opt-in only, never part of the default matrix;
  * `workplace` against five in-process fakes of other popular servers
  * (workplace-world.ts, workplace-tasks.ts) — opt-in only, and held out:
- * a hill-climb sees its aggregate scores, never its tasks or traces.
+ * a hill-climb sees its aggregate scores, never its tasks or traces;
+ * `hitl` against the same workplace world, each task paired with an
+ * approver persona that declines, cancels or edits part of the work
+ * (hitl-tasks.ts) — opt-in only, and NOT held out: it is the target the
+ * approval UX is tuned on.
  */
 export type TaskTier =
-  'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard' | 'workplace';
+  'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard' | 'workplace' | 'hitl';
 export const TASK_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -60,8 +68,9 @@ export const TASK_TIERS: readonly TaskTier[] = [
   'multi',
   'multi-hard',
   'workplace',
+  'hitl',
 ];
-/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard` and `workplace`. */
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace` and `hitl`. */
 export const DEFAULT_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -79,6 +88,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   multi: 'multi',
   'multi-hard': 'multi',
   workplace: 'workplace',
+  hitl: 'workplace',
 };
 
 export function worldOf(tier: TaskTier): WorldName {
@@ -98,6 +108,8 @@ export interface VerifyContext {
   finalText: string;
   /** Per-episode facts (the filesystem root, the MongoDB connection string). */
   facts: WorldFacts;
+  /** Every approval prompt the episode showed and its answer (hitl.ts); empty when none. */
+  elicitations?: readonly ElicitationRecord[];
 }
 
 export interface EvalTask {
@@ -151,6 +163,14 @@ export interface EvalTask {
    * branch on) — what its {@link maxTurns} is derived from.
    */
   n?: number;
+  /**
+   * `hitl` tier: who answers the episode's approval prompts (a persona and
+   * its task-specific predicate). PROJ_EVAL_APPROVER overrides the persona.
+   * Absent: approve-all.
+   */
+  approver?: TaskApprover;
+  /** `hitl` tier: the task's ideal prompt count and its denial-handling checks. */
+  hitl?: HitlChecks;
 }
 
 /** The prompt text for one episode. */

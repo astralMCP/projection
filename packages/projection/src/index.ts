@@ -48,6 +48,8 @@ export {
   DIRECT_BOX_SEPARATOR,
   type DirectTool,
 } from './facade/direct.js';
+// Batched approval prompts (WrapOptions.approvalPrompts; DECISIONS D25).
+export { BATCH_KEY, batchField, type ApprovalPrompts } from './mrtr/batch.js';
 export {
   wrapMcpServers,
   type MultiProjectionFacade,

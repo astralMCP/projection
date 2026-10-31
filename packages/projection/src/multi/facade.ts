@@ -53,6 +53,7 @@ import { ProjectionError, toStructuredError } from '../errors.js';
 import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
+  assertApprovalPrompts,
   freezePolicySettings,
   resolveDirectSetting,
   resolveIntrospectTimeout,
@@ -152,6 +153,7 @@ export async function wrapMcpServers(
   const aliases = new Set(resolved.map((source) => source.alias));
   assertPolicyKeys(options.policy, aliases);
   const approvals = assertApprovalsMode(options.approvals);
+  assertApprovalPrompts(options.approvalPrompts);
   const { globalSearch } = resolveCatalogOptions(options.catalog);
   const selected = resolveProjections(options.projections);
   const direct = resolveDirectSetting(options.projections, selected.catalog);

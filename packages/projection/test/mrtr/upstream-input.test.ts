@@ -32,6 +32,7 @@ import {
   SPOOFED_APPROVAL,
   type ProbeEvent,
 } from '../conformance/everything-server.js';
+import { BATCH_KEY } from '../../src/mrtr/batch.js';
 import { elicitation, sealedState, structured, suspension } from './helpers.js';
 
 const KEY = new Uint8Array(32).fill(61);
@@ -477,6 +478,9 @@ describe('the sealer shape rules for upstream_input', () => {
       },
     ],
     ['a snapshot', { snapshot: {} }],
+    // `prompts` (R15 batched layout) never rides an upstream_input blob:
+    // it has no pending approval to lay out (D24, D25).
+    ['a prompt layout', { prompts: 'batched' }],
   ])('rejects %s as malformed', (_label, change) => {
     const payload = { ...buildBlobPayload(base), ...change } as ReturnType<typeof buildBlobPayload>;
     expect(() => open(payload)).toThrow(/malformed/);
@@ -560,5 +564,112 @@ ${body}`;
         reason: expect.stringContaining('finished'),
       }),
     ]);
+  });
+});
+
+describe('batched approvals and forwarded questions in one suspension (R15, R64)', () => {
+  const MACHINE = `
+import { setup, assign } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+const mark = (outcome) => assign({ seen: ({ context, event }) => ({ ...context.seen, [event.callId]: outcome }) });
+export default setup({}).createMachine({
+  context: { seen: {} }, initial: 'go',
+  states: {
+    go: {
+      entry: [
+        toolCall('explicit_write', () => ({}), { id: 'w1' }),
+        toolCall('unannotated_write', () => ({}), { id: 'w2' }),
+        toolCall('ask_user', () => ({}), { id: 'q' }),
+      ],
+      on: { TOOL_RESULT: { actions: mark('result') }, TOOL_DENIED: { actions: mark('denied') }, TOOL_ERROR: { actions: mark('error') } },
+      always: { guard: ({ context }) => Object.keys(context.seen).length === 3, target: 'done' },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => context.seen,
+});`;
+
+  it('the question stays its own elicitation beside the batch, and both answers are read on resume', async () => {
+    const { facade, probe } = await single({ approvalPrompts: 'batched' });
+    const first = await facade.executeMachine({ code: MACHINE }, 'modern');
+    expect(Object.keys(suspension(first).inputRequests ?? {}).sort()).toEqual(
+      [BATCH_KEY, 'upstream-1'].sort(),
+    );
+    expect(elicitation(first, 'upstream-1').message.split('\n')[0]).toBe(
+      'Question from the server (not an approval)',
+    );
+    const done = await facade.executeMachine(
+      {
+        code: MACHINE,
+        requestState: sealedState(first),
+        inputResponses: {
+          [BATCH_KEY]: { action: 'accept', content: { approve_1: true, approve_2: false } },
+          'upstream-1': answer('blue'),
+        },
+      },
+      'modern',
+    );
+    expect(structured(done)['output']).toEqual({ w1: 'result', w2: 'denied', q: 'result' });
+    expect(probe).toContainEqual({
+      kind: 'elicit-answer',
+      tool: 'ask_user',
+      answer: expect.objectContaining({ action: 'accept', content: { answer: 'blue' } }),
+    });
+  });
+
+  it('an accepted question answer approves no batched call', async () => {
+    const { facade, probe } = await single({ approvalPrompts: 'batched' });
+    const first = await facade.executeMachine({ code: MACHINE }, 'modern');
+    const done = await facade.executeMachine(
+      {
+        code: MACHINE,
+        requestState: sealedState(first),
+        inputResponses: {
+          'upstream-1': { action: 'accept', content: { answer: 'blue', approve_1: true } },
+        },
+      },
+      'modern',
+    );
+    expect(structured(done)['output']).toEqual({ w1: 'denied', w2: 'denied', q: 'result' });
+    expect(probe).toContainEqual({
+      kind: 'elicit-answer',
+      tool: 'ask_user',
+      answer: expect.objectContaining({ action: 'accept', content: { answer: 'blue' } }),
+    });
+  });
+});
+
+describe('the sealer shape rules for prompts (R15, R20)', () => {
+  const pending = (ids: string[]) => Object.fromEntries(ids.map((id) => [id, { ...CALL, id }]));
+  const open = (payload: ReturnType<typeof buildBlobPayload>) =>
+    openBlob(sealBlob(payload, { key: KEY }), {
+      expectedKind: 'machine',
+      code: 'code',
+      serverIdentity: 's@1',
+      config: { key: KEY },
+    });
+  const machine = (ids: string[]) =>
+    buildBlobPayload({
+      code: 'code',
+      serverIdentity: 's@1',
+      snapshot: {},
+      pending: pending(ids),
+      prompts: 'batched',
+      trip: 1,
+    });
+
+  it('a machine blob with two or more pending calls may be batched', () => {
+    expect(open(machine(['a', 'b'])).prompts).toBe('batched');
+  });
+
+  it('a batched machine blob with fewer than two pending calls is malformed', () => {
+    expect(() => open(machine(['a']))).toThrow(/malformed/);
+    expect(() => open(machine([]))).toThrow(/malformed/);
+  });
+
+  it('any value but batched is malformed', () => {
+    expect(() => open({ ...machine(['a', 'b']), prompts: 'per-call' } as never)).toThrow(
+      /malformed/,
+    );
   });
 });

@@ -103,6 +103,10 @@ const facade = await wrapMcpServer(myServer, {
   // Fails closed: if this throws, the prompt shows a placeholder, never args.
   redact: (tool, args) => (tool === 'send_email' ? { ...args, body: '[hidden]' } : args),
 
+  // Put a machine step's several gated calls to the person as ONE prompt
+  // (see "Batched approval prompts" below). Default 'per-call'.
+  // approvalPrompts: 'batched',
+
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
   // Bound on connecting to the server and reading its tools at wrap time;
@@ -150,6 +154,46 @@ places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come
 from the wrapped server, and a hostile or careless server can label a
 damaging tool non-destructive — enable the mode only for servers you trust,
 and pin anything you doubt with a per-tool `ask` or `deny`.
+
+### What the person and the model see around an approval
+
+- **Before asking.** A gated call whose arguments cannot fit the tool's
+  input schema (a required argument missing, a top-level value of the wrong
+  type, an argument the schema forbids) is never put to the person:
+  `call_tool` returns a `validate` error, and a machine step gets a
+  `TOOL_ERROR` naming the argument, without a prompt.
+- **After a decline.** `call_tool` tells the model the refusal covers only
+  that call; not to make it again or reach its result another way (unless
+  the person's note asks for a change, which it then makes as a new call
+  that asks again); to carry on with the parts of the task that do not
+  depend on it; and to say in its answer what was not done. A machine's
+  completed result restates every refused call after its output, with the
+  same guidance, so a machine that ignores `TOOL_DENIED` cannot hide a
+  refusal; a failed one also lists the approved calls that already ran.
+
+### Batched approval prompts
+
+When one machine step requests several gated calls at once (parallel
+regions, or several `toolCall`s in one action), the default
+`approvalPrompts: 'per-call'` sends one elicitation per call in a single
+round trip, and most hosts show one prompt per call.
+`approvalPrompts: 'batched'` sends one elicitation instead: a header, then
+each call's usual approval copy under `[1]`, `[2]`, … and a form with one
+unticked boolean per call (`approve_1`, …) plus the optional `reason`.
+The fields have no default, so a client that applies form defaults to an
+empty accept approves nothing.
+
+What runs does not change. Each call is still sealed on its own in the
+blob, and runs only if its own boolean comes back exactly `true` in an
+accepted answer; a declined, cancelled or missing answer, or one without
+the booleans, declines every call in it. The layout is sealed in the blob
+when the prompt is minted, so a resume is always read the way the prompt
+was asked, whichever setting the resuming instance has. A batch holds at
+most 10 calls and 20 000 characters; past either, the step falls back to
+per-call prompts. `call_tool` and a step with one gated call keep the
+per-call prompt. Machine `toolCall` ids may not start with `projection:`
+(that namespace holds the batched answer's key). Enable it when your
+clients render boolean form fields; any other value fails the wrap.
 
 ## What your metadata becomes
 
@@ -227,7 +271,8 @@ Small catalogs can also be listed directly (exploration, off by default):
 when their estimated definitions fit `directBudgetTokens` (default 12 000),
 and falls back to the search tools when they do not. Each listed tool is a
 thin alias of `call_tool({ name, args })`: same validation, policy, approval
-prompt and sealed blob, its description led by its posture
+prompt and sealed blob, forwarded server questions (below), decline copy,
+progress and cancellation, its description led by its posture
 (`[asks for approval]`) and the server's own text indented beneath. In this
 mode the search tools are dropped, except a box's `search_<box>` when its
 server sends guidance; `describe_tool`, `call_tool` and code mode stay.
@@ -276,6 +321,9 @@ approval gate:
   questions per round; each round counts against the round-trip cap.
 - In a machine, the step waits on your question like an approval: the
   workflow suspends, and the step's `TOOL_RESULT` is your final result.
+  With `approvalPrompts: 'batched'`, your question is never folded into the
+  batch: it stays its own prompt beside it, and answering it approves
+  nothing.
 
 Only push-free MRTR questions can be forwarded: a server that speaks only the
 2025 era would have to hold its call open across the human's answer, which a
