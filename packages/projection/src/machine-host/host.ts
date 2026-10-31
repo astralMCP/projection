@@ -757,6 +757,17 @@ class SegmentRunner {
     };
     const pending: Record<string, PendingToolCall> = {};
     for (const call of gated) {
+      // Two gated calls under one id would seal as one entry: one approval
+      // lost, and both answered by the other's verdict (S2).
+      if (Object.hasOwn(pending, call.id)) {
+        throw new ProjectionError(
+          'validate',
+          `two tool calls in flight share the id ${JSON.stringify(neutralizeControlChars(capLength(call.id, 200)))}`,
+          {
+            hint: "Give each toolCall that can be waiting at the same time its own id; toolCalls(name, list, { id }) uses '<id>#0', '<id>#1', …",
+          },
+        );
+      }
       pending[call.id] = call;
     }
     // A held call and a gated call sharing an id would both answer to it.

@@ -703,6 +703,16 @@ function sampleView(first: ToolCatalogEntry[]) {
   ]);
 }
 
+describe('the multi-server contract quotes the facade round-trip cap (R18, D30)', () => {
+  it('in discover_apis and the contract resource', async () => {
+    const facade = await wrap({ caps: { maxRoundTrips: 5 } });
+    const text = (facade.discoverApis().content[0] as { text: string }).text;
+    expect(text).toContain('a workflow gets at most 5: one gated call per item');
+    const contract = facade.resources.find((r) => r.name === 'authoring-contract.md');
+    expect(contract?.text).toContain('stops unfinished past 5 items');
+  });
+});
+
 describe('sample tool names in the contract and examples (R45)', () => {
   const NOTE = '(sample names; use the names in tools.d.ts)';
 

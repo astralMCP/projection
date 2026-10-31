@@ -16,6 +16,8 @@
  * actors, which would re-execute an already-approved write.
  */
 
+import { DEFAULT_CAPS } from '../types.js';
+
 /**
  * Prelude + `toolCall` implementation, appended to the generated bridge.
  *
@@ -81,6 +83,53 @@ export function toolCall(name, args, options) {
 }
 
 /**
+ * Request one call of the same tool per item, all from one action, so they
+ * are outstanding together: the gated ones go to the user in ONE round trip
+ * (R15), where a call per state would cost a round trip each.
+ *
+ *   entry: toolCalls('write_file', ({ context }) => context.paths.map((path) => ({ path })), { id: 'w' })
+ *
+ * Call k (0-based, in list order) gets the id '<id>#k', '<id>' defaulting
+ * to the tool name; guard the waiting state with whenCallIn(id). An empty
+ * list requests nothing, so no event will come: check the list before
+ * entering the state (or leave it with an 'always' transition, as the
+ * contract's example does). Every item is checked before any is queued.
+ *
+ * @param name  Tool name exactly as catalogued.
+ * @param argsList  Array of plain objects, or a function of the XState
+ *              action arguments ({ context, event }) returning one.
+ * @param options  Optional { id }: the prefix of the calls' ids.
+ */
+export function toolCalls(name, argsList, options) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('toolCalls(name, argsList): name must be a non-empty tool name string');
+  }
+  const prefix = options && options.id !== undefined ? String(options.id) : name;
+  return function projectionToolCalls(actionArgs) {
+    let list;
+    try {
+      list = typeof argsList === 'function' ? argsList(actionArgs) : argsList;
+    } catch (err) {
+      throw new Error('toolCalls("' + name + '") argument function threw: ' + String(err));
+    }
+    if (!Array.isArray(list)) {
+      throw new Error('toolCalls("' + name + '") argsList must resolve to an array of plain objects');
+    }
+    const calls = [];
+    for (let i = 0; i < list.length; i += 1) {
+      let resolved = list[i];
+      if (resolved === undefined || resolved === null) resolved = {};
+      if (typeof resolved !== 'object' || Array.isArray(resolved)) {
+        throw new Error('toolCalls("' + name + '") item ' + i + ' must be a plain object');
+      }
+      calls.push({ id: prefix + '#' + i, name: name, args: resolved });
+    }
+    const queue = __projQueue();
+    for (const call of calls) queue.push(call);
+  };
+}
+
+/**
  * Guard matching the event for one specific call id.
  *
  * XState delivers an event to every region that can handle it, so a machine
@@ -95,6 +144,21 @@ export function whenCall(id) {
   return function projectionWhenCall(guardArgs) {
     const event = guardArgs && guardArgs.event;
     return Boolean(event) && event.callId === wanted;
+  };
+}
+
+/**
+ * Guard matching the events of every call one toolCalls(name, list, { id })
+ * made: their callIds are '<id>#0', '<id>#1', … The item's index is
+ * Number(event.callId.slice(id.length + 1)).
+ *
+ *   on: { TOOL_RESULT: { guard: whenCallIn('w'), actions: 'answered' } }
+ */
+export function whenCallIn(id) {
+  const prefix = String(id) + '#';
+  return function projectionWhenCallIn(guardArgs) {
+    const event = guardArgs && guardArgs.event;
+    return Boolean(event) && typeof event.callId === 'string' && event.callId.startsWith(prefix);
   };
 }
 `;
@@ -136,8 +200,14 @@ export function sampleNote(sample: SampleTool): string {
  * qualified names, a placeholder's line says so, and one rule is added —
  * tool names are qualified. Without it the text is the single-server
  * contract, byte for byte.
+ *
+ * `maxRoundTrips` is the facade's clamped `caps.maxRoundTrips` (R12, R18),
+ * quoted by rule 5.
  */
-export function authoringContract(samples?: ToolSamples): string {
+export function authoringContract(
+  samples?: ToolSamples,
+  maxRoundTrips: number = DEFAULT_CAPS.maxRoundTrips,
+): string {
   const read = samples?.read ?? { name: 'read_file', placeholder: false };
   const gated = samples?.gated ?? { name: 'write_file', placeholder: false };
   const qualifiedRule =
@@ -184,7 +254,25 @@ Rules:
      on: { TOOL_RESULT: { guard: whenCall('a'), target: 'done' } },
 5. Tools marked "asks for approval" pause the machine for user approval;
    tools marked "runs immediately" do not. The arguments captured at that
-   moment are the arguments that execute.
+   moment are the arguments that execute. Each pause is one approval round
+   trip and a workflow gets at most ${maxRoundTrips}: one gated call per item, each in
+   its own state, stops unfinished past ${maxRoundTrips} items. Make them together with
+   toolCalls (one round trip for all): call k gets the id '<id>#k'; count
+   the answers guarded by whenCallIn(id) until all have one. An empty list
+   makes no calls; the always transition below then leaves at once:
+
+     import { toolCalls, whenCallIn } from '@astral-mcp/tools';
+     setup({ actions: { answered: assign({ answered: ({ context }) => context.answered + 1 }) } })
+     // context: ({ input }) => ({ paths: input.paths, answered: 0 })
+     writing: {
+       entry: toolCalls('${gated.name}', ({ context }) => context.paths.map((path) => ({ path, content: 'hello' })), { id: 'w' }),${sampleNote(gated)}
+       always: { guard: ({ context }) => context.answered === context.paths.length, target: 'done' },
+       on: {
+         TOOL_RESULT: { guard: whenCallIn('w'), actions: 'answered' },
+         TOOL_DENIED: { guard: whenCallIn('w'), actions: 'answered' },
+         TOOL_ERROR: { guard: whenCallIn('w'), actions: 'answered' },
+       },
+     },
 6. Only 'xstate' and '@astral-mcp/tools' resolve as imports. There is no
    filesystem, no network, no fetch. All working state lives in context.
 7. Finish by reaching a final state. Use the machine's output for the result.

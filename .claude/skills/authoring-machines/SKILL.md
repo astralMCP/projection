@@ -82,6 +82,13 @@ export default setup({}).createMachine({
   `whenCall(id)` — events reach every region that can handle them, so an
   unguarded region consumes another call's result.
 
+  For one gated call per item, use `toolCalls(name, argsList, { id })`:
+  one action queues a call per item (ids `<id>#0`, `<id>#1`, …), so all
+  of them share one approval round trip, where a call per state costs one
+  each and stops unfinished at `caps.maxRoundTrips` (8). Guard with
+  `whenCallIn(id)` and count answers until every call has one (contract
+  rule 5, D30).
+
 - `event.result` on `TOOL_RESULT` is the tool's `structuredContent` when the
   server returns one (see its Output type in `tools.d.ts`); otherwise the
   text of its single text block — parsed when it is JSON for an object or

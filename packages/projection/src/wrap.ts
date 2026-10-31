@@ -84,7 +84,7 @@ import {
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
 import { assertApprovalsMode } from './policy/index.js';
-import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
+import { clampCaps, DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
 
 export type { ProjectionsOptions, RegisterOptions, WrapOptions } from './facade/options.js';
 
@@ -266,7 +266,12 @@ export async function wrapMcpServer(
     : selected;
 
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
-  const resources = buildResources(catalog, dts);
+  const resources = buildResources(
+    catalog,
+    dts,
+    undefined,
+    clampCaps(options.caps ?? {}).maxRoundTrips,
+  );
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
   return new Facade({
@@ -380,6 +385,7 @@ class Facade implements ProjectionFacade {
         ? { findTools: "This server's tools are listed directly as tools of their own." }
         : {}),
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
+      maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
     });
   }
 

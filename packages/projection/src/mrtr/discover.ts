@@ -210,6 +210,7 @@ export function buildResources(
   catalog: ServerCatalog,
   dts: string,
   policy?: PolicyOptions,
+  maxRoundTrips?: number,
 ): ProjectionResource[] {
   const subject = codeModeSubject(catalog, policy);
   return [
@@ -225,7 +226,7 @@ export function buildResources(
       name: 'authoring-contract.md',
       description: 'Rules an authored machine must follow.',
       mimeType: 'text/markdown',
-      text: authoringContract(subject.samples),
+      text: authoringContract(subject.samples, maxRoundTrips),
     },
     {
       uri: RESOURCE_URIS.happyPath,
@@ -292,6 +293,8 @@ export interface DiscoverApisOptions {
    * multi-server view (R45, {@link toolSamples}).
    */
   policy?: PolicyOptions;
+  /** The facade's clamped `caps.maxRoundTrips` (R12), quoted by the contract's rule 5. */
+  maxRoundTrips?: number;
 }
 
 /** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
@@ -341,7 +344,7 @@ export function discoverApis(
     '',
     toolsSection,
     '',
-    authoringContract(subject.samples),
+    authoringContract(subject.samples, options.maxRoundTrips),
   ].join('\n');
 
   const links: ContentBlock[] = (options.resources ?? buildResources(catalog, ''))

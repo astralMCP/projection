@@ -97,7 +97,13 @@ import { assertApprovalsMode } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { generateToolTypes, type ToolTypeText } from '../typegen/index.js';
-import { isRecord, type ApprovalsMode, type StructuredError, type ToolCatalog } from '../types.js';
+import {
+  clampCaps,
+  isRecord,
+  type ApprovalsMode,
+  type StructuredError,
+  type ToolCatalog,
+} from '../types.js';
 import type { ProjectionFacade } from '../wrap.js';
 import {
   assertPolicyKeys,
@@ -251,7 +257,10 @@ export async function wrapMcpServers(
       overview,
       toolTypes,
       // The code-mode resources (R3, R45), then the box overviews (R43, R45).
-      resources: [...buildResources(view, dts, policySettings), ...boxOverviewResources(view)],
+      resources: [
+        ...buildResources(view, dts, policySettings, clampCaps(options.caps ?? {}).maxRoundTrips),
+        ...boxOverviewResources(view),
+      ],
       instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
       options,
       policySettings,
@@ -680,6 +689,7 @@ class MultiFacade implements MultiProjectionFacade {
       // The samples are picked under the facade's policy (R45).
       policy: this.deps.policySettings,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
+      maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
     });
   }
 

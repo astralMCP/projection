@@ -1822,3 +1822,53 @@ before. The `tools.d.ts` header gains five comment lines. `call_tool` results an
 `execute_machine` results may carry `notes`; a machine's `TOOL_RESULT` may
 carry `notes` and `text`. Machines that parsed JSON text themselves must
 drop the `JSON.parse` — a minor-version change.
+
+## D30 — Many gated calls in one round trip: `toolCalls` and `whenCallIn` (2026-10-30)
+
+Context. A live eval on Haiku 4.5 asked for 14 writes. The machine looped
+over the items with one gated `toolCall` per state, so each write cost one
+approval round trip. The workflow hit the `maxRoundTrips` cap (8) after 8
+writes and failed with a `terminal` error, and the model told the user the
+task was complete. R15 already batches every gated call a machine has
+outstanding at once into one suspension, but the only way to have several
+outstanding was parallel regions, one region per call, written by hand for
+a fixed number of items.
+
+Decision (PRD R7, R15). The `@astral-mcp/tools` prelude exports
+`toolCalls(name, argsList, { id }?)`: one action that queues one call per
+item, with ids `<id>#0`, `<id>#1`, … in list order (`<id>` defaults to the
+tool name), so the author can map an answer back to its item. `argsList` is
+an array of plain objects or a function of the action arguments returning
+one. Every item is checked like `toolCall`'s arguments before any is
+queued, so a bad item queues nothing. An empty list queues nothing either,
+so no event arrives; the contract's example leaves the state with an
+`always` transition that compares the answers counted with the list's
+length, which also covers the empty case. `whenCallIn(id)` is the guard
+for every event of one `toolCalls`. Each call is still its own sealed
+`pending` entry with its own verdict (S2); only the number of round trips
+changes. Under `approvalPrompts: 'batched'`, up to 10 of them share one
+prompt (D25).
+
+Authoring contract rule 5 says each pause is one approval round trip, that
+a workflow gets at most `maxRoundTrips` of them (the facade's clamped
+value, quoted), and shows the pattern in twelve lines using the facade's
+own gated sample tool. The `tools.d.ts` header names `toolCalls` in two
+comment lines.
+
+No new cap. The host has no limit on how many gated calls one suspension
+holds; what bounds it is the R23 blob ceiling (each pending entry carries
+its arguments), and for calls that run without approval
+`maxReadCallsPerSegment`. Both fail with a structured error, never by
+dropping calls. Above 10 calls, a batched layout falls back to per-call
+prompts for all of them, as before. Two gated calls in flight under one id
+are now a `validate` error: before, the second silently replaced the first
+in the sealed map, which could happen when a `toolCalls` without an
+explicit id met a `toolCall` default id (`write_file#1`).
+
+Rejected: a `callIndex` field on events. The index is in the `callId`
+already, a field would have to be parsed from ids the host does not
+otherwise interpret, and plain `toolCall` ids of the form `name#N` would
+grow an index that means nothing.
+
+Consequences. The contract grows by about 280 tokens. A machine that
+already used parallel regions is unchanged.
