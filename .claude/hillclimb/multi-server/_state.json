@@ -345,7 +345,7 @@
     "packages/harness/vendor/mongodb-mcp-server/package.json",
     "packages/harness/vitest.config.ts"
   ],
-  "budget_usd": 100,
+  "budget_usd": 150,
   "stop": {
     "target": "all gating tasks pass in all reps for both models",
     "plateau_rounds": 3
@@ -876,7 +876,8 @@
     "v5 probe (v5/probe/, 20 episodes): $0.67 (exact, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 = $34.32.",
     "v6 probe (v6/probe/, 20 episodes): $0.85 (exact $0.8483, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5 probe) + $0.85 = $35.17.",
     "v7 probe (v7/probe/, 20 episodes): $0.63 (exact $0.6254, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5) + $0.85 (v6) + $0.63 = $35.80.",
-    "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user"
+    "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user",
+    "2026-10-31: user raised the budget from $100 to $150 after v15 (rounds v13-bc 8.30 + v14 7.46 + v15 7.00 on top of 75.75). Basecamp build ($34), summit calibration ($68) and the v15 milestone ($13.37) are tracked outside this budget."
   ],
-  "cumulative_spend_usd": 75.75
+  "cumulative_spend_usd": 98.51
 }
