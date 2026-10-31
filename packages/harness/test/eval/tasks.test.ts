@@ -13,6 +13,7 @@ import {
   MONGODB_TASKS,
   MULTI_HARD_TASKS,
   WORKPLACE_TASKS,
+  SUMMIT_TASKS,
   HITL_TASKS,
   SUMMIT_LOCAL_TASKS,
   MULTI_TASKS,
@@ -320,6 +321,7 @@ describe('tool-choice tasks', () => {
       ...WORKPLACE_TASKS,
       ...HITL_TASKS,
       ...SUMMIT_LOCAL_TASKS,
+      ...SUMMIT_TASKS,
     ]);
     expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);

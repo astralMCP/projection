@@ -288,6 +288,36 @@ harmful writes; each task's budget is 2N + 10 action turns. Box descriptions
 only (the tier is held out: never tune the facade on it); latest
 calibration, 2 runs: Sonnet (`sonnet-low`) 47/48, Haiku (`haiku45`) 35/48.
 
+The opt-in, **held-out** **summit-saas** tier (24 tasks,
+`src/eval/summit-tasks.ts`) runs against the **summit world**
+(`openSummitWorld`, `src/eval/summit-world.ts`): high-fidelity in-process
+fakes of four popular SaaS MCP servers whose definitions are public, plus
+the real filesystem server on the user's files, as boxes `fs`, `notion`,
+`sentry`, `slack` and `stripe`. Each fake serves its real server's tool
+list verbatim, from a pinned release, and reproduces that server's
+argument handling, result format and the API semantics behind it:
+
+| Box      | Real server (pinned)                                                                     | Surface                                                                                                                                                 | Notable semantics                                                                                                                                                                                                                                                                               |
+| -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notion` | `@notionhq/notion-mcp-server` v2.5.2 (`730ae78`)                                         | 24 OpenAPI-generated `API-*` tools, every schema with all `$defs` (`test/fixtures/summit/notion-tools.json`, checked against the server's own snapshot) | no argument validation; JSON-string arguments parsed; API errors as ordinary JSON text; `start_cursor`/`has_more`/`next_cursor`, page size ≤ 100; blocks need their own children calls; data sources (API 2025-09-03); filter/sort JSON; markdown read/write                                    |
+| `sentry` | `@sentry/mcp-server` 0.42.0 (`54f66d8`), skills `inspect,seer,triage`, no embedded agent | 9 direct tools; the rest of the catalog only via `search_sentry_tools` / `execute_sentry_tool` (`sentry-tools.json`)                                    | markdown answers, structured JSON for some; issue-search syntax passed through; `limit` default 10, ≤ 100, no cursor; period-window counts in search, all-time in details; numeric IDs and short IDs both resolve                                                                               |
+| `slack`  | reference `server-slack` (servers-archived `52db0d9`)                                    | 8 `slack_*` tools, no annotations                                                                                                                       | raw Web API JSON (`ok:false` errors, never `isError`); `users.list`/`conversations.list` cursor paging via `response_metadata.next_cursor`; history newest-first with `has_more` but no cursor parameter; channel IDs everywhere except posting, which also takes names                         |
+| `stripe` | `@stripe/mcp` 0.2.5 / agent-toolkit 0.8.1 (`72d20b9`)                                    | 22 tools (zod schemas as listed by SDK 1.17)                                                                                                            | zod validation (`-32602`), unknown keys stripped; compact JSON of `.data` only — no `has_more` or `starting_after`, `limit` default 10, ≤ 100; `list_customers` returns IDs only; amounts in integer cents; refunds bounded by the refundable remainder; failures as the string `"Failed to …"` |
+
+The fakes are seeded fresh per episode (Fernhill, the user Raj Mehta, now =
+2026-10-28 15:00 UTC; no clock, no network) with realistic noise:
+near-duplicate people across products, decoy threads and payments, items
+just outside every filter. Ten tasks use one server and fourteen cross
+servers (Sentry → Slack, Slack → Stripe refunds in cents, Stripe → a Notion
+page, Notion people → Slack mentions, the local CHANGELOG → Sentry, …); they
+include paging past the first page, money arithmetic in cents, ID-vs-name
+resolution and bulk writes. Write tasks are graded on the boxes' end state
+(`facts.summit`), read tasks on the `ANSWER:` line, harmful writes are
+`forbid`den, and every task has its own turn budget. Like `workplace`, a
+hill-climb may see only this tier's aggregate scores, and it is calibrated
+in `direct` mode only. Run it with `PROJ_EVAL_TIERS=summit-saas` (no
+`mongod` needed).
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -298,8 +328,8 @@ Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haik
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection,projection-boxes`,
 the default), `PROJ_EVAL_TIERS`
 (`basic,hard,filesystem,mongodb,multi`, the default; `mongodb` and `multi` need
-`pnpm run setup:mongodb`; the opt-in `multi-hard`, `workplace`, `hitl` and
-`summit-local`, which needs `pnpm run setup:servers-real`), `PROJ_EVAL_TASKS` (comma list of task names
+`pnpm run setup:mongodb`; the opt-in `multi-hard`, `workplace`, `hitl`,
+`summit-local`, which needs `pnpm run setup:servers-real`, and `summit-saas`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4), `PROJ_EVAL_BOX_DESCRIPTIONS=1` (multi
 tier: host box descriptions; default off), `PROJ_EVAL_FORCE_CODE_MODE=1`

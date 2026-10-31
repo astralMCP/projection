@@ -61,7 +61,10 @@ export type TaskKind =
  * git, memory, SQLite, fetch (on a loopback intranet) and time — seeded
  * with one company's data (summit-local-world.ts, summit-local-tasks.ts):
  * opt-in only, needs `pnpm run setup:servers-real`, and held out like
- * `workplace` (calibrated in `direct` mode only).
+ * `workplace` (calibrated in `direct` mode only);
+ * `summit-saas` against high-fidelity fakes of the Notion, Sentry, Slack and
+ * Stripe MCP servers plus the real filesystem server (summit-world.ts,
+ * summit-tasks.ts) — opt-in only, and held out like `workplace`.
  */
 export type TaskTier =
   | 'basic'
@@ -72,7 +75,8 @@ export type TaskTier =
   | 'multi-hard'
   | 'workplace'
   | 'hitl'
-  | 'summit-local';
+  | 'summit-local'
+  | 'summit-saas';
 export const TASK_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -83,8 +87,9 @@ export const TASK_TIERS: readonly TaskTier[] = [
   'workplace',
   'hitl',
   'summit-local',
+  'summit-saas',
 ];
-/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace`, `hitl` and `summit-local`. */
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace`, `hitl`, `summit-local` and `summit-saas`. */
 export const DEFAULT_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -104,6 +109,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   workplace: 'workplace',
   hitl: 'workplace',
   'summit-local': 'summit-local',
+  'summit-saas': 'summit',
 };
 
 export function worldOf(tier: TaskTier): WorldName {

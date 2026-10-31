@@ -15,10 +15,12 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
- *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl,summit-local (default all
- *                          but the opt-in multi-hard, workplace, hitl and summit-local; workplace is the held-out world,
- *                          in-process, no mongod; hitl runs approval-persona tasks in the same world; summit-local is
- *                          held out too, six real local servers, needs `pnpm run setup:servers-real`)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl,summit-local,summit-saas
+ *                          (default all but the opt-in multi-hard, workplace, hitl, summit-local and summit-saas;
+ *                          workplace is the held-out world, in-process, no mongod; hitl runs approval-persona tasks
+ *                          in the same world; summit-local is held out too, six real local servers, needs
+ *                          `pnpm run setup:servers-real`; summit-saas is the held-out SaaS-fakes world (Notion,
+ *                          Sentry, Slack, Stripe + files))
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)

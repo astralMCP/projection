@@ -84,6 +84,7 @@ import { SHOP_DB, withMongodb } from './mongodb-world.js';
 import { qualifiedName } from './multi-world.js';
 import { containsText, sameText, type EvalTask, type TaskKind } from './task-core.js';
 import { SUMMIT_WRITE_TOOLS } from './summit-local-world.js';
+import { SAAS_WRITE_TOOLS } from './summit-world.js';
 import { WORKPLACE_WRITE_TOOLS } from './workplace-world.js';
 import { BOX_ALIASES, type BoxAlias } from './world.js';
 
@@ -153,7 +154,8 @@ const MONGO_WRITES: ReadonlySet<string> = new Set([
  * A qualified call that changes its box's world: a GitHub tool not
  * annotated read-only, a filesystem write (a `dryRun` edit is a read), a
  * MongoDB write, a workplace box's write tool (WORKPLACE_WRITE_TOOLS), a
- * summit-local box's write tool (SUMMIT_WRITE_TOOLS).
+ * summit-local box's write tool (SUMMIT_WRITE_TOOLS), a summit SaaS fake's
+ * write tool (SAAS_WRITE_TOOLS).
  */
 export function isBoxWrite(call: SideEffect): boolean {
   const alias = boxOf(call.tool);
@@ -172,6 +174,11 @@ export function isBoxWrite(call: SideEffect): boolean {
     case 'sqlite':
     case 'time':
       return SUMMIT_WRITE_TOOLS[alias].includes(bare);
+    case 'notion':
+    case 'sentry':
+    case 'slack':
+    case 'stripe':
+      return SAAS_WRITE_TOOLS[alias].includes(bare);
     default:
       return WORKPLACE_WRITE_TOOLS[alias].includes(bare);
   }
