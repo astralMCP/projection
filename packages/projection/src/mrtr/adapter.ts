@@ -334,15 +334,24 @@ function toToolCallResult(
     case 'suspended':
       return suspendResult(outcome, args, deps, caps);
 
-    case 'error': {
-      // A workflow that fails after earlier round trips may already have run
-      // approved writes: say so (and what was refused), or the model, seeing
-      // only the error, asks the person to approve the same write again.
-      const failed = errorResult(outcome.error);
-      const extra = approvalOutcomeBlocks(outcome.audit ?? [], deps.redact);
-      return extra.length === 0 ? failed : { ...failed, content: [...failed.content, ...extra] };
-    }
+    case 'error':
+      return withApprovalOutcomes(errorResult(outcome.error), outcome.audit ?? [], deps.redact);
   }
+}
+
+/**
+ * R15b: a workflow that fails after earlier round trips may already have run
+ * approved writes. Say so (and what was refused), or the model, seeing only
+ * the error, runs again and the person is asked to approve the same write
+ * again. Every failure of a segment with an audit goes through here.
+ */
+function withApprovalOutcomes(
+  failed: CallToolResult,
+  audit: AuditEntry[],
+  redact: RedactionHook | undefined,
+): CallToolResult {
+  const extra = approvalOutcomeBlocks(audit, redact);
+  return extra.length === 0 ? failed : { ...failed, content: [...failed.content, ...extra] };
 }
 
 function suspendResult(
@@ -351,9 +360,12 @@ function suspendResult(
   deps: ExecuteMachineDeps,
   caps: ResourceCaps,
 ): ToolCallResult {
-  // This segment's console output rides on every failure below (R31).
+  // This segment's console output rides on every failure below (R31), and
+  // so do the calls already decided in earlier round trips (R15b).
+  const failed = (error: Parameters<typeof errorResult>[0]): ToolCallResult =>
+    withApprovalOutcomes(errorResult(error), outcome.audit, deps.redact);
   const fail = (phase: ErrorPhase, message: string, hint: string): ToolCallResult =>
-    errorResult({ phase, message, diagnostics: [], hint, logs: outcome.logs });
+    failed({ phase, message, diagnostics: [], hint, logs: outcome.logs });
 
   // R28: a client that cannot carry MRTR must fail here rather than silently
   // executing an unapproved write or hanging (see legacy-gate.ts).
@@ -433,7 +445,7 @@ function suspendResult(
       );
     } catch (err) {
       const structured = toStructuredError(err, outcome.logs);
-      return errorResult({ ...structured, logs: outcome.logs });
+      return failed({ ...structured, logs: outcome.logs });
     }
     next += Object.keys(round.inputRequests).length;
     Object.assign(inputRequests, round.inputRequests);
@@ -460,7 +472,7 @@ function suspendResult(
     // it must keep this segment's console output (R31) rather than losing it
     // to the generic catch in executeMachine.
     const structured = toStructuredError(err, outcome.logs);
-    return errorResult({ ...structured, logs: outcome.logs });
+    return failed({ ...structured, logs: outcome.logs });
   }
 
   // The SDK's builder enforces the spec's at-least-one rule and stamps the

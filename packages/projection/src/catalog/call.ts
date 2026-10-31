@@ -295,6 +295,7 @@ async function resume(
       decision: 'approved',
       request,
       trip: payload.trip,
+      exp: payload.exp,
     },
     deps,
     caps,
@@ -339,7 +340,13 @@ async function resumeQuestion(
   }
   const responses = answersFor(hold, args.inputResponses);
   return await execute(
-    { call: callOf(hold.name, hold.args), decision: hold.decision, request, trip: payload.trip },
+    {
+      call: callOf(hold.name, hold.args),
+      decision: hold.decision,
+      request,
+      trip: payload.trip,
+      exp: payload.exp,
+    },
     deps,
     caps,
     {
@@ -366,6 +373,13 @@ interface GatedRun {
   request: string;
   /** Round trips taken so far: an approval, then each forwarded question (R18). */
   trip: number;
+  /**
+   * The `exp` of the blob this run resumed (`call` or `upstream_input`): a
+   * question's blob inherits it and is never given a fresh TTL, so an
+   * approval lives at most one `callTtlMs` across all its round trips (R38).
+   * Absent for a call that ran without a blob (`auto`, first leg).
+   */
+  exp?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +504,8 @@ function askQuestion(
     trip,
     upstreamInput: { [CALL_KEY]: hold },
     ttlMs: deps.blob.callTtlMs ?? DEFAULT_CALL_TTL_MS,
+    // A continuation never outlives the blob it continues (R38).
+    ...(run.exp !== undefined ? { notAfter: run.exp } : {}),
   });
   const requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog, deps.blobDomain));
   return inputRequired({ inputRequests, requestState });

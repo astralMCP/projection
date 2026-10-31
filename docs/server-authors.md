@@ -278,10 +278,17 @@ mode the search tools are dropped, except a box's `search_<box>` when its
 server sends guidance; `describe_tool`, `call_tool` and code mode stay.
 `direct: true` lists them whatever the size.
 
+A listed tool advertises Projection's own annotations, never your server's:
+`readOnlyHint: true` only when Projection runs the call without asking and
+your tool is read-only (never under an `ask` or `deny` override), and
+`destructiveHint: true` when your tool says so. A host that auto-runs
+read-only tools therefore skips its prompt only where Projection would too.
+
 Approval blobs for `call_tool` live 5 minutes by default (`blob.callTtlMs`),
 shorter than machine blobs: once approved there is no further step, so a
 captured approved retry is a standing capability until it expires (see
-"Lifecycle" on replay).
+"Lifecycle" on replay). A forwarded question's blob keeps the expiry of the
+approval it follows; it is never given a fresh 5 minutes.
 
 ### Your tools asking the user something
 
@@ -311,13 +318,21 @@ approval gate:
   number, integer, boolean, single- and multi-select of string options), at
   most 12 fields whose names are identifiers; titles are capped at 100
   characters and descriptions at 300. The answer you get back carries only
-  those fields.
+  those fields. Fields named `approve_<n>` or `reason` (Projection's own
+  approval fields) are dropped. Anything that reads like an approval (an
+  `approv…` word or `Tool:` at the start, a `⚠` anywhere) is shown as
+  `The server's text: …`, in titles, descriptions, option values and
+  untitled field names alike; such a string default is dropped. Avoid
+  approval wording in your questions.
 - A URL must be `https:` without credentials (`http:` only on loopback). The
   prompt shows its origin; a client without URL-mode support gets the link as
   text in a form with a "done" checkbox, and accepting sends no content.
 - `decline` and `cancel` reach you as such; an unanswered question arrives as
   `cancel`. Your `requestState` comes back byte-exact on the retry: it rides
-  sealed inside Projection's own blob (keep it under 16 KB). Ask at most 4
+  sealed inside Projection's own blob (keep it under 16 KB). That blob keeps
+  the expiry of the call's first blob, whatever the number of rounds; with
+  forwarding on, configure a `replayCache` so each round's blob is
+  single-use. Ask at most 4
   questions per round; each round counts against the round-trip cap.
 - In a machine, the step waits on your question like an approval: the
   workflow suspends, and the step's `TOOL_RESULT` is your final result.

@@ -356,21 +356,51 @@ function prose(value: unknown, max: number): string | undefined {
 }
 
 /**
- * Form labels that read like Projection's approval copy (S6): the `⚠`
- * glyph, an `Approve` heading, the `Tool:` footer, the purpose line, or the
- * approval form's own field text.
+ * Labels that read like Projection's approval copy (S6): the `⚠` glyph, an
+ * `Approve…` / `Approval…` heading (after any leading `[k]`, numbering,
+ * glyphs or punctuation, as the batched form's `[1] ⚠ Approve: …` fields
+ * have), the `Tool:` footer, or the purpose line.
  */
-const APPROVAL_LIKE = /^(?:⚠|approve\b|tool\s*:|what .{0,40} says it does)/iu;
-const APPROVAL_FIELD_TEXT = 'Optional note shown to the model when declining.';
+const APPROVAL_LEAD = /^[\s\p{N}\p{P}\p{S}]*/u;
+const APPROVAL_HEAD = /^(?:approv\w*|tool\s*:|what\b.{0,40}\bsays it does)/iu;
+/** The approval forms' own field text (per-call and batched `reason`). */
+const APPROVAL_FIELD_TEXT: ReadonlySet<string> = new Set([
+  'Optional note shown to the model when declining.',
+  'Optional note shown to the model for the actions you decline.',
+]);
+
+/**
+ * True when `text` could pass for approval copy: a `⚠` anywhere, an
+ * approval heading near the start, or an approval form's field text. Also
+ * applied to field names and option values (`Approve_delete_repo`).
+ */
+export function looksLikeApproval(text: string): boolean {
+  if (text.includes('⚠')) return true;
+  if (APPROVAL_FIELD_TEXT.has(text)) return true;
+  const rest = text.replace(APPROVAL_LEAD, '').replace(/_/g, ' ');
+  return APPROVAL_HEAD.test(rest);
+}
+
+const SERVER_TEXT = "The server's text: ";
+
+/** `text` with the server-text mark, capped. */
+function marked(text: string, max: number): string {
+  return capLength(`${SERVER_TEXT}${text}`, max);
+}
 
 /** A title or description: inert, capped, and marked as the server's when it mimics approval copy. */
 function label(value: unknown, max: number): string | undefined {
   const text = prose(value, max);
   if (text === undefined) return undefined;
-  return APPROVAL_LIKE.test(text) || text === APPROVAL_FIELD_TEXT
-    ? capLength(`The server's text: ${text}`, max)
-    : text;
+  return looksLikeApproval(text) ? marked(text, max) : text;
 }
+
+/**
+ * Field names Projection's own approval forms use (`approve_<n>`, `reason`):
+ * a forwarded form may not carry them, so no answer to a question can be
+ * read as, or shown as, an approval field.
+ */
+const RESERVED_FIELD = /^(?:approve_\d+|reason)$/iu;
 
 function finite(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -399,30 +429,51 @@ function titledOptions(value: unknown): { const: string; title: string }[] | und
     if (!isRecord(option)) continue;
     const constant = prose(option['const'], MAX_ENUM_CHARS);
     if (constant === undefined || out.some((o) => o.const === constant)) continue;
-    out.push({ const: constant, title: label(option['title'], MAX_TITLE_CHARS) ?? constant });
+    // Every option gets a title, marked when it (or, untitled, its value)
+    // mimics approval copy: a client shows the title, never the raw value.
+    out.push({
+      const: constant,
+      title:
+        label(option['title'], MAX_TITLE_CHARS) ?? label(constant, MAX_TITLE_CHARS) ?? constant,
+    });
   }
   return out.length > 0 ? out : undefined;
 }
 
-function labels(field: Record<string, unknown>, out: Record<string, unknown>): void {
+/** Untitled options for `enum` members: each member titled, marked when it mimics approval copy. */
+function asOptions(members: readonly string[]): { const: string; title: string }[] {
+  return members.map((member) => ({
+    const: member,
+    title: label(member, MAX_TITLE_CHARS) ?? member,
+  }));
+}
+
+function labels(name: string, field: Record<string, unknown>, out: Record<string, unknown>): void {
   const title = label(field['title'], MAX_TITLE_CHARS);
   if (title !== undefined) out['title'] = title;
+  // A client labels an untitled field with its name: a name that mimics
+  // approval copy gets a marked title instead.
+  else if (looksLikeApproval(name)) out['title'] = marked(name, MAX_TITLE_CHARS);
   const description = label(field['description'], MAX_DESCRIPTION_CHARS);
   if (description !== undefined) out['description'] = description;
 }
 
 /** One primitive field of the MCP elicitation schema, allowlisted; undefined when unusable. */
-function sanitizeField(field: unknown): Record<string, unknown> | undefined {
+function sanitizeField(name: string, field: unknown): Record<string, unknown> | undefined {
   if (!isRecord(field)) return undefined;
   const out: Record<string, unknown> = {};
   switch (field['type']) {
     case 'string': {
       out['type'] = 'string';
-      labels(field, out);
+      labels(name, field, out);
       const options = titledOptions(field['oneOf']);
       const members = enumValues(field['enum']);
       if (options !== undefined) {
         out['oneOf'] = options;
+      } else if (members !== undefined && members.some(looksLikeApproval)) {
+        // A member that mimics approval copy would be shown raw: the
+        // members become titled options, each marked as needed.
+        out['oneOf'] = asOptions(members);
       } else if (members !== undefined) {
         out['enum'] = members;
         // Labels pair with members by position: keep them only when every
@@ -446,14 +497,16 @@ function sanitizeField(field: unknown): Record<string, unknown> | undefined {
           out['format'] = field['format'];
         }
       }
+      // A default is a value, not a label: one that mimics approval copy
+      // cannot be marked without changing it, so it is dropped.
       const fallback = prose(field['default'], MAX_DEFAULT_CHARS);
-      if (fallback !== undefined) out['default'] = fallback;
+      if (fallback !== undefined && !looksLikeApproval(fallback)) out['default'] = fallback;
       return out;
     }
     case 'number':
     case 'integer': {
       out['type'] = field['type'];
-      labels(field, out);
+      labels(name, field, out);
       for (const key of ['minimum', 'maximum', 'default'] as const) {
         const value = finite(field[key]);
         if (value !== undefined) out[key] = value;
@@ -462,7 +515,7 @@ function sanitizeField(field: unknown): Record<string, unknown> | undefined {
     }
     case 'boolean': {
       out['type'] = 'boolean';
-      labels(field, out);
+      labels(name, field, out);
       if (typeof field['default'] === 'boolean') out['default'] = field['default'];
       return out;
     }
@@ -473,8 +526,11 @@ function sanitizeField(field: unknown): Record<string, unknown> | undefined {
       const members = enumValues(items['enum']);
       if (options === undefined && members === undefined) return undefined;
       out['type'] = 'array';
-      labels(field, out);
-      out['items'] = options !== undefined ? { anyOf: options } : { type: 'string', enum: members };
+      labels(name, field, out);
+      if (options !== undefined) out['items'] = { anyOf: options };
+      else if (members?.some(looksLikeApproval) === true) {
+        out['items'] = { anyOf: asOptions(members) };
+      } else out['items'] = { type: 'string', enum: members };
       const minItems = count(field['minItems']);
       if (minItems !== undefined) out['minItems'] = minItems;
       const maxItems = count(field['maxItems']);
@@ -488,7 +544,8 @@ function sanitizeField(field: unknown): Record<string, unknown> | undefined {
 
 /**
  * The server's `requestedSchema`, reduced to the MCP elicitation primitives
- * (S5): at most 12 fields whose names are plain identifiers; each field a
+ * (S5): at most 12 fields whose names are plain identifiers and not one of
+ * the approval forms' own fields (`approve_<n>`, `reason`); each field a
  * string, number, integer, boolean or a multi-select of string options,
  * with only the keywords that shape the form; every string neutralized and
  * capped. Anything else — nested objects, `$ref`, vendor keys, comments,
@@ -500,8 +557,8 @@ export function sanitizeElicitationSchema(schema: unknown): ElicitationSchema {
   if (!isRecord(schema) || !isRecord(schema['properties'])) return out;
   for (const [name, field] of Object.entries(schema['properties'])) {
     if (Object.keys(out.properties).length >= MAX_FIELDS) break;
-    if (!FIELD_NAME.test(name)) continue;
-    const safe = sanitizeField(field);
+    if (!FIELD_NAME.test(name) || RESERVED_FIELD.test(name)) continue;
+    const safe = sanitizeField(name, field);
     if (safe !== undefined) out.properties[name] = safe;
   }
   if (Array.isArray(schema['required'])) {

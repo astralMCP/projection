@@ -442,6 +442,12 @@ export interface BuildBlobPayloadInput {
   upstreamInput?: Record<string, UpstreamHold> | undefined;
   /** Blob TTL in ms. Default {@link DEFAULT_TTL_MS} (15 minutes). */
   ttlMs?: number | undefined;
+  /**
+   * Latest allowed `exp`, Unix ms: the blob expires at `iat + ttlMs` or this,
+   * whichever is earlier. A blob minted to continue an earlier one carries
+   * that blob's `exp` here, so a chain of round trips never extends it (R38).
+   */
+  notAfter?: number | undefined;
   /** Clock override for testability, Unix ms. Default `Date.now()`. */
   now?: number | undefined;
 }
@@ -470,7 +476,7 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
       : {}),
     nonce: randomBytes(16).toString('base64url'),
     iat,
-    exp: iat + ttlMs,
+    exp: input.notAfter !== undefined ? Math.min(iat + ttlMs, input.notAfter) : iat + ttlMs,
   };
 }
 

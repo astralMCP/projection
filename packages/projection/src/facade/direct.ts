@@ -18,7 +18,11 @@
  * `describe_tool` helpers: the description is neutralized, capped and
  * rendered as an indented block under a library-written posture line, the
  * input schema passes the R34 allowlist sanitizer, and the annotation title
- * is neutralized. Tool names are mapped onto `[A-Za-z0-9_-]{1,64}` — the
+ * is neutralized. The advertised annotations are Projection's own, derived
+ * from its decided posture (R35): `readOnlyHint: true` only for a call it
+ * runs without asking that the server also marks read-only, and
+ * `destructiveHint: true` only as a warning. A server's claims never reach a
+ * host that auto-runs read-only tools on their own. Tool names are mapped onto `[A-Za-z0-9_-]{1,64}` — the
  * strictest common host rule (the Messages API's; MCP itself also allows
  * dots, up to 128) — so a hostile name cannot carry anything but those
  * characters, and a collision with a Projection tool or another mapped name
@@ -31,7 +35,7 @@ import { boxedTool, isBoxedCatalog } from '../catalog/boxes.js';
 import { sanitizeSchema } from '../catalog/schema-safety.js';
 import { decidePolicy, policyContext, postureOf, type ToolPosture } from '../policy/index.js';
 import { capLength, indentBlock, neutralizeControlChars } from '../text-safety.js';
-import type { PolicyOptions, ServerCatalog, ToolAnnotations } from '../types.js';
+import type { PolicyDecision, PolicyOptions, ServerCatalog, ToolAnnotations } from '../types.js';
 import type { DirectSetting } from './options.js';
 
 /** Host tool-name rule the mapped names satisfy (the Messages API's). */
@@ -56,6 +60,7 @@ export interface DirectTool {
   description: string;
   /** The R34-sanitized input schema, always `type: "object"` at the root. */
   inputSchema: Record<string, unknown>;
+  /** What the listing advertises: Projection's own, see {@link advertisedAnnotations}. */
   annotations: ToolAnnotations;
   posture: ToolPosture;
 }
@@ -92,7 +97,8 @@ export function planDirectTools(catalog: ServerCatalog, options: DirectPlanOptio
     if (name === undefined) continue;
     taken.add(name);
 
-    const posture = postureOf(decidePolicy(entry, policy));
+    const decision = decidePolicy(entry, policy);
+    const posture = postureOf(decision);
     const annotations = sanitizeAnnotations(entry.annotations);
     const input = sanitizeSchema(entry.inputSchema);
     const schema: Record<string, unknown> = { ...input.schema, type: 'object' };
@@ -110,11 +116,34 @@ export function planDirectTools(catalog: ServerCatalog, options: DirectPlanOptio
         schemaTruncated: input.truncated,
       }),
       inputSchema: schema,
-      annotations,
+      annotations: advertisedAnnotations(decision, annotations),
       posture,
     });
   }
   return tools;
+}
+
+/**
+ * The annotations a mediated tool advertises, decided by Projection (R35,
+ * S5), never copied from the server: a host that auto-runs tools marked
+ * read-only would otherwise skip its own prompt on the server's word, under
+ * an `ask` or `deny` override too. `readOnlyHint: true` only when Projection
+ * runs the call without asking (`auto`) AND the server marks it read-only
+ * and not destructive; otherwise absent. `destructiveHint: true` when the
+ * server says so, as a warning; `false` is never advertised (it would
+ * reassure). No `title` (the listed tool's own title is the neutralized
+ * one), no `idempotentHint` or `openWorldHint`.
+ */
+export function advertisedAnnotations(
+  decision: PolicyDecision,
+  server: ToolAnnotations,
+): ToolAnnotations {
+  const out: ToolAnnotations = {};
+  if (decision === 'auto' && server.readOnlyHint === true && server.destructiveHint !== true) {
+    out.readOnlyHint = true;
+  }
+  if (server.destructiveHint === true) out.destructiveHint = true;
+  return out;
 }
 
 /**

@@ -200,8 +200,10 @@ export function registerCatalogTools(
  * arguments as `args`, the MRTR retry envelope, the upstream progress and
  * cancellation options and the client's elicitation capabilities, read from
  * the transport exactly as for `call_tool` (so a forwarded upstream question,
- * decline copy and audit redaction are `call_tool`'s own). No annotation is added beyond the server's
- * own (sanitized); Projection's gate decides either way.
+ * decline copy and audit redaction are `call_tool`'s own). The annotations
+ * are Projection's own, from its decided posture (`advertisedAnnotations`),
+ * never the server's: a host that auto-runs read-only tools may only skip
+ * its prompt where Projection would not ask either.
  */
 export function registerDirectTools(
   server: McpServer,

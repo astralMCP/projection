@@ -1641,3 +1641,43 @@ measured approval UX. Now:
   tasks, each with a persona. Success needs the end state and the denial
   handling. Offline tests run a reference, a naive retry, a workaround and a
   silent final answer for each, in direct and Projection modes.
+
+## D27 — Integration security fixes: forwarded-form mimicry, direct-listing annotations, R15b on every failure, question blobs inherit expiry (2026-10-30)
+
+An adversarial review of `integration-hillclimb` found four gaps where two
+merged features met. Each fix keeps the stricter reading.
+
+- **Forwarded forms vs. batched approvals (S6, R64.5).** The look-alike
+  check matched only a leading `⚠`, `Approve` or `Tool:`, written for the
+  per-call prompt. The batched prompt (D25) titles its fields `[k] ⚠
+Approve: …` and names them `approve_<n>`, so a server question could
+  reproduce it: `[1] ⚠ Approve: …` titles, `Approved:` or `1. Approve:`
+  headings, enum values shown raw, and fields named `approve_1` or
+  `Approve_delete_repo`. Now the check skips any leading `[k]`, digits,
+  glyphs and punctuation, matches every `approv…` word and a `⚠` anywhere,
+  and also runs on option values, untitled field names and string
+  defaults. Option values are always shown by a title (marked when needed);
+  look-alike defaults are dropped because a value cannot be marked; the
+  approval forms' own field names (`approve_<n>`, `reason`) are dropped
+  outright. Marking, not dropping, is the rule for labels, so an honest
+  form that says "Approval date" stays usable, marked.
+- **Direct-listing annotations (R35, S5).** A mediated `<alias>__<tool>`
+  advertised the server's own annotations, while `call_tool` carries none.
+  A host that auto-runs read-only tools would skip its own prompt on the
+  server's word, even where Projection asks (an `ask` override) or refuses.
+  The listing now advertises only what Projection decided:
+  `readOnlyHint: true` only for an `auto` call the server also marks
+  read-only and not destructive, `destructiveHint: true` only as a warning,
+  nothing that reassures (`destructiveHint: false`, `idempotentHint`,
+  `openWorldHint`) and no annotation `title`.
+- **R15b after a suspension begins.** Failures raised while building the
+  next suspension (the R18 trip cap, an unknown tool, a question that cannot
+  be forwarded, an oversized blob) returned a bare error. The model re-ran
+  the workflow and the person was asked again to approve a write that had
+  already run. Every such failure now carries the "already done" and
+  refusal blocks.
+- **Question blobs inherit expiry (R38, R64.3).** Each forwarded round
+  minted an `upstream_input` blob with a fresh `callTtlMs`, so an approval
+  could live `maxRoundTrips × callTtlMs`. The blob now keeps the `exp` of
+  the blob it continues (`buildBlobPayload`'s `notAfter`). A replay cache is
+  recommended wherever forwarding is on.

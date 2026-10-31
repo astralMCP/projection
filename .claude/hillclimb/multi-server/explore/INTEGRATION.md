@@ -155,6 +155,41 @@ merges 1 and 2 (resume-leg p95 192 ms against a 100 ms budget, median
 53 ms, load average about 10 from live runs in other worktrees). It passed
 solo every time and in the final full run.
 
+## Security fixes after integration (DECISIONS D27)
+
+An adversarial review of this branch found four gaps where merged features
+met. Fixed on `integration-sec-fixes`, fast-forwarded here:
+
+1. **S6 (confirmed).** A forwarded question could mimic the batched
+   approval form: `[1] ⚠ Approve: …` titles, `Approved:` headings, raw
+   option values, and fields named `approve_1` or `Approve_delete_repo`.
+   `mrtr/upstream-input.ts` now detects look-alikes after any leading
+   `[k]`, numbering or punctuation (`approv…` words, `⚠` anywhere), marks
+   option values and untitled field names, drops look-alike defaults, and
+   drops `approve_<n>` and `reason` fields. Ordinary forms pass unchanged
+   (tested).
+2. **Direct-listing annotations.** `<alias>__<tool>` advertised the
+   server's annotations; it now advertises only Projection's decided
+   posture (`advertisedAnnotations` in `facade/direct.ts`): `readOnlyHint`
+   only for `auto` calls the server marks read-only and not destructive,
+   `destructiveHint: true` only as a warning, no annotation `title`.
+3. **R15b.** Failures raised while building the next suspension in
+   `mrtr/adapter.ts` (trip cap, unknown tool, unforwardable question, blob
+   too big) now carry the "already done" and refusal blocks.
+4. **Question blob expiry.** An `upstream_input` blob keeps the `exp` of
+   the blob it continues (`buildBlobPayload({ notAfter })`); PRD R38 and
+   the docs recommend `replayCache` wherever forwarding is on.
+
+Each fix has a test that failed before it (`test/mrtr/upstream-input.test.ts`,
+`test/facade/direct.test.ts`, `test/mrtr/e2e.test.ts`). The adapter test
+covers the trip-cap branch; the other three branches share the same helper.
+
+`pnpm run check` after the fixes: 16/16 turbo tasks. Projection: 54 files,
+1532 passed, 1 skipped, 5 todo. Harness: 457 passed, 129 skipped. TUI: 14
+passed. Lint: 0 errors. `format:check` clean. The perf-budget p95 test
+failed once under load (resume-leg p95 138 ms, load average about 12),
+passed solo, and passed in the final full run.
+
 ## Left inconsistent / open
 
 - `LIB_VERSION` and the package version are not bumped. Three public

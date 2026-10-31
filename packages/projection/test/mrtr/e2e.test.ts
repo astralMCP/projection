@@ -421,6 +421,38 @@ export default setup({}).createMachine({
     expect(completed(plain).content).toHaveLength(1);
   });
 
+  it('a suspension that fails after an approved write still says it already ran (R15b, R18)', async () => {
+    // Two writes in sequence under a one-round-trip cap: the first is
+    // approved and runs, then the second would need a second round trip.
+    const TWO_WRITES = `
+import { setup } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+export default setup({}).createMachine({
+  initial: 'a',
+  states: {
+    a: { entry: toolCall('write_file', () => ({ path: '/a', content: 'x' }), { id: 'w1' }), on: { TOOL_RESULT: 'b', TOOL_DENIED: 'done' } },
+    b: { entry: toolCall('delete_file', () => ({ path: '/b' }), { id: 'w2' }), on: { TOOL_RESULT: 'done', TOOL_DENIED: 'done' } },
+    done: { type: 'final' },
+  },
+});`;
+    const capped = { caps: { maxRoundTrips: 1 } };
+    const first = await executeMachine({ code: TWO_WRITES }, deps(capped));
+    const executor = new FakeExecutor();
+    const retry = await executeMachine(
+      { code: TWO_WRITES, requestState: sealedState(first), inputResponses: { w1: ACCEPT } },
+      deps({ ...capped, executor }),
+    );
+    expect(structuredError(retry).phase).toBe('terminal');
+    expect(executor.calls.map((c) => c.name)).toEqual(['write_file']);
+    const texts = (completed(retry).content as { type: string; text: string }[]).map((c) => c.text);
+    expect(texts).toContainEqual(
+      [
+        'Already done before this error: this call was approved and ran. Do not request it again; continue from the state it left.',
+        '- "write_file" {"path":"/a","content":"x"}',
+      ].join('\n'),
+    );
+  });
+
   it('treats a missing response as declined (R17)', async () => {
     const first = await executeMachine({ code: WRITE_MACHINE }, deps());
     if (!isSuspended(first)) throw new Error('expected suspension');

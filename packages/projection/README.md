@@ -114,6 +114,9 @@ fails with an `auth` error. See "Upstream authentication" in
 Known limitation: unless you supply a shared `replayCache` (R38), an approved
 retry can be replayed until its blob expires (by default 5 min for
 `call_tool`, 15 for machines; `blob.callTtlMs` and `blob.ttlMs` override).
+A forwarded server question's blob keeps the expiry of the approval it
+follows. With `upstreamElicitation: 'forward'` on, a `replayCache` is
+recommended.
 See
 [Lifecycle](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#lifecycle-and-operations).
 
