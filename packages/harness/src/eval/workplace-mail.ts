@@ -139,7 +139,12 @@ export function seedMail(): MailState {
 
 function matches(e: Email, query: string): boolean {
   const tokens = query.match(/(?:\S+:"[^"]*"|"[^"]*"|\S+)/g) ?? [];
-  return tokens.every((raw) => {
+  // A leading `-` negates a term, as the webmail query syntax does.
+  return tokens.every((token) => {
+    const negated = token.length > 1 && token.startsWith('-');
+    return termMatches(negated ? token.slice(1) : token) !== negated;
+  });
+  function termMatches(raw: string): boolean {
     const m = /^(from|to|subject|label|is):(.*)$/i.exec(raw);
     const strip = (v: string): string => v.replace(/^"|"$/g, '').toLowerCase();
     if (m === null) {
@@ -160,7 +165,7 @@ function matches(e: Email, query: string): boolean {
       default:
         return value === 'unread' ? e.labels.includes('UNREAD') : true;
     }
-  });
+  }
 }
 
 function addresses(args: FakeArgs, key: string): string[] | undefined {

@@ -1395,6 +1395,25 @@ function searchReply<T>(
   });
 }
 
+function custFields(c: BillingCustomer, key: string): string | undefined {
+  if (key === 'name' || key === 'email') return c[key];
+  const meta = /^metadata\['(.+)'\]$/.exec(key);
+  if (meta !== null) return c.metadata[meta[1] as string] ?? '';
+  return undefined;
+}
+function invoiceFields(i: BillingInvoice, key: string): string | undefined {
+  switch (key) {
+    case 'number':
+    case 'customer':
+    case 'status':
+      return i[key];
+    case 'total':
+      return String(i.amount_due);
+    default:
+      return undefined;
+  }
+}
+
 /** The billing box over `state`. */
 export function createBillingBox(
   state: BillingState,
@@ -1410,25 +1429,6 @@ export function createBillingBox(
   };
   const customer = (id: string | undefined): BillingCustomer | undefined =>
     state.customers.find((c) => c.id === id);
-
-  const custFields = (c: BillingCustomer, key: string): string | undefined => {
-    if (key === 'name' || key === 'email') return c[key];
-    const meta = /^metadata\['(.+)'\]$/.exec(key);
-    if (meta !== null) return c.metadata[meta[1] as string] ?? '';
-    return undefined;
-  };
-  const invoiceFields = (i: BillingInvoice, key: string): string | undefined => {
-    switch (key) {
-      case 'number':
-      case 'customer':
-      case 'status':
-        return i[key];
-      case 'total':
-        return String(i.amount_due);
-      default:
-        return undefined;
-    }
-  };
 
   const special = (op: Operation): ((args: FakeArgs) => FakeReply) | undefined => {
     const r = op.resource;
