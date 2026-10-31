@@ -83,6 +83,7 @@ import {
 } from './modes.js';
 import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
 import { estimateUsd, serverToolUsd, standardCost } from './cost.js';
+import { hostPromptPrefix, type HostPromptKind } from './host-prompt.js';
 import {
   episodeApprover,
   hitlMetrics,
@@ -333,6 +334,8 @@ export interface ToolChoiceEvalOptions {
   toolSearch?: ToolSearchVariant;
   /** `native-ptc`: each tool's `allowed_callers` (PROJ_EVAL_PTC_CALLERS). Default `code`. */
   ptcCallers?: PtcCallers;
+  /** Every mode: the host system prompt put first (PROJ_EVAL_HOST_PROMPT). Default none. */
+  hostPrompt?: HostPromptKind;
 }
 
 export interface BatchEvalOptions {
@@ -652,6 +655,9 @@ async function runPlanned(
           : {}),
         ...(options.toolSearch !== undefined ? { toolSearch: options.toolSearch } : {}),
         ...(options.ptcCallers !== undefined ? { ptcCallers: options.ptcCallers } : {}),
+        ...(options.hostPrompt !== undefined
+          ? { hostPrompt: hostPromptPrefix(options.hostPrompt) }
+          : {}),
       });
       try {
         const prefixTokens = await countedPrefix(
@@ -1545,6 +1551,11 @@ export interface ResultsMeta {
   toolSearch?: ToolSearchVariant;
   /** `native-ptc` runs: the tools' `allowed_callers` (PROJ_EVAL_PTC_CALLERS). */
   ptcCallers?: PtcCallers;
+  /**
+   * The host system prompt every mode's system prompt started with
+   * (PROJ_EVAL_HOST_PROMPT); absent when none was (the one-line framing only).
+   */
+  hostPrompt?: HostPromptKind;
   modes?: EvalMode[];
   tiers?: TaskTier[];
   tasks?: string[];

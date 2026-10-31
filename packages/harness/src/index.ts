@@ -386,6 +386,12 @@ export {
 } from './eval/mongodb-world.js';
 export { createRecordingProxy, type RecordingProxy } from './eval/recording-proxy.js';
 export {
+  hostPromptPrefix,
+  resolveHostPrompt,
+  REALISTIC_HOST_PROMPT,
+  type HostPromptKind,
+} from './eval/host-prompt.js';
+export {
   hostPromptText,
   hostToolName,
   isNativeMode,

@@ -18,6 +18,8 @@
  *                          opt-in: native-search, native-ptc (Anthropic's tool search / programmatic tool
  *                          calling over the raw tools; native-ptc is skipped on models without it, e.g. Haiku
  *                          4.5), projection-direct, projection-auto
+ *   PROJ_EVAL_HOST_PROMPT=realistic  every mode: put a ~12k-token generic agent-host system prompt
+ *                          (src/eval/host-prompt.ts) before the session's own (default: the one-line framing only)
  *   PROJ_EVAL_TOOL_SEARCH  native-search: bm25 or regex (default bm25)
  *   PROJ_EVAL_PTC_CALLERS  native-ptc: code (tools callable from code only) or both (also directly; default code)
  *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl (default all but the
@@ -69,6 +71,7 @@ import {
   mongodbServerInstalled,
   resolveModelPresets,
   resolveApproverPersona,
+  resolveHostPrompt,
   resolveModes,
   resolveTasks,
   resolveTiers,
@@ -139,6 +142,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         throw new Error(`PROJ_EVAL_PTC_CALLERS must be code or both, got ${callersEnv}`);
       }
       const ptcCallers = callersEnv === 'both' ? ('both' as const) : ('code' as const);
+      const hostPrompt = resolveHostPrompt(process.env['PROJ_EVAL_HOST_PROMPT']);
       for (const model of models) {
         for (const mode of modes) {
           if (!modeSupportsModel(mode, model.model)) {
@@ -174,6 +178,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
           boxDescriptions,
           ...(modes.includes('native-search') ? { toolSearch } : {}),
           ...(modes.includes('native-ptc') ? { ptcCallers } : {}),
+          ...(hostPrompt !== undefined ? { hostPrompt } : {}),
           ...(approver !== undefined ? { approver } : {}),
           ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
           outputSchemas: true,
@@ -199,6 +204,7 @@ describe.skipIf(!optedIn || !hasKey)('live tool-choice eval (direct vs Projectio
         boxDescriptions,
         toolSearch,
         ptcCallers,
+        ...(hostPrompt !== undefined ? { hostPrompt } : {}),
         ...(approver !== undefined ? { approver } : {}),
         ...(approvalPrompts !== undefined ? { approvalPrompts } : {}),
         ...(systemSuffix !== undefined ? { systemSuffix } : {}),

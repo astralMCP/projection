@@ -236,6 +236,13 @@ export interface SessionOptions {
   toolSearch?: ToolSearchVariant;
   /** `native-ptc`: each tool's `allowed_callers` (PROJ_EVAL_PTC_CALLERS). Default `code`. */
   ptcCallers?: PtcCallers;
+  /**
+   * Every mode: a host system prompt put before the session's own system
+   * prompt (PROJ_EVAL_HOST_PROMPT=realistic; host-prompt.ts), as a host's
+   * own prompt precedes whatever its servers contribute. It joins the same
+   * system block, so the one system breakpoint caches it with the rest.
+   */
+  hostPrompt?: string;
 }
 
 /**
@@ -794,10 +801,22 @@ export async function openMultiDirectSession(
   };
 }
 
-export function openSession(
+export async function openSession(
   mode: EvalMode,
   world: EvalWorld,
   options: SessionOptions = {},
+): Promise<ModeSession> {
+  const session = await openModeSession(mode, world, options);
+  if (options.hostPrompt !== undefined && options.hostPrompt !== '') {
+    session.runtime.system = `${options.hostPrompt}\n\n${session.runtime.system}`;
+  }
+  return session;
+}
+
+function openModeSession(
+  mode: EvalMode,
+  world: EvalWorld,
+  options: SessionOptions,
 ): Promise<ModeSession> {
   switch (mode) {
     case 'direct':
