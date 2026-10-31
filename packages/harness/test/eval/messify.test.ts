@@ -185,10 +185,14 @@ describe('schema transforms', () => {
       { const: 'high', title: 'high' },
     ]);
     // Nested object hoisted.
-    expect((props['filter']?.['anyOf'] as unknown[])[0]).toEqual({ $ref: '#/$defs/Filter' });
+    expect((props['filter']?.['anyOf'] as unknown[] | undefined)?.[0]).toEqual({
+      $ref: '#/$defs/Filter',
+    });
     expect(defs['Filter']?.['properties']).toEqual({ state: { type: 'string' } });
     // Array of objects: items hoisted.
-    expect((props['tags']?.['anyOf'] as Record<string, unknown>[])[0]?.['items']).toEqual({
+    expect(
+      (props['tags']?.['anyOf'] as Record<string, unknown>[] | undefined)?.[0]?.['items'],
+    ).toEqual({
       $ref: '#/$defs/TagsItem',
     });
   });
