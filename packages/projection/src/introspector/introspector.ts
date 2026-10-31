@@ -16,7 +16,14 @@
  *   its lifecycle; `close()` will not touch it.
  */
 
-import { Client, type Progress } from '@modelcontextprotocol/client';
+import {
+  Client,
+  fromJsonSchema,
+  isInputRequiredResult,
+  SdkError,
+  SdkErrorCode,
+  type Progress,
+} from '@modelcontextprotocol/client';
 import {
   InMemoryTransport,
   McpServer,
@@ -24,10 +31,16 @@ import {
   ProtocolErrorCode,
   type Tool,
 } from '@modelcontextprotocol/server';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { UpstreamConnector } from '../auth/connect.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { ProjectionError } from '../errors.js';
-import { DEFAULT_INTROSPECT_TIMEOUT_MS, INTROSPECTOR_CLIENT_INFO } from './constants.js';
+import { MRTR_PROTOCOL_REVISION } from '../mrtr/protocol.js';
+import {
+  DEFAULT_INTROSPECT_TIMEOUT_MS,
+  INTROSPECTOR_CLIENT_INFO,
+  upstreamClientOptions,
+} from './constants.js';
 import type {
   ServerAlias,
   ServerCatalog,
@@ -37,6 +50,7 @@ import type {
   ToolCatalogEntry,
   ToolExecutor,
   UpstreamCallOptions,
+  UpstreamInputRequest,
   UpstreamProgress,
 } from '../types.js';
 
@@ -61,6 +75,14 @@ interface Connection {
    * returns (S1).
    */
   connector?: UpstreamConnector;
+  /**
+   * The box forwards its server's questions (G1): the client declared the
+   * elicitation capability, and an `input_required` from the server is
+   * handed to the gated entry points instead of failing the call.
+   */
+  forward: boolean;
+  /** Tears down what serves an in-process source (its `serveStdio` handle). */
+  release?: () => Promise<void>;
 }
 
 /** How {@link Introspector.create} connects. */
@@ -73,6 +95,12 @@ export interface IntrospectOptions {
   timeoutMs?: number;
   /** How the timeout error names a source. Default: `wrapped server "<alias>"`. */
   describe?: (alias: ServerAlias) => string;
+  /**
+   * The aliases whose boxes forward their server's questions to the human
+   * (`upstreamElicitation: 'forward'`, G1). Their owned clients declare the
+   * elicitation capability; every other box declares none.
+   */
+  forwardElicitation?: ReadonlySet<ServerAlias>;
 }
 
 function isTextBlock(block: unknown): block is { type: 'text'; text: string } {
@@ -358,6 +386,75 @@ function progressOptions(
   };
 }
 
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The SDK's text when a server asked a client for input it did not declare
+ * it could give (`Cannot request input 'q' (elicitation/create): …`), or
+ * when a caller's client had no way to answer (`Fulfilling input required
+ * by …`). Server text is untrusted, but a match only selects the R25
+ * wording below, never what runs.
+ */
+const SDK_INPUT_REFUSAL =
+  /^(?:Cannot request input '[^']*' \(([a-z/A-Z]+)\)|Fulfilling input required by )/;
+
+function isSdkInputRefusal(message: string): boolean {
+  return SDK_INPUT_REFUSAL.test(message);
+}
+
+/** The method an SDK refusal names, or `elicitation/create`. */
+function inputMethodOf(message: string): string {
+  return SDK_INPUT_REFUSAL.exec(message)?.[1] ?? 'elicitation/create';
+}
+
+/**
+ * The method a thrown error says a server could not ask for, when the error
+ * is an input refusal: the server SDK's missing-client-capability error, or
+ * the client SDK's own refusal to fulfil an `input_required` (a caller's
+ * client with auto-fulfilment off, or no handler for the request).
+ */
+function inputRefusalOf(err: unknown): string | undefined {
+  if (
+    err instanceof ProtocolError &&
+    err.code === ProtocolErrorCode.MissingRequiredClientCapability
+  ) {
+    return inputMethodOf(err.message.replace(/^MCP error -?\d+: /, ''));
+  }
+  if (
+    err instanceof SdkError &&
+    (err.code === SdkErrorCode.UnsupportedResultType ||
+      (err.code === SdkErrorCode.CapabilityNotSupported && /input request/.test(err.message)))
+  ) {
+    return 'elicitation/create';
+  }
+  return undefined;
+}
+
+/** The R25 copy names what the server wanted; library text throughout. */
+const INPUT_KINDS: Readonly<Record<string, string>> = {
+  'elicitation/create': 'the user for input',
+  'sampling/createMessage': 'the client for a model completion (sampling)',
+  'roots/list': 'the client for its roots',
+};
+
+/**
+ * A call whose server asked for input that this box does not pass on (G1
+ * interim fix): the arguments were not the problem, and a retry will ask
+ * again. `inputRefused` lets `call_tool` give the matching hint.
+ */
+function inputRefused(name: string, method: string): ToolCallOutcome {
+  const asked = INPUT_KINDS[method] ?? 'the user for input';
+  return {
+    ok: false,
+    error: {
+      message: `Tool "${name}" asked ${asked}, which this server does not pass on. The call did not complete.`,
+    },
+    inputRefused: true,
+  };
+}
+
 /**
  * Holds one MCP client per wrapped-server alias, exposes the aggregated
  * {@link ToolCatalog}, and executes tool calls (implements
@@ -423,9 +520,10 @@ export class Introspector implements ToolExecutor {
           async (signal) => {
             const source = sources[alias];
             if (source === undefined) return;
-            const connection = await Introspector.#connect(alias, source, signal);
+            const forward = options.forwardElicitation?.has(alias) === true;
+            const connection = await Introspector.#connect(alias, source, signal, forward);
             if (signal.aborted) {
-              if (connection.owned) await connection.client.close().catch(() => undefined);
+              if (connection.owned) await Introspector.#release(connection);
               return;
             }
             connections.set(alias, connection);
@@ -465,9 +563,18 @@ export class Introspector implements ToolExecutor {
     alias: ServerAlias,
     source: ServerSource | UpstreamConnector,
     signal: AbortSignal,
+    forward: boolean,
   ): Promise<Connection> {
     if (source instanceof UpstreamConnector) {
-      return { client: await source.open(signal), owned: true, connector: source };
+      const client = await source.open(signal, { forwardElicitation: forward });
+      // A server given by URL may still speak only the 2025 era, where it
+      // cannot ask through MRTR (the connector then declared nothing).
+      return {
+        client,
+        owned: true,
+        connector: source,
+        forward: forward && client.getProtocolEra() === 'modern',
+      };
     }
     if (source instanceof McpServer) {
       if (source.isConnected()) {
@@ -479,18 +586,27 @@ export class Introspector implements ToolExecutor {
           },
         );
       }
+      // G2: an in-process server runs on Projection's own SDK copy, so it
+      // speaks 2026-07-28 for certain. A hand-connected McpServer is pinned
+      // to the 2025 era, so the server side is served the way the SDK's
+      // stdio entry serves it — one instance pinned for the connection,
+      // the era chosen by the opening exchange — over an in-memory pair.
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      const client = new Client(INTROSPECTOR_CLIENT_INFO, { capabilities: {} });
-      await source.connect(serverTransport);
+      const client = new Client(
+        INTROSPECTOR_CLIENT_INFO,
+        upstreamClientOptions(forward, { pin: MRTR_PROTOCOL_REVISION }),
+      );
+      const served = serveStdio(() => source, { transport: serverTransport, legacy: 'reject' });
+      const release = (): Promise<void> => served.close().catch(() => undefined);
       try {
         await client.connect(clientTransport);
       } catch (err) {
         // The server side is attached and nothing would ever close it:
         // release it so a failed wrap leaves the McpServer reusable.
-        await serverTransport.close().catch(() => undefined);
+        await release();
         throw err;
       }
-      return { client, owned: true };
+      return { client, owned: true, forward, release };
     }
     if (looksLikeForeignMcpServer(source)) {
       throw new ProjectionError(
@@ -501,7 +617,20 @@ export class Introspector implements ToolExecutor {
         },
       );
     }
-    return { client: source, owned: false };
+    // A caller-provided client keeps the era and capabilities its owner
+    // negotiated (D7). It forwards only when the box opted in and the
+    // connection can carry MRTR.
+    return {
+      client: source,
+      owned: false,
+      forward: forward && source.getProtocolEra() === 'modern',
+    };
+  }
+
+  /** Close what Projection opened for one connection. */
+  static async #release(connection: Connection): Promise<void> {
+    await connection.client.close().catch(() => undefined);
+    await connection.release?.();
   }
 
   static async #closeConnections(connections: Map<ServerAlias, Connection>): Promise<void> {
@@ -511,7 +640,7 @@ export class Introspector implements ToolExecutor {
         .map((connection) => {
           // Auth requests in flight (a refresh) end with the facade (R58).
           connection.connector?.close();
-          return connection.client.close().catch(() => undefined);
+          return Introspector.#release(connection);
         }),
     );
   }
@@ -571,24 +700,43 @@ export class Introspector implements ToolExecutor {
     // does not know has no definition; the server rejects it anyway.
     const toolDefinition = this.#definitions.get(alias)?.get(name);
     const connector = connection.connector;
+    // G1: on a 2026-07-28 connection Projection owns, or one whose box
+    // forwards, a server's `input_required` comes back as data
+    // (`allowInputRequired`) rather than as an SDK error or an
+    // auto-fulfilled prompt Projection never saw.
+    const manual =
+      (connection.owned || connection.forward) && connection.client.getProtocolEra() === 'modern';
+    const input = options.input;
+    const params = {
+      name,
+      arguments: args,
+      ...(input !== undefined ? { inputResponses: input.responses } : {}),
+      ...(input?.requestState !== undefined ? { requestState: input.requestState } : {}),
+    };
+    const requestOptions = {
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...progressOptions(options.onProgress, connector),
+    };
     try {
       // The SDK's return type is a union that includes a legacy
       // `{ toolResult }` compatibility shape; narrow to the modern fields.
-      const result = (await connection.client.callTool(
-        { name, arguments: args },
-        {
-          ...(toolDefinition !== undefined ? { toolDefinition } : {}),
-          ...(options.signal !== undefined ? { signal: options.signal } : {}),
-          ...progressOptions(options.onProgress, connector),
-        },
-      )) as {
-        content?: unknown;
-        structuredContent?: unknown;
-        isError?: unknown;
-      };
+      const raw: unknown = manual
+        ? await this.#callManual(connection.client, alias, name, params, toolDefinition, {
+            ...requestOptions,
+            allowInputRequired: true,
+          })
+        : await connection.client.callTool(params, {
+            ...(toolDefinition !== undefined ? { toolDefinition } : {}),
+            ...requestOptions,
+          });
+      if (isInputRequiredResult(raw)) return this.#inputOutcome(connection, name, raw);
+      const result = raw as { content?: unknown; structuredContent?: unknown; isError?: unknown };
       if (result.isError === true) {
         const message =
           errorTextFromContent(result.content) ?? `Tool "${name}" returned an error result.`;
+        // A 2025-era server asked a client that declared no elicitation
+        // capability: the call needed the user's input, not other arguments.
+        if (isSdkInputRefusal(message)) return inputRefused(name, inputMethodOf(message));
         const detail = result.structuredContent ?? result.content;
         return {
           ok: false,
@@ -605,6 +753,10 @@ export class Introspector implements ToolExecutor {
         ? { ok: true, result: redacted, rawContent: true }
         : { ok: true, result: redacted };
     } catch (err) {
+      // The server (or a caller's client) refused to ask the user: the
+      // facade's client declared no elicitation capability for this box.
+      const refusal = inputRefusalOf(err);
+      if (refusal !== undefined) return inputRefused(name, refusal);
       // A source given by URL: an auth failure is its own outcome (R25
       // `auth`), and no error text reaches the model unredacted.
       if (connector !== undefined) return connector.callFailure(name, err);
@@ -616,6 +768,115 @@ export class Introspector implements ToolExecutor {
         },
       };
     }
+  }
+
+  /**
+   * `tools/call` in manual MRTR mode. The SDK checks a tool's output schema
+   * on whatever comes back, an `input_required` included, so it is handed
+   * the definition without `outputSchema` and the check runs here, on
+   * complete results only, with the SDK's own validator and wording.
+   */
+  async #callManual(
+    client: Client,
+    alias: ServerAlias,
+    name: string,
+    params: Parameters<Client['callTool']>[0],
+    toolDefinition: Tool | undefined,
+    requestOptions: Parameters<Client['callTool']>[1],
+  ): Promise<unknown> {
+    const { outputSchema, ...withoutOutput } = toolDefinition ?? {
+      name,
+      inputSchema: { type: 'object' as const },
+    };
+    const result = (await client.callTool(params, {
+      ...requestOptions,
+      toolDefinition: withoutOutput,
+    })) as unknown;
+    if (outputSchema === undefined || isInputRequiredResult(result)) return result;
+    const complete = result as { structuredContent?: unknown; isError?: unknown };
+    if (complete.isError === true) return result;
+    if (complete.structuredContent === undefined) {
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        `Tool ${name} has an output schema but did not return structured content`,
+      );
+    }
+    const verdict = await this.#outputValidator(alias, name, outputSchema)['~standard'].validate(
+      complete.structuredContent,
+    );
+    if ('issues' in verdict && verdict.issues !== undefined) {
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
+        `Structured content does not match the tool's output schema: ${verdict.issues.map((issue) => issue.message).join('; ')}`,
+      );
+    }
+    return result;
+  }
+
+  #outputValidators = new Map<string, ReturnType<typeof fromJsonSchema>>();
+
+  #outputValidator(
+    alias: ServerAlias,
+    name: string,
+    schema: NonNullable<Tool['outputSchema']>,
+  ): ReturnType<typeof fromJsonSchema> {
+    const key = JSON.stringify([alias, name]);
+    let validator = this.#outputValidators.get(key);
+    if (validator === undefined) {
+      try {
+        validator = fromJsonSchema(schema as Parameters<typeof fromJsonSchema>[0]);
+      } catch (err) {
+        const message = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidParams,
+          `Tool '${name}' has an invalid outputSchema: ${message}`,
+        );
+      }
+      this.#outputValidators.set(key, validator);
+    }
+    return validator;
+  }
+
+  /**
+   * A server answered `input_required` (G1). A box that forwards hands the
+   * request on (redacted first for a source given by URL, S1); any other
+   * box refuses it, naming what was asked.
+   */
+  #inputOutcome(
+    connection: Connection,
+    name: string,
+    raw: { inputRequests?: unknown; requestState?: unknown },
+  ): ToolCallOutcome {
+    const requests = isRecordValue(raw.inputRequests) ? raw.inputRequests : {};
+    const methods = Object.values(requests).map((request) =>
+      isRecordValue(request) && typeof request['method'] === 'string'
+        ? request['method']
+        : 'an unknown request',
+    );
+    if (!connection.forward) return inputRefused(name, methods[0] ?? 'elicitation/create');
+    const upstreamInput: UpstreamInputRequest = { requests };
+    const state = raw.requestState;
+    if (typeof state === 'string') upstreamInput.requestState = state;
+    const connector = connection.connector;
+    if (connector !== undefined) {
+      // S1: the question is shown to the human, and the state is sealed
+      // into a blob; neither may carry a credential the server was sent.
+      // The state must round-trip byte-exact, so one that would need
+      // redacting is refused instead of altered.
+      if (upstreamInput.requestState !== undefined) {
+        if (connector.redact(upstreamInput.requestState) !== upstreamInput.requestState) {
+          return inputRefused(name, methods[0] ?? 'elicitation/create');
+        }
+      }
+      upstreamInput.requests = connector.redact(requests);
+    }
+    return {
+      ok: false,
+      error: {
+        message: `Tool "${name}" asked the user for input, which was not passed on to the user.`,
+      },
+      upstreamInput,
+    };
   }
 
   /**

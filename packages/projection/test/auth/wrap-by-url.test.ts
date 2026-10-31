@@ -335,7 +335,10 @@ describe('credentials echoed by the upstream never surface (S1, R59)', () => {
     const { store, record } = await storeWith(fake);
     const err = await wrapFailure(() => wrapUrl(fake, store));
     expect(err.phase).toBe('protocol');
-    expect(err.message).toContain('[redacted]');
+    // The 2026-07-28 version probe (G2) reports the status without quoting
+    // the body; whatever the error does quote must be scrubbed (the
+    // call-time case below exercises the scrubber on a quoted body).
+    expect(err.message).toContain('HTTP 500');
     expect(dump(err)).not.toContain(record.access_token);
     expect(err.cause).toBeUndefined();
   });

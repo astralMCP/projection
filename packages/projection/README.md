@@ -41,6 +41,13 @@ over the mode. The mode extends the trust Projection places in
 `readOnlyHint` to `destructiveHint: false`, and a hostile server can
 mislabel a damaging tool — enable it only for servers you trust.
 
+`upstreamElicitation: 'forward'` lets a trusted wrapped server ask the user
+questions mid-call (a form, or a link to open): each is relayed over MRTR as
+`Question from <box> (not an approval)` with the server's words quoted and
+its form allowlisted, after the call itself passed the approval gate. The
+default, `'refuse'`, fails such a call with a result telling the model the
+tool needs the user's input. Per box on `wrapMcpServers`.
+
 All suspension state rides the MRTR `requestState` payload, so Projection is
 fully stateless: any server instance can resume any workflow.
 
@@ -54,6 +61,7 @@ const facade = await wrapMcpServer(myMcpServer, {
   blob: { key: myThirtyTwoByteKey }, // shared across instances
   policy: { query: 'ask' }, // override annotations per tool
   // approvals: 'destructive-only', // skip approval for destructiveHint: false writes (trusted servers only)
+  // upstreamElicitation: 'forward', // pass the server's own questions on to the user (trusted servers only)
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
 

@@ -226,12 +226,50 @@ shorter than machine blobs: once approved there is no further step, so a
 captured approved retry is a standing capability until it expires (see
 "Lifecycle" on replay).
 
-If one of your tools raises its own elicitation mid-call, it is refused:
-Projection's introspector client declares no `elicitation` capability, so the
-upstream request fails with a named error and the machine receives an ordinary
-`TOOL_ERROR` (through `call_tool`, an `upstream` error). Projection never
-forwards upstream elicitations (D7). If you pass your own connected `Client`,
-its elicitation handlers are yours to govern.
+### Your tools asking the user something
+
+Projection speaks MCP 2026-07-28 to the servers it wraps: an in-process
+`McpServer` always, a server given by URL when it supports that revision
+(otherwise the 2025 handshake, as before). A tool can then ask its user a
+question mid-call by returning `inputRequired(...)`: a form, or a link to
+open (URL mode).
+
+By default (`upstreamElicitation: 'refuse'`) Projection declares no
+`elicitation` capability to your server, so a tool that asks fails: the
+machine gets a `TOOL_ERROR`, and `call_tool` an `upstream` error whose hint
+tells the model the arguments were fine and the tool needs the user's input.
+Sampling and roots requests are refused the same way, always.
+
+Opt in per server with `upstreamElicitation: 'forward'` (on `wrapMcpServer`'s
+options, or per box in a `wrapMcpServers` source configuration). The question
+is then relayed to the human over MRTR, after the call itself passed the
+approval gate:
+
+- The prompt reads `Question from <alias> (not an approval)` (`Link from …`
+  for a URL; `the server` on a single-server facade), names the tool, and
+  quotes your message line by line (`│ …`), neutralized and capped at 1,000
+  characters and 12 lines. Write a short, plain question; formatting does
+  not survive.
+- Your `requestedSchema` is reduced to the elicitation primitives (string,
+  number, integer, boolean, single- and multi-select of string options), at
+  most 12 fields whose names are identifiers; titles are capped at 100
+  characters and descriptions at 300. The answer you get back carries only
+  those fields.
+- A URL must be `https:` without credentials (`http:` only on loopback). The
+  prompt shows its origin; a client without URL-mode support gets the link as
+  text in a form with a "done" checkbox, and accepting sends no content.
+- `decline` and `cancel` reach you as such; an unanswered question arrives as
+  `cancel`. Your `requestState` comes back byte-exact on the retry: it rides
+  sealed inside Projection's own blob (keep it under 16 KB). Ask at most 4
+  questions per round; each round counts against the round-trip cap.
+- In a machine, the step waits on your question like an approval: the
+  workflow suspends, and the step's `TOOL_RESULT` is your final result.
+
+Only push-free MRTR questions can be forwarded: a server that speaks only the
+2025 era would have to hold its call open across the human's answer, which a
+stateless facade cannot do (D7). If you pass your own connected `Client`, its
+era and handlers are yours to govern; forwarding then works only when that
+client negotiated 2026-07-28.
 
 ## Several servers behind one facade (preview)
 

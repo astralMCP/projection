@@ -60,6 +60,7 @@ export interface CatalogHandlers {
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
 }
 
@@ -69,6 +70,7 @@ export interface CodeModeHandlers {
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
   discoverApis(): CallToolResult;
 }
@@ -181,6 +183,7 @@ export function registerCatalogTools(
         },
         era,
         clientCanElicit(server),
+        clientUrlElicitation(server),
       ),
   );
 }
@@ -290,6 +293,7 @@ export function registerCodeModeTools(
         },
         era,
         clientCanElicit(server),
+        clientUrlElicitation(server),
       ),
   );
 
@@ -347,6 +351,14 @@ function clientCanElicit(server: McpServer): boolean | undefined {
   return (
     elicitation !== undefined && (elicitation.form !== undefined || elicitation.url === undefined)
   );
+}
+
+/**
+ * Whether the client declared URL-mode elicitation (G1: a forwarded link is
+ * sent in URL mode only then). Read per call, like {@link clientCanElicit}.
+ */
+function clientUrlElicitation(server: McpServer): boolean {
+  return server.server.getClientCapabilities()?.elicitation?.url !== undefined;
 }
 
 /**

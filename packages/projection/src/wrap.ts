@@ -42,6 +42,7 @@ import { callTool, describeTool, searchTools, type CallToolArgs } from './catalo
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
+  assertUpstreamElicitationMode,
   freezePolicySettings,
   resolveIntrospectTimeout,
   resolveProjections,
@@ -96,12 +97,15 @@ export interface ProjectionFacade {
   /**
    * Run `execute_machine` for one `tools/call`, first attempt or retry.
    * `clientCanElicit` reports whether the connected client declared the
-   * `elicitation` capability (legacy compat only; omit when unknown).
+   * `elicitation` capability (legacy compat only; omit when unknown), and
+   * `clientUrlElicitation` whether it declared URL mode (a forwarded
+   * server link, G1, is otherwise shown as text in a form).
    */
   executeMachine(
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
   /** Run `discover_apis`. */
   discoverApis(): CallToolResult;
@@ -111,12 +115,13 @@ export interface ProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult;
   /**
    * Run `call_tool` (R35) for one `tools/call`, first attempt or retry.
-   * `era` / `clientCanElicit` as for `executeMachine`.
+   * `era`, `clientCanElicit` and `clientUrlElicitation` as for `executeMachine`.
    */
   callTool(
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
   /** The projections this facade serves (R32). Frozen: fixed at wrap time. */
   readonly projections: Readonly<ProjectionSelection>;
@@ -185,6 +190,7 @@ export async function wrapMcpServer(
   const projections = resolveProjections(options.projections);
   const approvals = assertApprovalsMode(options.approvals);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
+  const upstreamElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)
     ? new UpstreamConnector(
@@ -199,6 +205,9 @@ export async function wrapMcpServer(
     {
       timeoutMs: introspectTimeoutMs,
       describe: () => connector?.where ?? 'the wrapped server',
+      ...(upstreamElicitation === 'forward'
+        ? { forwardElicitation: new Set([DEFAULT_SERVER_ALIAS]) }
+        : {}),
     },
   );
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
@@ -282,9 +291,10 @@ class Facade implements ProjectionFacade {
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
     return executeMachine(args, {
-      ...this.gateDeps(era, clientCanElicit),
+      ...this.gateDeps(era, clientCanElicit, clientUrlElicitation),
       bridgeSource: this.deps.bridgeSource,
     });
   }
@@ -293,8 +303,9 @@ class Facade implements ProjectionFacade {
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
-    return callTool(args, this.gateDeps(era, clientCanElicit));
+    return callTool(args, this.gateDeps(era, clientCanElicit, clientUrlElicitation));
   }
 
   /**
@@ -305,6 +316,7 @@ class Facade implements ProjectionFacade {
   private gateDeps(
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
+    clientUrlElicitation?: boolean,
   ): ApprovalGateDeps {
     return approvalGateDeps({
       catalog: this.deps.catalog,
@@ -314,6 +326,7 @@ class Facade implements ProjectionFacade {
       policySettings: this.deps.policySettings,
       era,
       clientCanElicit,
+      clientUrlElicitation,
     });
   }
 

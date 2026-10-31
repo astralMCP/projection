@@ -23,6 +23,7 @@ import {
   wrapMcpServers,
   type MultiProjectionFacade,
   type ProjectionFacade,
+  type WrapOptions,
 } from '../../src/index.js';
 import { MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
 import {
@@ -48,9 +49,29 @@ interface Session {
   probe: ProbeEvent[];
   /** Every elicitation message that reached the human (the client's handler). */
   prompts: string[];
+  /** Every elicitation request's params, as the human's client received them. */
+  requests: Record<string, unknown>[];
   /** Every `notifications/message` the client received. */
   logs: unknown[];
+  /** How the human answers a forwarded question (default: accept, answer "blue"). */
+  human: {
+    action: 'accept' | 'decline' | 'cancel';
+    content?: Record<string, string | number | boolean | string[]>;
+  };
 }
+
+type SessionState = Omit<Session, 'client' | 'probe'>;
+
+function newSessionState(): SessionState {
+  return {
+    prompts: [],
+    requests: [],
+    logs: [],
+    human: { action: 'accept', content: { answer: 'blue' } },
+  };
+}
+
+const FORWARD = { upstreamElicitation: 'forward' } as const;
 
 let facades: (ProjectionFacade | MultiProjectionFacade)[] = [];
 let clients: Client[] = [];
@@ -62,21 +83,30 @@ afterEach(async () => {
   facades = [];
 });
 
-function newClient(modern: boolean, session: Omit<Session, 'client' | 'probe'>): Client {
+function newClient(modern: boolean, session: SessionState, url = true): Client {
   const client = new Client(
     { name: 'conformance', version: '1.0.0' },
     {
       capabilities: {
-        elicitation: modern ? { form: {}, url: {} } : {},
+        elicitation: modern ? { form: {}, ...(url ? { url: {} } : {}) } : {},
         sampling: {},
         roots: {},
       },
       ...(modern ? { versionNegotiation: { mode: { pin: MRTR_PROTOCOL_REVISION } } } : {}),
     },
   );
-  // The human: approves everything, and records what it was shown.
+  // The human: approves every approval, answers every forwarded question as
+  // `session.human` says, and records what it was shown.
   client.setRequestHandler('elicitation/create', (request) => {
-    session.prompts.push((request.params as { message: string }).message);
+    const params = request.params as { message: string; mode?: string };
+    session.prompts.push(params.message);
+    session.requests.push(params as Record<string, unknown>);
+    if (/^(Question|Link) from /.test(params.message)) {
+      const { action, content } = session.human;
+      return params.mode === 'url' || content === undefined || action !== 'accept'
+        ? { action }
+        : { action, content };
+    }
     return { action: 'accept', content: {} };
   });
   client.setRequestHandler('roots/list', () => ({ roots: [{ uri: 'file:///work' }] }));
@@ -90,40 +120,49 @@ function newClient(modern: boolean, session: Omit<Session, 'client' | 'probe'>):
 async function overHttp(
   facade: ProjectionFacade | MultiProjectionFacade,
   probe: ProbeEvent[],
+  url = true,
 ): Promise<Session> {
   facades.push(facade);
   const handler = createMcpHandler(facade.serverFactory);
-  const session = { prompts: [] as string[], logs: [] as unknown[] };
-  const client = newClient(true, session);
+  const session = newSessionState();
+  const client = newClient(true, session, url);
   await client.connect(
     new StreamableHTTPClientTransport(ENDPOINT, {
       fetch: (url, init) => handler.fetch(new Request(url, init)),
     }),
   );
-  return { client, probe, ...session };
+  return Object.assign(session, { client, probe });
 }
 
-async function modernSingle(): Promise<Session> {
+async function modernSingle(
+  options: Partial<WrapOptions> = {},
+  clientUrl = true,
+): Promise<Session> {
   const up = everythingServer();
-  return overHttp(await wrapMcpServer(up.server, { blob: { key: KEY } }), up.probe);
+  return overHttp(
+    await wrapMcpServer(up.server, { blob: { key: KEY }, ...options }),
+    up.probe,
+    clientUrl,
+  );
 }
 
-async function legacySingle(): Promise<Session> {
+async function legacySingle(options: Partial<WrapOptions> = {}): Promise<Session> {
   const up = everythingServer();
   const facade = await wrapMcpServer(up.server, {
     blob: { key: KEY },
     compat: { legacyElicitation: true },
+    ...options,
   });
   facades.push(facade);
-  const session = { prompts: [] as string[], logs: [] as unknown[] };
+  const session = newSessionState();
   const client = newClient(false, session);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await facade.createServer().connect(serverTransport);
   await client.connect(clientTransport);
-  return { client, probe: up.probe, ...session };
+  return Object.assign(session, { client, probe: up.probe });
 }
 
-async function modernMulti(): Promise<Session> {
+async function modernMulti(forwardEvery = false): Promise<Session> {
   const up = everythingServer();
   const paged = paginatedServer();
   const pagedClient = new Client({ name: 'paged-client', version: '1.0.0' });
@@ -132,7 +171,10 @@ async function modernMulti(): Promise<Session> {
   await paged.connect(b);
   await pagedClient.connect(a);
   return overHttp(
-    await wrapMcpServers({ every: up.server, paged: pagedClient }, { blob: { key: KEY } }),
+    await wrapMcpServers(
+      { every: forwardEvery ? { source: up.server, ...FORWARD } : up.server, paged: pagedClient },
+      { blob: { key: KEY } },
+    ),
     up.probe,
   );
 }
@@ -172,6 +214,11 @@ export default setup({}).createMachine({
   },
   output: ({ context }) => context,
 });`;
+}
+
+/** The lines of a prompt that are NOT the server's quoted words. */
+function ownLines(prompt: string): string[] {
+  return prompt.split('\n').filter((line) => !line.startsWith('│ '));
 }
 
 async function runMachine(s: Session, tool: string): Promise<Record<string, unknown>> {
@@ -339,21 +386,23 @@ describe('single facade, 2026-07-28 client', () => {
     expect(s.logs).toEqual([]);
   });
 
-  describe('upstream input requests (dropped: an upstream-phase error, never a prompt)', () => {
-    for (const [tool, method] of [
-      ['ask_user', 'elicitation/create'],
-      ['ask_url', 'elicitation/create'],
-      ['summarize', 'sampling/createMessage'],
-      ['list_roots', 'roots/list'],
+  describe('upstream input requests, refused (the default): an upstream-phase error, never a prompt', () => {
+    for (const [tool, method, asked] of [
+      ['ask_user', 'elicitation/create', 'the user for input'],
+      ['ask_url', 'elicitation/create', 'the user for input'],
+      ['summarize', 'sampling/createMessage', 'a model completion'],
+      ['list_roots', 'roots/list', 'its roots'],
     ] as const) {
       it(`${tool} (${method})`, async () => {
         const s = await modernSingle();
         const result = await call(s, tool, tool === 'summarize' ? { text: 'hi' } : {});
         expect(result.isError).toBe(true);
         expect(result.structuredContent?.['phase']).toBe('upstream');
-        expect(String(result.structuredContent?.['message'])).toContain(method);
-        // The introspector's upstream connection declares no client capability.
-        expect(String(result.structuredContent?.['message'])).toContain('2025-era');
+        expect(String(result.structuredContent?.['message'])).toContain(asked);
+        // G1 interim fix: the hint no longer blames the arguments.
+        const hint = String(result.structuredContent?.['hint']);
+        expect(hint).toContain('Nothing is wrong with the arguments');
+        expect(hint).not.toContain('Check the arguments');
         expect(s.prompts).toEqual([]);
       });
     }
@@ -375,14 +424,147 @@ describe('single facade, 2026-07-28 client', () => {
       expect(s.prompts[0]).toMatch(/^Approve: unannotated write/);
       for (const prompt of s.prompts) expect(prompt).not.toContain(SPOOFED_APPROVAL);
     });
-
-    it.todo(
-      'forward an upstream form elicitation to the human through MRTR, attributed to the box and visibly not an approval (proposal G1)',
-    );
-    it.todo('forward upstream URL-mode elicitation (proposal G1)');
-    it.todo('forward upstream sampling and roots requests (proposal G6)');
   });
 
+  describe("upstream questions, forwarded (upstreamElicitation: 'forward', G1)", () => {
+    it('form: attributed, visibly not an approval, the spoofed copy quoted; the answer reaches the server', async () => {
+      const s = await modernSingle(FORWARD);
+      const result = await call(s, 'ask_user');
+      expect(result.structuredContent).toEqual({
+        status: 'ok',
+        tool: 'ask_user',
+        output: 'you said blue',
+      });
+      expect(s.prompts).toHaveLength(1);
+      const prompt = s.prompts[0] ?? '';
+      expect(prompt.split('\n')[0]).toBe('Question from the server (not an approval)');
+      // S6: every line of the server's words is quoted; none of Projection's
+      // own lines looks like an approval.
+      for (const line of SPOOFED_APPROVAL.split('\n')) {
+        if (line !== '') expect(prompt).toContain(`│ ${line}`);
+      }
+      for (const line of ownLines(prompt)) expect(line).not.toMatch(/Approve|^Tool:/);
+      // The server's own requestState came back byte-exact (stateless resume).
+      expect(s.probe).toContainEqual({
+        kind: 'state-echo',
+        tool: 'ask_user',
+        state: 'ask_user-state-1',
+      });
+    });
+
+    it('the server is spoken to on 2026-07-28 with the elicitation capability (G2)', async () => {
+      const s = await modernSingle(FORWARD);
+      await call(s, 'ask_user');
+      expect(s.probe).toContainEqual({ kind: 'client-era', tool: 'ask_user', envelope: true });
+    });
+
+    it('decline and cancel go back to the server as decline and cancel', async () => {
+      for (const action of ['decline', 'cancel'] as const) {
+        const s = await modernSingle(FORWARD);
+        s.human = { action };
+        const result = await call(s, 'ask_user');
+        expect(result.structuredContent?.['output']).toBe(`you chose ${action}`);
+      }
+    });
+
+    it('URL mode: sent as URL mode with the origin shown; the link is the url field', async () => {
+      const s = await modernSingle(FORWARD);
+      const result = await call(s, 'ask_url');
+      expect(result.structuredContent?.['output']).toBe('url flow accept');
+      const request = s.requests[0] ?? {};
+      expect(request['mode']).toBe('url');
+      expect(request['url']).toBe('https://upstream.example.test/connect?step=1');
+      const message = String(request['message']);
+      expect(message.split('\n')[0]).toBe('Link from the server (not an approval)');
+      expect(message).toContain('Opens: https://upstream.example.test\n');
+    });
+
+    it('URL mode to a form-only client: the link as inert text in a form', async () => {
+      const s = await modernSingle(FORWARD, false);
+      const result = await call(s, 'ask_url');
+      expect(result.structuredContent?.['output']).toBe('url flow accept');
+      const request = s.requests[0] ?? {};
+      expect(request['mode']).not.toBe('url');
+      expect(String(request['message'])).toContain(
+        'Link: https://upstream.example.test/connect?step=1',
+      );
+    });
+
+    it('a link that is not https: is refused, not shown', async () => {
+      const s = await modernSingle(FORWARD);
+      const result = await call(s, 'ask_bad_url');
+      expect(result.structuredContent?.['phase']).toBe('upstream');
+      expect(String(result.structuredContent?.['hint'])).toContain(
+        'Nothing is wrong with the arguments',
+      );
+      expect(s.prompts).toEqual([]);
+    });
+
+    it('sampling and roots are never forwarded, even when questions are', async () => {
+      const s = await modernSingle(FORWARD);
+      for (const tool of ['summarize', 'list_roots']) {
+        const result = await call(s, tool, tool === 'summarize' ? { text: 'hi' } : {});
+        expect(result.structuredContent?.['phase']).toBe('upstream');
+      }
+      expect(s.prompts).toEqual([]);
+    });
+
+    it('no pass-through: a gated tool is approved first, then its question is asked within the same call', async () => {
+      const s = await modernSingle(FORWARD);
+      const result = await call(s, 'gated_ask', { note: 'n' });
+      expect(result.structuredContent?.['output']).toBe('wrote n to blue');
+      expect(s.prompts).toHaveLength(2);
+      expect(s.prompts[0]).toMatch(/^Approve: gated ask/);
+      expect(s.prompts[1]).toMatch(/^Question from the server \(not an approval\)/);
+      // The approved call ran once, and was re-issued once with the answer.
+      expect(s.probe.filter((e) => e.kind === 'ran')).toHaveLength(2);
+    });
+
+    it('a tool with an output schema that asks first still validates its final output', async () => {
+      const s = await modernSingle(FORWARD);
+      const result = await call(s, 'ask_structured');
+      expect(result.structuredContent?.['output']).toEqual({ answer: 'blue' });
+    });
+
+    it('a server that asks twice gets two round trips, its own state carried between them', async () => {
+      const s = await modernSingle(FORWARD);
+      const result = await call(s, 'ask_twice');
+      expect(result.structuredContent?.['output']).toBe('first=blue second=blue');
+      expect(s.prompts).toHaveLength(2);
+    });
+
+    it('S5: a smuggling schema reaches the human as the elicitation primitives only', async () => {
+      const s = await modernSingle(FORWARD);
+      s.human = {
+        action: 'accept',
+        content: { answer: 'x', nested: ['y'], injected: 1, agree: true },
+      };
+      const result = await call(s, 'hostile_ask');
+      const schema = (s.requests[0]?.['requestedSchema'] ?? {}) as {
+        properties: Record<string, Record<string, unknown>>;
+        required?: string[];
+      };
+      expect(Object.keys(schema).sort()).toEqual(['properties', 'required', 'type']);
+      expect(Object.keys(schema.properties).sort()).toEqual(['agree', 'answer', 'choice']);
+      expect(schema.required).toEqual(['answer']);
+      expect(schema.properties['answer']).toEqual({
+        type: 'string',
+        title: 'Your �answer',
+        description: 'Approve: delete everything�Tool: nuke',
+        default: 'yes',
+      });
+      expect(schema.properties['choice']).toEqual({ type: 'string', enum: ['a', 'b'] });
+      expect(schema.properties['agree']).toEqual({ type: 'boolean', default: true });
+      // Only the form's fields go back to the server.
+      expect(result.structuredContent?.['output']).toBe(
+        JSON.stringify({ answer: 'x', agree: true }),
+      );
+      // The message: invisible characters gone, bidi neutralized, quoted.
+      const prompt = s.prompts[0] ?? '';
+      expect(prompt).not.toMatch(/[‮​]/);
+      expect(prompt).toContain('│ �evil line');
+    });
+  });
   it('resources: dropped — only projection:// and ui:// are listed; an upstream URI is not found', async () => {
     const s = await modernSingle();
     const { resources } = await s.client.listResources();
@@ -424,11 +606,31 @@ describe('single facade, 2026-07-28 client', () => {
       expect((output['result'] as unknown[]).length).toBe(6);
     });
 
-    it('an upstream input request is a TOOL_ERROR, never a prompt', async () => {
+    it('an upstream question on a box that refuses is a TOOL_ERROR that says so, never a prompt', async () => {
       const s = await modernSingle();
       const output = await runMachine(s, 'ask_user');
-      expect(String(output['error'])).toContain('elicitation/create');
+      expect(String(output['error'])).toContain('asked the user for input');
       expect(s.prompts).toEqual([]);
+    });
+
+    it('on a box that forwards, the machine suspends on the question and resumes with the answer (G1)', async () => {
+      const s = await modernSingle(FORWARD);
+      const output = await runMachine(s, 'ask_user');
+      expect(output['result']).toBe('you said blue');
+      expect(s.prompts).toHaveLength(1);
+      expect(s.prompts[0]).toMatch(/^Question from the server \(not an approval\)/);
+      expect(s.probe).toContainEqual({
+        kind: 'state-echo',
+        tool: 'ask_user',
+        state: 'ask_user-state-1',
+      });
+    });
+
+    it('a declined question reaches the server as a decline; the machine gets its result', async () => {
+      const s = await modernSingle(FORWARD);
+      s.human = { action: 'decline' };
+      const output = await runMachine(s, 'ask_user');
+      expect(output['result']).toBe('you chose decline');
     });
 
     it('progress from a machine step is not relayed', async () => {
@@ -448,9 +650,34 @@ describe('single facade, 2026-07-28 client', () => {
   it.todo(
     'expose upstream openWorldHint, tool title and icons on describe_tool / search (proposal G8)',
   );
-  it.todo(
-    'speak 2026-07-28 to the upstream (the introspector negotiates legacy today; proposal G2)',
-  );
+  it('speaks 2026-07-28 to an in-process upstream, declaring no elicitation capability by default (G2)', async () => {
+    const s = await modernSingle();
+    await call(s, 'ask_user');
+    expect(s.probe).toContainEqual({ kind: 'client-era', tool: 'ask_user', envelope: true });
+  });
+
+  it('a legacy-era upstream (a caller Client on the 2025 handshake) keeps working (G2)', async () => {
+    const up = everythingServer();
+    const legacyClient = new Client({ name: 'legacy-upstream-client', version: '1.0.0' });
+    clients.push(legacyClient);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await up.server.connect(b);
+    await legacyClient.connect(a);
+    expect(legacyClient.getProtocolEra()).toBe('legacy');
+    const s = await overHttp(
+      await wrapMcpServer(legacyClient, { blob: { key: KEY }, ...FORWARD }),
+      up.probe,
+    );
+    const weather = await call(s, 'get_weather', { city: 'Oslo' });
+    expect(weather.structuredContent?.['status']).toBe('ok');
+    // Its question cannot be forwarded on the 2025 era (D7): refused, not prompted.
+    const asked = await call(s, 'ask_user');
+    expect(asked.structuredContent?.['phase']).toBe('upstream');
+    expect(String(asked.structuredContent?.['hint'])).toContain(
+      'Nothing is wrong with the arguments',
+    );
+    expect(s.prompts).toEqual([]);
+  });
 });
 
 describe('single facade, held legacy-era client', () => {
@@ -472,6 +699,22 @@ describe('single facade, held legacy-era client', () => {
     const s = await legacySingle();
     const result = await call(s, 'ask_user');
     expect(result.structuredContent?.['phase']).toBe('upstream');
+    expect(s.prompts).toEqual([]);
+  });
+
+  it('a forwarded question reaches a legacy client through the opted-in shim, as the question copy', async () => {
+    const s = await legacySingle(FORWARD);
+    const result = await call(s, 'ask_user');
+    expect(result.structuredContent?.['output']).toBe('you said blue');
+    expect(s.prompts[0]).toMatch(/^Question from the server \(not an approval\)/);
+  });
+
+  it('without the shim opt-in a legacy client gets a protocol error naming the revision', async () => {
+    const s = await legacySingle({ ...FORWARD, compat: {} });
+    const result = await call(s, 'ask_user');
+    expect(result.structuredContent?.['phase']).toBe('protocol');
+    expect(String(result.structuredContent?.['message'])).toContain(MRTR_PROTOCOL_REVISION);
+    expect(String(result.structuredContent?.['message'])).toContain('question');
     expect(s.prompts).toEqual([]);
   });
 
@@ -530,6 +773,14 @@ describe('multi-server facade (two boxes), 2026-07-28 client', () => {
       'every.slow_count: step 2',
       'every.slow_count: step 3',
     ]);
+  });
+
+  it('a forwarding box: the question names the box by its host alias, never shaped like an approval (S6)', async () => {
+    const s = await modernMulti(true);
+    const result = await call(s, 'every.ask_user');
+    expect(result.structuredContent?.['output']).toBe('you said blue');
+    expect(s.prompts[0]?.split('\n')[0]).toBe('Question from every (not an approval)');
+    expect(s.prompts[0]).toContain('while running the tool "every.ask_user"');
   });
 
   it('approval copy names the box by its host alias; upstream questions never reach the human (S6)', async () => {

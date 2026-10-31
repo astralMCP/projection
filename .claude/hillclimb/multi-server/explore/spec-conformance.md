@@ -2,8 +2,12 @@
 
 Target: MCP 2026-07-28 through SDK v2.4.0 (`@modelcontextprotocol/{client,server}`).
 Evidence: `packages/projection/test/conformance/everything-server.ts` (the
-upstream fake) and `spec-conformance.test.ts` (35 passing assertions, 9
-`it.todo` gaps). Zero API spend: everything runs in-process.
+upstream fake), `spec-conformance.test.ts` (53 passing, 5 `it.todo` gaps),
+`upstream-era.test.ts` (G2 over HTTP) and `test/mrtr/upstream-input.test.ts`
+(G1 security). Zero API spend: everything runs in-process.
+
+**Update (branch `feat-upstream-elicitation`): G1 and G2 are fixed** (PRD
+R63, R64; DECISIONS D23). Rows marked **F1** / **F2** below changed.
 
 Fixed design point: approvals (MRTR elicitation from tool annotations plus
 integrator policy) are unchanged by everything below. Gap ranking weighs the
@@ -23,10 +27,11 @@ tokens).
 - `logging/setLevel` and `resources/subscribe` are not on the modern wire
   (log level travels in request `_meta`; subscriptions use
   `subscriptions/listen`). A modern client gets a local SDK error for both.
-- **Projection's introspector negotiates the legacy era with every upstream**
-  (`new Client(..., { capabilities: {} })` with no `versionNegotiation`). The
-  upstream sees a 2025-era client with no capabilities. This drives several
-  rows below.
+- ~~**Projection's introspector negotiates the legacy era with every upstream**~~
+  Fixed (G2): owned clients speak 2026-07-28 (in-process: pinned, served
+  through `serveStdio` over an in-memory pair; by URL: `'auto'` with 2025
+  fallback), auto-fulfilment off, elicitation declared only on forwarding
+  boxes.
 
 ## Matrix
 
@@ -36,42 +41,50 @@ branch. Columns: single facade (`wrapMcpServer`), multi facade
 (`wrapMcpServers`, two boxes), the `call_tool` path, and code mode
 (`execute_machine`).
 
-| Upstream feature                                        | single                                                       | multi                                                          | call_tool                                                    | execute_machine          |
-| ------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------ |
-| Tools listed as direct tools                            | D (by design, R1)                                            | D (R1)                                                         | n/a                                                          | n/a                      |
-| Server `instructions`                                   | P verbatim + preamble                                        | T: shelf line quoted and attributed; full text in box overview | n/a                                                          | n/a                      |
-| Server title / icons / serverInfo                       | D                                                            | D                                                              | n/a                                                          | n/a                      |
-| `tools/list` pagination                                 | P (bounded, D12)                                             | P                                                              | last-page tool callable                                      | P                        |
-| `outputSchema`                                          | T: allowlisted in `describe_tool`; typegen                   | T                                                              | n/a                                                          | T: `.d.ts` Output type   |
-| `structuredContent`                                     | —                                                            | —                                                              | T: `{status, tool, output}`                                  | T: `TOOL_RESULT.result`  |
-| text content                                            | —                                                            | —                                                              | T: text, neutralized                                         | P (string)               |
-| image / audio                                           | —                                                            | —                                                              | **F**: native blocks (was base64 JSON in text)               | T: raw array with base64 |
-| embedded resource (text / blob)                         | —                                                            | —                                                              | **F**: text inline under URI; blob native                    | T: raw array             |
-| `resource_link`                                         | —                                                            | —                                                              | **F**: described, not attached (facade cannot serve the URI) | T: raw array             |
-| annotations readOnly / destructive / idempotent / title | P (drive policy)                                             | P                                                              | P in `describe_tool`                                         | P (posture in `.d.ts`)   |
-| `openWorldHint`                                         | D                                                            | D                                                              | D                                                            | D                        |
-| missing annotations                                     | T: `ask` (S5)                                                | T                                                              | approval prompt                                              | approval prompt          |
-| tool `title` / `icons`                                  | D                                                            | D                                                              | D                                                            | D                        |
-| progress notifications                                  | —                                                            | —                                                              | **F**: relayed, `<tool>: msg`, neutralized, capped           | D                        |
-| logging (`notifications/message`)                       | D (facade declares no `logging`)                             | D                                                              | D                                                            | D                        |
-| upstream form elicitation                               | E                                                            | E                                                              | E upstream, no prompt                                        | E TOOL_ERROR             |
-| upstream URL elicitation                                | E                                                            | E                                                              | E                                                            | E                        |
-| push-style `elicitInput`                                | E                                                            | E                                                              | E                                                            | E                        |
-| sampling (`createMessage`)                              | E                                                            | E                                                              | E                                                            | E                        |
-| roots (`roots/list`)                                    | E                                                            | E                                                              | E                                                            | E                        |
-| cancellation                                            | —                                                            | —                                                              | **F**: abort reaches upstream                                | D (call runs on)         |
-| resources list / templates / read                       | D (`resources/read` not found)                               | D (box overviews only)                                         | n/a                                                          | n/a                      |
-| resource subscribe / updated                            | D                                                            | D                                                              | n/a                                                          | n/a                      |
-| prompts list / get                                      | D (workflow prompts only)                                    | D                                                              | n/a                                                          | n/a                      |
-| completions                                             | E Method not found                                           | E                                                              | n/a                                                          | n/a                      |
-| `tools/list_changed` add                                | D: new tool unknown (`validate`)                             | D (R47)                                                        | validate error                                               | TOOL_ERROR               |
-| `tools/list_changed` remove                             | D: stale entry; call fails upstream                          | D                                                              | upstream error                                               | TOOL_ERROR               |
-| tasks                                                   | n/a (deleted in 2026-07-28)                                  | n/a                                                            | n/a                                                          | n/a                      |
-| Legacy-era client                                       | same as modern for reads; gated calls via shim when opted in | same                                                           | same, F fixes hold                                           | same                     |
+| Upstream feature                                        | single                                                         | multi                                                          | call_tool                                                                                        | execute_machine                   |
+| ------------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------- |
+| Tools listed as direct tools                            | D (by design, R1)                                              | D (R1)                                                         | n/a                                                                                              | n/a                               |
+| Server `instructions`                                   | P verbatim + preamble                                          | T: shelf line quoted and attributed; full text in box overview | n/a                                                                                              | n/a                               |
+| Server title / icons / serverInfo                       | D                                                              | D                                                              | n/a                                                                                              | n/a                               |
+| `tools/list` pagination                                 | P (bounded, D12)                                               | P                                                              | last-page tool callable                                                                          | P                                 |
+| `outputSchema`                                          | T: allowlisted in `describe_tool`; typegen                     | T                                                              | n/a                                                                                              | T: `.d.ts` Output type            |
+| `structuredContent`                                     | —                                                              | —                                                              | T: `{status, tool, output}`                                                                      | T: `TOOL_RESULT.result`           |
+| text content                                            | —                                                              | —                                                              | T: text, neutralized                                                                             | P (string)                        |
+| image / audio                                           | —                                                              | —                                                              | **F**: native blocks (was base64 JSON in text)                                                   | T: raw array with base64          |
+| embedded resource (text / blob)                         | —                                                              | —                                                              | **F**: text inline under URI; blob native                                                        | T: raw array                      |
+| `resource_link`                                         | —                                                              | —                                                              | **F**: described, not attached (facade cannot serve the URI)                                     | T: raw array                      |
+| annotations readOnly / destructive / idempotent / title | P (drive policy)                                               | P                                                              | P in `describe_tool`                                                                             | P (posture in `.d.ts`)            |
+| `openWorldHint`                                         | D                                                              | D                                                              | D                                                                                                | D                                 |
+| missing annotations                                     | T: `ask` (S5)                                                  | T                                                              | approval prompt                                                                                  | approval prompt                   |
+| tool `title` / `icons`                                  | D                                                              | D                                                              | D                                                                                                | D                                 |
+| progress notifications                                  | —                                                              | —                                                              | **F**: relayed, `<tool>: msg`, neutralized, capped                                               | D                                 |
+| logging (`notifications/message`)                       | D (facade declares no `logging`)                               | D                                                              | D                                                                                                | D                                 |
+| upstream form elicitation                               | **F1**: refused by default (correct hint); `forward` relays it | **F1**: per box                                                | **F1**: `Question from <box> (not an approval)`, schema allowlisted                              | **F1**: machine suspends, resumes |
+| upstream URL elicitation                                | **F1**: as form row; origin shown, https only                  | **F1**                                                         | **F1**: URL mode, or link-in-form for form-only clients                                          | **F1**                            |
+| push-style `elicitInput`                                | E (2026-07-28 forbids push; D7)                                | E                                                              | E                                                                                                | E                                 |
+| sampling (`createMessage`)                              | E, **F1** hint (never forwarded, Q2)                           | E                                                              | E                                                                                                | E                                 |
+| roots (`roots/list`)                                    | E, **F1** hint (never forwarded)                               | E                                                              | E                                                                                                | E                                 |
+| cancellation                                            | —                                                              | —                                                              | **F**: abort reaches upstream                                                                    | D (call runs on)                  |
+| resources list / templates / read                       | D (`resources/read` not found)                                 | D (box overviews only)                                         | n/a                                                                                              | n/a                               |
+| resource subscribe / updated                            | D                                                              | D                                                              | n/a                                                                                              | n/a                               |
+| prompts list / get                                      | D (workflow prompts only)                                      | D                                                              | n/a                                                                                              | n/a                               |
+| completions                                             | E Method not found                                             | E                                                              | n/a                                                                                              | n/a                               |
+| `tools/list_changed` add                                | D: new tool unknown (`validate`)                               | D (R47)                                                        | validate error                                                                                   | TOOL_ERROR                        |
+| `tools/list_changed` remove                             | D: stale entry; call fails upstream                            | D                                                              | upstream error                                                                                   | TOOL_ERROR                        |
+| tasks                                                   | n/a (deleted in 2026-07-28)                                    | n/a                                                            | n/a                                                                                              | n/a                               |
+| Legacy-era client                                       | same as modern for reads; gated calls via shim when opted in   | same                                                           | same; a forwarded question: `protocol` error naming 2026-07-28, or the shim's form when opted in | same                              |
+| Upstream protocol era                                   | **F2**: 2026-07-28 (in-process pinned; URL `'auto'`)           | **F2**                                                         | **F2**                                                                                           | **F2**                            |
+| Legacy-era upstream (2025-only server or caller Client) | P: keeps working; questions refused (D7)                       | P                                                              | P                                                                                                | P                                 |
 
 Security results (asserted in the suite):
 
-- S6 holds by construction today: an upstream question never reaches the
+- S6 with forwarding off (the default): an upstream question never reaches
+  the human. With `upstreamElicitation: 'forward'` it reaches the human only
+  as `Question from <box> (not an approval)` (or `Link from …`), the
+  server's words quoted line by line (`│ `), so the spoofed
+  `Approve: Read the weather …` reads as quoted data; the schema passes the
+  elicitation-primitive allowlist; answers are cut to the form's fields.
+- Previously: an upstream question never reached the
   human. The fake's elicitation message is a spoofed approval
   (`Approve: Read the weather …`); the only prompts the human sees are
   Projection's own (`⚠ Approve: nuke` / `⚠ Approve (every): nuke`).
@@ -85,7 +98,15 @@ Security results (asserted in the suite):
 
 Rank = rough user impact against performance, human-in-the-loop and cost.
 
-### G1. Upstream elicitation is refused (HITL: high · perf: — · cost: medium)
+### G1. Upstream elicitation is refused (HITL: high · perf: — · cost: medium) — FIXED (R64, D23)
+
+Built as proposed with these differences: the option is
+`upstreamElicitation: 'forward' | 'refuse'` (default `refuse`) on
+`WrapOptions` and `ServerSourceConfig`; wire keys are `upstream-<n>` (the
+alias is already in the copy and the qualified tool name); the machine path
+holds the step inside the existing `machine` blob (`upstreamInput` field)
+rather than minting a new kind; the interim hint ships for every refusal.
+Original proposal kept below for the record.
 
 Any upstream that asks its user something (confirm, pick an account, OAuth
 URL connect) fails, and the model burns turns on an error whose hint says
@@ -120,7 +141,13 @@ Proposal (keeps approvals intact; follows D7):
    for SDK "Cannot request input" errors with "The tool asked for user input,
    which this facade does not forward; tell the user to run it directly."
 
-### G2. Introspector speaks the legacy era to upstreams (perf: medium · HITL: enabler · cost: low)
+### G2. Introspector speaks the legacy era to upstreams (perf: medium · HITL: enabler · cost: low) — FIXED (R63, D23)
+
+In-process sources are pinned to 2026-07-28 (a hand-connected `McpServer` is
+legacy-only in the SDK, so the introspector serves it through `serveStdio`
+with an in-memory transport). The auth sweep needed one change: the probe's
+5xx error does not quote the body, so the echo test now asserts the status
+and the absence of the token. Original proposal kept below.
 
 Every upstream is driven as a 2025 client with no capabilities. Blocks G1/G6,
 loses modern features (per-request log level, `subscriptions/listen`, cache
@@ -222,7 +249,13 @@ media: true })`).
 argument (non-breaking). DECISIONS D22 records it; `docs/server-authors.md`
 describes it.
 
+4. **G2** (R63): owned upstream clients negotiate 2026-07-28.
+5. **G1** (R64): upstream questions forwarded per box, or refused with a
+   correct hint; `call_tool` and `execute_machine`.
+
 ## PRD proposals (not edited)
+
+(The N6 / Q2 and G2 items below were taken up as R63, R64 and the Q2 note.)
 
 - R35.5: add the content-block rendering rule and the progress/cancellation
   relay.

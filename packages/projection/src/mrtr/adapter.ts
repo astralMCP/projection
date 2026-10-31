@@ -11,7 +11,7 @@ import {
   buildBlobPayload,
   type BlobKeyDomain,
 } from '../blob/index.js';
-import { approvalSubject, blobKeyDomain } from '../catalog/boxes.js';
+import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
@@ -34,7 +34,9 @@ import {
   type PolicyOptions,
   type StructuredError,
   type ToolExecutor,
+  type UpstreamHold,
 } from '../types.js';
+import { answersFor, forwardQuestions } from './upstream-input.js';
 import {
   APPROVAL_SCHEMA,
   inputRequired,
@@ -45,6 +47,7 @@ import {
   type ProtocolEra,
   type RetryEnvelope,
   type ToolCallResult,
+  supportsMrtr,
 } from './protocol.js';
 
 /**
@@ -112,6 +115,12 @@ export interface ApprovalGateDeps extends PolicyOptions {
    * not know) leaves the shim to decide.
    */
   clientCanElicit?: boolean;
+  /**
+   * Whether the connected client declared URL-mode elicitation. A forwarded
+   * server question that is a link (G1) is sent in URL mode only then;
+   * otherwise the link is shown as inert text in a form.
+   */
+  clientUrlElicitation?: boolean;
   /** Optional shared replay cache (R38); consulted after verification, before execution. */
   replayCache?: ReplayCache;
 }
@@ -171,6 +180,8 @@ interface ResumeState {
   verdicts: Record<string, ApprovalVerdict>;
   audit: AuditEntry[];
   trip: number;
+  /** Calls held on their server's question, with the answers to send back (G1). */
+  held: Record<string, { hold: UpstreamHold; responses: Record<string, unknown> }>;
 }
 
 /**
@@ -226,9 +237,17 @@ async function openResume(
     verdicts[key] = { kind: 'approved' };
   }
 
+  // G1: a held call's answers go back to its server, whatever they are; an
+  // unanswered question is a cancel. No answer approves anything.
+  const held: ResumeState['held'] = {};
+  for (const [id, hold] of Object.entries(payload.upstreamInput ?? {})) {
+    held[id] = { hold, responses: answersFor(hold, args.inputResponses) };
+  }
+
   return {
     snapshot: payload.snapshot,
     pending: payload.pending,
+    held,
     verdicts,
     // PRD §8: the audit trail spans the whole workflow, so it rides in the
     // blob — the library keeps no state between round trips (R27).
@@ -298,9 +317,13 @@ function suspendResult(
 
   // R28: a client that cannot carry MRTR must fail here rather than silently
   // executing an unapproved write or hanging (see legacy-gate.ts).
+  const onlyQuestions = Object.keys(outcome.pending).length === 0;
   const gate = legacySuspendError(deps, {
     subject: 'this machine',
-    readOnlyAdvice: 'Author a machine that only calls tools that run without approval',
+    readOnlyAdvice: onlyQuestions
+      ? 'Author a machine that avoids the tool whose server asks the user questions'
+      : 'Author a machine that only calls tools that run without approval',
+    ...(onlyQuestions ? { need: "to pass on a question a tool's server asked the user" } : {}),
   });
   if (gate !== undefined) return fail(gate.phase, gate.message, gate.hint);
 
@@ -342,6 +365,35 @@ function suspendResult(
     });
   }
 
+  // G1: forward each held call's server question in the same round trip,
+  // keyed apart from the approvals (whose keys are the machine's call ids).
+  const upstreamInput: Record<string, UpstreamHold> = {};
+  const clientUrl = supportsMrtr(deps.protocolEra) && deps.clientUrlElicitation === true;
+  let next = 1;
+  for (const held of outcome.held) {
+    const target = routeCall(deps.catalog, held.call.name);
+    let round: ReturnType<typeof forwardQuestions>;
+    try {
+      round = forwardQuestions(
+        held.call,
+        held.decision,
+        held.input,
+        {
+          ...(isBoxedCatalog(deps.catalog) ? { box: target.alias } : {}),
+          tool: held.call.name,
+          clientUrl,
+        },
+        { first: next, taken: new Set(Object.keys(inputRequests)) },
+      );
+    } catch (err) {
+      const structured = toStructuredError(err, outcome.logs);
+      return errorResult({ ...structured, logs: outcome.logs });
+    }
+    next += Object.keys(round.inputRequests).length;
+    Object.assign(inputRequests, round.inputRequests);
+    upstreamInput[held.call.id] = round.hold;
+  }
+
   const payload = buildBlobPayload({
     code: args.code,
     serverIdentity: deps.catalog.identity,
@@ -349,6 +401,7 @@ function suspendResult(
     pending: outcome.pending,
     audit: outcome.audit,
     trip: outcome.trip,
+    upstreamInput,
     ...(deps.blob.ttlMs !== undefined ? { ttlMs: deps.blob.ttlMs } : {}),
   });
 

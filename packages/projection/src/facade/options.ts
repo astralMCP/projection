@@ -23,6 +23,7 @@ import type {
   ResourceCaps,
   ServerCatalog,
   ToolExecutor,
+  UpstreamElicitationMode,
 } from '../types.js';
 
 export interface WrapOptions {
@@ -99,6 +100,21 @@ export interface WrapOptions {
    * shared store (R27). Unused by pre-built `McpServer` / `Client` sources.
    */
   tokenStore?: TokenStore;
+  /**
+   * Whether the wrapped server's own questions reach the human (G1,
+   * DECISIONS D23). `'refuse'` (default): Projection declares no
+   * elicitation capability to the server, and a tool that asks anyway fails
+   * with a result saying it needs the user's input. `'forward'`: the
+   * capability is declared, and each question — a form, or a link to open —
+   * is relayed to the human over MRTR in Projection's own prompt, headed
+   * `Question from <box> (not an approval)` with the server's words quoted,
+   * after the call itself passed the approval gate. Enable it only for
+   * servers you trust to ask your users things: a hostile server can still
+   * word a phishing question. On `wrapMcpServers` this is the default for
+   * every box, and a source configuration can override it per box.
+   * Read once, at wrap time; any other value fails the wrap (`validate`).
+   */
+  upstreamElicitation?: UpstreamElicitationMode;
   /**
    * Bound, in milliseconds, on each wrapped source's connect and `tools/list`
    * introspection at wrap time (R47). A source that has not finished in time
@@ -207,8 +223,10 @@ export function approvalGateDeps(input: {
   policySettings: PolicySettings;
   era: ProtocolEra | undefined;
   clientCanElicit: boolean | undefined;
+  /** Whether the client declared URL-mode elicitation (G1); omit when unknown. */
+  clientUrlElicitation?: boolean | undefined;
 }): ApprovalGateDeps {
-  const { options, era, clientCanElicit } = input;
+  const { options, era, clientCanElicit, clientUrlElicitation } = input;
   return {
     catalog: input.catalog,
     blobDomain: input.blobDomain,
@@ -220,6 +238,21 @@ export function approvalGateDeps(input: {
     ...(era !== undefined ? { protocolEra: era } : {}),
     ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
     ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
+    ...(clientUrlElicitation !== undefined ? { clientUrlElicitation } : {}),
     ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
   };
+}
+
+/**
+ * `upstreamElicitation` (G1), validated: `'forward'`, `'refuse'`, or absent
+ * (the default, `'refuse'`); anything else is a `validate` error at wrap time.
+ */
+export function assertUpstreamElicitationMode(
+  value: unknown,
+  label = 'upstreamElicitation',
+): UpstreamElicitationMode | undefined {
+  if (value === undefined || value === 'forward' || value === 'refuse') return value;
+  throw new ProjectionError('validate', `${label} must be "forward" or "refuse"`, {
+    hint: "Pass upstreamElicitation: 'forward' to pass a trusted server's own questions on to the user, or omit it to refuse them (the default).",
+  });
 }

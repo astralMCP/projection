@@ -32,10 +32,12 @@ import {
   APPROVAL_SCHEMA,
   inputRequired,
   inputResponse,
+  supportsMrtr,
   type CallToolResult,
   type RetryEnvelope,
   type ToolCallResult,
 } from '../mrtr/protocol.js';
+import { answersFor, forwardQuestions } from '../mrtr/upstream-input.js';
 import {
   buildElicitationCopy,
   decidePolicy,
@@ -51,8 +53,9 @@ import {
   type ResourceCaps,
   type ToolCatalogEntry,
   type UpstreamCallOptions,
+  type UpstreamInputRequest,
 } from '../types.js';
-import { approvalSubject, blobKeyDomain, routeCall } from './boxes.js';
+import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
 import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
@@ -129,7 +132,12 @@ export async function callTool(args: CallToolArgs, deps: CallToolDeps): Promise<
 
     switch (decidePolicy(entry, policyContext(deps))) {
       case 'auto':
-        return await execute(entry.name, toolArgs, deps, caps, args.upstream);
+        return await execute(
+          { call: callOf(entry.name, toolArgs), decision: 'auto', request, trip: 0 },
+          deps,
+          caps,
+          args.upstream,
+        );
       case 'deny':
         return denied(entry);
       case 'ask':
@@ -185,12 +193,7 @@ function suspend(
   });
   if (gate !== undefined) return errorResult(gate.toStructured());
 
-  const pending: PendingToolCall = {
-    id: CALL_KEY,
-    name: entry.name,
-    args: toolArgs,
-    stateName: 'call_tool',
-  };
+  const pending = callOf(entry.name, toolArgs);
   // S6: copy from catalog data and redacted args only. On a multi-server
   // facade it is built from the box's own entry and names the box (R46).
   const subject = approvalSubject(deps.catalog, entry);
@@ -247,14 +250,21 @@ async function resume(
   if (named !== undefined && decidePolicy(named, policy) === 'deny') return denied(named);
 
   // R21 + R36: authenticate, version, expiry, kind, binding hash, identity.
+  // call_tool opens its two kinds: an approval (`call`) and a call waiting
+  // on its server's question (`upstream_input`, G1).
+  const request = canonicalRequest(args.name, toolArgs);
   const payload = openBlob(args.requestState as string, {
-    expectedKind: 'call',
-    code: canonicalRequest(args.name, toolArgs),
+    expectedKind: ['call', 'upstream_input'],
+    code: request,
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
     domain: blobKeyDomain(deps.catalog, deps.blobDomain),
   });
   await assertNotReplayed(payload, deps.replayCache);
+
+  if (payload.kind === 'upstream_input') {
+    return await resumeQuestion(args, request, payload, deps, caps, policy);
+  }
 
   // The sealer guarantees exactly one entry keyed CALL_KEY for a call blob,
   // and the binding hash that its name is the retry's name.
@@ -278,7 +288,72 @@ async function resume(
   }
 
   // S2: the approval authorized the RECORDED args.
-  return await execute(recorded.name, recorded.args, deps, caps, args.upstream);
+  return await execute(
+    {
+      call: callOf(recorded.name, recorded.args),
+      decision: 'approved',
+      request,
+      trip: payload.trip,
+    },
+    deps,
+    caps,
+    args.upstream,
+  );
+}
+
+/**
+ * G1: the retry of a call whose server asked the human a question. The call
+ * already ran under the gate (read-only, or approved); the answers go back
+ * to the server by re-issuing the RECORDED call — never the retry's own
+ * args (S2) — with the server's sealed `requestState`. Every answer is
+ * passed on, a decline or a cancel included: the server decides what it
+ * means. Nothing here approves anything.
+ */
+async function resumeQuestion(
+  args: CallToolArgs,
+  request: string,
+  payload: ReturnType<typeof openBlob>,
+  deps: CallToolDeps,
+  caps: ResourceCaps,
+  policy: ReturnType<typeof policyContext>,
+): Promise<ToolCallResult> {
+  // The sealer guarantees exactly one hold keyed CALL_KEY.
+  const hold = payload.upstreamInput?.[CALL_KEY];
+  if (hold === undefined) throw new ProjectionError('blob_verification', 'malformed hold');
+  const entry = findTool(deps.catalog, hold.name);
+  if (entry === undefined) throw unknownToolError(deps.catalog, hold.name, 'call_tool');
+  // Policy outranks the call's earlier authorization (D9): a tool now
+  // `deny` is not re-issued, whatever the human answered.
+  if (decidePolicy(entry, policy) === 'deny') return denied(entry);
+  const responses = answersFor(hold, args.inputResponses);
+  return await execute(
+    { call: callOf(hold.name, hold.args), decision: hold.decision, request, trip: payload.trip },
+    deps,
+    caps,
+    {
+      ...args.upstream,
+      input: {
+        responses,
+        ...(hold.requestState !== undefined ? { requestState: hold.requestState } : {}),
+      },
+    },
+  );
+}
+
+function callOf(name: string, toolArgs: Record<string, unknown>): PendingToolCall {
+  return { id: CALL_KEY, name, args: toolArgs, stateName: 'call_tool' };
+}
+
+/** One run of a call that passed the gate. */
+interface GatedRun {
+  /** The call as recorded: what executes, and what a question's blob holds. */
+  call: PendingToolCall;
+  /** How the gate authorized it. */
+  decision: 'auto' | 'approved';
+  /** The R36 canonical request: the binding text of any blob this run mints. */
+  request: string;
+  /** Round trips taken so far: an approval, then each forwarded question (R18). */
+  trip: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,15 +361,18 @@ async function resume(
 // ---------------------------------------------------------------------------
 
 async function execute(
-  name: string,
-  toolArgs: Record<string, unknown>,
+  run: GatedRun,
   deps: CallToolDeps,
   caps: ResourceCaps,
   upstream: UpstreamCallOptions | undefined,
-): Promise<CallToolResult> {
+): Promise<ToolCallResult> {
+  const name = run.call.name;
   // A multi-server facade routes the qualified name to its box (R40).
   const target = routeCall(deps.catalog, name);
-  const result = await deps.executor.callTool(target.alias, target.name, toolArgs, upstream);
+  const result = await deps.executor.callTool(target.alias, target.name, run.call.args, upstream);
+  if (!result.ok && result.upstreamInput !== undefined) {
+    return askQuestion(run, result.upstreamInput, target.alias, deps, caps);
+  }
   if (!result.ok && result.auth !== undefined) {
     // R25 `auth`: upstream authorization failed (a source given by URL).
     // Library copy throughout; the model cannot fix this by rewriting the call.
@@ -313,7 +391,10 @@ async function execute(
       phase: 'upstream',
       message: neutralizeControlChars(capLength(result.error.message, MAX_UPSTREAM_MESSAGE_CHARS)),
       diagnostics: [],
-      hint: 'The wrapped server rejected this call. Check the arguments against describe_tool and try again, or report the error to the user.',
+      hint:
+        result.inputRefused === true
+          ? INPUT_REFUSED_HINT
+          : 'The wrapped server rejected this call. Check the arguments against describe_tool and try again, or report the error to the user.',
       logs: [],
     });
   }
@@ -337,6 +418,69 @@ async function execute(
     truncated: true,
     outputBytes,
   });
+}
+
+/**
+ * The interim fix of G1: a server that asked the user for input this box
+ * does not pass on is not a bad-arguments failure, and retrying asks again.
+ */
+const INPUT_REFUSED_HINT =
+  'Nothing is wrong with the arguments, and retrying asks again: the tool needs input from the user that this server does not pass on. Tell the user it has to be run another way.';
+
+/**
+ * G1: the call ran and its server asked the human a question. Suspend with
+ * Projection's own prompt — attributed to the box, never shaped like an
+ * approval (S6) — and an `upstream_input` blob holding the recorded call,
+ * its authorization and the server's own `requestState` (R27: the resume
+ * needs nothing else). The blob is bound to the same canonical request as
+ * the call (R36) and to the facade's identity, under the usual envelope.
+ */
+function askQuestion(
+  run: GatedRun,
+  input: UpstreamInputRequest,
+  alias: string,
+  deps: CallToolDeps,
+  caps: ResourceCaps,
+): ToolCallResult {
+  // R28: a 2025-era client cannot carry the question (unless the legacy
+  // shim was opted into); fail in Projection's own shape.
+  const gate = legacySuspendError(deps, {
+    subject: 'this call',
+    need: "to pass on a question the tool's server asked the user",
+    readOnlyAdvice: 'Run the tool another way',
+  });
+  if (gate !== undefined) return errorResult(gate.toStructured());
+  const trip = run.trip + 1;
+  if (trip > caps.maxRoundTrips) {
+    return errorResult({
+      phase: 'terminal',
+      message: `${inert(run.call.name)} kept asking the user questions, past the limit of ${caps.maxRoundTrips} round trips for one call`,
+      diagnostics: [],
+      hint: 'Tell the user the tool could not finish here and has to be run another way.',
+      logs: [],
+    });
+  }
+  // URL mode only to a 2026-07-28 client that declared it; the legacy shim
+  // and form-only clients get the link as inert text in a form.
+  const clientUrl = supportsMrtr(deps.protocolEra) && deps.clientUrlElicitation === true;
+  const { hold, inputRequests } = forwardQuestions(run.call, run.decision, input, {
+    ...(isBoxedCatalog(deps.catalog) ? { box: alias } : {}),
+    tool: run.call.name,
+    clientUrl,
+  });
+  const payload = buildBlobPayload({
+    kind: 'upstream_input',
+    code: run.request,
+    serverIdentity: deps.catalog.identity,
+    snapshot: null,
+    pending: {},
+    audit: [],
+    trip,
+    upstreamInput: { [CALL_KEY]: hold },
+    ttlMs: deps.blob.callTtlMs ?? DEFAULT_CALL_TTL_MS,
+  });
+  const requestState = sealBlob(payload, deps.blob, blobKeyDomain(deps.catalog, deps.blobDomain));
+  return inputRequired({ inputRequests, requestState });
 }
 
 /** `JSON.stringify`, or `undefined` for values it cannot serialize (circular, function). */
