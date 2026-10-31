@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 11,
+  "current_round": 12,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -729,6 +729,21 @@
       "spend_usd": 7.42,
       "kept": false,
       "decision": "mixed: haiku +2 at -25% cost, guard +2; sonnet -3 (text-field marker hid string type -> machine miscounted; root-caused), haiku export-prs 0/3 (sequential gated writes hit 8 round trips; model reported success). Fixed in D30, re-run as v12"
+    },
+    {
+      "round": 11,
+      "variant": "v12",
+      "change": "D30: toolCalls/whenCallIn fan-out, round-trip-limit copy says unfinished, typed text-field marker",
+      "commit": "662d390",
+      "multi": "204/204",
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "23/36 $0.0412",
+        "sonnetLow": "32/36 $0.0500"
+      },
+      "spend_usd": 7.56,
+      "kept": false,
+      "decision": "worse: sonnet export-prs 0/3 — fan-out results mapped by 1-based index guess (ids 0-based) -> comments on wrong PRs. Fix D31: events carry args"
     }
   ],
   "rebaseline": "v4",
@@ -803,5 +818,5 @@
     "v7 probe (v7/probe/, 20 episodes): $0.63 (exact $0.6254, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5) + $0.85 (v6) + $0.63 = $35.80.",
     "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user"
   ],
-  "cumulative_spend_usd": 60.7
+  "cumulative_spend_usd": 68.26
 }
