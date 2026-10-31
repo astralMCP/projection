@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 14,
+  "current_round": 15,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -31,9 +31,9 @@
     }
   ],
   "best": {
-    "round": 14,
-    "variant": "v14",
-    "note": "D32 inline signatures on v13 + basecamp harness"
+    "round": 15,
+    "variant": "v15",
+    "note": "D33 arg glosses on v14"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -789,6 +789,21 @@
       "spend_usd": 7.46,
       "kept": true,
       "decision": "best: vs v13-bc describe_tool calls per episode fall 1.18->0.20 (haiku multi), 0.59->0.00 (sonnet multi), 2.78->1.08 / 1.11->0.31 (multi-hard); cost multi -18%/-8%, multi-hard -7%/-18%; multi-hard +1/+2. Regression seen: signature hides arg descriptions, so Sonnet guessed mongo connectionId \"default\" once (db-rename-audit-log). issue_write missing-method errors (12) self-correct via the hint."
+    },
+    {
+      "round": 15,
+      "variant": "v15",
+      "change": "D33: signed hits gloss required args whose description adds meaning; upstream/validate errors gloss the args sent",
+      "commit": "1c2dd86",
+      "multi": "202/204",
+      "guard": "120/120",
+      "multiHard": {
+        "haiku45": "23/36 $0.0403",
+        "sonnetLow": "34/36 $0.0459"
+      },
+      "spend_usd": 7,
+      "kept": true,
+      "decision": "best: vs v14 guard 117->120 (mongodb 15/15 both models), multi cost -5%/-9%, haiku multi-hard cost -10%, turns down 0.3-0.6 per episode; multi-hard -1/-1 within noise (new haiku vip-tiers fails are machine logic). Next: empty-query box listing shows no args, so models still guess connectionId once per mongo episode and self-correct via the validate hint."
     }
   ],
   "rebaseline": "v4",
