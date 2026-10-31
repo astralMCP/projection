@@ -488,6 +488,38 @@ async function connectNonConforming(): Promise<{ client: Client; server: Server 
   return { client, server };
 }
 
+describe('Introspector server notes (D29)', () => {
+  it('keeps short text beside structuredContent that is not a mirror of it, and drops a mirror', async () => {
+    const mcp = new McpServer({ name: 'notes', version: '1.0.0' });
+    const data = { total: 40, docs: [{ id: 'a1', title: 'Alpha' }] };
+    mcp.registerTool('find', { inputSchema: z.object({}) }, () => ({
+      content: [
+        { type: 'text', text: JSON.stringify(data) },
+        { type: 'text', text: 'Query resulted in 40 documents. Returning 1.' },
+      ],
+      structuredContent: data,
+    }));
+    mcp.registerTool('mirror', { inputSchema: z.object({}) }, () => ({
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+      structuredContent: data,
+    }));
+    const introspector = await createIntrospector({ default: mcp });
+    try {
+      expect(await introspector.callTool('default', 'find', {})).toEqual({
+        ok: true,
+        result: data,
+        serverNote: 'Query resulted in 40 documents. Returning 1.',
+      });
+      expect(await introspector.callTool('default', 'mirror', {})).toEqual({
+        ok: true,
+        result: data,
+      });
+    } finally {
+      await introspector.close();
+    }
+  });
+});
+
 describe('Introspector output-schema validation', () => {
   it('rejects non-conforming structuredContent before and after tools/list_changed', async () => {
     const { client, server } = await connectNonConforming();

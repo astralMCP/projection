@@ -34,6 +34,7 @@ import {
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { UpstreamConnector } from '../auth/connect.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
+import { serverNoteText } from '../catalog/result-notes.js';
 import { ProjectionError } from '../errors.js';
 import { MRTR_PROTOCOL_REVISION } from '../mrtr/protocol.js';
 import {
@@ -783,9 +784,17 @@ export class Introspector implements ToolExecutor {
       const value = pickResultValue(result);
       // S1: a server given by URL must not hand the model the token it saw.
       const redacted = connector !== undefined ? connector.redact(value) : value;
-      return value === result.content && Array.isArray(value)
-        ? { ok: true, result: redacted, rawContent: true }
-        : { ok: true, result: redacted };
+      // D29: the text beside structuredContent, when it is a remark and
+      // not a mirror of the data, is kept for a result note.
+      const note = serverNoteText(result.content, result.structuredContent);
+      const serverNote =
+        note !== undefined && connector !== undefined ? connector.redact(note) : note;
+      return {
+        ok: true,
+        result: redacted,
+        ...(value === result.content && Array.isArray(value) ? { rawContent: true as const } : {}),
+        ...(serverNote !== undefined ? { serverNote } : {}),
+      };
     } catch (err) {
       // The server (or a caller's client) refused to ask the user: the
       // facade's client declared no elicitation capability for this box.

@@ -1758,3 +1758,27 @@ omitted: "limit" = 10.`), and typegen documents each kept default as
 `@default <JSON value>` on the property, through the same `safeDefault`
 rule. Directly listed tools carry the default in their sanitized
 `inputSchema`.
+
+Decision 2 — a partial-result signal (PRD R35.6). The facade attaches
+notes to a successful result: at most three single lines, printed by
+`call_tool` between its head line and the body, returned in
+`structuredContent.notes`, delivered to a machine on `TOOL_RESULT.notes`,
+and restated after a completed `execute_machine`'s output (at most ten,
+tool-prefixed), since the output is the model's own and the traces showed
+machines that counted a page and returned the count. The detectors are
+`catalog/result-notes.ts`: a total-like integer larger than the one
+top-level array; an array exactly as long as the effective page size (the
+argument sent, else the kept default); and short side text beside
+`structuredContent` that is neither JSON nor a prose restatement of its
+values. The notes sit above the body so the server's own text cannot be
+placed before them; every server-controlled fragment is quoted on one
+line.
+
+Rejected, for false positives: any `/count|total/i` key (`unread_count`,
+`total_pages` and `errorCount` are not the size of the array beside them;
+the total-like key set is closed); results with several arrays (which one
+the total counts is a guess); `has_more`/`nextCursor` fields (the model
+already sees them in the body, and their naming varies too much to quote
+reliably); and passing on every side text (a prose summary like "Oslo:
+21C, clear" beside `{ city, tempC, sky }` is a mirror, and on every call
+it would cost tokens and teach the model to skip notes).

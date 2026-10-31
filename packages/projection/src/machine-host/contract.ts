@@ -169,9 +169,10 @@ Rules:
    fromPromise/invoke — restored snapshots restart invoked actors, which
    would re-execute an approved write. Machines using invoke are rejected.
 4. After a toolCall, wait in a state for one of these events:
-     TOOL_RESULT { callId, result }   the call succeeded
-     TOOL_ERROR  { callId, error }    the call failed
-     TOOL_DENIED { callId, reason }   the user declined, or policy denies it
+     TOOL_RESULT { callId, result, notes? }  the call succeeded; notes, if
+                                             any, say the result looks partial
+     TOOL_ERROR  { callId, error }           the call failed
+     TOOL_DENIED { callId, reason }          the user declined, or policy denies it
    Denial is not an abort: handle TOOL_DENIED and continue or finish.
    IMPORTANT: if your machine has more than one call outstanding at the same
    time (parallel regions), give each toolCall an explicit id and guard every

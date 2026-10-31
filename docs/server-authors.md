@@ -259,6 +259,17 @@ multi-server facade), neutralized and capped at 200 characters; cancelling the
 messages, resources, prompts and completions of the wrapped server are not
 projected.
 
+A successful result can also carry short notes from the facade (PRD R35.6):
+when your result has one array and a `total`/`count`-style field larger than
+it, when the array is exactly as long as the page-size argument (`limit`,
+`per_page`, … — sent, or your schema's `default`), and when you put a short
+remark beside `structuredContent` in a text block ("40 matches, returning
+10"). The model reads them above the result, and a machine gets them on
+`TOOL_RESULT.notes`. To be read right, report totals as numbers next to the
+array, declare page-size defaults in the schema (scalar defaults are shown,
+R34), and keep the JSON mirror of `structuredContent` and any remark in
+separate text blocks.
+
 For servers with many tools, `describe_tool` is how the model learns a
 schema without paying for the whole catalog up front. With the catalog
 projection on, above 40 tools (`catalogInlineThreshold`) `discover_apis`

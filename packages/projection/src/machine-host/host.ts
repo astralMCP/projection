@@ -9,12 +9,15 @@ import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
 import { isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { assertForwardable, MAX_FORWARDED_QUESTIONS } from '../mrtr/upstream-input.js';
 import { didYouMeanHint } from '../catalog/search.js';
+import { resultNotes } from '../catalog/result-notes.js';
 import { validateArgsShape } from '../catalog/validate-args.js';
 import { RESERVED_ID_PREFIX } from '../mrtr/batch.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
+  findTool,
+  MAX_SEGMENT_NOTES,
   type ApprovalVerdict,
   type AuditEntry,
   type ErrorPhase,
@@ -288,6 +291,9 @@ class SegmentRunner {
   private eventsProcessed = 0;
   /** Calls that ran and are waiting on their server's question (G1). */
   private readonly heldBatch: HeldCall[] = [];
+  /** This segment's result notes, tool-prefixed, for the completed output (D29). */
+  private readonly notes: string[] = [];
+  private notesDropped = 0;
 
   constructor(deps: RunnerDeps) {
     this.deps = deps;
@@ -506,7 +512,19 @@ class SegmentRunner {
         args: request.args,
         decision,
       });
-      return { type: 'TOOL_RESULT', callId: request.id, result: outcome.result };
+      const notes = resultNotes({
+        value: outcome.result,
+        args: request.args,
+        inputSchema: findTool(this.deps.catalog, request.name)?.inputSchema ?? {},
+        ...(outcome.serverNote !== undefined ? { serverNote: outcome.serverNote } : {}),
+      });
+      this.noteResult(request.name, notes);
+      return {
+        type: 'TOOL_RESULT',
+        callId: request.id,
+        result: outcome.result,
+        ...(notes.length > 0 ? { notes } : {}),
+      };
     }
     this.deps.audit.push({
       callId: request.id,
@@ -748,6 +766,22 @@ class SegmentRunner {
     };
   }
 
+  /**
+   * Keep a result's notes for the completed output, prefixed with the tool
+   * (a catalog name, quoted inert) — the machine may drop `event.notes`,
+   * and the model reads its output, not the events. Bounded: past
+   * {@link MAX_SEGMENT_NOTES}, only a count is kept.
+   */
+  private noteResult(tool: string, notes: string[]): void {
+    for (const note of notes) {
+      if (this.notes.length >= MAX_SEGMENT_NOTES) {
+        this.notesDropped += 1;
+        continue;
+      }
+      this.notes.push(`${JSON.stringify(neutralizeControlChars(capLength(tool, 200)))}: ${note}`);
+    }
+  }
+
   private complete(drained: DrainResult): SegmentOutcome {
     const output = drained.output;
     const size = Buffer.byteLength(JSON.stringify(output ?? null), 'utf8');
@@ -760,11 +794,16 @@ class SegmentRunner {
         },
       );
     }
+    const notes =
+      this.notesDropped > 0
+        ? [...this.notes, `… and ${this.notesDropped} more notes like these`]
+        : this.notes;
     return {
       status: 'completed',
       output,
       audit: this.deps.audit,
       logs: this.logs(),
+      ...(notes.length > 0 ? { notes } : {}),
     };
   }
 

@@ -70,7 +70,9 @@ export default setup({}).createMachine({
   servers in `test/multi/helpers.ts`.
 - After a `toolCall`, wait in a state for one of these events, each carrying
   the `callId` of the call it answers:
-  - `TOOL_RESULT { callId, result }` — the call succeeded
+  - `TOOL_RESULT { callId, result, notes? }` — the call succeeded; `notes`
+    (D29), when present, are one-line remarks such as "Partial result: …"
+    or "Page full: …", also restated after a completed run's output
   - `TOOL_ERROR { callId, error }` — the call failed
   - `TOOL_DENIED { callId, reason }` — the user declined, or policy denies it
 

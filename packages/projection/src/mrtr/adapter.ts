@@ -321,6 +321,7 @@ function toToolCallResult(
       return {
         content: [
           { type: 'text', text: JSON.stringify(outcome.output ?? null, null, 2) },
+          ...noteBlocks(outcome.notes),
           ...refusalBlocks(outcome.audit, deps.redact),
           ...logBlocks(outcome.logs),
         ],
@@ -328,6 +329,7 @@ function toToolCallResult(
           output: outcome.output ?? null,
           approvals: outcome.audit,
           logs: outcome.logs,
+          ...(outcome.notes !== undefined ? { notes: outcome.notes } : {}),
         },
       };
 
@@ -562,6 +564,27 @@ function refusalBlocks(audit: AuditEntry[], redact?: RedactionHook): ContentBloc
         `Not executed: ${refused.length === 1 ? 'this call was' : `these ${refused.length} calls were`} refused, so nothing ran for ${refused.length === 1 ? 'it' : 'them'}, whatever the output above says.`,
         ...listed,
         `Each refusal covers only that call: do not make it again or reach its result another way${noted ? ' (if a note asks for a change, make the changed call instead; it asks for approval again)' : ''}. ${AFTER_REFUSAL}`,
+      ].join('\n'),
+    },
+  ];
+}
+
+/**
+ * A completed workflow's result notes (R35.6, D29), as a text block after
+ * its output. The machine saw them on `TOOL_RESULT.notes`, but its output
+ * is model-authored and may drop them; a partial page the machine counted
+ * as the whole set would otherwise read as a complete answer. The notes
+ * are already single neutralized lines, prefixed with the tool and
+ * bounded by the host.
+ */
+function noteBlocks(notes: string[] | undefined): ContentBlock[] {
+  if (notes === undefined || notes.length === 0) return [];
+  return [
+    {
+      type: 'text',
+      text: [
+        'Notes on the tool results this run read (added by this server, not by the machine; check that the output above accounts for them):',
+        ...notes.map((note) => `- ${note}`),
       ].join('\n'),
     },
   ];

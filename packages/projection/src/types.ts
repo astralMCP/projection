@@ -184,6 +184,13 @@ export type ToolCallOutcome =
        * array.
        */
       rawContent?: true;
+      /**
+       * Short text the server sent beside its `structuredContent` that is
+       * not a JSON mirror of it (a warning such as "returning 10 of 40"),
+       * raw but redacted like the result (S1). Shown to the model only as
+       * a neutralized, quoted result note (D29, `catalog/result-notes.ts`).
+       */
+      serverNote?: string;
     }
   | {
       ok: false;
@@ -292,7 +299,13 @@ export interface PendingToolCall {
 
 /** Events the host injects into the machine. The machine never performs I/O itself. */
 export type HostEvent =
-  | { type: 'TOOL_RESULT'; callId: string; result: unknown }
+  | {
+      type: 'TOOL_RESULT';
+      callId: string;
+      result: unknown;
+      /** The facade's notes on the result (R35.6, D29); absent when there are none. */
+      notes?: string[];
+    }
   | { type: 'TOOL_ERROR'; callId: string; error: { message: string; detail?: unknown } }
   | { type: 'TOOL_DENIED'; callId: string; reason?: string };
 
@@ -586,6 +599,9 @@ export interface ReplayCache {
 export type ApprovalVerdict = { kind: 'approved' } | { kind: 'declined'; reason?: string };
 
 /** Outcome of running one execution segment. */
+/** Most result notes a completed segment reports (D29). */
+export const MAX_SEGMENT_NOTES = 10;
+
 export type SegmentOutcome =
   | {
       status: 'completed';
@@ -594,6 +610,12 @@ export type SegmentOutcome =
       /** Per-call approval audit trail. */
       audit: AuditEntry[];
       logs: LogEntry[];
+      /**
+       * The result notes of this segment's tool calls (R35.6, D29), each
+       * prefixed with its tool's name, at most {@link MAX_SEGMENT_NOTES};
+       * absent when there are none.
+       */
+      notes?: string[];
     }
   | {
       status: 'suspended';

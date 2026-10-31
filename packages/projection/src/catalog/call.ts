@@ -58,6 +58,7 @@ import {
 } from '../types.js';
 import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
+import { resultNotes } from './result-notes.js';
 import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
 
@@ -103,6 +104,12 @@ export type CallToolOutcome =
       truncated?: true;
       /** Byte length of the full result's JSON, when truncated. */
       outputBytes?: number;
+      /**
+       * The facade's remarks on the result, when it looks partial or the
+       * server sent a note beside its structured result (R35.6, D29):
+       * single neutralized lines, at most three, printed under the head.
+       */
+      notes?: string[];
     }
   | { status: 'declined'; tool: string; reason?: string }
   | { status: 'denied_by_policy'; tool: string; reason: string };
@@ -431,8 +438,16 @@ async function execute(
   // error would read as "retry") carrying a bounded preview of the output.
   const json = jsonText(result.result);
   const outputBytes = json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
+  // R35.6: computed on the full result, so a preview carries them too.
+  const notes = resultNotes({
+    value: result.result,
+    args: run.call.args,
+    inputSchema: findTool(deps.catalog, name)?.inputSchema ?? {},
+    ...(result.serverNote !== undefined ? { serverNote: result.serverNote } : {}),
+  });
+  const noted = notes.length > 0 ? { notes } : {};
   if (json === undefined || outputBytes <= caps.maxResultBytes) {
-    const value: CallToolOutcome = { status: 'ok', tool: name, output: result.result };
+    const value: CallToolOutcome = { status: 'ok', tool: name, output: result.result, ...noted };
     return result.rawContent === true && Array.isArray(result.result)
       ? contentOutcome(value, name, result.result)
       : outcome(value);
@@ -443,7 +458,17 @@ async function execute(
     output: json.slice(0, RESULT_PREVIEW_CHARS),
     truncated: true,
     outputBytes,
+    ...noted,
   });
+}
+
+/**
+ * The head line of an `ok` result, then the facade's notes on it, one per
+ * line (R35.6). They sit in a fixed place the server's body cannot reach:
+ * between the head and the blank line that opens the body.
+ */
+function okHead(tool: string, notes: string[] | undefined, suffix = ''): string {
+  return [`call_tool ${inert(tool)}: ok${suffix}`, ...(notes ?? [])].join('\n');
 }
 
 /**
@@ -558,7 +583,7 @@ function contentOutcome(value: CallToolOutcome, tool: string, blocks: unknown[])
     lines.push(rendered.text);
     if (rendered.native !== undefined) native.push(rendered.native);
   }
-  const head = `call_tool ${inert(tool)}: ok`;
+  const head = okHead(tool, value.status === 'ok' ? value.notes : undefined);
   const body = neutralizeControlChars(lines.join('\n\n'), { allowNewline: true });
   return {
     content: [{ type: 'text', text: `${head}\n\n${body}` }, ...native],
@@ -628,7 +653,11 @@ function renderOutcome(value: CallToolOutcome): string {
       // — newlines kept, they are the result's own lines, and the head
       // above is line 1 regardless — while `structuredContent.output`
       // carries the result verbatim.
-      const head = `call_tool ${inert(value.tool)}: ok`;
+      const head = okHead(
+        value.tool,
+        value.notes,
+        value.truncated === true ? ' (result truncated)' : '',
+      );
       const body = neutralizeControlChars(
         typeof value.output === 'string'
           ? value.output
@@ -636,7 +665,7 @@ function renderOutcome(value: CallToolOutcome): string {
         { allowNewline: true },
       );
       if (value.truncated === true) {
-        return `${head} (result truncated)\n\n${body}\n\nThe call ran, but its result is ${value.outputBytes} bytes, over this server's result limit; the output above is the first ${RESULT_PREVIEW_CHARS} characters of its JSON. Retrying returns the same preview — work from it, or call the tool with arguments that return less.`;
+        return `${head}\n\n${body}\n\nThe call ran, but its result is ${value.outputBytes} bytes, over this server's result limit; the output above is the first ${RESULT_PREVIEW_CHARS} characters of its JSON. Retrying returns the same preview — work from it, or call the tool with arguments that return less.`;
       }
       return `${head}\n\n${body}`;
     }

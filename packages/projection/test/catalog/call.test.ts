@@ -284,6 +284,86 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     );
   });
 
+  it('prints result notes under the head, before the body, and returns them structured (R35.6, D29)', async () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'find',
+          description: 'Find documents.',
+          annotations: { readOnlyHint: true },
+          inputSchema: {
+            type: 'object',
+            properties: { query: { type: 'string' }, limit: { type: 'integer', default: 2 } },
+          },
+        }),
+      ],
+    };
+    const d = deps({
+      catalog,
+      executor: new FakeExecutor({
+        find: {
+          ok: true,
+          result: { total: 7, docs: [{ id: 1 }, { id: 2 }] },
+          serverNote: `Matched 7.${ESC}\nReturning 2.`,
+        },
+      }),
+    });
+    const result = completed(await callTool({ name: 'find', args: { query: 'q' } }, d));
+    const text = (result.content[0] as { text: string }).text;
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('call_tool "find": ok');
+    expect(lines[1]).toBe(
+      'Partial result: "docs" holds 2 of 7 (per "total"). Narrow the query, raise the limit or fetch the next page before treating these as all of them.',
+    );
+    expect(lines[2]).toBe(
+      'Note from the server, beside its structured result: "Matched 7.� Returning 2."',
+    );
+    expect(lines[3]).toBe('');
+    expect(text).not.toContain(ESC);
+    const out = outcome(result);
+    expect(out).toMatchObject({ status: 'ok', output: { total: 7, docs: [{ id: 1 }, { id: 2 }] } });
+    expect((out as { notes?: string[] }).notes).toEqual([lines[1], lines[2]]);
+  });
+
+  it('notes a full page from the default page size, even on a truncated preview (D29)', async () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'find',
+          annotations: { readOnlyHint: true },
+          inputSchema: {
+            type: 'object',
+            properties: { limit: { type: 'integer', default: 50 }, cursor: { type: 'string' } },
+          },
+        }),
+      ],
+    };
+    const page = Array.from({ length: 50 }, (_, i) => ({ id: i, body: 'x'.repeat(40) }));
+    const d = deps({
+      catalog,
+      caps: { maxResultBytes: 1_024 },
+      executor: new FakeExecutor({ find: { ok: true, result: page } }),
+    });
+    const result = completed(await callTool({ name: 'find' }, d));
+    const lines = (result.content[0] as { text: string }).text.split('\n');
+    expect(lines[0]).toBe('call_tool "find": ok (result truncated)');
+    expect(lines[1]).toBe(
+      'Page full: 50 items, exactly the default of "limit", so more may exist. To see them all, raise "limit" or fetch the next page with "cursor" before treating these as all of them.',
+    );
+    expect(outcome(result)).toMatchObject({ truncated: true, notes: [lines[1]] });
+  });
+
+  it('adds no notes to an ordinary result', async () => {
+    const d = deps({
+      executor: new FakeExecutor({ read_file: { ok: true, result: { items: [1], total: 1 } } }),
+    });
+    const result = completed(await callTool({ name: 'read_file', args: { path: '/n' } }, d));
+    expect(outcome(result)).not.toHaveProperty('notes');
+    expect((result.content[0] as { text: string }).text.split('\n')[1]).toBe('');
+  });
+
   it('a deny policy is a normal (non-error) denied_by_policy result and nothing executes', async () => {
     const d = deps({ policy: { read_file: 'deny' } });
     const result = completed(await callTool({ name: 'read_file', args: { path: '/n' } }, d));
