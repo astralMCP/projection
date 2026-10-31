@@ -1,11 +1,13 @@
 {
   "flow": "multi-server",
-  "current_round": 7,
+  "current_round": 10,
   "reps": 3,
   "goal": {
     "target": "pass",
     "direction": "higher",
-    "hold": ["guard_pass"]
+    "hold": [
+      "guard_pass"
+    ]
   },
   "approve_each_round": false,
   "gating_cells": [
@@ -29,11 +31,9 @@
     }
   ],
   "best": {
-    "round": 4,
-    "variant": "v4",
-    "train_gating_pass": 0.9314,
-    "guard_pass": 0.975,
-    "note": "re-baseline under harness change 2; best by definition (first round on the new harness)"
+    "round": 9,
+    "variant": "v10",
+    "note": "first best on harness change 3"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -345,14 +345,14 @@
     "packages/harness/vendor/mongodb-mcp-server/package.json",
     "packages/harness/vitest.config.ts"
   ],
-  "budget_usd": 50,
+  "budget_usd": 100,
   "stop": {
     "target": "all gating tasks pass in all reps for both models",
     "plateau_rounds": 3
   },
   "runner": ".claude/hillclimb/multi-server/run-round.sh <variant>",
   "reference": "reference-direct/ (direct mode, multi tier, both models, 3 reps; context only, not a round)",
-  "harness_sha": "c7a5ded0b32f73094ac32f5c9746642615f83399fadf824138b002b3a52f0138",
+  "harness_sha": "2c6245e47fca621441d6a9aff39cd52d528a87b760c1e60d283cb7a6baf80e69",
   "baseline": {
     "gating_pass": 0.8431,
     "noise_floor_gating_pooled_pts": 6.7,
@@ -656,8 +656,20 @@
           },
           "detection": "no hint on any non-empty result or on the 10 validate errors; 2 of 4 GitHub 404 hints were on existing items called with bad args",
           "haiku_tool_name_search_misses_per_csv_episode": {
-            "v7": [2, 2, 1, 3, 2],
-            "v6": [4, 4, 4, 4, 3]
+            "v7": [
+              2,
+              2,
+              1,
+              3,
+              2
+            ],
+            "v6": [
+              4,
+              4,
+              4,
+              4,
+              3
+            ]
           }
         }
       },
@@ -666,6 +678,42 @@
       "reverted": true,
       "decision": "probe insufficient: csv haiku 2/5 (best of v4-v7, 3 capped), sonnet 0/5 (pooled 2/10 = v5 = v6), last-log 10/10; bar (csv >=3/5 either model) not met, full round not run, source reverted to v4. Sonnet read the other-box pointer on 10/10 decisive empty GitHub results and answered from GitHub anyway; haiku tool-name-search misses halved (3.8 -> 2.0/episode) but turns still ran out in GitHub. Guard not measured.",
       "cumulative_spend_usd": 35.8
+    },
+    {
+      "round": 8,
+      "variant": "v10-base",
+      "change": "re-baseline under harness change 3 (user-approved 2026-10-30): integration build (v4 surface + IDF search + upstream elicitation + batched-approval option), direct off",
+      "commit": "77ac115",
+      "multi": {
+        "haiku45": "102/102 $0.0218",
+        "sonnetLow": "102/102 $0.0165"
+      },
+      "guard": "114/120",
+      "multiHard": {
+        "haiku45": "21/36 $0.0565",
+        "sonnetLow": "35/36 $0.0448"
+      },
+      "spend_usd": 9.42,
+      "kept": false,
+      "decision": "control for v10"
+    },
+    {
+      "round": 9,
+      "variant": "v10",
+      "change": "projections.direct defaults to auto (D28)",
+      "commit": "cfa47e0",
+      "multi": {
+        "haiku45": "102/102 $0.0110",
+        "sonnetLow": "102/102 $0.0147"
+      },
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "26/36 $0.0509",
+        "sonnetLow": "36/36 $0.0538"
+      },
+      "spend_usd": 8.06,
+      "kept": true,
+      "decision": "best: multi saturated both, Haiku cost -50%; guard +3; multi-hard haiku +5, sonnet +1 at +20% cost"
     }
   ],
   "rebaseline": "v4",
@@ -737,7 +785,8 @@
     "export.mjs spend sums cost_usd over variant results.jsonl files only; probes outside the round layout are added here by hand.",
     "v5 probe (v5/probe/, 20 episodes): $0.67 (exact, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 = $34.32.",
     "v6 probe (v6/probe/, 20 episodes): $0.85 (exact $0.8483, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5 probe) + $0.85 = $35.17.",
-    "v7 probe (v7/probe/, 20 episodes): $0.63 (exact $0.6254, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5) + $0.85 (v6) + $0.63 = $35.80."
+    "v7 probe (v7/probe/, 20 episodes): $0.63 (exact $0.6254, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5) + $0.85 (v6) + $0.63 = $35.80.",
+    "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user"
   ],
-  "cumulative_spend_usd": 35.8
+  "cumulative_spend_usd": 53.28
 }
