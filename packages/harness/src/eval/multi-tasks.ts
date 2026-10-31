@@ -84,6 +84,7 @@ import { SHOP_DB, withMongodb } from './mongodb-world.js';
 import { qualifiedName } from './multi-world.js';
 import { containsText, sameText, type EvalTask, type TaskKind } from './task-core.js';
 import { WORKPLACE_WRITE_TOOLS } from './workplace-world.js';
+import { isBillingWrite } from './messy-billing.js';
 import { BOX_ALIASES, type BoxAlias } from './world.js';
 
 /** The bare call, when `call` went to box `alias`. */
@@ -164,6 +165,8 @@ export function isBoxWrite(call: SideEffect): boolean {
       return FS_WRITES.has(bare) && !(bare === 'edit_file' && call.args['dryRun'] === true);
     case 'mongo':
       return MONGO_WRITES.has(bare);
+    case 'billing':
+      return isBillingWrite(bare);
     default:
       return WORKPLACE_WRITE_TOOLS[alias].includes(bare);
   }

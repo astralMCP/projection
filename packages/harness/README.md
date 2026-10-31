@@ -245,6 +245,35 @@ whether the global search earns its place, which settles the
 totals; the report's per-tier blocks break each tier out on its own anyway.
 The approvals-mode comparison §13 also asks for is not run yet.
 
+The opt-in, held-out **summit-messy** tier (20 tasks, `messy-tasks.ts`)
+measures robustness to other people's badly built servers, for comparing
+the facade against raw servers. Its **messy world** (`messy-world.ts`)
+opens up to four boxes, each a working server behind
+`messify(world, profile)` (`messify.ts`): a reusable proxy that serves a
+degraded surface over any in-process single-server world (a workplace
+fake, the GitHub fake, a recording proxy) and maps each call back, so the
+wrapped server still records canonical names and arguments. Its defects
+are ones real servers ship: missing, one-word or multi-KB descriptions;
+parameters with no description; schemas with no `type` or Pydantic-style
+`anyOf`/`$ref`/`oneOf`; unknown arguments dropped silently; no
+annotations or no `readOnlyHint`; generic names (`search`, `get`,
+`create`, `list`) that collide across boxes; camelCase on some tools and
+snake_case on others; errors sent as ordinary results; JSON as one text
+block (compact or Python `repr`) with no `structuredContent`; output
+schemas that drifted from the payload; 100 KB+ results; the next page
+mentioned only in prose; no or rambling `instructions`; slow tools. The
+boxes are `tracker` (terse, generic names), `chat` (verbose, camelCase
+mix, 110 KB history), `mail` (Pydantic schemas, `repr` results) and
+`billing`, a 315-tool catalog generated from a payments-style OpenAPI
+document (`messy-billing.ts`: operationId names, HTML or empty
+descriptions, a nested `requestBody`, cursor, page-number and offset
+pagination). A task opens only the boxes it names (`EvalTask.boxes`), so
+the catalog is in the ten tasks that need it. The prompts are ordinary
+requests; graders read the end state or a final `ANSWER:` line, accept
+every correct path, and each task has a `forbid` and its own turn budget.
+Calibrate it in `direct` mode only (`PROJ_EVAL_TIERS=summit-messy
+PROJ_EVAL_MODES=direct`).
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -254,7 +283,8 @@ PROJ_LIVE_EVAL=1 pnpm --filter @astral-mcp/harness exec vitest run test/tool-cho
 Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haiku-low`,
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection,projection-boxes`,
 the default), `PROJ_EVAL_TIERS`
-(`basic,hard,filesystem,mongodb,multi`, the default; `mongodb` and `multi` need
+(`basic,hard,filesystem,mongodb,multi`, the default; opt-in `multi-hard`,
+`workplace`, `hitl`, `summit-messy`; `mongodb` and `multi` need
 `pnpm run setup:mongodb`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4), `PROJ_EVAL_BOX_DESCRIPTIONS=1` (multi

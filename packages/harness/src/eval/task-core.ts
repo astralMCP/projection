@@ -11,7 +11,7 @@
 
 import type { SideEffect } from '../types.js';
 import type { ElicitationRecord, HitlChecks, TaskApprover } from './hitl.js';
-import type { WorldFacts, WorldName, WorldOptions } from './world.js';
+import type { MessyBoxAlias, WorldFacts, WorldName, WorldOptions } from './world.js';
 
 /**
  * `single` / `multi`: one tool call or several (the original tiers). The
@@ -56,10 +56,20 @@ export type TaskKind =
  * `hitl` against the same workplace world, each task paired with an
  * approver persona that declines, cancels or edits part of the work
  * (hitl-tasks.ts) — opt-in only, and NOT held out: it is the target the
- * approval UX is tuned on.
+ * approval UX is tuned on; `summit-messy` against the messy world — the
+ * same kinds of servers badly built, each behind a defect profile
+ * (messy-world.ts, messy-tasks.ts) — opt-in only, and held out.
  */
 export type TaskTier =
-  'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi' | 'multi-hard' | 'workplace' | 'hitl';
+  | 'basic'
+  | 'hard'
+  | 'filesystem'
+  | 'mongodb'
+  | 'multi'
+  | 'multi-hard'
+  | 'workplace'
+  | 'hitl'
+  | 'summit-messy';
 export const TASK_TIERS: readonly TaskTier[] = [
   'basic',
   'hard',
@@ -69,6 +79,7 @@ export const TASK_TIERS: readonly TaskTier[] = [
   'multi-hard',
   'workplace',
   'hitl',
+  'summit-messy',
 ];
 /** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace` and `hitl`. */
 export const DEFAULT_TIERS: readonly TaskTier[] = [
@@ -89,6 +100,7 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   'multi-hard': 'multi',
   workplace: 'workplace',
   hitl: 'workplace',
+  'summit-messy': 'messy',
 };
 
 export function worldOf(tier: TaskTier): WorldName {
@@ -98,6 +110,16 @@ export function worldOf(tier: TaskTier): WorldName {
 /** World options a tier needs beyond its world's name: `multi-hard` opens the hard variant. */
 export function worldOptionsOf(tier: TaskTier): Pick<WorldOptions, 'variant'> {
   return tier === 'multi-hard' ? { variant: 'hard' } : {};
+}
+
+/** World options one task needs: its tier's, plus the boxes it names (`summit-messy`). */
+export function taskWorldOptions(
+  task: Pick<EvalTask, 'tier' | 'boxes'>,
+): Pick<WorldOptions, 'variant' | 'boxes'> {
+  return {
+    ...worldOptionsOf(task.tier),
+    ...(task.boxes !== undefined ? { boxes: task.boxes } : {}),
+  };
 }
 
 /** What `verify` sees once the episode is over and before the world is torn down. */
@@ -171,6 +193,8 @@ export interface EvalTask {
   approver?: TaskApprover;
   /** `hitl` tier: the task's ideal prompt count and its denial-handling checks. */
   hitl?: HitlChecks;
+  /** `summit-messy` tier: the boxes the episode opens (default: all of the messy world's). */
+  boxes?: readonly MessyBoxAlias[];
 }
 
 /** The prompt text for one episode. */

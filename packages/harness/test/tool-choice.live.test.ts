@@ -15,9 +15,10 @@
  *
  *   PROJ_EVAL_MODELS       comma list of presets (haiku45, sonnet-low, haiku-low, sonnet-medium; default haiku45,sonnet-low)
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only)
- *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl (default all but the
- *                          opt-in multi-hard, workplace and hitl; workplace is the held-out world, in-process, no
- *                          mongod; hitl runs approval-persona tasks in the same world)
+ *   PROJ_EVAL_TIERS        basic,hard,filesystem,mongodb,multi,multi-hard,workplace,hitl,summit-messy (default all
+ *                          but the opt-in multi-hard, workplace, hitl and summit-messy; workplace is the held-out
+ *                          world, in-process, no mongod; hitl runs approval-persona tasks in the same world;
+ *                          summit-messy is held out too: badly built servers behind messify, in-process)
  *   PROJ_EVAL_TASKS        comma list of task names (within the selected tiers)
  *   PROJ_EVAL_RUNS         episodes per cell (default 3)
  *   PROJ_EVAL_CONCURRENCY  episodes in flight (default 4)

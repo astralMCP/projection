@@ -16,7 +16,10 @@
  *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts);
  * - **workplace**: five in-process fakes of other popular servers (chat,
  *   docs, errors, mail, tracker) as boxes, stateful per episode
- *   (workplace-world.ts) — the opt-in `workplace` tier's world.
+ *   (workplace-world.ts) — the opt-in `workplace` tier's world;
+ * - **messy**: badly built servers — three workplace fakes and a 315-tool
+ *   generated billing API, each behind `messify` with a defect profile
+ *   (messy-world.ts) — the held-out `summit-messy` tier's world.
  *
  * Real-server effects land for real; tasks verify the end state (on disk,
  * in the database) as well as the recorded calls.
@@ -27,20 +30,24 @@ import type { SideEffect } from '../types.js';
 import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
+import { openMessyWorld, type MessyState } from './messy-world.js';
 import { openMultiWorld } from './multi-world.js';
 import { openWorkplaceWorld, type WorkplaceState } from './workplace-world.js';
 
-export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace';
+export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace' | 'messy';
 /** The worlds made of several boxes. */
-export type BoxedWorldName = 'multi' | 'workplace';
+export type BoxedWorldName = 'multi' | 'workplace' | 'messy';
 /** The workplace world's boxes (each a server world named by its alias). */
 export type WorkplaceBoxAlias = 'chat' | 'docs' | 'errors' | 'mail' | 'tracker';
-/** The worlds that are one upstream server (a workplace box is one too, though never opened alone). */
-export type ServerWorldName = Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias;
+/** The messy world's boxes: three workplace fakes and the generated billing API. */
+export type MessyBoxAlias = 'billing' | 'chat' | 'mail' | 'tracker';
+/** The worlds that are one upstream server (a workplace or messy box is one too, though never opened alone). */
+export type ServerWorldName =
+  Exclude<WorldName, BoxedWorldName> | WorkplaceBoxAlias | MessyBoxAlias;
 
 /** Whether a world name is a boxed (multi-server) world. */
 export function isBoxedWorldName(name: WorldName): name is BoxedWorldName {
-  return name === 'multi' || name === 'workplace';
+  return name === 'multi' || name === 'workplace' || name === 'messy';
 }
 
 /** One tool as a world serves it (the model sees name, description, schema). */
@@ -72,11 +79,13 @@ export interface WorldFacts {
   mongoUri?: string;
   /** workplace: every box's live state, for `verify` to read the end state. */
   workplace?: WorkplaceState;
+  /** messy: every box's live state, for `verify` to read the end state. */
+  messy?: MessyState;
 }
 
 interface WorldBase {
   /** A world's name; a workplace box (never opened alone) is named by its alias. */
-  name: WorldName | WorkplaceBoxAlias;
+  name: WorldName | WorkplaceBoxAlias | MessyBoxAlias;
   readonly tools: readonly WorldTool[];
   /** The `instructions` the upstream advertises (undefined when none). */
   readonly instructions: string | undefined;
@@ -104,8 +113,9 @@ export interface ServerWorld extends WorldBase {
 /** The aliases of the multi world's boxes. */
 export type MultiBoxAlias = 'github' | 'fs' | 'mongo';
 /** Any box alias, multi or workplace. */
-export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias;
+export type BoxAlias = MultiBoxAlias | WorkplaceBoxAlias | MessyBoxAlias;
 export const BOX_ALIASES: readonly BoxAlias[] = [
+  'billing',
   'github',
   'fs',
   'mongo',
@@ -154,6 +164,8 @@ export interface WorldOptions {
    * Absent: the base fixtures, exactly as every other tier sees them.
    */
   variant?: 'hard';
+  /** messy only: the boxes to open (default all). */
+  boxes?: readonly MessyBoxAlias[];
 }
 
 /** A fresh world for one episode. */
@@ -169,5 +181,7 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
       return openMultiWorld(options);
     case 'workplace':
       return Promise.resolve(openWorkplaceWorld(options));
+    case 'messy':
+      return openMessyWorld(options);
   }
 }

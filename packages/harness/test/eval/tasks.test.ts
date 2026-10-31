@@ -14,6 +14,7 @@ import {
   MULTI_HARD_TASKS,
   WORKPLACE_TASKS,
   HITL_TASKS,
+  MESSY_TASKS,
   MULTI_TASKS,
   promptFor,
   resolveTasks,
@@ -317,6 +318,7 @@ describe('tool-choice tasks', () => {
       ...MULTI_HARD_TASKS,
       ...WORKPLACE_TASKS,
       ...HITL_TASKS,
+      ...MESSY_TASKS,
     ]);
     expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);

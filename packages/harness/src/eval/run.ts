@@ -94,7 +94,7 @@ import {
   TASK_TIERS,
   TOOL_CHOICE_TASKS,
   worldOf,
-  worldOptionsOf,
+  taskWorldOptions,
   type EvalTask,
   type TaskKind,
   type TaskTier,
@@ -620,7 +620,7 @@ async function runPlanned(
   try {
     world = await openWorld(worldOf(task.tier), {
       ...(options.serverInstructions === false ? { instructions: false } : {}),
-      ...worldOptionsOf(task.tier),
+      ...taskWorldOptions(task),
     });
     try {
       // An approver only when the task or the run asks for one: every other
