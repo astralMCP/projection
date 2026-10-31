@@ -17,7 +17,9 @@
  *   PROJ_EVAL_MODES        direct,projection,projection-boxes (default all; projection-boxes runs on the multi tier only);
  *                          opt-in: native-search, native-ptc (Anthropic's tool search / programmatic tool
  *                          calling over the raw tools; native-ptc is skipped on models without it, e.g. Haiku
- *                          4.5), projection-direct, projection-auto
+ *                          4.5), projection-direct, projection-auto, and the ablations projection-search
+ *                          (projections.direct false), projection-nocode (codeMode false), projection-codeonly
+ *                          (catalog false), projection-nopreamble (codeModePreamble '')
  *   PROJ_EVAL_HOST_PROMPT=realistic  every mode: put a ~12k-token generic agent-host system prompt
  *                          (src/eval/host-prompt.ts) before the session's own (default: the one-line framing only)
  *   PROJ_EVAL_TOOL_SEARCH  native-search: bm25 or regex (default bm25)

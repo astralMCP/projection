@@ -56,6 +56,12 @@
  *   `tool_use` blocks and pass the same gate. Not on Haiku 4.5
  *   ({@link modeSupportsModel}).
  *
+ * The opt-in **ablations** are `projection` minus one feature, through
+ * public `WrapOptions` only ({@link projectionWrapOptions}):
+ * `projection-search` (never list tools directly), `projection-nocode`
+ * (catalog only), `projection-codeonly` (code mode only) and
+ * `projection-nopreamble` (no routing preamble).
+ *
  * Both Projection modes pass no box `description`s by default; the
  * `boxDescriptions` session option (PROJ_EVAL_BOX_DESCRIPTIONS=1) passes
  * each box's host description (MULTI_BOX_DESCRIPTIONS, WORKPLACE_BOX_DESCRIPTIONS) instead.
@@ -106,7 +112,11 @@ export type EvalMode =
   | 'projection'
   | 'projection-boxes'
   | 'projection-direct'
-  | 'projection-auto';
+  | 'projection-auto'
+  | 'projection-search'
+  | 'projection-nocode'
+  | 'projection-codeonly'
+  | 'projection-nopreamble';
 /** The modes a run plans by default (the opt-in exploration modes are not among them). */
 export const EVAL_MODES: readonly EvalMode[] = ['direct', 'projection', 'projection-boxes'];
 /**
@@ -122,11 +132,56 @@ export const KNOWN_EVAL_MODES: readonly EvalMode[] = [
   'projection-auto',
   'native-search',
   'native-ptc',
+  'projection-search',
+  'projection-nocode',
+  'projection-codeonly',
+  'projection-nopreamble',
 ];
 
-/** The `projections.direct` setting a Projection mode wraps with. */
+/**
+ * The `projections.direct` setting a Projection mode passes explicitly;
+ * `false` here means "not passed" (the library default, `'auto'`), except
+ * for `projection-search`, which {@link projectionWrapOptions} passes as an
+ * explicit `false`.
+ */
 export function directSettingOf(mode: EvalMode): 'auto' | boolean {
   return mode === 'projection-direct' ? true : mode === 'projection-auto' ? 'auto' : false;
+}
+
+/**
+ * The public `WrapOptions` a Projection mode sets on top of the defaults —
+ * the ablations take one feature away each, through options only:
+ *
+ * - `projection-search`: `projections.direct: false` (never list the tools
+ *   directly; always search).
+ * - `projection-nocode`: `projections.codeMode: false` (catalog only, so
+ *   no `execute_machine` / `discover_apis`).
+ * - `projection-codeonly`: `projections.catalog: false` (code mode only;
+ *   no search/describe/call, and so no direct listing).
+ * - `projection-nopreamble`: `codeModePreamble: ''` (no routing preamble in
+ *   the instructions; the server's own instructions and, on a multi-server
+ *   facade, the box list stay).
+ */
+export function projectionWrapOptions(mode: EvalMode): {
+  projections?: { direct?: 'auto' | boolean; codeMode?: boolean; catalog?: boolean };
+  codeModePreamble?: string;
+} {
+  switch (mode) {
+    case 'projection-direct':
+      return { projections: { direct: true } };
+    case 'projection-auto':
+      return { projections: { direct: 'auto' } };
+    case 'projection-search':
+      return { projections: { direct: false } };
+    case 'projection-nocode':
+      return { projections: { codeMode: false } };
+    case 'projection-codeonly':
+      return { projections: { catalog: false } };
+    case 'projection-nopreamble':
+      return { codeModePreamble: '' };
+    default:
+      return {};
+  }
 }
 
 /** The modes that offer the raw tools through Anthropic's server tools. */
@@ -693,7 +748,7 @@ async function openSingleProjectionSession(
   if ('boxes' in world) return openMultiProjectionSession(world, mode, options);
   const facade = await wrapMcpServer(world.server, {
     blob: { key: randomBytes(32) },
-    ...(directSettingOf(mode) !== false ? { projections: { direct: directSettingOf(mode) } } : {}),
+    ...projectionWrapOptions(mode),
     ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   });
   return connectFacade(mode, world, facade, () => PROJECTION_DISCOVERY_TOOLS, options);
@@ -722,7 +777,7 @@ export async function openMultiProjectionSession(
   const facade = await wrapMcpServers(sources, {
     blob: { key: randomBytes(32) },
     ...(mode === 'projection-boxes' ? { catalog: { globalSearch: false } } : {}),
-    ...(directSettingOf(mode) !== false ? { projections: { direct: directSettingOf(mode) } } : {}),
+    ...projectionWrapOptions(mode),
     ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   });
   return connectFacade(
@@ -834,6 +889,10 @@ function openModeSession(
       return openMultiProjectionSession(world, mode, options);
     case 'projection-direct':
     case 'projection-auto':
+    case 'projection-search':
+    case 'projection-nocode':
+    case 'projection-codeonly':
+    case 'projection-nopreamble':
       return openSingleProjectionSession(world, mode, options);
   }
 }

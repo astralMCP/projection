@@ -399,6 +399,7 @@ export {
   modeApplies,
   modeSupportsModel,
   nativeToolsOf,
+  projectionWrapOptions,
   multiDirectSystemPrompt,
   openDirectSession,
   openMultiDirectSession,
