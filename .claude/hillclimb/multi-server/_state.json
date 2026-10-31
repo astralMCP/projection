@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 13,
+  "current_round": 14,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -31,9 +31,9 @@
     }
   ],
   "best": {
-    "round": 13,
-    "variant": "v13-bc",
-    "note": "v13 facade on basecamp harness (re-baseline)"
+    "round": 14,
+    "variant": "v14",
+    "note": "D32 inline signatures on v13 + basecamp harness"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -774,6 +774,21 @@
       "spend_usd": 8.3,
       "kept": true,
       "decision": "new baseline for the basecamp harness; drops vs v13 on old harness come from the harder mocks (check-run summaries no longer leak the failing file, search no longer matches every PR)"
+    },
+    {
+      "round": 14,
+      "variant": "v14",
+      "change": "D32: top-3 search hits carry a compact args signature; call_tool validation errors carry it; query pages 15 (was 50)",
+      "commit": "edc5a78",
+      "multi": "202/204",
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "24/36 $0.0447",
+        "sonnetLow": "35/36 $0.0451"
+      },
+      "spend_usd": 7.46,
+      "kept": true,
+      "decision": "best: vs v13-bc describe_tool calls per episode fall 1.18->0.20 (haiku multi), 0.59->0.00 (sonnet multi), 2.78->1.08 / 1.11->0.31 (multi-hard); cost multi -18%/-8%, multi-hard -7%/-18%; multi-hard +1/+2. Regression seen: signature hides arg descriptions, so Sonnet guessed mongo connectionId \"default\" once (db-rename-audit-log). issue_write missing-method errors (12) self-correct via the hint."
     }
   ],
   "rebaseline": "v4",
