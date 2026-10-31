@@ -59,6 +59,7 @@ import {
 import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from './boxes.js';
 import { canonicalRequest } from './canonical.js';
 import { resultNotes } from './result-notes.js';
+import { callSignature, signatureLine } from './signature.js';
 import { unknownToolError } from './search.js';
 import { validateArgsShape } from './validate-args.js';
 
@@ -424,10 +425,7 @@ async function execute(
       phase: 'upstream',
       message: neutralizeControlChars(capLength(result.error.message, MAX_UPSTREAM_MESSAGE_CHARS)),
       diagnostics: [],
-      hint:
-        result.inputRefused === true
-          ? INPUT_REFUSED_HINT
-          : 'The wrapped server rejected this call. Check the arguments against describe_tool and try again, or report the error to the user.',
+      hint: result.inputRefused === true ? INPUT_REFUSED_HINT : rejectedHint(deps, name),
       logs: [],
     });
   }
@@ -778,6 +776,22 @@ export function declinedText(tool: string, reason: string | undefined): string {
       ? 'The refusal covers only this call. If the note asks for a change, make the changed call instead (it asks for approval again); otherwise do not make this call again or reach its result another way.'
       : 'The refusal covers only this call: do not make it again or reach its result another way.';
   return `${head} ${next} ${AFTER_REFUSAL}`;
+}
+
+/**
+ * The hint of an `upstream` failure (R25): the server's own validation is
+ * the authority on what the shallow R35.1 check let through (nested
+ * fields, formats, unknown names the schema does not forbid), so the hint
+ * restates the tool's call signature (D32) — one retry instead of a
+ * describe_tool turn and a retry when the arguments were the problem.
+ */
+function rejectedHint(deps: CallToolDeps, name: string): string {
+  const entry = findTool(deps.catalog, name);
+  if (entry === undefined) {
+    return 'The wrapped server rejected this call. Check the arguments against describe_tool and try again, or report the error to the user.';
+  }
+  const takes = signatureLine(callSignature(entry.inputSchema));
+  return `The wrapped server rejected this call. If the arguments were wrong: ${inert(name)} takes ${takes}. Fix them and try again, or report the error to the user.`;
 }
 
 function inert(text: string): string {

@@ -172,7 +172,12 @@ export function registerCatalogTools(
       description: copy.callDescription,
       inputSchema: z.object({
         name: z.string().describe(copy.toolName),
-        args: z.unknown().optional().describe('JSON object of arguments per describe_tool.'),
+        args: z
+          .unknown()
+          .optional()
+          .describe(
+            "JSON object of arguments, as a search hit's args or describe_tool shows them.",
+          ),
       }),
     },
     async (args, ctx) =>

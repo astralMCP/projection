@@ -131,7 +131,10 @@ describe('call_tool: validation (R35.1)', () => {
       const err = structured(result);
       expect(err['phase']).toBe('validate');
       expect(String(err['message'])).toContain(`"${property}"`);
-      expect(String(err['hint'])).toContain('describe_tool');
+      // The hint carries the tool's call signature (D32): one retry, no describe_tool turn.
+      expect(String(err['hint'])).toBe(
+        `"write_file" takes args: {path: string, content: string, mode?: "append"|"overwrite", retries?: integer|null}. Fix argument "${property}" and try again.`,
+      );
     }
     // Nothing reached the executor or asked for approval.
     expect(d.executor.calls).toEqual([]);
@@ -437,7 +440,9 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     expect(err['phase']).toBe('upstream');
     expect(String(err['message'])).toContain('disk on fire');
     expect(String(err['message'])).not.toContain(ESC);
-    expect(String(err['hint'])).toContain('describe_tool');
+    // The server is the authority on what R35.1 lets through: the hint
+    // restates the call signature (D32).
+    expect(String(err['hint'])).toContain('If the arguments were wrong: "read_file" takes args: {');
   });
 });
 

@@ -34,13 +34,16 @@ export {
   SCHEMA_KEY_ALLOWLIST,
   type SanitizedSchema,
 } from './schema-safety.js';
+export { callSignature, MAX_SIGNATURE_CHARS, type CallSignature } from './signature.js';
 export {
   searchBoxes,
   searchTools,
   summarizeTool,
   tokenize,
+  DEFAULT_QUERY_PAGE_SIZE,
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
+  SIGNATURE_HITS,
   type BoxedSearchPage,
   type BoxedToolSummary,
   type SearchBoxesOptions,

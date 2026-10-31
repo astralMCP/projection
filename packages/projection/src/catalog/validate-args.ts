@@ -5,7 +5,8 @@
  * types match, enum membership for top-level primitives, and no unknown
  * top-level properties when the schema forbids them. It exists so a human
  * is never asked to approve a call the wrapped server would reject on
- * shape, and so the model gets a `validate` hint naming the property. Full
+ * shape, and so the model gets a `validate` hint naming the property and
+ * showing the tool's call signature (D32). Full
  * JSON Schema validation would run twice — the wrapped server is the
  * authority — for nothing but a nicer error message (D9).
  *
@@ -16,6 +17,7 @@
 import { ProjectionError } from '../errors.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { isRecord } from '../types.js';
+import { callSignature, signatureLine } from './signature.js';
 
 const MAX_NAME_CHARS = 200;
 
@@ -27,9 +29,12 @@ export function validateArgsShape(
   caller: 'call_tool' | 'toolCall' = 'call_tool',
 ): void {
   const safeTool = inert(toolName);
+  // The hint carries the tool's call signature (D32), so a call made
+  // straight from a search hit, or from a guess, is fixed in one retry
+  // instead of a describe_tool turn and a retry. Built only on failure.
   const fail = (property: string, why: string): ProjectionError =>
     new ProjectionError('validate', `${caller} ${safeTool}: argument ${inert(property)} ${why}`, {
-      hint: `Call describe_tool with name ${safeTool} and fix argument ${inert(property)} to match its input schema.`,
+      hint: `${safeTool} takes ${signatureLine(callSignature(schema))}. Fix argument ${inert(property)} and try again.`,
     });
 
   const properties = isRecord(schema['properties']) ? schema['properties'] : {};

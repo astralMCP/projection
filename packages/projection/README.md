@@ -22,7 +22,7 @@ five tools in all, never a pass-through to the wrapped server's own:
   approve that exact call via MRTR elicitation); `discover_apis` returns
   the generated TypeScript definitions and the authoring contract.
 - **Catalog** — `search_tools` lists the wrapped tools with their approval
-  posture, `describe_tool` returns one tool's schemas (and its generated
+  posture (a query's top three hits with their arguments), `describe_tool` returns one tool's schemas (and its generated
   types on request, `types: true`), and `call_tool` runs one tool by name
   under the same approval gate. The instructions route the model: one step
   → `call_tool`; a workflow → `execute_machine`. Either projection can be

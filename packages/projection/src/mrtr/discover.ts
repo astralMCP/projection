@@ -418,10 +418,10 @@ export const APPROVAL_SENTENCE_TAIL = `and ask the user to approve that specific
 export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Tools that change something may pause the machine ${APPROVAL_SENTENCE_TAIL} Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
 
 /** Preamble when only the catalog projection is on (R29, R32). */
-export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, then call_tool to run it, with the args its search hit shows (describe_tool gives any other tool's). Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** Preamble when both projections are on: the routing rule (R29). */
-export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, computing over a list (counting, filtering, summing, comparing or checking every item), or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, then call_tool to run it, with the args its search hit shows (describe_tool gives any other tool's). For several steps, branching on results, computing over a list (counting, filtering, summing, comparing or checking every item), or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /**
  * The sentence every direct-listing preamble carries: what a mediated tool

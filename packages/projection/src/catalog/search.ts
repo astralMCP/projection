@@ -40,6 +40,7 @@ import {
 } from '../text-safety.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
 import { boxOverview, renderOverviewBlock, toolCount } from './box-guidance.js';
+import { callSignature, signatureLine, type CallSignature } from './signature.js';
 import {
   boxSearchTool,
   isBoxedCatalog,
@@ -67,12 +68,37 @@ export interface SearchToolsArgs {
 
 /** The policy options (R14, R49) decide the rendered posture. */
 export interface SearchToolsOptions extends PolicyOptions {
-  /** Tools per page. Default {@link DEFAULT_SEARCH_PAGE_SIZE}, clamped to [1, 200]. */
+  /**
+   * Tools per page, for listings and queries alike. Default {@link DEFAULT_SEARCH_PAGE_SIZE}
+   * for a listing (no query) and {@link DEFAULT_QUERY_PAGE_SIZE} for a
+   * query; clamped to [1, 200].
+   */
   pageSize?: number;
 }
 
-/** Page size — a transport bound, independent of the R37 inline threshold. */
+/** Page size of a listing — a transport bound, independent of the R37 inline threshold. */
 export const DEFAULT_SEARCH_PAGE_SIZE = 50;
+
+/**
+ * Page size of a ranked (queried) search (D32). On the offline search
+ * corpus (1,173 cases, D22) the gold tool is in the top 15 in 96.6 % of
+ * cases and in the top 50 in 97.7 %, while every row past the 15th costs
+ * about 30 tokens on every search that has it: "create issue" in the
+ * GitHub box matched 25. The rest stay a cursor away.
+ */
+export const DEFAULT_QUERY_PAGE_SIZE = 15;
+
+/**
+ * How many of a query's best hits carry their call signature (D32). On the
+ * offline corpus the gold tool ranks 1st in 75.5 % of cases, top 3 in
+ * 89.9 % (93.4 % of the queries models actually sent) and top 5 in 92.8 %:
+ * the 4th and 5th signatures would buy 2.9 points for two more lines on
+ * every search. A signature's optional arguments are cut at 480
+ * characters (`MAX_SIGNATURE_CHARS`); over the GitHub tools the median is
+ * 109 (~27 tokens), so the three typically cost ~80 tokens, against
+ * ~800–1,400 for one `describe_tool` answer plus the turn that fetches it.
+ */
+export const SIGNATURE_HITS = 3;
 const MAX_PAGE_SIZE = 200;
 /** `query` is capped (R33): its words are matched as plain substrings, never a regex. */
 export const MAX_QUERY_CHARS = 200;
@@ -83,6 +109,11 @@ export interface ToolSummary {
   purpose: string;
   posture: ToolPosture;
   destructive: boolean;
+  /**
+   * The tool's compact call signature (D32): on the first
+   * {@link SIGNATURE_HITS} hits of a query, unless the tool is blocked.
+   */
+  signature?: CallSignature;
 }
 
 export interface SearchToolsPage {
@@ -92,14 +123,32 @@ export interface SearchToolsPage {
   nextCursor?: string;
 }
 
-/** Summarize one catalog entry (R33); `context` decides its posture (R14, R49). */
-export function summarizeTool(entry: ToolCatalogEntry, context?: PolicyContext): ToolSummary {
+/**
+ * Summarize one catalog entry (R33); `context` decides its posture (R14,
+ * R49). With `withSignature`, a tool that is not blocked also carries its
+ * call signature (D32): there is no point showing how to call a tool the
+ * gate refuses.
+ */
+export function summarizeTool(
+  entry: ToolCatalogEntry,
+  context?: PolicyContext,
+  withSignature = false,
+): ToolSummary {
+  const posture = postureOf(decidePolicy(entry, context));
   return {
     name: entry.name,
     purpose: purposeSentence(entry.description) ?? '(no description)',
-    posture: postureOf(decidePolicy(entry, context)),
+    posture,
     destructive: entry.annotations?.destructiveHint === true,
+    ...(withSignature && posture !== 'blocked by policy'
+      ? { signature: callSignature(entry.inputSchema) }
+      : {}),
   };
+}
+
+/** Whether the hit at 0-based `rank` of a search for `query` shows its signature (D32). */
+function signed(query: string, rank: number): boolean {
+  return query.length > 0 && rank < SIGNATURE_HITS;
 }
 
 /**
@@ -119,7 +168,7 @@ export function searchTools(
     undefined,
     // First occurrence wins, as for `findTool` and typegen (S5).
     (q) => rankTools(dedupeTools(catalog.tools), q),
-    (entry) => summarizeTool(entry, context),
+    (entry, rank, q) => summarizeTool(entry, context, signed(q, rank)),
   );
   return {
     content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
@@ -150,12 +199,14 @@ function paginate<T, S>(
   pageSizeOption: number | undefined,
   tool: string | undefined,
   rank: (query: string) => readonly T[],
-  summarize: (item: T) => S,
+  /** `rank` is the item's 0-based position in the whole ranking. */
+  summarize: (item: T, rank: number, query: string) => S,
 ): Paged<S> {
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? DEFAULT_SEARCH_PAGE_SIZE));
   // Slice, not capLength: an ellipsis would change what the filter matches.
   const rawQuery = args.query ?? '';
   const query = rawQuery.slice(0, MAX_QUERY_CHARS);
+  const fallback = query.length > 0 ? DEFAULT_QUERY_PAGE_SIZE : DEFAULT_SEARCH_PAGE_SIZE;
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? fallback));
   const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
   const offset = decodeCursor(args.cursor, query, tool);
 
@@ -170,7 +221,7 @@ function paginate<T, S>(
   const end = offset + slice.length;
   return {
     page: {
-      tools: slice.map(summarize),
+      tools: slice.map((item, i) => summarize(item, offset + i, query)),
       total: matches.length,
       ...(end < matches.length ? { nextCursor: encodeCursor(query, end, tool) } : {}),
     },
@@ -249,8 +300,8 @@ export function searchBoxes(
     options.pageSize,
     tool,
     (q) => (q.length === 0 ? members : scoreBoxedTools(members, q, aliases).map((i) => i.member)),
-    (member): BoxedToolSummary => ({
-      ...summarizeTool(member.qualified, context),
+    (member, rank, q): BoxedToolSummary => ({
+      ...summarizeTool(member.qualified, context, signed(q, rank)),
       box: member.alias,
     }),
   );
@@ -278,10 +329,7 @@ export function searchBoxes(
   }
   const where = box !== undefined ? `in the ${box} box` : 'in any box';
   lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel));
-  lines.push(
-    '',
-    'Tool names are qualified as <box>.<tool>. Call describe_tool with a name before calling a tool whose arguments you have not seen.',
-  );
+  lines.push('', `Tool names are qualified as <box>.<tool>. ${nextStep(result.tools)}`);
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
     structuredContent: { ...result },
@@ -730,11 +778,20 @@ function renderPage(
       `server ${inertIdentity(catalog.identity)}`,
     ),
   );
-  lines.push(
-    '',
-    'Call describe_tool with a name before calling a tool whose arguments you have not seen.',
-  );
+  lines.push('', nextStep(page.tools));
   return lines.join('\n');
+}
+
+/**
+ * The page's closing pointer (R33, D32): with an `args:` line on the page,
+ * those tools can go straight to `call_tool`; every other one needs
+ * `describe_tool` first.
+ */
+function nextStep(tools: readonly ToolSummary[]): string {
+  if (!tools.some((tool) => tool.signature !== undefined)) {
+    return 'Call describe_tool with a name before calling a tool whose arguments you have not seen.';
+  }
+  return 'A tool shown with its args can be called with call_tool right away; call describe_tool first for any other tool, or for what an argument means.';
 }
 
 /**
@@ -768,6 +825,9 @@ function renderEntries(
       const name = capLength(neutralizeControlChars(entry.name), MAX_IDENTITY_CHARS);
       const flags = entry.destructive ? `${entry.posture}, destructive` : entry.posture;
       lines.push(`- ${name} — ${entry.purpose} [${flags}]`);
+      // One line built by `callSignature` from the sanitized schema, under
+      // the entry and indented: it cannot forge an entry or a posture.
+      if (entry.signature !== undefined) lines.push(`  ${signatureLine(entry.signature)}`);
     }
   }
   if (page.nextCursor !== undefined) {

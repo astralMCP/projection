@@ -360,6 +360,12 @@ export interface MultiPreambleOptions {
 }
 
 /**
+ * Where a found tool's arguments come from (D32): a query's top hits show
+ * them, so call_tool can follow the search directly.
+ */
+const ARGS_SENTENCE = "A query's top hits show their args; describe_tool gives any other tool's.";
+
+/**
  * The multi-server preamble (R29, R44, R45), one variant per projection
  * selection as the single-server `defaultPreamble`: the routing rule when
  * both projections are on, naming the search tools the facade serves (R43)
@@ -386,7 +392,7 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
     const others =
       unlisted.length === 0
         ? ''
-        : ` ${unlisted.length === 1 ? `The ${unlisted[0] ?? ''} box is` : `The ${aliasList(unlisted)} boxes are`} not listed: call ${unlisted.map(boxSearchTool).join(' or ')}${globalSearch ? ' (or search_tools, which searches every box)' : ''} to find a tool there — without a query, a box's search lists the box and leads with its own guidance — then describe_tool to see its arguments and call_tool to run it.`;
+        : ` ${unlisted.length === 1 ? `The ${unlisted[0] ?? ''} box is` : `The ${aliasList(unlisted)} boxes are`} not listed: call ${unlisted.map(boxSearchTool).join(' or ')}${globalSearch ? ' (or search_tools, which searches every box)' : ''} to find a tool there — without a query, a box's search lists the box and leads with its own guidance — then call_tool to run it, with the args its search hit shows or describe_tool gives.`;
     const head = `This server fronts several toolboxes, each wrapping another server. ${direct}${read}${others}`;
     if (!projections.codeMode) return `${head} ${DIRECT_LISTING_SENTENCE}`;
     return `${head} For a single action or a short chain where you look something up and then act on it, call the tools one at a time, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). ${DIRECT_LISTING_SENTENCE}`;
@@ -399,11 +405,11 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
     ? "search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
     : "a box's search_<box> tool to look inside that box";
   const listing = `${find}; without a query, a box's search lists the box and leads with its own guidance.`;
-  const steps = `${listing} Then call describe_tool to see a tool's arguments and call_tool to run it.`;
+  const steps = `${listing} ${ARGS_SENTENCE} Then run it with call_tool.`;
   if (!projections.codeMode) {
     return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
   }
-  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call ${listing} Then call describe_tool to see a tool's arguments and call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call ${listing} ${ARGS_SENTENCE} Then use call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 }
 
 /**
@@ -471,11 +477,11 @@ export function buildMultiInstructions(
   return `${copy}\n\n${lines.join('\n')}`;
 }
 
-const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more); a word that is a box's name boosts that box's tools. Each entry gives the tool's qualified name (<box>.<tool>), its box, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more); a word that is a box's name boosts that box's tools. Each entry gives the tool's qualified name (<box>.<tool>), its box, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive; a query's top hits also show their args, enough to call call_tool directly. Call describe_tool before calling any other tool.`;
 
-const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool.`;
+const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool when no search hit showed the tool's args, or to learn what an argument means.`;
 
-const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. Chains of a few calls are best done as successive call_tool calls, reading each result before the next.`;
+const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments: the args a search hit shows, or those describe_tool gives. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. Chains of a few calls are best done as successive call_tool calls, reading each result before the next.`;
 
 /** The catalog tools point at execute_machine only when code mode is served (R29). */
 const DESCRIBE_TOOL_TYPES_POINTER = ` Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
@@ -526,7 +532,7 @@ function boxSearchCopy(view: BoxedCatalog, alias: string, box: ToolBox): SearchT
   return {
     alias,
     title: `Search the ${alias} toolbox`,
-    description: `${head}\n\nLists this box's tools one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more). Each entry gives the tool's qualified name (${alias}.<tool>), a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Without a query, the first page leads with the box's own guidance, when its server gives any. Call describe_tool before calling a tool whose arguments you have not seen.`,
+    description: `${head}\n\nLists this box's tools one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more). Each entry gives the tool's qualified name (${alias}.<tool>), a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive; a query's top hits also show their args, enough to call call_tool directly. Without a query, the first page leads with the box's own guidance, when its server gives any. Call describe_tool before calling any other tool.`,
     query: `Words to match against the ${alias} box's tool names, titles and descriptions; any word matches, name hits weigh more. Omit it to list the box, its guidance first.`,
   };
 }

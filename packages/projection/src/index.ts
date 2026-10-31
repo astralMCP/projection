@@ -67,6 +67,7 @@ export {
 
 // Catalog projection — search_tools / describe_tool / call_tool (PRD §6.8, R32–R38)
 export {
+  callSignature,
   callTool,
   canonicalJson,
   canonicalRequest,
@@ -77,10 +78,14 @@ export {
   validateArgsShape,
   CALL_KEY,
   DEFAULT_CALL_TTL_MS,
+  DEFAULT_QUERY_PAGE_SIZE,
   DEFAULT_SEARCH_PAGE_SIZE,
   MAX_QUERY_CHARS,
   MAX_SCHEMA_CHARS,
+  MAX_SIGNATURE_CHARS,
+  SIGNATURE_HITS,
   SCHEMA_KEY_ALLOWLIST,
+  type CallSignature,
   type CallToolArgs,
   type CallToolDeps,
   type CallToolOutcome,
