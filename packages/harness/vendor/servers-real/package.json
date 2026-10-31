@@ -1,0 +1,8 @@
+{
+  "name": "@astral-mcp/harness-vendor-servers-real",
+  "private": true,
+  "description": "Isolated install of the npm MCP servers behind the harness's held-out summit-local tier (`pnpm run setup:servers-real` in packages/harness). The Python servers are pinned in requirements.txt and installed into .venv by the same script.",
+  "dependencies": {
+    "@modelcontextprotocol/server-memory": "2.0.0"
+  }
+}
