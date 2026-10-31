@@ -550,7 +550,7 @@ export function createTrackerBox(
         type: 'object',
         properties: {
           team: { type: 'string', description: 'Team key, name or ID' },
-          assignee: { type: 'string', description: 'Assignee email, or "me"' },
+          assignee: { type: 'string', description: 'User ID, name, email, or "me"' },
           state: { type: 'string', description: 'Workflow state name (e.g. "In Review")' },
           label: { type: 'string', description: 'Label name' },
           query: {
@@ -583,7 +583,19 @@ export function createTrackerBox(
         if (teamArg !== undefined && team === undefined) {
           return toolError(`Entity not found: Team "${teamArg}".`);
         }
-        const assignee = argString(args, 'assignee')?.trim().toLowerCase();
+        // The assignee resolves to a user, as the hosted trackers' filters do:
+        // an unknown one is an error, not a silently empty list.
+        const assigneeArg = argString(args, 'assignee');
+        let assignee: string | null | undefined;
+        if (assigneeArg !== undefined) {
+          if (assigneeArg.trim().toLowerCase() === 'me') {
+            assignee = 'assistant@northwind.dev';
+          } else {
+            const r = resolveAssignee(assigneeArg);
+            if ('error' in r) return toolError(r.error);
+            assignee = r.email;
+          }
+        }
         const stateName = argString(args, 'state')?.trim().toLowerCase();
         const label = argString(args, 'label')?.trim().toLowerCase();
         const query = argString(args, 'query')?.trim().toLowerCase();
@@ -591,7 +603,7 @@ export function createTrackerBox(
           .filter(
             (i) =>
               (team === undefined || i.team === team.key) &&
-              (assignee === undefined || (i.assignee ?? '') === assignee) &&
+              (assignee === undefined || i.assignee === assignee) &&
               (stateName === undefined || i.state.toLowerCase() === stateName) &&
               (label === undefined || i.labels.includes(label)) &&
               (query === undefined ||

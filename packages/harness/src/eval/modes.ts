@@ -52,9 +52,10 @@
  * facade has no boxes and no `catalog` option); the runner skips it for
  * every other tier ({@link modeApplies}).
  *
- * Tool results are the result's content blocks joined in order: text
- * verbatim, anything else as a one-line placeholder (`[image image/png,
- * N bytes]`), which is what a host like Claude Code shows the model.
+ * Tool results are the result's content blocks joined in order: text and
+ * embedded text resources verbatim, anything else as a one-line
+ * placeholder (`[image image/png, N bytes]`), which is what a host like
+ * Claude Code shows the model.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -270,6 +271,19 @@ function isTextBlock(block: unknown): block is { type: 'text'; text: string } {
 }
 
 /**
+ * The text of an embedded text resource (GitHub's get_file_contents sends a
+ * file this way), which a host shows the model as text; undefined for any
+ * other block.
+ */
+function resourceText(block: unknown): string | undefined {
+  if (typeof block !== 'object' || block === null) return undefined;
+  const view = block as { type?: unknown; resource?: { text?: unknown } };
+  return view.type === 'resource' && typeof view.resource?.text === 'string'
+    ? view.resource.text
+    : undefined;
+}
+
+/**
  * A non-text block as a host would summarise it to the model: an image's
  * type and size, not its bytes. Rendering a placeholder (rather than
  * dropping the block) keeps `read_media_file` distinguishable from an empty
@@ -303,7 +317,9 @@ function placeholder(block: unknown): string {
 /** The text a host shows the model for a tools/call result. */
 export function toolResultText(result: ToolCallResultView): AgentToolResult {
   const blocks = Array.isArray(result.content) ? result.content : [];
-  const lines = blocks.map((block) => (isTextBlock(block) ? block.text : placeholder(block)));
+  const lines = blocks.map((block) =>
+    isTextBlock(block) ? block.text : (resourceText(block) ?? placeholder(block)),
+  );
   const text =
     lines.length > 0
       ? lines.join('\n')

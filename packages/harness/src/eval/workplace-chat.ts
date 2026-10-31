@@ -14,7 +14,8 @@
  *   `get_user_profile` declares no annotations at all;
  * - history lists top-level messages only; a thread's replies come from
  *   `get_thread_replies`;
- * - deactivated users stay in the list with `deleted: true`.
+ * - deactivated users stay in the list with `deleted: true`; the profile
+ *   (users.profile.get) has no such flag.
  */
 
 import type { SideEffect } from '../types.js';
@@ -627,8 +628,15 @@ export function createChatBox(state: ChatState, onCall?: (call: SideEffect) => v
         const channel = channelOf(args);
         if (channel === undefined) return notOk('channel_not_found');
         const ts = argString(args, 'thread_ts');
-        const parent = state.messages.find((x) => x.channel === channel.id && x.ts === ts);
-        if (parent === undefined) return notOk('thread_not_found');
+        const found = state.messages.find((x) => x.channel === channel.id && x.ts === ts);
+        if (found === undefined) return notOk('thread_not_found');
+        // The ts of any message in a thread selects the whole thread, as
+        // conversations.replies does (its parent or one of its replies).
+        const parent =
+          found.thread_ts !== undefined && found.thread_ts !== found.ts
+            ? (state.messages.find((x) => x.channel === channel.id && x.ts === found.thread_ts) ??
+              found)
+            : found;
         const thread = state.messages
           .filter(
             (x) => x.channel === channel.id && (x.ts === parent.ts || x.thread_ts === parent.ts),
@@ -815,7 +823,6 @@ export function createChatBox(state: ChatState, onCall?: (call: SideEffect) => v
             title: p.chatDeleted === true ? '' : p.title,
             tz: 'Europe/Berlin',
             status_text: p.chatDeleted === true ? '' : 'Working',
-            ...(p.chatDeleted === true ? { deleted: true } : {}),
           },
         });
       },

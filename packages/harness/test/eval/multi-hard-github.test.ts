@@ -19,6 +19,8 @@ import {
   MULTI_HARD_EXPECTED as E,
   type FakeAnswer,
 } from '../../src/index.js';
+import { FakeText } from '../../src/eval/github-fake.js';
+import { NEWEST_PR, NEWEST_PR_FAILING_FILE } from '../../src/eval/multi-hard-github.js';
 
 const ACME = { owner: 'acme', repo: 'widgets' };
 
@@ -187,11 +189,15 @@ describe('hard world search qualifiers', () => {
 describe('hard world issue creation', () => {
   it('numbers created issues above every existing issue and PR, each one unique', () => {
     const answers = hardGithubAnswers();
-    const create = (title: string): { number: number; title: string } =>
-      call(answers, 'issue_write', { ...ACME, method: 'create', title }) as {
-        number: number;
-        title: string;
+    // issue_write answers `{id, url}` (upstream issues.go:3376): the number is in the url.
+    const create = (title: string): { number: number; title: string } => {
+      const made = call(answers, 'issue_write', { ...ACME, method: 'create', title }) as {
+        url: string;
       };
+      const number = Number(/\/issues\/(\d+)$/.exec(made.url)?.[1]);
+      const read = call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: number });
+      return { number, title: (read as { title: string }).title };
+    };
     const existing = new Set([
       ...HARD_WORLD_ISSUES.map((i) => i.number),
       ...HARD_WORLD_PULLS.map((p) => p.number),
@@ -210,8 +216,13 @@ describe('hard world issue creation', () => {
       ...ACME,
       method: 'create',
       title: 'x',
-    }) as { number: number };
-    expect(fresh.number).toBe(HARD_MAX_NUMBER + 1);
+    }) as { url: string };
+    expect(fresh.url).toBe(`https://github.com/acme/widgets/issues/${HARD_MAX_NUMBER + 1}`);
+    // A create without a title is refused, as the real server does.
+    expect(
+      (call(hardGithubAnswers(), 'issue_write', { ...ACME, method: 'create' }) as FakeError)
+        .message,
+    ).toBe('missing required parameter: title');
   });
 });
 
@@ -236,10 +247,10 @@ describe('hard world writes show in later reads', () => {
       labels: [...(seeded?.labels ?? []), 'stale'],
     });
     const got = call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
-      labels: { name: string }[];
+      labels: string[];
       updated_at: string;
     };
-    expect(got.labels.map((l) => l.name)).toContain('stale');
+    expect(got.labels).toContain('stale');
     expect(got.updated_at > '2026-10-29').toBe(true);
     expect(issues(answers, 'repo:acme/widgets is:open label:stale').map((i) => i.number)).toEqual([
       n,
@@ -266,24 +277,25 @@ describe('hard world writes show in later reads', () => {
       method: 'create',
       title: 'Fix src/api/routes.ts',
       body: 'From #139.',
-    }) as { number: number };
-    expect(made.number).toBe(HARD_MAX_NUMBER + 1);
+    }) as { url: string };
+    expect(made.url).toBe(`https://github.com/acme/widgets/issues/${HARD_MAX_NUMBER + 1}`);
+    const number = HARD_MAX_NUMBER + 1;
     const got = call(answers, 'issue_read', {
       ...ACME,
       method: 'get',
-      issue_number: made.number,
+      issue_number: number,
     }) as { title: string; state: string };
     expect(got).toMatchObject({ title: 'Fix src/api/routes.ts', state: 'open' });
     expect(
       issues(answers, 'repo:acme/widgets is:open in:title Fix src/api/routes.ts').map(
         (i) => i.number,
       ),
-    ).toContain(made.number);
+    ).toContain(number);
     const listed = call(answers, 'list_issues', { ...ACME, state: 'OPEN' }) as {
       issues: { number: number }[];
       totalCount: number;
     };
-    expect(listed.issues[0]?.number).toBe(made.number);
+    expect(listed.issues[0]?.number).toBe(number);
     expect(listed.totalCount).toBe(HARD_WORLD_ISSUES.filter((i) => i.state === 'open').length + 1);
   });
 
@@ -308,11 +320,13 @@ describe('hard world writes show in later reads', () => {
     expect(viaIssue).toHaveLength(1);
 
     const n = Number(Object.keys(E.staleIssues)[0]);
-    const before = (
-      call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
-        comments: number;
-      }
-    ).comments;
+    // `comments` is omitted when zero (MinimalIssue's omitempty).
+    const before =
+      (
+        call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
+          comments?: number;
+        }
+      ).comments ?? 0;
     call(answers, 'add_issue_comment', { ...ACME, issue_number: n, body: 'ping' });
     const after = call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
       comments: number;
@@ -345,9 +359,7 @@ describe('hard world writes show in later reads', () => {
       method: 'get_reviews',
       pullNumber: 116,
     }) as { state: string; comments: unknown[] }[];
-    expect(reviews).toMatchObject([
-      { state: 'COMMENTED', body: 'Changelog?', comments: [{ body: 'here' }] },
-    ]);
+    expect(reviews).toMatchObject([{ state: 'COMMENTED', body: 'Changelog?' }]);
     call(answers, 'pull_request_review_write', {
       ...ACME,
       method: 'create',
@@ -378,30 +390,109 @@ describe('hard world writes show in later reads', () => {
     ).toEqual([]);
   });
 
-  it('leaves the base fake stateless, exactly as before', () => {
+  it('leaves the base fake stateless; other repositories fall through to it', () => {
     const comment = GITHUB_FAKE_ANSWERS['add_issue_comment'];
     if (typeof comment !== 'function') throw new Error('no base add_issue_comment');
-    expect(comment({ owner: 'octo', repo: 'other', issue_number: 1, body: 'x' })).toEqual({
-      ok: true,
-    });
+    // A repository GitHub does not have is a 404, in the base fake and through the hard one.
+    const missing = { owner: 'octo', repo: 'other', issue_number: 1, body: 'x' };
+    expect(comment(missing)).toBeInstanceOf(FakeError);
     expect(GITHUB_FAKE_ANSWERS['pull_request_review_write']).toBeUndefined();
-    // Outside acme/widgets the hard answers fall through to the base ones.
     const answers = hardGithubAnswers();
-    expect(
-      call(answers, 'add_issue_comment', {
-        owner: 'octo',
-        repo: 'other',
-        issue_number: 1,
-        body: 'x',
-      }),
-    ).toEqual({ ok: true });
+    expect(call(answers, 'add_issue_comment', missing)).toEqual(comment(missing));
     expect(
       call(answers, 'pull_request_review_write', {
-        owner: 'octo',
-        repo: 'other',
+        owner: 'modelcontextprotocol',
+        repo: 'servers',
         pullNumber: 1,
         method: 'create',
       }),
-    ).toEqual({ ok: true });
+    ).toEqual(new FakeText('pending pull request created'));
+  });
+
+  it("answers the real server's texts for review writes and its errors for a missing review", () => {
+    const answers = hardGithubAnswers();
+    const review = (args: object): unknown =>
+      call(answers, 'pull_request_review_write', { ...ACME, pullNumber: 116, ...args });
+    expect(review({ method: 'submit_pending', event: 'COMMENT' })).toEqual(
+      new FakeError('No pending review found for the viewer'),
+    );
+    expect(review({ method: 'create' })).toEqual(new FakeText('pending pull request created'));
+    expect(
+      call(answers, 'add_comment_to_pending_review', {
+        ...ACME,
+        pullNumber: 116,
+        path: 'a',
+        body: 'b',
+        subjectType: 'FILE',
+      }),
+    ).toEqual(new FakeText('pull request review comment successfully added to pending review'));
+    expect(review({ method: 'submit_pending', event: 'APPROVE' })).toEqual(
+      new FakeText('pending pull request review successfully submitted'),
+    );
+    expect(review({ method: 'create', event: 'COMMENT', body: 'x' })).toEqual(
+      new FakeText('pull request review submitted successfully'),
+    );
+  });
+
+  it('creates an unknown label silently on write, as GitHub does for a collaborator', () => {
+    const answers = hardGithubAnswers();
+    const n = Number(Object.keys(E.staleIssues)[0]);
+    expect(
+      call(answers, 'issue_write', {
+        ...ACME,
+        method: 'update',
+        issue_number: n,
+        labels: ['Stale', 'wontfix'],
+      }),
+    ).toMatchObject({ url: `https://github.com/acme/widgets/issues/${n}` });
+    const got = call(answers, 'issue_read', { ...ACME, method: 'get', issue_number: n }) as {
+      labels: string[];
+    };
+    // Matched case-insensitively to the existing label; the new one now exists.
+    expect(got.labels).toEqual(['stale', 'wontfix']);
+    const labels = call(answers, 'list_label', { ...ACME }) as { labels: { name: string }[] };
+    expect(labels.labels.map((l) => l.name)).toContain('wontfix');
+  });
+
+  it('check runs carry no output: a failing check reports its file only in its job log', () => {
+    const answers = hardGithubAnswers();
+    const runs = call(answers, 'pull_request_read', {
+      ...ACME,
+      method: 'get_check_runs',
+      pullNumber: NEWEST_PR,
+    }) as { total_count: number; check_runs: Record<string, unknown>[] };
+    const failing = runs.check_runs.find((r) => r['conclusion'] === 'failure') as Record<
+      string,
+      unknown
+    >;
+    expect(failing).not.toHaveProperty('output');
+    expect(JSON.stringify(runs)).not.toContain(NEWEST_PR_FAILING_FILE);
+    const url = String(failing['details_url']);
+    const [, runId, jobId] = /\/actions\/runs\/(\d+)\/job\/(\d+)$/.exec(url) ?? [];
+    expect(Number(jobId)).toBe(failing['id']);
+    // Without return_content the server answers a download URL, not the log.
+    const asUrl = call(answers, 'get_job_logs', { ...ACME, job_id: failing['id'] }) as Record<
+      string,
+      unknown
+    >;
+    expect(asUrl).toMatchObject({ message: 'Job logs are available for download' });
+    expect(JSON.stringify(asUrl)).not.toContain(NEWEST_PR_FAILING_FILE);
+    const log = call(answers, 'get_job_logs', {
+      ...ACME,
+      job_id: failing['id'],
+      return_content: true,
+    }) as { logs_content: string };
+    expect(log.logs_content).toContain(NEWEST_PR_FAILING_FILE);
+    const failed = call(answers, 'get_job_logs', {
+      ...ACME,
+      run_id: Number(runId),
+      failed_only: true,
+      return_content: true,
+    }) as { failed_jobs: number; logs: { job_name: string; logs_content: string }[] };
+    expect(failed.failed_jobs).toBe(1);
+    expect(failed.logs[0]?.logs_content).toContain(NEWEST_PR_FAILING_FILE);
+    expect(call(answers, 'get_job_logs', { ...ACME, failed_only: true })).toEqual(
+      new FakeError('run_id is required when failed_only is true'),
+    );
   });
 });

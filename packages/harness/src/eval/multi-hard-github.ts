@@ -25,20 +25,41 @@
  */
 
 import {
+  ACME_BRANCHES,
+  answerFor,
+  apiError,
   fakeError,
   FakeError,
+  fakeText,
   GITHUB_FAKE_ANSWERS,
-  HARD_BRANCHES,
   HARD_DEFAULT_BRANCH,
   HARD_ISSUES,
   HARD_LABELS,
   HARD_PULLS,
   HARD_REPO,
   HARD_REVIEW_COMMENTS,
+  issueId,
+  issueReadMissing,
+  issueReadOf,
+  labelView,
+  listIssuesPage,
+  minimalPull,
+  minimalUser,
+  pageOf,
+  pickFields,
+  prDiff,
+  prFile,
+  pullAsIssue,
   queryTerms,
+  reviewThreads,
+  searchItem,
+  stableSha,
   textMatches,
+  validateIssueUpdate,
   type FakeAnswer,
   type FakeArgs,
+  type IssueRecord,
+  type PullRecord,
 } from './github-fake.js';
 import { HARD_PROJECT_PATHS } from './multi-hard-fixtures.js';
 
@@ -536,71 +557,8 @@ export const EXPECTED_EXPORT_PRS: readonly number[] = HARD_WORLD_PULLS.filter(
 // ---------------------------------------------------------------------------
 // Branches and releases
 
-/** 64 branches, alphabetical as GitHub lists them: the base six plus 58. */
-export const HARD_WORLD_BRANCHES: readonly string[] = (() => {
-  const features = [
-    'audit-log',
-    'bulk-edit',
-    'csv-export',
-    'dark-mode',
-    'drag-drop',
-    'emoji-picker',
-    'filters',
-    'i18n',
-    'inline-edit',
-    'json-export',
-    'keyboard',
-    'live-preview',
-    'markdown',
-    'offline',
-    'pagination',
-    'pdf-export',
-    'plugins',
-    'presence',
-    'retry',
-    'search-v2',
-    'sharing',
-    'themes',
-    'webhooks',
-  ].map((name) => `feature/${name}`);
-  const fixes = [
-    'auth-loop',
-    'chart-legend',
-    'cli-quiet',
-    'csv-header',
-    'date-parse',
-    'empty-state',
-    'focus-trap',
-    'leak-watch',
-    'locale',
-    'pool-exhaustion',
-    'race-upload',
-    'safari',
-    'scroll-jump',
-    'tz-offset',
-    'xml-escape',
-  ].map((name) => `fix/${name}`);
-  const chores = ['bump-node', 'eslint-flat', 'lockfile', 'prettier', 'renovate', 'tsconfig'].map(
-    (name) => `chore/${name}`,
-  );
-  const docs = ['api-ref', 'faq', 'migration', 'readme-badges'].map((name) => `docs/${name}`);
-  const releases = ['release/1.0', 'release/1.1'];
-  const deps = ['express-5', 'typescript-6', 'vitest-5', 'zod-4', 'undici-7'].map(
-    (name) => `dependabot/npm_and_yarn/${name}`,
-  );
-  // Near misses: not under feature/.
-  const decoys = ['features/legacy-ui', 'feature-flags', 'experiment/feature-x'];
-  return [
-    ...HARD_BRANCHES,
-    ...features,
-    ...fixes,
-    ...chores,
-    ...docs,
-    ...releases,
-    ...deps,
-    ...decoys,
-  ].toSorted();
-})();
+/** 64 branches, alphabetical as GitHub lists them: the base fake's (github-fake.ts). */
+export const HARD_WORLD_BRANCHES: readonly string[] = ACME_BRANCHES;
 
 export const EXPECTED_FEATURE_BRANCHES: number = HARD_WORLD_BRANCHES.filter((b) =>
   b.startsWith('feature/'),
@@ -668,7 +626,7 @@ export const EXPECTED_FIRST_2025_TAG: string = (() => {
 })();
 
 // ---------------------------------------------------------------------------
-// Answers
+// Answers (shapes and errors as the base fake's, from the real server: see github-fake.ts)
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : undefined;
@@ -692,53 +650,23 @@ function scopedToHardRepo(args: FakeArgs): boolean {
   return isHardRepo(args) || query.includes(`${HARD_REPO.owner}/${HARD_REPO.repo}`);
 }
 
-/** Keep only `fields` (when given) of each item. */
-function pick(item: Record<string, unknown>, fields: unknown): Record<string, unknown> {
-  if (!Array.isArray(fields) || fields.length === 0) return item;
-  const keep = new Set(fields.map((f) => String(f)));
-  return Object.fromEntries(Object.entries(item).filter(([key]) => keep.has(key)));
-}
+const SLUG = `${HARD_REPO.owner}/${HARD_REPO.repo}`;
+const WEB = `https://github.com/${SLUG}`;
 
-interface Page<T> {
-  items: T[];
-  page: number;
-  perPage: number;
-  total: number;
-  hasNext: boolean;
-}
-
-function paged<T>(items: readonly T[], args: FakeArgs): Page<T> {
-  const page = Math.max(1, Math.floor(num(args['page']) ?? 1));
-  const perPage = Math.min(
-    100,
-    Math.max(1, Math.floor(num(args['perPage']) ?? HARD_GITHUB_PAGE_SIZE)),
-  );
-  const start = (page - 1) * perPage;
-  return {
-    items: items.slice(start, start + perPage),
-    page,
-    perPage,
-    total: items.length,
-    hasNext: start + perPage < items.length,
-  };
-}
-
-const ISSUE_URL = `https://github.com/${HARD_REPO.owner}/${HARD_REPO.repo}/issues/`;
-const PULL_URL = `https://github.com/${HARD_REPO.owner}/${HARD_REPO.repo}/pull/`;
-
-/** A comment posted on an issue or PR during the episode. */
+/** A comment posted on an issue or PR during the episode (MinimalIssueComment). */
 interface HardComment {
   id: number;
-  user: { login: string };
   body: string;
-  created_at: string;
   html_url: string;
+  user: Record<string, unknown>;
+  author_association: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** A PR review submitted (or left pending) during the episode. */
 interface HardReview {
   id: number;
-  user: { login: string };
   state: 'PENDING' | 'COMMENTED' | 'APPROVED' | 'CHANGES_REQUESTED';
   body: string;
   /** Comments added to it while pending. */
@@ -749,7 +677,7 @@ interface HardReview {
 /**
  * One world's acme/widgets as its writes leave it: the seeded issues
  * (copied, so updates never touch {@link HARD_WORLD_ISSUES}) plus the
- * issues, comments and reviews written since. Created by
+ * issues, comments, reviews and labels written since. Created by
  * {@link hardGithubAnswers} per world, so nothing is shared across
  * episodes. Writes stamp a clock that starts after every seeded date.
  */
@@ -757,6 +685,8 @@ interface HardState {
   issues: HardIssue[];
   comments: Map<number, HardComment[]>;
   reviews: Map<number, HardReview[]>;
+  /** The repository's labels: an issue write naming a new one creates it, as GitHub does. */
+  labels: string[];
   /** The last issue number handed out. */
   lastNumber: number;
   /** The last comment / review id handed out. */
@@ -779,8 +709,9 @@ function newState(): HardState {
     })),
     comments: new Map(),
     reviews: new Map(),
+    labels: [...HARD_WORLD_LABELS],
     lastNumber: HARD_MAX_NUMBER,
-    lastId: 900_000,
+    lastId: 3_310_000_000,
     writes: 0,
   };
 }
@@ -790,89 +721,39 @@ function tick(st: HardState): string {
   return new Date(WRITE_CLOCK_START + st.writes * 60_000).toISOString();
 }
 
-function issueView(issue: HardIssue, st: HardState): Record<string, unknown> {
+/** An issue as the shared views take it; seeded issues report a few earlier comments. */
+function issueRecordOf(issue: HardIssue, st: HardState): IssueRecord {
   return {
-    number: issue.number,
-    title: issue.title,
-    state: issue.state,
-    user: { login: issue.user },
-    labels: issue.labels.map((name) => ({ name })),
-    assignees: issue.assignees.map((login) => ({ login })),
-    // Seeded issues report a few earlier comments; this episode's add to them.
+    ...issue,
     comments:
       (issue.number <= HARD_MAX_NUMBER ? issue.number % 4 : 0) +
       (st.comments.get(issue.number)?.length ?? 0),
-    created_at: issue.created_at,
-    updated_at: issue.updated_at,
-    closed_at: issue.closed_at,
-    body: issue.body,
-    html_url: `${ISSUE_URL}${issue.number}`,
   };
 }
 
-function pullView(pull: HardPull): Record<string, unknown> {
+function pullRecordOf(pull: HardPull): PullRecord {
   return {
     number: pull.number,
     title: pull.title,
     state: pull.state,
-    user: { login: pull.author },
-    head: { ref: pull.head },
-    base: { ref: HARD_DEFAULT_BRANCH },
+    author: pull.author,
+    head: pull.head,
+    base: HARD_DEFAULT_BRANCH,
     created_at: pull.created_at,
     updated_at: pull.created_at,
-    changed_files: pull.files.length,
-    html_url: `${PULL_URL}${pull.number}`,
+    files: pull.files,
   };
-}
-
-function cursorOf(offset: number): string {
-  return Buffer.from(`cursor:${offset}`).toString('base64');
-}
-
-function offsetOf(cursor: unknown): number {
-  const text = str(cursor);
-  if (text === undefined || text === '') return 0;
-  const decoded = Buffer.from(text, 'base64').toString('utf8');
-  const m = /^cursor:(\d+)$/.exec(decoded);
-  return m === null ? 0 : Number(m[1]);
 }
 
 function listIssues(st: HardState, args: FakeArgs): unknown {
-  const state = lower(args['state']);
-  const labels = Array.isArray(args['labels']) ? args['labels'].map(lower) : [];
-  const since = str(args['since']);
-  let issues = st.issues.filter(
-    (issue) =>
-      (state === '' || issue.state === state) &&
-      labels.every((label) => issue.labels.includes(label)) &&
-      (since === undefined || since === '' || issue.updated_at >= since),
+  return listIssuesPage(
+    st.issues.map((issue) => issueRecordOf(issue, st)),
+    args,
   );
-  const orderBy = lower(args['orderBy']);
-  const key: keyof HardIssue =
-    orderBy === 'updated_at' ? 'updated_at' : orderBy === 'comments' ? 'number' : 'created_at';
-  issues = issues.toSorted((a, b) => String(b[key]).localeCompare(String(a[key])));
-  if (key === 'number') issues = issues.toSorted((a, b) => (b.number % 4) - (a.number % 4));
-  if (lower(args['direction']) === 'asc') issues = issues.toReversed();
-  const perPage = Math.min(
-    100,
-    Math.max(1, Math.floor(num(args['perPage']) ?? HARD_GITHUB_PAGE_SIZE)),
-  );
-  const offset = offsetOf(args['after']);
-  const page = issues.slice(offset, offset + perPage);
-  const hasNextPage = offset + perPage < issues.length;
-  return {
-    issues: page.map((issue) => pick(issueView(issue, st), args['fields'])),
-    pageInfo: {
-      hasNextPage,
-      hasPreviousPage: offset > 0,
-      endCursor: hasNextPage ? cursorOf(offset + perPage) : null,
-    },
-    totalCount: issues.length,
-  };
 }
 
 // ---------------------------------------------------------------------------
-// Search queries (hard world only: the base fake's search is unchanged)
+// Search queries (hard world only)
 
 /** One issue or PR as the hard world's search filters it. */
 interface Searchable {
@@ -1125,7 +1006,9 @@ function searchIssues(st: HardState, args: FakeArgs): unknown {
   return {
     total_count: page.total,
     incomplete_results: false,
-    items: page.items.map((issue) => pick(issueView(issue, st), args['fields'])),
+    items: page.items.map((issue) =>
+      pickFields(searchItem(SLUG, issueRecordOf(issue, st)), args['fields']),
+    ),
   };
 }
 
@@ -1138,37 +1021,39 @@ function searchPulls(args: FakeArgs): unknown {
   return {
     total_count: page.total,
     incomplete_results: false,
-    items: page.items.map((pull) => pick(pullView(pull), args['fields'])),
+    items: page.items.map((pull) =>
+      pickFields(searchItem(SLUG, pullAsIssue(pullRecordOf(pull))), args['fields']),
+    ),
   };
+}
+
+interface Page<T> {
+  items: T[];
+  total: number;
+}
+
+function paged<T>(items: readonly T[], args: FakeArgs): Page<T> {
+  return { items: pageOf(items, args).items, total: items.length };
 }
 
 function issueRead(st: HardState, args: FakeArgs): unknown {
   const n = num(args['issue_number']);
-  const issue = st.issues.find((i) => i.number === n);
   const method = lower(args['method']);
-  if (issue === undefined) {
-    const pull = HARD_WORLD_PULLS.find((p) => p.number === n);
-    if (pull !== undefined) {
-      if (method === 'get' || method === '') {
-        return { ...pullView(pull), pull_request: { url: `${PULL_URL}${pull.number}` } };
-      }
-      // A PR's conversation comments are issue comments.
-      return method === 'get_comments' ? [...(st.comments.get(pull.number) ?? [])] : [];
-    }
-    return fakeError(`404 Not Found: issue #${String(n)}.`);
+  const issue = st.issues.find((i) => i.number === n);
+  if (issue !== undefined) {
+    return issueReadOf(SLUG, issueRecordOf(issue, st), method, st.comments.get(issue.number) ?? []);
   }
-  switch (method) {
-    case 'get_labels':
-      return issue.labels.map((name) => ({ name }));
-    case 'get_comments':
-      return [...(st.comments.get(issue.number) ?? [])];
-    case 'get_sub_issues':
-      return [];
-    case 'get_parent':
-      return null;
-    default:
-      return issueView(issue, st);
+  const pull = HARD_WORLD_PULLS.find((p) => p.number === n);
+  if (pull !== undefined) {
+    // A PR is an issue too; its conversation comments are issue comments.
+    return issueReadOf(
+      SLUG,
+      pullAsIssue(pullRecordOf(pull)),
+      method,
+      st.comments.get(pull.number) ?? [],
+    );
   }
+  return issueReadMissing(SLUG, n, method);
 }
 
 /** The highest issue or PR number in the hard world: a created issue gets the next one. */
@@ -1177,31 +1062,37 @@ export const HARD_MAX_NUMBER: number = Math.max(
   ...HARD_WORLD_PULLS.map((pull) => pull.number),
 );
 
-/** `labels` as names, or a 422 for one acme/widgets does not define. */
-function knownLabels(labels: unknown[]): string[] | FakeError {
-  const names = labels.map((l) => String(l));
-  for (const label of names) {
-    if (!HARD_WORLD_LABELS.includes(label.toLowerCase())) {
-      return fakeError(`422 Validation Failed: label "${label}" does not exist in acme/widgets.`);
-    }
-  }
-  return names;
+/**
+ * `labels` as names, each matched case-insensitively to an existing label;
+ * one acme/widgets does not define is created, as GitHub's issues API
+ * does for a caller with push access (no error).
+ */
+function applyLabels(st: HardState, labels: unknown[]): string[] {
+  return labels.map((l) => {
+    const name = String(l);
+    const existing = st.labels.find((label) => label.toLowerCase() === name.toLowerCase());
+    if (existing !== undefined) return existing;
+    st.labels.push(name);
+    return name;
+  });
 }
 
 /**
  * issue_write against the world's state: `create` adds an open issue with
  * the next number; `update` changes the issue in place (labels replaced, as
- * on GitHub). Later reads see either.
+ * on GitHub). Both answer `{id, url}`, as the real server does; later reads
+ * see the change.
  */
 function issueWrite(st: HardState, args: FakeArgs): unknown {
   if (lower(args['method']) === 'create') {
-    const labels = knownLabels(Array.isArray(args['labels']) ? args['labels'] : []);
-    if (labels instanceof FakeError) return labels;
+    const title = str(args['title']) ?? '';
+    if (title === '') return fakeError('missing required parameter: title');
+    const labels = applyLabels(st, Array.isArray(args['labels']) ? args['labels'] : []);
     const at = tick(st);
     st.lastNumber += 1;
     const issue: HardIssue = {
       number: st.lastNumber,
-      title: str(args['title']) ?? '',
+      title,
       state: 'open',
       labels,
       user: WRITER,
@@ -1212,14 +1103,22 @@ function issueWrite(st: HardState, args: FakeArgs): unknown {
       body: str(args['body']) ?? '',
     };
     st.issues.unshift(issue);
-    return issueView(issue, st);
+    return { id: String(issueId(SLUG, issue.number)), url: `${WEB}/issues/${issue.number}` };
   }
-  const n = num(args['issue_number']);
+  const invalid = validateIssueUpdate(args);
+  if (invalid !== undefined) return invalid;
+  const n = num(args['issue_number']) as number;
   const issue = st.issues.find((i) => i.number === n);
-  if (issue === undefined) return fakeError(`404 Not Found: issue #${String(n)}.`);
-  const labels = Array.isArray(args['labels']) ? knownLabels(args['labels']) : issue.labels;
-  if (labels instanceof FakeError) return labels;
+  if (issue === undefined) {
+    // A PR is an issue too: its state and labels change through the issues API.
+    if (HARD_WORLD_PULLS.some((p) => p.number === n)) {
+      tick(st);
+      return { id: String(issueId(SLUG, n)), url: `${WEB}/pull/${n}` };
+    }
+    return apiError('failed to update issue', 'PATCH', `/repos/${SLUG}/issues/${n}`);
+  }
   const at = tick(st);
+  const labels = Array.isArray(args['labels']) ? applyLabels(st, args['labels']) : issue.labels;
   const state =
     lower(args['state']) === 'closed'
       ? 'closed'
@@ -1228,35 +1127,51 @@ function issueWrite(st: HardState, args: FakeArgs): unknown {
         : issue.state;
   if (state !== issue.state) issue.closed_at = state === 'closed' ? at : null;
   issue.labels = [...labels];
-  issue.title = str(args['title']) ?? issue.title;
+  issue.title = str(args['title']) || issue.title;
   issue.state = state;
   issue.body = str(args['body']) ?? issue.body;
   if (Array.isArray(args['assignees'])) issue.assignees = args['assignees'].map(String);
   issue.updated_at = at;
-  return issueView(issue, st);
+  return { id: String(issueId(SLUG, n)), url: `${WEB}/issues/${n}` };
 }
 
 /** add_issue_comment: the comment lands on the issue or PR, and its reads show it. */
 function addIssueComment(st: HardState, args: FakeArgs): unknown {
+  const body = str(args['body']);
+  if (body === undefined && args['reaction'] === undefined) {
+    return fakeError('at least one of body or reaction is required');
+  }
   const n = num(args['issue_number']);
   const exists =
     st.issues.some((i) => i.number === n) || HARD_WORLD_PULLS.some((p) => p.number === n);
-  if (n === undefined || !exists) return fakeError(`404 Not Found: issue #${String(n)}.`);
-  const body = str(args['body']);
-  if (body === undefined) return fakeError('missing required parameter: body');
+  if (n === undefined || !exists) {
+    return apiError(
+      'failed to create comment',
+      'POST',
+      `/repos/${SLUG}/issues/${String(n)}/comments`,
+    );
+  }
   const at = tick(st);
   st.lastId += 1;
+  if (body === undefined) {
+    return {
+      id: String(st.lastId),
+      url: `https://api.github.com/repos/${SLUG}/issues/${n}/reactions/${st.lastId}`,
+    };
+  }
   const comment: HardComment = {
     id: st.lastId,
-    user: { login: WRITER },
     body,
+    html_url: `${WEB}/issues/${n}#issuecomment-${st.lastId}`,
+    user: minimalUser(WRITER),
+    author_association: 'COLLABORATOR',
     created_at: at,
-    html_url: `${ISSUE_URL}${n}#issuecomment-${st.lastId}`,
+    updated_at: at,
   };
   st.comments.set(n, [...(st.comments.get(n) ?? []), comment]);
   const issue = st.issues.find((i) => i.number === n);
   if (issue !== undefined) issue.updated_at = at;
-  return comment;
+  return { id: String(comment.id), url: comment.html_url };
 }
 
 const REVIEW_STATES: Readonly<Record<string, HardReview['state']>> = {
@@ -1270,62 +1185,76 @@ function pendingReview(st: HardState, n: number): HardReview | undefined {
   return st.reviews.get(n)?.find((r) => r.state === 'PENDING');
 }
 
+/** The GraphQL error a PR lookup by an unknown number gets. */
+function noSuchPull(n: number | undefined): FakeError {
+  return fakeError(
+    `failed to get pull request: Could not resolve to a PullRequest with the number of ${String(n)}.`,
+  );
+}
+
 /**
- * pull_request_review_write: `create` with an event submits a review,
- * without one leaves it pending; `submit_pending` submits the pending one
- * with its event; `delete_pending` drops it. get_reviews shows the result.
+ * pull_request_review_write (upstream pullrequests.go:2002): `create` with
+ * an event submits a review, without one leaves it pending; `submit_pending`
+ * submits the pending one with its event; `delete_pending` drops it. Each
+ * answers the server's one-line text; get_reviews shows the result.
  */
 function reviewWrite(st: HardState, args: FakeArgs): unknown {
   const n = num(args['pullNumber']);
-  if (n === undefined || !HARD_WORLD_PULLS.some((p) => p.number === n)) {
-    return fakeError(`404 Not Found: pull request #${String(n)}.`);
-  }
+  if (n === undefined || !HARD_WORLD_PULLS.some((p) => p.number === n)) return noSuchPull(n);
   const method = lower(args['method']);
   const event = (str(args['event']) ?? '').trim().toUpperCase();
   const submitted = event === '' ? undefined : REVIEW_STATES[event];
-  if (event !== '' && submitted === undefined) {
-    return fakeError(`422 Validation Failed: unknown review event "${event}".`);
-  }
   const reviews = st.reviews.get(n) ?? [];
   switch (method) {
     case 'create': {
       if (pendingReview(st, n) !== undefined) {
-        return fakeError('422 Validation Failed: you already have a pending review on this PR.');
+        return fakeError('User can only have one pending review per pull request');
       }
       const at = tick(st);
       st.lastId += 1;
-      const review: HardReview = {
-        id: st.lastId,
-        user: { login: WRITER },
-        state: submitted ?? 'PENDING',
-        body: str(args['body']) ?? '',
-        comments: [],
-        submitted_at: submitted === undefined ? null : at,
-      };
-      st.reviews.set(n, [...reviews, review]);
-      return review;
+      st.reviews.set(n, [
+        ...reviews,
+        {
+          id: st.lastId,
+          state: submitted ?? 'PENDING',
+          body: str(args['body']) ?? '',
+          comments: [],
+          submitted_at: submitted === undefined ? null : at,
+        },
+      ]);
+      return fakeText(
+        submitted === undefined
+          ? 'pending pull request created'
+          : 'pull request review submitted successfully',
+      );
     }
     case 'submit_pending': {
       const review = pendingReview(st, n);
-      if (review === undefined) return fakeError('404 Not Found: no pending review on this PR.');
-      if (submitted === undefined) return fakeError('missing required parameter: event');
+      if (review === undefined) return fakeError('No pending review found for the viewer');
+      if (submitted === undefined) {
+        return fakeError(
+          "failed to submit pull request review: Argument 'event' on InputObject 'SubmitPullRequestReviewInput' is required.",
+        );
+      }
       review.state = submitted;
       review.body = str(args['body']) ?? review.body;
       review.submitted_at = tick(st);
-      return review;
+      return fakeText('pending pull request review successfully submitted');
     }
     case 'delete_pending': {
       const review = pendingReview(st, n);
-      if (review === undefined) return fakeError('404 Not Found: no pending review on this PR.');
+      if (review === undefined) return fakeError('No pending review found for the viewer');
       tick(st);
       st.reviews.set(
         n,
         reviews.filter((r) => r !== review),
       );
-      return { ok: true };
+      return fakeText('pending pull request review successfully deleted');
     }
     default:
-      return fakeError(`unknown method "${method}"`);
+      return fakeText(
+        `review thread ${method === 'unresolve_thread' ? 'unresolved' : 'resolved'} successfully`,
+      );
   }
 }
 
@@ -1333,10 +1262,10 @@ function reviewWrite(st: HardState, args: FakeArgs): unknown {
 function addPendingComment(st: HardState, args: FakeArgs): unknown {
   const n = num(args['pullNumber']);
   const review = n === undefined ? undefined : pendingReview(st, n);
-  if (review === undefined) return fakeError('404 Not Found: no pending review on this PR.');
+  if (review === undefined) return fakeError('No pending review found for the viewer');
   tick(st);
   review.comments.push({ path: str(args['path']) ?? '', body: str(args['body']) ?? '' });
-  return { ok: true, review_id: review.id };
+  return fakeText('pull request review comment successfully added to pending review');
 }
 
 function pullsFor(args: FakeArgs): HardPull[] {
@@ -1349,88 +1278,315 @@ function pullsFor(args: FakeArgs): HardPull[] {
       (head === '' || pull.head === head) &&
       (base === '' || base === HARD_DEFAULT_BRANCH),
   );
-  if (lower(args['direction']) === 'asc' || lower(args['order']) === 'asc') {
-    pulls = pulls.toReversed();
-  }
+  if (lower(args['direction']) === 'asc') pulls = pulls.toReversed();
   return pulls;
+}
+
+/** The PR's one Actions workflow run, and each check run's job (a check run's id is its job's id). */
+export function runIdOf(pr: number): number {
+  return 11_200_000_000 + pr * 1000;
+}
+
+export function jobIdOf(pr: number, i: number): number {
+  return 31_400_000_000 + pr * 100 + i;
+}
+
+function jobUrl(pr: number, i: number): string {
+  return `${WEB}/actions/runs/${runIdOf(pr)}/job/${jobIdOf(pr, i)}`;
+}
+
+/** The job's log, as GitHub Actions writes it: the step, its output, the exit. */
+function jobLog(pull: HardPull, i: number): string {
+  const run = pull.checks[i] as HardCheckRun;
+  const t = (s: number): string =>
+    `${daysAfter(pull.created_at, 0.01 + s / 86_400)
+      .replace('Z', '')
+      .replace(/\.\d+$/, '')}.0000000Z`;
+  if (run.conclusion === 'skipped') return '';
+  return [
+    `${t(0)} ##[group]Run pnpm run ${run.name}`,
+    `${t(0)} pnpm run ${run.name}`,
+    `${t(0)} shell: /usr/bin/bash -e {0}`,
+    `${t(0)} ##[endgroup]`,
+    `${t(1)} > widgets@1.2.0 ${run.name} /home/runner/work/widgets/widgets`,
+    `${t(30)} ${run.summary}`,
+    run.conclusion === 'failure'
+      ? `${t(31)} ##[error]Process completed with exit code 1.`
+      : `${t(31)} Done.`,
+    '',
+  ].join('\n');
 }
 
 function pullRead(st: HardState, args: FakeArgs): unknown {
   const n = num(args['pullNumber']);
   const pull = HARD_WORLD_PULLS.find((p) => p.number === n);
-  if (pull === undefined) return fakeError(`404 Not Found: pull request #${String(n)}.`);
-  switch (lower(args['method'])) {
-    case 'get_files':
-      return paged(pull.files, args).items.map((filename) => ({
-        filename,
-        status: 'modified',
-        additions: 3 + (filename.length % 17),
-        deletions: filename.length % 5,
-      }));
-    case 'get_check_runs':
-      return {
-        total_count: pull.checks.length,
-        check_runs: pull.checks.map((run, i) => ({
-          id: pull.number * 100 + i,
-          name: run.name,
-          status: 'completed',
-          conclusion: run.conclusion,
-          output: { title: run.name, summary: run.summary },
-        })),
-      };
-    case 'get_status':
-      return {
-        state: pull.checks.some((run) => run.conclusion === 'failure') ? 'failure' : 'success',
-        total_count: pull.checks.length,
-      };
-    case 'get_diff':
-      return pull.files
-        .map(
-          (file) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n`,
+  const method = lower(args['method']);
+  if (pull === undefined) {
+    return method === 'get_comments'
+      ? apiError(
+          'failed to get issue comments',
+          'GET',
+          `/repos/${SLUG}/issues/${String(n)}/comments?page=1&per_page=30`,
         )
-        .join('');
-    case 'get_review_comments':
-      return (HARD_REVIEW_COMMENTS[pull.number] ?? []).map((comment) => ({
-        id: comment.id,
-        user: { login: comment.author },
-        path: comment.path,
-        body: comment.body,
+      : apiError('failed to get pull request', 'GET', `/repos/${SLUG}/pulls/${String(n)}`);
+  }
+  const sha = stableSha(`${SLUG}:${pull.head}`);
+  switch (method) {
+    case 'get_files':
+      return pageOf(pull.files, args).items.map(prFile);
+    case 'get_check_runs': {
+      // Check runs carry no output summary (upstream minimal_types.go:2207):
+      // what a failing check reports is in its job's log.
+      const runs = pull.checks.map((run, i) => ({
+        id: jobIdOf(pull.number, i),
+        name: run.name,
+        status: 'completed',
+        conclusion: run.conclusion,
+        html_url: jobUrl(pull.number, i),
+        details_url: jobUrl(pull.number, i),
+        started_at: daysAfter(pull.created_at, 0.01).replace(/\.\d+Z$/, 'Z'),
+        completed_at: daysAfter(pull.created_at, 0.02).replace(/\.\d+Z$/, 'Z'),
       }));
+      return { total_count: runs.length, check_runs: pageOf(runs, args).items };
+    }
+    case 'get_status': {
+      // The CI also posts a commit status per job (skipped jobs post none).
+      const statuses = pull.checks
+        .map((run, i) => ({ run, i }))
+        .filter(({ run }) => run.conclusion !== 'skipped')
+        .map(({ run, i }) => ({
+          state: run.conclusion === 'failure' ? 'failure' : 'success',
+          context: `ci/${run.name}`,
+          description: run.conclusion === 'failure' ? 'Failing after 31s' : 'Successful in 31s',
+          target_url: jobUrl(pull.number, i),
+          created_at: daysAfter(pull.created_at, 0.02).replace(/\.\d+Z$/, 'Z'),
+          updated_at: daysAfter(pull.created_at, 0.02).replace(/\.\d+Z$/, 'Z'),
+        }));
+      return {
+        state: statuses.some((s) => s.state === 'failure') ? 'failure' : 'success',
+        sha,
+        total_count: statuses.length,
+        statuses,
+      };
+    }
+    case 'get_diff':
+      return fakeText(prDiff(pull.files));
+    case 'get_review_comments':
+      return reviewThreads(SLUG, pull.number, HARD_REVIEW_COMMENTS[pull.number] ?? []);
     case 'get_comments':
       return [...(st.comments.get(pull.number) ?? [])];
     case 'get_reviews':
-      // Submitted reviews; a pending one is visible only to its author (the writer).
-      return [...(st.reviews.get(pull.number) ?? [])];
+      // The writer's reviews, a pending one included (visible to its author).
+      return (st.reviews.get(pull.number) ?? []).map((review) => ({
+        id: review.id,
+        state: review.state,
+        ...(review.body !== '' ? { body: review.body } : {}),
+        html_url: `${WEB}/pull/${pull.number}#pullrequestreview-${review.id}`,
+        user: minimalUser(WRITER),
+        commit_id: sha,
+        ...(review.submitted_at !== null ? { submitted_at: review.submitted_at } : {}),
+        author_association: 'COLLABORATOR',
+      }));
     case 'get_commits':
-      return [];
+      return [
+        {
+          sha,
+          html_url: `${WEB}/commit/${sha}`,
+          commit: {
+            message: pull.title,
+            author: {
+              name: pull.author,
+              email: `${pull.author}@users.noreply.github.com`,
+              date: pull.created_at,
+            },
+          },
+          author: minimalUser(pull.author),
+        },
+      ];
     default:
-      return { ...pullView(pull), mergeable: true };
+      return minimalPull(SLUG, pullRecordOf(pull), true);
   }
 }
 
+/** The PR and check index of a job id, if it is one of acme/widgets' jobs. */
+function jobOf(jobId: number): { pull: HardPull; i: number } | undefined {
+  for (const pull of HARD_WORLD_PULLS) {
+    const i = pull.checks.findIndex((_, k) => jobIdOf(pull.number, k) === jobId);
+    if (i >= 0) return { pull, i };
+  }
+  return undefined;
+}
+
+/** One job's log entry: content, or the download URL (upstream actions.go:128). */
+function jobLogEntry(
+  pull: HardPull,
+  i: number,
+  content: boolean,
+  tail: number,
+  named: boolean,
+): Record<string, unknown> {
+  const jobId = jobIdOf(pull.number, i);
+  const name = named ? { job_name: (pull.checks[i] as HardCheckRun).name } : {};
+  if (!content) {
+    return {
+      job_id: jobId,
+      ...name,
+      logs_url: `https://productionresultssa1.blob.core.windows.net/actions-results/${stableSha(`log:${jobId}`)}/logs/job/job-logs.txt`,
+      message: 'Job logs are available for download',
+      note: 'The logs_url provides a download link for the individual job logs in plain text format. Use return_content=true to get the actual log content.',
+    };
+  }
+  const lines = jobLog(pull, i).split('\n');
+  const kept = lines.slice(-Math.max(1, tail));
+  return {
+    job_id: jobId,
+    ...name,
+    logs_content: kept.join('\n'),
+    message: 'Job logs content retrieved successfully',
+    original_length: lines.length,
+  };
+}
+
+/**
+ * get_job_logs (upstream actions.go:571): one job's log by `job_id`, or
+ * every failed job of a run with `run_id` + `failed_only`; URLs unless
+ * `return_content`.
+ */
+function jobLogs(args: FakeArgs): unknown {
+  const failedOnly = args['failed_only'] === true;
+  const runId = num(args['run_id']) ?? 0;
+  const jobId = num(args['job_id']) ?? 0;
+  const content = args['return_content'] === true;
+  const tail = num(args['tail_lines']) ?? 500;
+  if (failedOnly && runId === 0) return fakeError('run_id is required when failed_only is true');
+  if (!failedOnly && jobId === 0) return fakeError('job_id is required when failed_only is false');
+  if (failedOnly) {
+    const pull = HARD_WORLD_PULLS.find((p) => runIdOf(p.number) === runId);
+    if (pull === undefined) {
+      return apiError(
+        'failed to list workflow jobs',
+        'GET',
+        `/repos/${SLUG}/actions/runs/${runId}/jobs?filter=latest`,
+      );
+    }
+    const failed = pull.checks
+      .map((run, i) => ({ run, i }))
+      .filter(({ run }) => run.conclusion === 'failure');
+    if (failed.length === 0) {
+      return {
+        failed_jobs: 0,
+        message: 'No failed jobs found in this workflow run',
+        run_id: runId,
+        total_jobs: pull.checks.length,
+      };
+    }
+    return {
+      failed_jobs: failed.length,
+      logs: failed.map(({ i }) => jobLogEntry(pull, i, content, tail, true)),
+      message: `Retrieved logs for ${failed.length} failed jobs`,
+      return_format: { content, urls: !content },
+      run_id: runId,
+      total_jobs: pull.checks.length,
+    };
+  }
+  const job = jobOf(jobId);
+  if (job === undefined) {
+    return apiError(
+      `failed to get job logs: failed to get job logs for job ${jobId}`,
+      'GET',
+      `/repos/${SLUG}/actions/jobs/${jobId}/logs`,
+    );
+  }
+  return jobLogEntry(job.pull, job.i, content, tail, false);
+}
+
+/** actions_list list_workflow_jobs for a PR's run (upstream actions.go:785): `{jobs: {total_count, jobs}}`. */
+function actionsList(args: FakeArgs): unknown {
+  const method = lower(args['method']);
+  const runId = num(args['resource_id']);
+  if (method !== 'list_workflow_jobs') return { total_count: 0, workflows: [] };
+  const pull = HARD_WORLD_PULLS.find((p) => runIdOf(p.number) === runId);
+  if (pull === undefined) {
+    return apiError(
+      'failed to list workflow jobs',
+      'GET',
+      `/repos/${SLUG}/actions/runs/${String(runId)}/jobs`,
+    );
+  }
+  const jobs = pull.checks.map((run, i) => ({
+    id: jobIdOf(pull.number, i),
+    run_id: runIdOf(pull.number),
+    name: run.name,
+    workflow_name: 'CI',
+    status: 'completed',
+    conclusion: run.conclusion,
+    head_branch: pull.head,
+    head_sha: stableSha(`${SLUG}:${pull.head}`),
+    html_url: jobUrl(pull.number, i),
+    run_attempt: 1,
+  }));
+  return { jobs: { total_count: jobs.length, jobs: pageOf(jobs, args).items } };
+}
+
+/** `MinimalRelease` (upstream minimal_types.go): list_releases items. */
 function releaseView(release: HardRelease, i: number): Record<string, unknown> {
   return {
-    id: 9000 + i,
+    id: 170_000_000 + i,
     tag_name: release.tag_name,
+    name: release.name,
+    body: release.body,
+    html_url: `${WEB}/releases/tag/${release.tag_name}`,
+    published_at: release.published_at,
+    prerelease: release.prerelease,
+    draft: false,
+    author: minimalUser('vibdev'),
+  };
+}
+
+/** go-github's full RepositoryRelease: get_release_by_tag and get_latest_release (upstream repositories.go:2263). */
+function fullRelease(release: HardRelease, i: number): Record<string, unknown> {
+  const id = 170_000_000 + i;
+  return {
+    tag_name: release.tag_name,
+    target_commitish: HARD_DEFAULT_BRANCH,
     name: release.name,
     body: release.body,
     draft: false,
     prerelease: release.prerelease,
+    make_latest: '',
+    id,
+    created_at: release.published_at,
     published_at: release.published_at,
-    author: { login: 'vibdev' },
-    html_url: `https://github.com/${HARD_REPO.owner}/${HARD_REPO.repo}/releases/tag/${release.tag_name}`,
+    url: `https://api.github.com/repos/${SLUG}/releases/${id}`,
+    html_url: `${WEB}/releases/tag/${release.tag_name}`,
+    assets_url: `https://api.github.com/repos/${SLUG}/releases/${id}/assets`,
+    assets: [],
+    upload_url: `https://uploads.github.com/repos/${SLUG}/releases/${id}/assets{?name,label}`,
+    zipball_url: `https://api.github.com/repos/${SLUG}/zipball/${release.tag_name}`,
+    tarball_url: `https://api.github.com/repos/${SLUG}/tarball/${release.tag_name}`,
+    author: {
+      login: 'vibdev',
+      id: minimalUser('vibdev')['id'],
+      type: 'User',
+      site_admin: false,
+      html_url: 'https://github.com/vibdev',
+    },
+    node_id: `RE_kwDO${id.toString(36).toUpperCase()}`,
   };
 }
 
 function releaseByTag(args: FakeArgs): unknown {
   const tag = (str(args['tag']) ?? '').trim();
-  const i = HARD_WORLD_RELEASES.findIndex((r) => r.tag_name.toLowerCase() === tag.toLowerCase());
+  if (tag === '') return fakeError('missing required parameter: tag');
+  const i = HARD_WORLD_RELEASES.findIndex((r) => r.tag_name === tag);
   if (i < 0) {
-    return fakeError(
-      `404 Not Found: no release with tag "${tag}" in ${HARD_REPO.owner}/${HARD_REPO.repo}.`,
+    return apiError(
+      `failed to get release by tag: ${tag}`,
+      'GET',
+      `/repos/${SLUG}/releases/tags/${tag}`,
     );
   }
-  return releaseView(HARD_WORLD_RELEASES[i] as HardRelease, i);
+  return fullRelease(HARD_WORLD_RELEASES[i] as HardRelease, i);
 }
 
 /** Wrap a base answer: acme/widgets gets `hard`, anything else the base fake's answer. */
@@ -1439,12 +1595,8 @@ function forHardRepo(
   hard: (args: FakeArgs) => unknown,
   scope = isHardRepo,
 ): FakeAnswer {
-  const base = GITHUB_FAKE_ANSWERS[tool];
-  return (args: FakeArgs) => {
-    if (scope(args)) return hard(args);
-    if (base === undefined) return { ok: true };
-    return typeof base === 'function' ? base(args) : base;
-  };
+  return (args: FakeArgs) =>
+    scope(args) ? hard(args) : answerFor({ ...GITHUB_FAKE_ANSWERS }, tool, args);
 }
 
 /**
@@ -1458,6 +1610,10 @@ function forHardRepo(
  */
 export function hardGithubAnswers(): Readonly<Record<string, FakeAnswer>> {
   const st = newState();
+  const labelsOf = (): Record<string, unknown> => ({
+    labels: st.labels.map((name) => labelView(name, SLUG)),
+    totalCount: st.labels.length,
+  });
   return {
     list_issues: forHardRepo('list_issues', (args) => listIssues(st, args)),
     search_issues: forHardRepo('search_issues', (args) => searchIssues(st, args), scopedToHardRepo),
@@ -1470,40 +1626,38 @@ export function hardGithubAnswers(): Readonly<Record<string, FakeAnswer>> {
     add_comment_to_pending_review: forHardRepo('add_comment_to_pending_review', (args) =>
       addPendingComment(st, args),
     ),
-    list_label: forHardRepo('list_label', () => HARD_WORLD_LABELS.map((name) => ({ name }))),
+    list_label: forHardRepo('list_label', labelsOf),
     get_label: forHardRepo('get_label', (args) => {
-      const name = lower(args['name']);
-      return HARD_WORLD_LABELS.includes(name)
-        ? { name, color: 'ededed' }
-        : fakeError(`404 Not Found: no label "${name}" in ${HARD_REPO.owner}/${HARD_REPO.repo}.`);
+      const name = str(args['name']) ?? '';
+      const found = st.labels.find((label) => label.toLowerCase() === name.toLowerCase());
+      return found !== undefined
+        ? labelView(found, SLUG)
+        : fakeError(`label '${name}' not found in ${SLUG}`);
     }),
-    list_pull_requests: forHardRepo('list_pull_requests', (args) => {
-      const page = paged(pullsFor(args), args);
-      return page.items.map((pull) => pick(pullView(pull), args['fields']));
-    }),
+    list_pull_requests: forHardRepo('list_pull_requests', (args) =>
+      pageOf(pullsFor(args), args).items.map((pull) =>
+        pickFields(minimalPull(SLUG, pullRecordOf(pull), false), args['fields']),
+      ),
+    ),
     search_pull_requests: forHardRepo('search_pull_requests', searchPulls, scopedToHardRepo),
     pull_request_read: forHardRepo('pull_request_read', (args) => pullRead(st, args)),
-    list_branches: forHardRepo('list_branches', (args) =>
-      paged(HARD_WORLD_BRANCHES, args).items.map((name) => ({
-        name,
-        protected: name === HARD_DEFAULT_BRANCH,
-      })),
-    ),
+    get_job_logs: forHardRepo('get_job_logs', jobLogs),
+    actions_list: forHardRepo('actions_list', actionsList),
     list_releases: forHardRepo('list_releases', (args) =>
-      paged(
+      pageOf(
         HARD_WORLD_RELEASES.map((release, i) => ({ release, i })),
         args,
-      ).items.map(({ release, i }) => pick(releaseView(release, i), args['fields'])),
+      ).items.map(({ release, i }) => pickFields(releaseView(release, i), args['fields'])),
     ),
     get_release_by_tag: forHardRepo('get_release_by_tag', releaseByTag),
     get_latest_release: forHardRepo('get_latest_release', () => {
       const i = HARD_WORLD_RELEASES.findIndex((r) => !r.prerelease);
-      return releaseView(HARD_WORLD_RELEASES[i] as HardRelease, i);
+      return fullRelease(HARD_WORLD_RELEASES[i] as HardRelease, i);
     }),
     list_tags: forHardRepo('list_tags', (args) =>
-      paged(HARD_WORLD_RELEASES, args).items.map((release) => ({
+      pageOf(HARD_WORLD_RELEASES, args).items.map((release) => ({
         name: release.tag_name,
-        commit: { sha: `c0ffee${release.tag_name.replace(/\W/g, '')}` },
+        sha: stableSha(`${SLUG}:tag:${release.tag_name}`),
       })),
     ),
   };

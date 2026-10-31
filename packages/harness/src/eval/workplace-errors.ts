@@ -33,7 +33,7 @@ import {
   type FakeBox,
   type FakeTool,
 } from './workplace-fake.js';
-import { PEOPLE, WORLD_NOW, type Person } from './workplace-people.js';
+import { ALL_PEOPLE, PEOPLE, WORLD_NOW, type Person } from './workplace-people.js';
 
 export type ErrorStatus = 'unresolved' | 'resolved' | 'ignored';
 
@@ -894,14 +894,17 @@ export function createErrorsBox(state: ErrorsState, onCall?: (call: SideEffect) 
           offset = decoded;
         }
         const slice = matches.slice(offset, offset + limit);
-        const header = `# Issues in **${ORG}/${project}**\n\nWindow: ${start} → ${end} · ${matches.length} matching issue(s)${matches.length > 0 ? `, showing ${offset + 1}–${offset + slice.length}` : ''}`;
+        // Like the real server, it counts the issues on this page only: the
+        // total across pages is never reported.
+        const header = `# Issues in **${ORG}/${project}**\n\nWindow: ${start} → ${end}`;
         if (slice.length === 0) return text(`${header}\n\nNo issues found.`);
         const body = slice.map((i, k) => listEntry(i, offset + k + 1, start, end)).join('\n\n');
         const more =
           offset + limit < matches.length
             ? `\n\n**Next page cursor**: ${encodeCursor(scope, offset + limit)}`
             : '';
-        return text(`${header}\n\n${body}${more}`);
+        const found = `Found ${slice.length} issue${slice.length === 1 ? '' : 's'}:`;
+        return text(`${header}\n\n${found}\n\n${body}${more}`);
       },
     },
     {
@@ -984,10 +987,28 @@ export function createErrorsBox(state: ErrorsState, onCall?: (call: SideEffect) 
         if (i === undefined)
           return toolError(`Issue "${argString(args, 'issueId') ?? ''}" not found.`);
         const status = argString(args, 'status');
+        const assignedTo = argString(args, 'assignedTo');
+        // As the real server: a call that changes nothing is refused, and
+        // an assignee the organization does not know is the API's 400.
+        if (status === undefined && assignedTo === undefined)
+          return toolError(
+            'At least one of `status` or `assignedTo` must be provided to update the issue.',
+          );
+        if (assignedTo !== undefined) {
+          // No teams are modelled, so only a known user resolves.
+          const user = /^user:(.+)$/.exec(assignedTo.trim())?.[1]?.toLowerCase();
+          const known = ALL_PEOPLE.some((p) => p.email === user);
+          if (!known)
+            return toolError(
+              `API error (400): {"assignedTo":["Unknown actor input"]} (assignedTo: ${assignedTo})`,
+            );
+        }
         if (status !== undefined)
           i.status = status === 'resolvedInNextRelease' ? 'resolved' : (status as ErrorStatus);
         state.mutations.push({ shortId: i.shortId, changes: { ...args } });
-        return text(`Updated **${i.shortId}**: status=${i.status}`);
+        return text(
+          `Updated **${i.shortId}**: status=${i.status}${assignedTo !== undefined ? `, assignedTo=${assignedTo.trim().slice('user:'.length).toLowerCase()}` : ''}`,
+        );
       },
     },
   ];

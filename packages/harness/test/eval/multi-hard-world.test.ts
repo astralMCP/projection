@@ -36,6 +36,7 @@ import {
   type MultiWorld,
   type SideEffect,
 } from '../../src/index.js';
+import { jobIdOf, runIdOf } from '../../src/eval/multi-hard-github.js';
 
 const installed = mongodbServerInstalled();
 const C = 'preconfigured';
@@ -176,6 +177,8 @@ const GOLDEN: Record<string, HardGolden> = {
     calls: (root) => [
       gh('list_pull_requests', { state: 'open', perPage: 1 }),
       gh('pull_request_read', { method: 'get_check_runs', pullNumber: 146 }),
+      // A check run has no output; the file is in its job's log.
+      gh('get_job_logs', { job_id: jobIdOf(146, 2), return_content: true }),
       fs('read_text_file', { path: `${root}/CODEOWNERS` }),
       mongo('find', 'staff', { filter: { github: 'rhea-m' } }),
       gh('search_issues', { query: 'repo:acme/widgets is:open assignee:rhea-m' }),
@@ -199,6 +202,7 @@ const GOLDEN: Record<string, HardGolden> = {
   'hard-branch-failing-checks': {
     calls: (root) => [
       gh('pull_request_read', { method: 'get_check_runs', pullNumber: 139 }),
+      gh('get_job_logs', { run_id: runIdOf(139), failed_only: true, return_content: true }),
       fs('directory_tree', { path: root }),
       ...E.fixIssues.map((path) =>
         gh('issue_write', {
@@ -309,9 +313,9 @@ describe.skipIf(!installed)('multi-hard world', () => {
       expect(hardCustomers).toMatch(/\b48\b/);
       expect(baseCollections).not.toContain('staff');
       expect(hardCollections).toContain('staff');
-      // The base fake: four issues, branches three to a page.
+      // The base fake: four issues; the same 64 branches, 30 to a page.
       expect(JSON.parse(baseIssues as string).totalCount).toBe(4);
-      expect(JSON.parse(baseBranches as string).items).toHaveLength(3);
+      expect(JSON.parse(baseBranches as string)).toHaveLength(30);
       // The hard fake: GitHub's default page of 30, a cursor to the next.
       const issues = JSON.parse(hardIssues as string);
       expect(issues.totalCount).toBe(HARD_WORLD_ISSUES.length);
@@ -336,7 +340,14 @@ describe.skipIf(!installed)('multi-hard world', () => {
       const page2 = JSON.parse(second as string);
       expect(page2.issues).toHaveLength(30);
       expect(page2.pageInfo.hasNextPage).toBe(false);
-      expect(JSON.parse(update as string).labels).toEqual([{ name: 'stale' }]);
+      expect(JSON.parse(update as string)).toEqual({
+        id: expect.any(String),
+        url: 'https://github.com/acme/widgets/issues/43',
+      });
+      const [read] = await replay(world, 'direct', [
+        gh('issue_read', { method: 'get', issue_number: 43 }),
+      ]);
+      expect(JSON.parse(read as string).labels).toEqual(['stale']);
     } finally {
       await world.close();
     }
@@ -351,14 +362,14 @@ describe.skipIf(!installed)('multi-hard world', () => {
         gh('issue_read', { method: 'get', issue_number: 43 }),
         gh('pull_request_read', { method: 'get_comments', pullNumber: 139 }),
       ]);
-      expect(JSON.parse(read as string).labels).toEqual([{ name: 'bug' }, { name: 'stale' }]);
+      expect(JSON.parse(read as string).labels).toEqual(['bug', 'stale']);
       expect(JSON.parse(comments as string).map((c: { body: string }) => c.body)).toEqual([
         'src/cache/lru.ts is missing.',
       ]);
       const [fresh] = await replay(second, 'direct', [
         gh('issue_read', { method: 'get', issue_number: 43 }),
       ]);
-      expect(JSON.parse(fresh as string).labels).toEqual([{ name: 'bug' }]);
+      expect(JSON.parse(fresh as string).labels).toEqual(['bug']);
     } finally {
       await Promise.all([first.close(), second.close()]);
     }

@@ -173,7 +173,13 @@ export function searchesPrsIn(call: SideEffect, ref: RepoRef): boolean {
 export function listsOpenPrs(call: SideEffect, ref: RepoRef = BASIC_REPO): boolean {
   const args = call.args;
   if (call.tool === 'list_pull_requests') {
-    return inRepo(args, ref) && (args['state'] === undefined || sameText(args['state'], 'open'));
+    // `all` lists the open ones too (with the closed ones beside them).
+    return (
+      inRepo(args, ref) &&
+      (args['state'] === undefined ||
+        sameText(args['state'], 'open') ||
+        sameText(args['state'], 'all'))
+    );
   }
   return (
     searchesPrsIn(call, ref) &&

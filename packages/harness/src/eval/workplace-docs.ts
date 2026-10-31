@@ -685,15 +685,134 @@ const validationError = (message: string): ReturnType<typeof toolError> =>
     }),
   );
 
-const notFound = (id: string | undefined): ReturnType<typeof toolError> =>
-  toolError(
-    JSON.stringify({
-      object: 'error',
-      status: 404,
-      code: 'object_not_found',
-      message: `Could not find block with ID: ${id ?? ''}. Make sure the relevant pages and databases are shared with your integration.`,
-    }),
+const apiError = (status: number, code: string, message: string): ReturnType<typeof toolError> =>
+  toolError(JSON.stringify({ object: 'error', status, code, message }));
+
+/**
+ * The API's answer to an ID it cannot use: a 400 naming the path parameter
+ * when the value is not a UUID at all, else a 404 naming the kind of object
+ * the endpoint looks for.
+ */
+const notFound = (
+  id: string | undefined,
+  kind: 'block' | 'page' | 'database' = 'block',
+  param = `${kind}_id`,
+): ReturnType<typeof toolError> => {
+  const uuid = normalizeId(id);
+  if (uuid === undefined)
+    return apiError(
+      400,
+      'validation_error',
+      `path failed validation: path.${param} should be a valid uuid, instead was \`${JSON.stringify(id ?? '')}\`.`,
+    );
+  return apiError(
+    404,
+    'object_not_found',
+    `Could not find ${kind} with ID: ${uuid}. Make sure the relevant pages and databases are shared with your integration.`,
   );
+};
+
+/** A database row's value of property `name` (of type `type`), for filters and sorts. */
+function rowValue(row: DocPage, name: string, type: string): unknown {
+  if (type === 'title') return row.title;
+  const prop = row.properties?.[name] as Record<string, unknown> | undefined;
+  const v = prop?.[type];
+  switch (type) {
+    case 'rich_text':
+      return plainText(v);
+    case 'select':
+    case 'status':
+      return (v as { name?: string } | null | undefined)?.name ?? null;
+    case 'people':
+      return Array.isArray(v) ? v.map((u) => (u as { id: string }).id) : [];
+    case 'date':
+      return (v as { start?: string } | null | undefined)?.start ?? null;
+    default:
+      return v;
+  }
+}
+
+type RowFilter = ((row: DocPage) => boolean) | { error: ReturnType<typeof toolError> };
+
+/**
+ * A database query filter, as the API evaluates it: compound `and`/`or`,
+ * and property conditions on the property's own type — text (`title` or
+ * `rich_text`), `select`, `status`, `people`, `date`. An unknown property
+ * or condition is an error, never a silently unfiltered result.
+ */
+function rowFilter(db: DocDatabase, filter: unknown, path = 'body.filter'): RowFilter {
+  const invalid = (message: string): RowFilter => ({ error: validationError(message) });
+  if (typeof filter !== 'object' || filter === null || Array.isArray(filter))
+    return invalid(`${path} should be an object`);
+  const f = filter as Record<string, unknown>;
+  for (const op of ['and', 'or'] as const) {
+    if (f[op] === undefined) continue;
+    if (!Array.isArray(f[op])) return invalid(`${path}.${op} should be an array`);
+    const parts = (f[op] as unknown[]).map((x, k) => rowFilter(db, x, `${path}.${op}[${k}]`));
+    const bad = parts.find((x) => typeof x !== 'function');
+    if (bad !== undefined) return bad;
+    const fns = parts as ((row: DocPage) => boolean)[];
+    return op === 'and' ? (r) => fns.every((g) => g(r)) : (r) => fns.some((g) => g(r));
+  }
+  const name = f['property'];
+  if (typeof name !== 'string') return invalid(`${path}.property should be defined`);
+  const type = db.schema[name]?.type;
+  if (type === undefined)
+    return {
+      error: apiError(400, 'validation_error', `Could not find property with name or id: ${name}`),
+    };
+  const textual = type === 'title' || type === 'rich_text';
+  const key = Object.keys(f).find((k) => k !== 'property');
+  if (key === undefined || (textual ? !['title', 'rich_text'].includes(key) : key !== type))
+    return invalid(`${path}.${textual ? 'rich_text' : type} should be defined`);
+  const cond = f[key];
+  if (typeof cond !== 'object' || cond === null)
+    return invalid(`${path}.${key} should be an object`);
+  const [[op, arg] = ['', undefined]] = Object.entries(cond as Record<string, unknown>);
+  const value = (row: DocPage): unknown => rowValue(row, name, type);
+  const empty = (v: unknown): boolean =>
+    v === null || v === '' || (Array.isArray(v) && v.length === 0);
+  if (op === 'is_empty') return (r) => empty(value(r));
+  if (op === 'is_not_empty') return (r) => !empty(value(r));
+  if (type === 'people') {
+    const id = normalizeId(typeof arg === 'string' ? arg : undefined);
+    if (id === undefined || !['contains', 'does_not_contain'].includes(op))
+      return invalid(`${path}.people.${op || 'contains'} should be a valid uuid`);
+    return (r) => (value(r) as string[]).includes(id) === (op === 'contains');
+  }
+  if (typeof arg !== 'string')
+    return invalid(`${path}.${key}.${op || 'equals'} should be a string`);
+  if (type === 'date') {
+    const ops: Record<string, (a: string, b: string) => boolean> = {
+      equals: (a, b) => a.slice(0, 10) === b.slice(0, 10),
+      before: (a, b) => a < b,
+      after: (a, b) => a > b,
+      on_or_before: (a, b) => a.slice(0, 10) <= b.slice(0, 10),
+      on_or_after: (a, b) => a >= b,
+    };
+    const cmp = ops[op];
+    if (cmp === undefined) return invalid(`${path}.date should be a valid date condition`);
+    return (r) => {
+      const v = value(r);
+      return typeof v === 'string' && cmp(v, arg);
+    };
+  }
+  const textOps: Record<string, (a: string, b: string) => boolean> = {
+    equals: (a, b) => a === b,
+    does_not_equal: (a, b) => a !== b,
+    ...(textual
+      ? {
+          contains: (a: string, b: string) => a.toLowerCase().includes(b.toLowerCase()),
+          does_not_contain: (a: string, b: string) => !a.toLowerCase().includes(b.toLowerCase()),
+          starts_with: (a: string, b: string) => a.toLowerCase().startsWith(b.toLowerCase()),
+          ends_with: (a: string, b: string) => a.toLowerCase().endsWith(b.toLowerCase()),
+        }
+      : {}),
+  };
+  const cmp = textOps[op];
+  if (cmp === undefined) return invalid(`${path}.${key}.${op} is not a supported condition`);
+  return (r) => cmp(String(value(r) ?? ''), arg);
+}
 
 function paged<T>(
   items: readonly T[],
@@ -803,7 +922,7 @@ export function createDocsBox(state: DocsState, onCall?: (call: SideEffect) => v
       handler: (args) => {
         const id = normalizeId(argString(args, 'page_id'));
         const p = state.pages.find((x) => x.id === id);
-        if (p === undefined) return notFound(argString(args, 'page_id'));
+        if (p === undefined) return notFound(argString(args, 'page_id'), 'page');
         return json(pageObject(state, p));
       },
     },
@@ -854,7 +973,7 @@ export function createDocsBox(state: DocsState, onCall?: (call: SideEffect) => v
           filter: {
             type: 'object',
             description:
-              'When supplied, limits which pages are returned based on the filter conditions. Supported here: {"property": "<name>", "title"|"rich_text": {"contains": "<text>"}}',
+              'When supplied, limits which pages are returned based on the filter conditions.',
           },
           sorts: { type: 'array', items: { type: 'object' } },
           start_cursor: { type: 'string' },
@@ -866,29 +985,51 @@ export function createDocsBox(state: DocsState, onCall?: (call: SideEffect) => v
       handler: (args) => {
         const id = normalizeId(argString(args, 'database_id'));
         const db = state.databases.find((d) => d.id === id);
-        if (db === undefined) return notFound(argString(args, 'database_id'));
+        if (db === undefined) return notFound(argString(args, 'database_id'), 'database');
         let rows = state.pages.filter(
           (p) => p.parent.type === 'database_id' && p.parent.database_id === db.id,
         );
         const filter = args['filter'];
-        if (typeof filter === 'object' && filter !== null) {
-          const f = filter as Record<string, unknown>;
-          const cond = (f['title'] ?? f['rich_text']) as Record<string, unknown> | undefined;
-          const needle =
-            typeof cond?.['contains'] === 'string'
-              ? (cond['contains'] as string).toLowerCase()
-              : undefined;
-          if (needle !== undefined) {
-            const prop = f['property'];
-            rows = rows.filter((p) => {
-              if (prop === 'Name' || prop === 'title' || f['title'] !== undefined)
-                return p.title.toLowerCase().includes(needle);
-              const v = (p.properties?.[String(prop)] as Record<string, unknown> | undefined)?.[
-                'rich_text'
-              ];
-              return plainText(v).toLowerCase().includes(needle);
-            });
+        if (filter !== undefined) {
+          const f = rowFilter(db, filter);
+          if (typeof f !== 'function') return f.error;
+          rows = rows.filter(f);
+        }
+        const sorts = args['sorts'];
+        if (Array.isArray(sorts) && sorts.length > 0) {
+          const keys: ((r: DocPage) => string)[] = [];
+          const dirs: number[] = [];
+          for (const [k, raw] of sorts.entries()) {
+            const sort = raw as Record<string, unknown>;
+            const name = sort['property'];
+            const stamp = sort['timestamp'];
+            if (typeof name === 'string') {
+              const type = db.schema[name]?.type;
+              if (type === undefined)
+                return apiError(
+                  400,
+                  'validation_error',
+                  `Could not find sort property with name or id: ${name}`,
+                );
+              keys.push((r) => {
+                const v = rowValue(r, name, type);
+                return Array.isArray(v) ? v.join(',') : String(v ?? '');
+              });
+            } else if (stamp === 'last_edited_time' || stamp === 'created_time') {
+              // Every row shares one created_time (pageObject).
+              keys.push((r) => (stamp === 'last_edited_time' ? r.lastEdited : ''));
+            } else {
+              return validationError(`body.sorts[${k}].property should be defined`);
+            }
+            dirs.push(sort['direction'] === 'descending' ? -1 : 1);
           }
+          rows = rows.toSorted((a, b) => {
+            for (const [k, key] of keys.entries()) {
+              const c = key(a).localeCompare(key(b));
+              if (c !== 0) return c * (dirs[k] as number);
+            }
+            return 0;
+          });
         }
         const p = paged(
           rows.map((r) => pageObject(state, r)),
@@ -940,15 +1081,32 @@ export function createDocsBox(state: DocsState, onCall?: (call: SideEffect) => v
         const parsed = children.map((c, k) => validateChild(c, k));
         const bad = parsed.find((p) => typeof p === 'string');
         if (typeof bad === 'string') return validationError(bad);
+        // `after` inserts right after one of block_id's own children instead
+        // of at the end (the message for a stranger is ours, not verbatim).
+        const afterArg = argString(args, 'after');
+        let slot: { lo: number; hi: number } | undefined;
+        if (afterArg !== undefined) {
+          const siblings = childrenOf(state, id);
+          const k = siblings.findIndex((b) => b.id === normalizeId(afterArg));
+          if (k < 0)
+            return validationError(`body.after should be the ID of a child block of ${id}`);
+          const lo = (siblings[k] as DocBlock).order;
+          slot = { lo, hi: siblings[k + 1]?.order ?? lo + 1 };
+        }
         const created: DocBlock[] = [];
-        for (const p of parsed as { type: string; data: Record<string, unknown> }[]) {
+        for (const [k, p] of (
+          parsed as { type: string; data: Record<string, unknown> }[]
+        ).entries()) {
           seq += 1;
           const block: DocBlock = {
             id: `c0ffee00-0000-4000-8000-${String(seq).padStart(12, '0')}`,
             parent: id,
             type: p.type,
             data: p.data,
-            order: 10_000 + seq,
+            order:
+              slot === undefined
+                ? 10_000 + seq
+                : slot.lo + ((slot.hi - slot.lo) * (k + 1)) / (parsed.length + 1),
             createdBy: BOT_USER,
             createdTime: '2026-10-14T12:00:00.000Z',
           };

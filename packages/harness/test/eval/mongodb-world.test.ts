@@ -14,6 +14,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import mongodbCatalog from '../fixtures/mongodb-catalog.json' with { type: 'json' };
+import { MONGODB_FIND_DEFAULT_LIMIT } from '../../src/eval/mongodb-world.js';
 import {
   mongodbServerEntry,
   mongodbServerInstalled,
@@ -316,6 +318,20 @@ describe.skipIf(!installed)('mongodb world', () => {
         }, 120_000);
       }
     }
+  });
+});
+
+describe('the harness assumptions about the real MongoDB server', () => {
+  it("a find without a limit returns the tool's default of 10, not the 100-document cap", () => {
+    const find = mongodbCatalog.tools.find((t) => t.name === 'find');
+    if (find === undefined) throw new Error('no find tool in the snapshot');
+    const limit = (find.inputSchema as { properties: { limit: { default?: number } } }).properties
+      .limit;
+    expect(limit.default).toBe(MONGODB_FIND_DEFAULT_LIMIT);
+    expect(MONGODB_FIND_DEFAULT_LIMIT).toBeLessThan(MONGODB_QUERY_CAP);
+    // So an unsorted, unlimited find of products sees neither the cap nor Gadget Max.
+    const gadgetMax = FIXTURE_PRODUCTS.findIndex((p) => p['name'] === 'Gadget Max');
+    expect(gadgetMax).toBeGreaterThanOrEqual(MONGODB_QUERY_CAP);
   });
 });
 
