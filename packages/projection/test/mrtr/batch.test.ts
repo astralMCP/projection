@@ -7,9 +7,15 @@
 import { describe, expect, it } from 'vitest';
 import { executeMachine, APPROVAL_SCHEMA } from '../../src/mrtr/index.js';
 import type { ExecuteMachineDeps } from '../../src/mrtr/index.js';
-import { batchOrder, BATCH_KEY } from '../../src/mrtr/batch.js';
+import {
+  batchOrder,
+  BATCH_KEY,
+  MAX_BATCH_CALLS,
+  MAX_BATCH_MESSAGE_CHARS,
+} from '../../src/mrtr/batch.js';
 import type { BlobSealerConfig, PendingToolCall } from '../../src/types.js';
 import { assertApprovalPrompts } from '../../src/facade/options.js';
+import { buildBlobPayload, openBlob, sealBlob } from '../../src/blob/index.js';
 import { BRIDGE_SOURCE, CATALOG, FakeExecutor } from '../machine-host/fixtures.js';
 import {
   ACCEPT,
@@ -101,13 +107,14 @@ async function resume(inputResponses: Record<string, unknown> | undefined, d = d
 }
 
 describe('batched approval prompts', () => {
-  it('puts every pending call in one elicitation: a [k] section and a pre-ticked boolean each', async () => {
+  it('puts every pending call in one elicitation: a [k] section and an unticked boolean each', async () => {
     const { first } = await suspend();
     expect(requestKeys(first)).toEqual([BATCH_KEY]);
+    expect(BATCH_KEY).toBe('projection:approvals');
     const { message, requestedSchema } = elicitation(first, BATCH_KEY);
     const lines = message.split('\n');
     expect(lines[0]).toBe(
-      'Approve 3 actions? Each one is approved or declined on its own: untick any you do not want, or decline to refuse them all.',
+      'Approve 3 actions? Each one is approved or declined on its own: tick the ones you approve, or decline to refuse them all.',
     );
     // Display order is the pending keys in natural order: d1, w2, w10.
     expect(lines.filter((l) => /^\[\d+\] /.test(l))).toEqual([
@@ -122,18 +129,19 @@ describe('batched approval prompts', () => {
     expect(lines.slice(at(1), at(2)).join('\n')).toContain(
       'This can permanently change or delete data.',
     );
+    // No `default` (a client applying defaults must not approve anything)
+    // and no `required` (an empty accept declines, it does not error).
     expect(requestedSchema).toEqual({
       type: 'object',
       properties: {
-        approve_1: { type: 'boolean', title: '[1] ⚠ Approve: delete file', default: true },
-        approve_2: { type: 'boolean', title: '[2] Approve: write file', default: true },
-        approve_3: { type: 'boolean', title: '[3] Approve: write file', default: true },
+        approve_1: { type: 'boolean', title: '[1] ⚠ Approve: delete file' },
+        approve_2: { type: 'boolean', title: '[2] Approve: write file' },
+        approve_3: { type: 'boolean', title: '[3] Approve: write file' },
         reason: {
           type: 'string',
           description: 'Optional note shown to the model for the actions you decline.',
         },
       },
-      required: ['approve_1', 'approve_2', 'approve_3'],
       additionalProperties: false,
     });
   });
@@ -189,35 +197,132 @@ describe('batched approval prompts', () => {
     }
   });
 
-  it('fails closed across layouts: per-call answers to a batched blob, or a batched answer to a per-call one, run nothing', async () => {
-    const perCallAnswers = { d1: ACCEPT, w2: ACCEPT, w10: ACCEPT };
-    expect((await resume(perCallAnswers)).executor.calls).toEqual([]);
-    // Minted per-call, resumed by a batched facade: every call declined.
-    const perCall = deps({ approvalPrompts: 'per-call' });
-    const { state } = await suspend(perCall);
+  it("a blob is answered by the layout sealed in it, not the resuming instance's option", async () => {
+    const ticked = {
+      [BATCH_KEY]: {
+        action: 'accept',
+        content: { approve_1: false, approve_2: true, approve_3: true },
+      },
+    };
+    // Minted batched, resumed by a per-call instance: still read as batched,
+    // so the unticked delete stays refused.
+    const batchedState = (await suspend()).state;
     const executor = new FakeExecutor();
     await executeMachine(
-      { code: FANOUT, requestState: state, inputResponses: perCallAnswers },
-      deps({ executor }),
+      { code: FANOUT, requestState: batchedState, inputResponses: ticked },
+      deps({ executor, approvalPrompts: 'per-call' }),
     );
-    expect(executor.calls).toEqual([]);
-    // Minted batched, resumed per-call: the batched answer is not a per-call one.
-    const batchedState = (await suspend()).state;
+    expect(executor.calls).toEqual([
+      { name: 'write_file', args: { path: '/two' } },
+      { name: 'write_file', args: { path: '/ten' } },
+    ]);
+    // Per-call answers to a batched blob are not its answer: nothing runs.
+    const perCallAnswers = { d1: ACCEPT, w2: ACCEPT, w10: ACCEPT };
+    expect((await resume(perCallAnswers)).executor.calls).toEqual([]);
+    // Minted per-call, resumed by a batched instance: still read per call.
+    const perCall = deps({ approvalPrompts: 'per-call' });
+    const { state } = await suspend(perCall);
     const executor2 = new FakeExecutor();
     await executeMachine(
-      {
-        code: FANOUT,
-        requestState: batchedState,
-        inputResponses: {
-          [BATCH_KEY]: {
-            action: 'accept',
-            content: { approve_1: true, approve_2: true, approve_3: true },
-          },
-        },
-      },
-      deps({ executor: executor2, approvalPrompts: 'per-call' }),
+      { code: FANOUT, requestState: state, inputResponses: { w2: ACCEPT } },
+      deps({ executor: executor2 }),
     );
-    expect(executor2.calls).toEqual([]);
+    expect(executor2.calls).toEqual([{ name: 'write_file', args: { path: '/two' } }]);
+    // ... and a batched answer to it approves nothing.
+    const executor3 = new FakeExecutor();
+    await executeMachine(
+      { code: FANOUT, requestState: state, inputResponses: ticked },
+      deps({ executor: executor3 }),
+    );
+    expect(executor3.calls).toEqual([]);
+  });
+
+  it('a call id cannot reach the batch key: the reserved prefix is refused, and the old colliding id stays bound', async () => {
+    // The review's repro: a machine names its destructive call "approvals",
+    // the old batch key. Minted batched, resumed per-call, the human's
+    // unticked [1] must not run.
+    const code = (id: string): string => `
+import { setup, assign } from 'xstate';
+import { toolCall, whenCall } from '@astral-mcp/tools';
+const region = (id, path, tool) => ({
+  initial: 'go',
+  states: {
+    go: {
+      entry: toolCall(tool, () => ({ path }), { id }),
+      on: {
+        TOOL_RESULT: { guard: whenCall(id), target: 'done', actions: assign({ [id]: 'ran' }) },
+        TOOL_DENIED: { guard: whenCall(id), target: 'done', actions: assign({ [id]: 'refused' }) },
+      },
+    },
+    done: { type: 'final' },
+  },
+});
+export default setup({}).createMachine({
+  context: { ['${id}']: 'pending', w2: 'pending' },
+  type: 'parallel',
+  states: { a: region('${id}', '/prod', 'delete_file'), b: region('w2', '/two', 'write_file') },
+  output: ({ context }) => context,
+});
+`;
+    const old = code('approvals');
+    const first = await executeMachine({ code: old }, deps());
+    expect(requestKeys(first)).toEqual([BATCH_KEY]);
+    const answer = {
+      [BATCH_KEY]: { action: 'accept', content: { approve_1: false, approve_2: true } },
+      approvals: ACCEPT,
+    };
+    for (const approvalPrompts of ['batched', 'per-call'] as const) {
+      const executor = new FakeExecutor();
+      const r = await executeMachine(
+        { code: old, requestState: sealedState(first), inputResponses: answer },
+        deps({ executor, approvalPrompts }),
+      );
+      expect(executor.calls).toEqual([{ name: 'write_file', args: { path: '/two' } }]);
+      expect(structured(r)['output']).toEqual({ approvals: 'refused', w2: 'ran' });
+    }
+    // An id in the reserved namespace is a validate error before any prompt.
+    const reserved = await executeMachine({ code: code(BATCH_KEY) }, deps());
+    expect(completed(reserved).isError).toBe(true);
+    expect(structured(reserved)['phase']).toBe('validate');
+    expect(structured(reserved)['message']).toContain('reserved prefix "projection:"');
+  });
+
+  it('caps a batch by call count and message length, falling back to per-call prompts', async () => {
+    const many = (n: number, args: string): string => `
+import { setup, enqueueActions } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+export default setup({}).createMachine({
+  initial: 'go',
+  states: {
+    go: {
+      entry: enqueueActions(({ enqueue }) => {
+        for (let i = 0; i < ${n}; i++) enqueue(toolCall('write_file', () => (${args}), { id: 'c' + i }));
+      }),
+    },
+  },
+});
+`;
+    const small = "{ path: '/f' }";
+    expect(
+      requestKeys(await executeMachine({ code: many(MAX_BATCH_CALLS, small) }, deps())),
+    ).toEqual([BATCH_KEY]);
+    expect(
+      requestKeys(await executeMachine({ code: many(MAX_BATCH_CALLS + 1, small) }, deps())),
+    ).toHaveLength(MAX_BATCH_CALLS + 1);
+    // Five calls whose copies (about 4 KB each) together pass the message cap.
+    const long = JSON.stringify('y'.repeat(500));
+    const wideArgs = `{ ${['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((k) => `${k}: ${long}`).join(', ')} }`;
+    const wide = await executeMachine({ code: many(5, wideArgs) }, deps());
+    expect(requestKeys(wide)).toHaveLength(5);
+    const perCallChars = elicitation(wide, 'c0').message.length;
+    expect(5 * perCallChars).toBeGreaterThan(MAX_BATCH_MESSAGE_CHARS);
+    // Sealed per-call, so its per-call answers are the ones read.
+    const executor = new FakeExecutor();
+    await executeMachine(
+      { code: many(5, wideArgs), requestState: sealedState(wide), inputResponses: { c0: ACCEPT } },
+      deps({ executor }),
+    );
+    expect(executor.calls).toHaveLength(1);
   });
 
   it('a suspension with one call keeps the per-call layout', async () => {
@@ -249,6 +354,30 @@ describe('batched approval prompts', () => {
     const b = { d1: call('d1'), w2: call('w2'), w10: call('w10') };
     expect(batchOrder(a)).toEqual(['d1', 'w2', 'w10']);
     expect(batchOrder(b)).toEqual(batchOrder(a));
+  });
+
+  it('seals the layout: only an absent or batched prompts field opens, and never on a call blob', () => {
+    const open = (extra: Record<string, unknown>, kind: 'machine' | 'call' = 'machine') => {
+      const payload = buildBlobPayload({
+        kind,
+        code: 'c',
+        serverIdentity: 'files@1.0.0',
+        snapshot: kind === 'call' ? null : {},
+        pending: { call: { id: 'call', name: 'write_file', args: {}, stateName: 's' } },
+        trip: 1,
+      });
+      return () =>
+        openBlob(sealBlob({ ...payload, ...extra } as typeof payload, BLOB), {
+          expectedKind: kind,
+          code: 'c',
+          serverIdentity: 'files@1.0.0',
+          config: BLOB,
+        });
+    };
+    expect(open({})().prompts).toBeUndefined();
+    expect(open({ prompts: 'batched' })().prompts).toBe('batched');
+    expect(open({ prompts: 'per-call' })).toThrow(/prompts/);
+    expect(open({ prompts: 'batched' }, 'call')).toThrow(/prompts \(call blob\)/);
   });
 
   it('validates the option at wrap time', () => {

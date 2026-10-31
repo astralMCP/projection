@@ -20,7 +20,7 @@ import {
   batchedInputRequests,
   batchedVerdicts,
   batchOrder,
-  isBatched,
+  chooseLayout,
   type ApprovalPrompts,
 } from './batch.js';
 import { legacySuspendError } from './legacy-gate.js';
@@ -225,10 +225,11 @@ async function openResume(
     );
   }
 
-  // A batched prompt (batch.ts) is re-derived from the option and the
-  // sealed pending map, never read from the client: one answer, one
-  // boolean per call, and only an exact `true` in an accepted answer runs.
-  if (isBatched(deps.approvalPrompts, payload.pending)) {
+  // A batched prompt (batch.ts) is answered by the layout SEALED in the
+  // blob, never by this instance's option or anything the client sends:
+  // one answer, one boolean per call, and only an exact `true` in an
+  // accepted answer runs.
+  if (payload.prompts === 'batched') {
     return {
       snapshot: payload.snapshot,
       pending: payload.pending,
@@ -296,7 +297,7 @@ function toToolCallResult(
       return {
         content: [
           { type: 'text', text: JSON.stringify(outcome.output ?? null, null, 2) },
-          ...refusalBlocks(outcome.audit),
+          ...refusalBlocks(outcome.audit, deps.redact),
           ...logBlocks(outcome.logs),
         ],
         structuredContent: {
@@ -314,7 +315,7 @@ function toToolCallResult(
       // approved writes: say so (and what was refused), or the model, seeing
       // only the error, asks the person to approve the same write again.
       const failed = errorResult(outcome.error);
-      const extra = approvalOutcomeBlocks(outcome.audit ?? []);
+      const extra = approvalOutcomeBlocks(outcome.audit ?? [], deps.redact);
       return extra.length === 0 ? failed : { ...failed, content: [...failed.content, ...extra] };
     }
   }
@@ -348,8 +349,7 @@ function suspendResult(
     );
   }
 
-  const batched = isBatched(deps.approvalPrompts, outcome.pending);
-  const keys = batched ? batchOrder(outcome.pending) : Object.keys(outcome.pending);
+  const keys = batchOrder(outcome.pending);
   const copies = [];
   let inputRequests: InputRequests = {};
   for (const key of keys) {
@@ -380,7 +380,8 @@ function suspendResult(
       requestedSchema: APPROVAL_SCHEMA,
     });
   }
-  if (batched) inputRequests = batchedInputRequests(copies);
+  const layout = chooseLayout(deps.approvalPrompts, outcome.pending, copies);
+  if (layout === 'batched') inputRequests = batchedInputRequests(copies);
 
   const payload = buildBlobPayload({
     code: args.code,
@@ -388,6 +389,7 @@ function suspendResult(
     snapshot: outcome.snapshot,
     pending: outcome.pending,
     audit: outcome.audit,
+    ...(layout === 'batched' ? { prompts: 'batched' as const } : {}),
     trip: outcome.trip,
     ...(deps.blob.ttlMs !== undefined ? { ttlMs: deps.blob.ttlMs } : {}),
   });
@@ -467,16 +469,16 @@ const MAX_REFUSALS_LISTED = 20;
  * own (model-authored) and the reason is the approver's note, already
  * neutralized and capped — both rendered as inert JSON.
  */
-function refusalBlocks(audit: AuditEntry[]): ContentBlock[] {
+function refusalBlocks(audit: AuditEntry[], redact?: RedactionHook): ContentBlock[] {
   const refused = audit.filter(
     (e) => e.decision === 'declined' || e.decision === 'denied_by_policy',
   );
   if (refused.length === 0) return [];
   const line = (e: AuditEntry): string => {
     if (e.decision === 'denied_by_policy') {
-      return `- ${auditCall(e)}: blocked by this server's policy`;
+      return `- ${auditCall(e, redact)}: blocked by this server's policy`;
     }
-    return `- ${auditCall(e)}: declined by the user${e.reason !== undefined ? ` with this note: ${JSON.stringify(e.reason)}` : ''}`;
+    return `- ${auditCall(e, redact)}: declined by the user${e.reason !== undefined ? ` with this note: ${JSON.stringify(e.reason)}` : ''}`;
   };
   const listed = refused.slice(0, MAX_REFUSALS_LISTED).map(line);
   if (refused.length > listed.length) {
@@ -501,11 +503,11 @@ function refusalBlocks(audit: AuditEntry[]): ContentBlock[] {
  * structured error. Nothing when no gated call was decided. Same inert
  * rendering as {@link refusalBlocks}.
  */
-function approvalOutcomeBlocks(audit: AuditEntry[]): ContentBlock[] {
+function approvalOutcomeBlocks(audit: AuditEntry[], redact?: RedactionHook): ContentBlock[] {
   const ran = audit.filter((e) => e.decision === 'approved');
-  const refused = refusalBlocks(audit);
+  const refused = refusalBlocks(audit, redact);
   if (ran.length === 0) return refused;
-  const listed = ran.slice(0, MAX_REFUSALS_LISTED).map((e) => `- ${auditCall(e)}`);
+  const listed = ran.slice(0, MAX_REFUSALS_LISTED).map((e) => `- ${auditCall(e, redact)}`);
   if (ran.length > listed.length) {
     listed.push(`- … and ${ran.length - listed.length} more (see the approvals audit)`);
   }
@@ -521,12 +523,33 @@ function approvalOutcomeBlocks(audit: AuditEntry[]): ContentBlock[] {
   ];
 }
 
-/** `"tool" {args}` for an audit entry, inert and bounded. */
-function auditCall(e: AuditEntry): string {
-  const args = JSON.stringify(e.args) ?? '{}';
-  const shown =
-    args.length > MAX_REFUSAL_ARGS_CHARS ? `${args.slice(0, MAX_REFUSAL_ARGS_CHARS)}…` : args;
-  return `${JSON.stringify(neutralizeControlChars(capLength(e.tool, 200)))} ${shown}`;
+/**
+ * `"tool" {args}` for an audit entry, inert and bounded. The audit holds
+ * the SEALED arguments, so they go through the integrator's redaction hook
+ * first (R16: a copy, under the name the hook knows), failing closed to
+ * `[redaction failed]`; then control, C1, line/paragraph-separator and
+ * bidi characters are neutralized (S5) and the text is cut on a code-point
+ * boundary.
+ */
+function auditCall(e: AuditEntry, redact: RedactionHook | undefined): string {
+  let args: string;
+  try {
+    const shownArgs = redact !== undefined ? redact(e.tool, structuredClone(e.args)) : e.args;
+    args = JSON.stringify(shownArgs) ?? '{}';
+  } catch {
+    args = '[redaction failed]';
+  }
+  const safe = neutralizeControlChars(args);
+  return `${JSON.stringify(neutralizeControlChars(capLength(e.tool, 200)))} ${cutAtCodePoint(safe, MAX_REFUSAL_ARGS_CHARS)}`;
+}
+
+/** `text` cut to at most `max` UTF-16 units without splitting a surrogate pair, `…` when cut. */
+export function cutAtCodePoint(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}…`;
 }
 
 function logBlocks(logs: LogEntry[]): ContentBlock[] {

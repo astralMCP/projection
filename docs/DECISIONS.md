@@ -1379,18 +1379,40 @@ how approvals are presented and recovered from.
   any prompt. Nothing executes either way, so S2 is untouched.
 - **Batched prompts, opt-in (R15).** `approvalPrompts: 'batched'` puts a
   suspension's several gated calls to the person as one elicitation with
-  one boolean per call. No blob or crypto change: `pending` stays the only
-  source of executable calls, one sealed entry each; the layout is a pure
-  function of the option and the pending keys, re-derived on resume and
-  never read from the client; only an exact `true` in an accepted answer
-  runs a call; a blob resumed under the other layout declines everything.
-  It stays opt-in, not the default, because a client that accepts the form
-  without the booleans declines every call (fail-closed, but a regression
-  for such clients), and because on the tier models rarely request several
-  gated calls in one step (default routing used `call_tool` in 19 of 20
-  episodes; under forced code mode about one Haiku fan-out in three did).
-  Offline it turns six prompts into one; its live effect is still
-  unmeasured.
+  one unticked boolean per call. `pending` stays the only source of
+  executable calls, one sealed entry each, and only an exact `true` in an
+  accepted answer runs a call. No crypto change; one optional blob field.
+  Amended after an adversarial review (same date):
+  - **The layout is sealed** (`prompts: 'batched'` in the payload, absent
+    for per-call, never on a `call` blob; any other value is malformed) and
+    the resume answers by the sealed value. The first version re-derived it
+    from the resuming instance's option, and the batch key `approvals`
+    could equal a model-chosen call id: a blob minted batched and resumed
+    per-call read the batched answer as that call's own approval and ran a
+    call the person had unticked.
+  - **The batch key is namespaced** (`projection:approvals`), and a machine
+    `toolCall` id starting with `projection:` is a `validate` error, so no
+    call can be keyed where a Projection answer lives.
+  - **No `default` on the checkboxes.** With `default: true`, a client that
+    applies form defaults (the SDK's `elicitation.form.applyDefaults`)
+    turned an empty accept into "approve all". The fields carry neither
+    `default` nor `required`; an empty accept declines everything.
+  - **Capped.** At most 10 calls and 20 000 characters per batched message;
+    above either, the suspension falls back to per-call prompts (sealed as
+    such).
+  - **Refusal and already-ran blocks** render the sealed arguments through
+    the integrator's redaction hook (failing closed to `[redaction failed]`),
+    neutralize control, C1, separator and bidi characters (S5), and cut on
+    a code-point boundary.
+    The blob schema version stays 1: the field is optional, and the exact
+    `libv` match already fences blobs across releases.
+    It stays opt-in, not the default, because a client that accepts the form
+    without the booleans declines every call (fail-closed, but a regression
+    for such clients), and because on the tier models rarely request several
+    gated calls in one step (default routing used `call_tool` in 19 of 20
+    episodes; under forced code mode about one Haiku fan-out in three did).
+    Offline it turns six prompts into one; its live effect is still
+    unmeasured.
 
 Alternatives not taken: **editable approval forms** (accept with changed
 arguments) would make the approval authorize something other than the

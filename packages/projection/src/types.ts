@@ -388,6 +388,14 @@ export interface BlobPayload {
    * of its final segment.
    */
   audit: AuditEntry[];
+  /**
+   * How this suspension was put to the person (R15): present, and
+   * `'batched'`, only when it was one batched elicitation; absent means
+   * one elicitation per pending call. Sealed so the resume answers the
+   * prompt that was actually shown, whatever the resuming instance's
+   * option (D22). Never present on `call` blobs.
+   */
+  prompts?: 'batched';
   /** Round-trip counter (R18). */
   trip: number;
   /** Random nonce for replay scoping. */

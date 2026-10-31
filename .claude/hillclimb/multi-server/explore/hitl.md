@@ -138,10 +138,13 @@ Code mode is where HITL was worst.
    what was refused. Code mode: 9/10, the cheapest Haiku code-mode run. **Kept.**
 6. **Batched prompts** (`approvalPrompts: 'batched'`, opt-in, default `per-call`). One
    elicitation lists a suspension's N gated calls, each in its full R16 copy under `[k]`, with
-   one pre-ticked boolean per call. No blob or crypto change was needed (design in DECISIONS
-   D22): `pending` stays per-call sealed; the layout is re-derived on resume from the option plus
-   the sorted pending keys; only an exact `true` in an accepted answer runs a call; every other
-   answer, or a blob resumed under the other layout, declines all. Offline, 6 prompts became 1.
+   one unticked boolean per call (no default). `pending` stays per-call sealed and only an exact
+   `true` in an accepted answer runs a call. After an adversarial review (DECISIONS D22): the
+   layout is sealed in the blob (`prompts: 'batched'`) instead of re-derived from the resuming
+   instance's option; the batch key is namespaced (`projection:approvals`, call ids with that
+   prefix are refused); the old `default: true` let a client applying form defaults approve
+   everything on an empty accept, so it is gone; a batch is capped at 10 calls and 20 000
+   characters. Offline, 6 prompts became 1.
    **Live it never triggered**: no machine in that run requested two gated calls in one step.
    Earlier code-mode runs had Haiku put 6 calls in one round trip in about 1 of 3 fan-out
    episodes, and default routing does it almost never (19/20 episodes used `call_tool`). Pass and

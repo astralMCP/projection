@@ -7,16 +7,25 @@
  * elicitation per call, and a host shows the person one prompt per call.
  * The batched layout sends ONE elicitation listing every call — each in
  * its full R16 copy under a `[k]` header — whose form has one boolean per
- * call (`approve_k`, pre-ticked) and the usual optional `reason`.
+ * call (`approve_k`, unticked: the person ticks what they approve) and the
+ * usual optional `reason`.
  *
  * Nothing about what is approved changes (S2): the sealed `pending` map is
  * still the only source of the calls that can run, one entry per call, and
  * a call runs only when ITS boolean comes back exactly `true` inside an
- * accepted response. The presentation is not recorded in the blob: it is a
- * pure function of the facade's option and the sealed `pending` keys, so
- * the resume re-derives it. A blob minted under one layout and resumed
- * under the other finds no answer under the keys it reads, and R17 turns a
- * missing answer into a decline: every call declined, nothing executed.
+ * accepted response. The fields carry no `default`: a client that fills
+ * defaults into an empty accept (the SDK's `elicitation.form.applyDefaults`)
+ * must not approve anything the person did not tick.
+ *
+ * The layout is decided when the suspension is minted and SEALED in the
+ * blob (`prompts: 'batched'`); the resume reads the sealed value, never the
+ * resuming instance's option, so a blob minted batched and resumed by a
+ * per-call instance (or the reverse) is still answered the way it was
+ * asked. The batch key lives in a reserved namespace (`projection:`): a
+ * machine call id with that prefix is a `validate` error, so no call can be
+ * keyed where the batched answer lives. A batch is capped by call count
+ * and message length; above either cap the suspension falls back to
+ * per-call prompts.
  *
  * Copy (S6): the message is the R16 copy of each call, unchanged, under a
  * library-written header; the field titles repeat the R16 titles, which
@@ -38,8 +47,19 @@ import {
 /** How a suspension with several gated calls is put to the person. */
 export type ApprovalPrompts = 'per-call' | 'batched';
 
-/** The single inputRequests key of a batched prompt. */
-export const BATCH_KEY = 'approvals';
+/**
+ * Call ids with this prefix are reserved for Projection's own
+ * inputRequests keys; a machine `toolCall` id using it is rejected.
+ */
+export const RESERVED_ID_PREFIX = 'projection:';
+
+/** The single inputRequests key of a batched prompt (reserved namespace). */
+export const BATCH_KEY = `${RESERVED_ID_PREFIX}approvals`;
+
+/** Most calls one batched prompt lists; above it, per-call prompts. */
+export const MAX_BATCH_CALLS = 10;
+/** Longest batched message; above it, per-call prompts. */
+export const MAX_BATCH_MESSAGE_CHARS = 20_000;
 
 /** The boolean field that carries the verdict of the call at 0-based position `i`. */
 export function batchField(i: number): string {
@@ -64,26 +84,35 @@ export function batchOrder(pending: Record<string, PendingToolCall>): string[] {
   });
 }
 
-/** Whether this suspension is put as one batched prompt. */
-export function isBatched(
+/**
+ * The layout a new suspension gets: batched only when the facade asks for
+ * it, the suspension holds 2..MAX_BATCH_CALLS calls, no pending key sits in
+ * the reserved namespace, and the batched message fits
+ * MAX_BATCH_MESSAGE_CHARS. The result is sealed in the blob.
+ */
+export function chooseLayout(
   mode: ApprovalPrompts | undefined,
   pending: Record<string, PendingToolCall>,
-): boolean {
-  return mode === 'batched' && Object.keys(pending).length >= 2;
+  copies: readonly ElicitationCopy[],
+): ApprovalPrompts {
+  const keys = Object.keys(pending);
+  if (mode !== 'batched' || keys.length < 2 || keys.length > MAX_BATCH_CALLS) return 'per-call';
+  if (keys.some((key) => key.startsWith(RESERVED_ID_PREFIX))) return 'per-call';
+  return batchedMessage(copies).length <= MAX_BATCH_MESSAGE_CHARS ? 'batched' : 'per-call';
+}
+
+function batchedMessage(copies: readonly ElicitationCopy[]): string {
+  const header = `Approve ${copies.length} actions? Each one is approved or declined on its own: tick the ones you approve, or decline to refuse them all.`;
+  const sections = copies.map((copy, i) => `[${i + 1}] ${copy.title}\n\n${copy.message}`);
+  return [header, ...sections].join('\n\n');
 }
 
 /** The one elicitation that lists every pending call (`copies` in {@link batchOrder}). */
 export function batchedInputRequests(copies: readonly ElicitationCopy[]): InputRequests {
-  const n = copies.length;
-  const header = `Approve ${n} actions? Each one is approved or declined on its own: untick any you do not want, or decline to refuse them all.`;
-  const sections = copies.map((copy, i) => `[${i + 1}] ${copy.title}\n\n${copy.message}`);
   const properties: Record<string, unknown> = {};
   copies.forEach((copy, i) => {
-    properties[batchField(i)] = {
-      type: 'boolean',
-      title: `[${i + 1}] ${copy.title}`,
-      default: true,
-    };
+    // No `default`: see the module comment (applyDefaults).
+    properties[batchField(i)] = { type: 'boolean', title: `[${i + 1}] ${copy.title}` };
   });
   properties['reason'] = {
     type: 'string',
@@ -92,12 +121,11 @@ export function batchedInputRequests(copies: readonly ElicitationCopy[]): InputR
   const requestedSchema = {
     type: 'object',
     properties,
-    required: copies.map((_, i) => batchField(i)),
     additionalProperties: false,
   } as unknown as ElicitRequestFormParams['requestedSchema'];
   return {
     [BATCH_KEY]: inputRequired.elicit({
-      message: [header, ...sections].join('\n\n'),
+      message: batchedMessage(copies),
       requestedSchema,
     }),
   };

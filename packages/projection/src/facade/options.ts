@@ -59,10 +59,12 @@ export interface WrapOptions {
    * How a machine suspension holding several gated calls is put to the
    * person (R15 amendment; DECISIONS D22). `'per-call'` (default) sends one
    * elicitation per call. `'batched'` sends one elicitation listing every
-   * call in its full approval copy, with one pre-ticked boolean per call:
-   * each call still runs only if its own box comes back ticked, on the
-   * arguments sealed for it (S2). A client that answers the form without
-   * the booleans declines every call. Read once, at wrap time; any other
+   * call in its full approval copy, with one unticked boolean per call (no
+   * default): each call still runs only if its own box comes back ticked,
+   * on the arguments sealed for it (S2). A client that answers the form
+   * without the booleans declines every call. The layout is sealed in the
+   * blob; a batch is capped at 10 calls and 20 000 characters, falling back
+   * to per-call prompts above that. Read once, at wrap time; any other
    * value fails the wrap (`validate`).
    */
   approvalPrompts?: ApprovalPrompts;

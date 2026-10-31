@@ -313,6 +313,9 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
   if (!Array.isArray(payload['audit'])) {
     throw malformed('audit');
   }
+  if ('prompts' in payload && payload['prompts'] !== 'batched') {
+    throw malformed('prompts');
+  }
   // R36: a `call` blob is the degenerate one-call machine, so its shape is
   // fixed — exactly one pending entry keyed `call` whose id is `call`, no
   // snapshot, no prior audit, and trip 1 (there is no second round trip).
@@ -329,6 +332,9 @@ function assertPayloadShape(payload: Record<string, unknown>): void {
     }
     if ((payload['audit'] as unknown[]).length !== 0) {
       throw malformed('audit (call blob)');
+    }
+    if ('prompts' in payload) {
+      throw malformed('prompts (call blob)');
     }
     if (payload['trip'] !== 1) {
       throw malformed('trip (call blob)');
@@ -365,6 +371,8 @@ export interface BuildBlobPayloadInput {
   pending: Record<string, PendingToolCall>;
   /** Approval audit accumulated so far in this workflow (PRD §8). */
   audit?: AuditEntry[] | undefined;
+  /** `'batched'` when the suspension was one batched prompt (R15, D22). */
+  prompts?: 'batched' | undefined;
   /** Round-trip counter (R18). */
   trip: number;
   /** Blob TTL in ms. Default {@link DEFAULT_TTL_MS} (15 minutes). */
@@ -390,6 +398,7 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
     snapshot: input.snapshot,
     pending: input.pending,
     audit: input.audit ?? [],
+    ...(input.prompts === 'batched' ? { prompts: 'batched' as const } : {}),
     trip: input.trip,
     nonce: randomBytes(16).toString('base64url'),
     iat,

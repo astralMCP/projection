@@ -179,15 +179,21 @@ regions, or several `toolCall`s in one action), the default
 round trip, and most hosts show one prompt per call.
 `approvalPrompts: 'batched'` sends one elicitation instead: a header, then
 each call's usual approval copy under `[1]`, `[2]`, … and a form with one
-pre-ticked boolean per call (`approve_1`, …) plus the optional `reason`.
+unticked boolean per call (`approve_1`, …) plus the optional `reason`.
+The fields have no default, so a client that applies form defaults to an
+empty accept approves nothing.
 
 What runs does not change. Each call is still sealed on its own in the
 blob, and runs only if its own boolean comes back exactly `true` in an
 accepted answer; a declined, cancelled or missing answer, or one without
-the booleans, declines every call in it. A blob minted under one setting
-and resumed under the other declines everything. `call_tool` and a step
-with one gated call keep the per-call prompt. Enable it when your clients
-render boolean form fields; any other value fails the wrap.
+the booleans, declines every call in it. The layout is sealed in the blob
+when the prompt is minted, so a resume is always read the way the prompt
+was asked, whichever setting the resuming instance has. A batch holds at
+most 10 calls and 20 000 characters; past either, the step falls back to
+per-call prompts. `call_tool` and a step with one gated call keep the
+per-call prompt. Machine `toolCall` ids may not start with `projection:`
+(that namespace holds the batched answer's key). Enable it when your
+clients render boolean form fields; any other value fails the wrap.
 
 ## What your metadata becomes
 

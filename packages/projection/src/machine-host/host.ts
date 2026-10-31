@@ -9,6 +9,8 @@ import { createSandboxSession, type SandboxSession } from '../sandbox/index.js';
 import { isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { didYouMeanHint } from '../catalog/search.js';
 import { validateArgsShape } from '../catalog/validate-args.js';
+import { RESERVED_ID_PREFIX } from '../mrtr/batch.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { policyContext, policyDeniedReason, resolveCallPolicy } from '../policy/index.js';
 import {
   clampCaps,
@@ -367,6 +369,15 @@ class SegmentRunner {
     const stateName = describeState(stateValue);
 
     for (const request of requests) {
+      // The `projection:` namespace keys Projection's own inputRequests (the
+      // batched approval, D22): a call id there could be answered by them.
+      if (request.id.startsWith(RESERVED_ID_PREFIX)) {
+        throw new ProjectionError(
+          'validate',
+          `toolCall id ${JSON.stringify(neutralizeControlChars(capLength(request.id, 200)))} uses the reserved prefix "${RESERVED_ID_PREFIX}"`,
+          { hint: `Give the toolCall an id that does not start with "${RESERVED_ID_PREFIX}".` },
+        );
+      }
       const call: PendingToolCall = {
         id: request.id,
         name: request.name,
