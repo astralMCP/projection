@@ -86,6 +86,7 @@ import { containsText, sameText, type EvalTask, type TaskKind } from './task-cor
 import { SUMMIT_WRITE_TOOLS } from './summit-local-world.js';
 import { SAAS_WRITE_TOOLS } from './summit-world.js';
 import { WORKPLACE_WRITE_TOOLS } from './workplace-world.js';
+import { isBillingWrite } from './messy-billing.js';
 import { BOX_ALIASES, type BoxAlias } from './world.js';
 
 /** The bare call, when `call` went to box `alias`. */
@@ -179,6 +180,8 @@ export function isBoxWrite(call: SideEffect): boolean {
     case 'slack':
     case 'stripe':
       return SAAS_WRITE_TOOLS[alias].includes(bare);
+    case 'billing':
+      return isBillingWrite(bare);
     default:
       return WORKPLACE_WRITE_TOOLS[alias].includes(bare);
   }

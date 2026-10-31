@@ -4,14 +4,15 @@
  * (mongodb-tasks.ts), `multi` (multi-tasks.ts) and the opt-in
  * `multi-hard` (multi-hard-tasks.ts) and the opt-in, held-out
  * `workplace` (workplace-tasks.ts), `hitl` (hitl-tasks.ts) and the opt-in,
- * held-out `summit-local` (summit-local-tasks.ts) and `summit-saas`
- * (summit-tasks.ts), plus the
+ * held-out `summit-local` (summit-local-tasks.ts), `summit-saas`
+ * (summit-tasks.ts) and `summit-messy` (messy-tasks.ts), plus the
  * PROJ_EVAL_TIERS / PROJ_EVAL_TASKS resolvers.
  */
 
 import { FILESYSTEM_TASKS } from './filesystem-tasks.js';
 import { HITL_TASKS } from './hitl-tasks.js';
 import { BASIC_TASKS, HARD_TASKS } from './github-tasks.js';
+import { MESSY_TASKS } from './messy-tasks.js';
 import { MONGODB_TASKS } from './mongodb-tasks.js';
 import { MULTI_HARD_TASKS } from './multi-hard-tasks.js';
 import { MULTI_TASKS } from './multi-tasks.js';
@@ -27,6 +28,7 @@ export {
   TIER_WORLDS,
   worldOf,
   worldOptionsOf,
+  taskWorldOptions,
   type EvalTask,
   type TaskKind,
   type TaskTier,
@@ -45,12 +47,13 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
   ...HITL_TASKS,
   ...SUMMIT_LOCAL_TASKS,
   ...SUMMIT_TASKS,
+  ...MESSY_TASKS,
 ];
 
 /**
  * Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names
- * throw. Unset selects {@link DEFAULT_TIERS} (`multi-hard`, `workplace`, `hitl`, `summit-local` and
- * `summit-saas` are opt-in).
+ * throw. Unset selects {@link DEFAULT_TIERS} (`multi-hard`, `workplace`, `hitl`, `summit-local`,
+ * `summit-saas` and `summit-messy` are opt-in).
  */
 export function resolveTiers(spec: string | undefined): TaskTier[] {
   if (spec === undefined || spec.trim() === '') return [...DEFAULT_TIERS];

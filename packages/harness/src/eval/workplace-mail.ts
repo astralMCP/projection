@@ -205,7 +205,10 @@ function matches(e: Email, query: string): boolean {
       }
     }
   };
-  return tokens.every((raw) => (raw.startsWith('-') ? !term(raw.slice(1)) : term(raw)));
+  // A leading `-` negates a term, as the webmail query syntax does (a lone `-` is a word).
+  return tokens.every((raw) =>
+    raw.length > 1 && raw.startsWith('-') ? !term(raw.slice(1)) : term(raw),
+  );
 }
 
 /** Label IDs a message can be given: the system labels (no user labels exist). */

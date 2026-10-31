@@ -16,6 +16,7 @@ import {
   SUMMIT_TASKS,
   HITL_TASKS,
   SUMMIT_LOCAL_TASKS,
+  MESSY_TASKS,
   MULTI_TASKS,
   promptFor,
   resolveTasks,
@@ -322,6 +323,7 @@ describe('tool-choice tasks', () => {
       ...HITL_TASKS,
       ...SUMMIT_LOCAL_TASKS,
       ...SUMMIT_TASKS,
+      ...MESSY_TASKS,
     ]);
     expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);

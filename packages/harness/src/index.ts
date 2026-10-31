@@ -161,6 +161,7 @@ export {
   resolveTiers,
   worldOf,
   worldOptionsOf,
+  taskWorldOptions,
   BASIC_TASKS,
   DEFAULT_TIERS,
   HARD_TASKS,
@@ -245,6 +246,7 @@ export {
   type WorkplaceBoxAlias,
   type SummitBoxAlias,
   type SaasBoxAlias,
+  type MessyBoxAlias,
   type EvalWorld,
   type MultiWorld,
   type ServerWorld,
@@ -255,6 +257,41 @@ export {
   type WorldOptions,
   type WorldTool,
 } from './eval/world.js';
+export {
+  argsToCanonical,
+  driftOutputSchema,
+  extractNextPage,
+  inflate,
+  messify,
+  messyResult,
+  messySurface,
+  oneWord,
+  pydanticSchema,
+  pythonRepr,
+  renameInText,
+  stripPropertyDescriptions,
+  untypeProperties,
+  type Defect,
+  type MessyProfile,
+  type MessyTool,
+} from './eval/messify.js';
+export {
+  billingOperations,
+  createBillingBox,
+  isBillingWrite,
+  seedBilling,
+  type BillingState,
+} from './eval/messy-billing.js';
+export {
+  messySystemPrompt,
+  openMessyWorld,
+  seedMessy,
+  MESSY_BOX_DESCRIPTIONS,
+  MESSY_BOXES,
+  MESSY_PROFILES,
+  type MessyState,
+} from './eval/messy-world.js';
+export { MESSY_EXPECTED, MESSY_TASKS } from './eval/messy-tasks.js';
 export {
   openMultiWorld,
   qualifiedName,
