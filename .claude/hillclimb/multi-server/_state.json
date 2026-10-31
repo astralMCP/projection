@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 12,
+  "current_round": 13,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -31,9 +31,9 @@
     }
   ],
   "best": {
-    "round": 9,
-    "variant": "v10",
-    "note": "first best on harness change 3"
+    "round": 12,
+    "variant": "v13",
+    "note": "D28 auto default + D29 signals + D30 fan-out + D31 event args"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -744,6 +744,21 @@
       "spend_usd": 7.56,
       "kept": false,
       "decision": "worse: sonnet export-prs 0/3 — fan-out results mapped by 1-based index guess (ids 0-based) -> comments on wrong PRs. Fix D31: events carry args"
+    },
+    {
+      "round": 12,
+      "variant": "v13",
+      "change": "D31: machine tool events carry the call args (map results by args, not index); on top of D29 signals + D30 fan-out",
+      "commit": "cc37510",
+      "multi": "203/204",
+      "guard": "120/120",
+      "multiHard": {
+        "haiku45": "29/36 $0.0390",
+        "sonnetLow": "36/36 $0.0474"
+      },
+      "spend_usd": 7.49,
+      "kept": true,
+      "decision": "best: vs v10 multi-hard haiku +3 at -23% cost, sonnet equal at -12% cost; guard 120/120 (+3); multi -1 (noise)"
     }
   ],
   "rebaseline": "v4",
@@ -818,5 +833,5 @@
     "v7 probe (v7/probe/, 20 episodes): $0.63 (exact $0.6254, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5) + $0.85 (v6) + $0.63 = $35.80.",
     "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user"
   ],
-  "cumulative_spend_usd": 68.26
+  "cumulative_spend_usd": 75.75
 }
