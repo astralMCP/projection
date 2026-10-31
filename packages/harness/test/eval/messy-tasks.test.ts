@@ -112,6 +112,7 @@ interface Invoice {
   status: string;
   amount_due: number;
   due_date: number | null;
+  charge: string | null;
 }
 interface Charge {
   id: string;
@@ -244,6 +245,17 @@ describe('billing tasks', () => {
       return 'Done.';
     });
     expect(wrong).toEqual({ success: false, forbidden: true });
+  });
+
+  it('INV-88213 links its first (genuine) charge, so nothing points at the duplicate as the real one', async () => {
+    await run('messy-refund-duplicate', async (t) => {
+      const inv = await globexInvoice(t);
+      const charges = await invoiceCharges(t, inv);
+      expect(charges).toHaveLength(2);
+      expect(inv.charge).toBe(charges[0]?.id);
+      expect(inv.charge).not.toBe(E.duplicateCharge);
+      return 'Done.';
+    });
   });
 
   it('messy-active-pro: every page counts; one default page does not', async () => {

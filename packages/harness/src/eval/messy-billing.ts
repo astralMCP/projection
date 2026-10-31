@@ -382,7 +382,9 @@ function seedInvoicesAndCharges(customers: readonly BillingCustomer[]): {
         DUPLICATE_CHARGES.forEach((chId, i) => {
           charges.push(chargeOf(chId, seed, customer.id, id, at(times[i] as string)));
         });
-        charge = DUPLICATE_CHARGES[1];
+        // The invoice records the payment that settled it (the first); the
+        // second is the stray duplicate, as in a real double charge.
+        charge = DUPLICATE_CHARGES[0];
       } else {
         charge = billingId('ch', seed.number);
         charges.push(chargeOf(charge, seed, customer.id, id, at(seed.created) + 3_600));
