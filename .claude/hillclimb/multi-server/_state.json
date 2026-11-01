@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 16,
+  "current_round": 17,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -31,9 +31,9 @@
     }
   ],
   "best": {
-    "round": 15,
-    "variant": "v15",
-    "note": "D33 arg glosses on v14"
+    "round": 17,
+    "variant": "v16b",
+    "note": "D34 shared args on box pages, on v15"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -819,6 +819,21 @@
       "spend_usd": 6.77,
       "kept": false,
       "decision": "mongo call errors 47->16 and cost down, but haiku multi 50->46 (projection) / 50->48 (boxes): on global-who-is-grace haiku asked which database/collection before calling any tool (2/6, never before). Shelf line removed -> v16b."
+    },
+    {
+      "round": 17,
+      "variant": "v16b",
+      "change": "D34 without the shelf line: shared args lead box pages only",
+      "commit": "30d2dc4",
+      "multi": "198/204",
+      "guard": "119/120",
+      "multiHard": {
+        "haiku45": "25/36 $0.0424",
+        "sonnetLow": "34/36 $0.0430"
+      },
+      "spend_usd": 7.05,
+      "kept": true,
+      "decision": "best: vs v15 mongo call errors 47->17, multi-hard haiku +2, sonnet cost -6%; haiku multi 100->96 of 102, most of it the indented-text copy bug (cross-email-to-todo x3) present since v13 -> fixed in v17 (D35)."
     }
   ],
   "rebaseline": "v4",
@@ -894,5 +909,5 @@
     "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user",
     "2026-10-31: user raised the budget from $100 to $150 after v15 (rounds v13-bc 8.30 + v14 7.46 + v15 7.00 on top of 75.75). Basecamp build ($34), summit calibration ($68) and the v15 milestone ($13.37) are tracked outside this budget."
   ],
-  "cumulative_spend_usd": 105.28
+  "cumulative_spend_usd": 112.33
 }

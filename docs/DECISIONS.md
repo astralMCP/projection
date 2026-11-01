@@ -2202,3 +2202,28 @@ prompt, and the box's first page shows it); a one-third threshold (the
 same arguments on these catalogs, and "most" would no longer be true);
 dropping the shared arguments from the hits altogether (a tool that takes
 only some of them, like `list-databases`, would no longer say which).
+
+## D35 — A text field is printed verbatim in a fence, not indented (2026-10-31)
+
+Context. D29 prints a top-level string of three or more lines (a file's
+contents, a document body) below the JSON as its own lines, indented four
+spaces like the other untrusted blocks. Models copy the indent. Writing a
+file back after reading it, Haiku 4.5 wrote `    - buy milk` for `- buy
+milk`. Across rounds v13-bc to v16b, 4–7 episodes a round wrote
+indented content to a file, and 1–3 of them failed on it
+(cross-email-to-todo, fs-append-todo). These were most of Haiku's
+multi-tier failures.
+
+Decision. The block is printed verbatim, with no indent, between two
+lines of backticks under a header that says so: `"content" (string, 10
+lines, verbatim between the ``` lines):`. The fence is one backtick
+longer than the longest backtick run in the text, and at least three. So
+the server's text cannot close it and continue as facade copy (S5), which
+was the only work the indent did. The JSON marker is unchanged. The
+`renderedSize` estimate now counts the header and fences.
+
+Rejected: keeping the indent and telling the model to strip it (copy
+does not fix a copying habit); a fixed fence such as `<<<`/`>>>` (the
+server could print it); printing the text raw with no fence (a line
+of the file could pass as facade copy).
+

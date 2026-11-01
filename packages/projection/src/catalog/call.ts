@@ -45,7 +45,7 @@ import {
   policyContext,
   policyDeniedReason,
 } from '../policy/index.js';
-import { capLength, indentBlock, neutralizeControlChars } from '../text-safety.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
 import {
   clampCaps,
   findTool,
@@ -712,8 +712,11 @@ export function renderedSize(value: unknown, stopAt: number): number {
         stack.push([field, depth + 1]);
       }
     } else if (typeof item === 'string') {
-      // Printed as indented text lines when long enough: 5 per line break.
-      size += item.length + 2 + 5 * (item.match(/[\r\n]/g)?.length ?? 0);
+      // Escaped as a JSON string, or printed fenced when long enough: the
+      // text, a header and two fences one longer than its longest backtick run.
+      const breaks = item.match(/[\r\n]/g)?.length ?? 0;
+      const fence = fenceFor(item).length;
+      size += item.length + 2 + Math.max(breaks, 100 + 2 * fence);
     } else {
       size += String(item).length;
     }
@@ -729,8 +732,8 @@ const MAX_TEXT_FIELDS = 5;
 /**
  * A structured result as pretty JSON — except that a top-level string of
  * several lines (a file's contents, a document body) is printed below the
- * JSON as its own lines, under its quoted key and indented like any
- * untrusted block, with a marker in its place in the JSON. Marker and
+ * JSON as its own lines, verbatim between backtick fences under its
+ * quoted key, with a marker in its place in the JSON. Marker and
  * header both say "string": a model that read only "N lines" took the
  * field for an array of lines or content blocks (D30). As a JSON
  * string it is one line of `\n` escapes the model has to unescape to read,
@@ -755,11 +758,25 @@ function structuredBody(output: unknown): string {
   // server data, and `__proto__` must stay a key, not a prototype.
   const json = JSON.stringify(Object.fromEntries(shown), null, 2) ?? 'null';
   if (texts.length === 0) return json;
-  const blocks = texts.map(
-    ([key, lines]) =>
-      `${JSON.stringify(capLength(key, 200))} (string, ${lines.length} lines):\n${indentBlock(lines.join('\n'))}`,
-  );
+  const blocks = texts.map(([key, lines]) => {
+    const text = lines.join('\n');
+    const fence = fenceFor(text);
+    return `${JSON.stringify(capLength(key, 200))} (string, ${lines.length} lines, verbatim between the ${fence} lines):\n${fence}\n${text}\n${fence}`;
+  });
   return [json, ...blocks].join('\n\n');
+}
+
+/**
+ * A backtick fence longer than any backtick run in `text` (at least three),
+ * so the server's text cannot close it early (S5). The block used to be
+ * indented instead, and models copied the indent into what they wrote
+ * back: Haiku rewrote todo.txt as `    - buy milk` in 4–7 episodes a round
+ * (v13–v16b), so a text field is now printed verbatim inside a fence.
+ */
+function fenceFor(text: string): string {
+  let longest = 0;
+  for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  return '`'.repeat(Math.max(3, longest + 1));
 }
 
 /**
