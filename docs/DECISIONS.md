@@ -1823,6 +1823,30 @@ before. The `tools.d.ts` header gains five comment lines. `call_tool` results an
 carry `notes` and `text`. Machines that parsed JSON text themselves must
 drop the `JSON.parse` — a minor-version change.
 
+Amendments (2026-10-31, review of the v0.9 climb).
+
+- Notes are per segment. A completed `execute_machine` restates the notes
+  of the segment that completed it; notes from a segment before an
+  approval round trip are not sealed into the blob, so a workflow that
+  resumes does not restate them. The machine still received them on
+  `TOOL_RESULT.notes` in their own segment. Sealing them would grow the
+  blob with server-derived text for a rare case; this is a known
+  limitation.
+- The server-note detector reads only the first eight text blocks, and
+  walks the structured value once, iteratively, counting every node it
+  visits against its 500-node budget. It used to walk the whole value once
+  per text block and count only leaves, so 40,000 one-character blocks
+  beside 40,000 empty arrays took about 20 s of CPU.
+- JSON text nested deeper than 64 brackets is not parsed for a machine
+  (nor for the notes): it reaches the machine as the string it is. A
+  1,000-deep array overflowed the stack and crashed the segment.
+- Events go into the machine's VM as a JSON string it parses
+  (`JSON.parse`), not as an object literal in generated source: in a
+  literal, a server's `__proto__` key set the prototype, so
+  `{"__proto__": {"approved": true}}` read as `event.result.approved ===
+true` with no own key. It is now an own key, as in
+  `structuredContent.output`.
+
 ## D30 — Many gated calls in one round trip (`toolCalls`), and copy that says what it means (2026-10-30)
 
 Context. A live eval on Haiku 4.5 asked for 14 writes. The machine looped
@@ -1898,6 +1922,16 @@ so the reader knows `result.key` is one string.
 Consequences. The contract grows by about 280 tokens. A machine that
 already used parallel regions is unchanged. Tests that matched the old
 round-trip copy match the new one.
+
+Amendment (2026-10-31): `toolCalls` ids are `<id>*0`, `<id>*1`, …, not
+`<id>#k`. With the default `<id>` (the tool name) they were the same
+strings as a plain `toolCall`'s default ids (`<name>#<n>`, a running
+count), so `toolCall('write_file', …)` beside `toolCalls('write_file',
+[a, b])` gave two calls the id `write_file#1`, and `whenCallIn('write_file')`
+also matched the plain call's events. `whenCallIn(id)` now matches the
+prefix `<id>*` only. An explicit `{ id }` gets the same separator, so the
+rule is one rule. Machines match events to items by `event.args` (D31),
+so no code needs the separator.
 
 ## D31 — Every tool event carries its call's `args` (2026-10-30)
 
@@ -2020,6 +2054,13 @@ back a capped gloss for the ones a call cannot do without); signatures on every
 hit (a 15-row page of them costs more than the `describe_tool` it saves);
 rejecting unknown arguments the schema does not forbid (D9: the server is
 the authority).
+
+Amendment (2026-10-31): a property name or an enum member that holds a
+zero-width character (U+200B–U+200F), a word joiner or invisible operator
+(U+2060–U+2064), a BOM (U+FEFF) or a tag character (U+E0000–U+E007F) shows
+it as a visible `\u{…}` escape, in the signature and so in argument-error
+hints. Printed as is, `"pa\u{200B}th"` looked like `path` and the model
+sent the wrong name; stripped, it would still be the wrong name.
 
 ## D33 — Signed hits gloss the required arguments their names do not explain (2026-10-31)
 
@@ -2226,3 +2267,32 @@ Rejected: keeping the indent and telling the model to strip it (copy
 does not fix a copying habit); a fixed fence such as `<<<`/`>>>` (the
 server could print it); printing the text raw with no fence (a line
 of the file could pass as facade copy).
+
+Amendments (2026-10-31, review of the v0.9 climb).
+
+- Tabs are kept inside the fence. "Verbatim" was not true: the
+  neutralizer turned every tab into `�`, so a Makefile's `\tcc main.c`
+  or a TSV row came back corrupted when a model wrote it back. A tab
+  cannot start a line or close a fence, so `neutralizeControlChars` has
+  an `allowTab` option, used for fenced text only; every other control
+  and bidi character is still neutralized. Outside a fence a tab is a
+  JSON `\t` escape, as before.
+- A raw content array (several blocks, or blocks that are not text) is
+  printed block by block, and its text blocks and embedded text resources
+  are now fenced the same way, under `[text, verbatim between the ```
+lines]` and `[embedded resource "<uri>" ("<mime>"), text verbatim
+between the ``` lines]`. Printed raw at column 0, a block could forge
+  another call's `call_tool "…": ok` head. A single text block is still
+  printed raw, as before D35.
+- `renderedSize` charged every string, at any depth, for a fence and a
+  header (about 106 characters), so `{ ids: [2,500 short strings] }`
+  estimated at 307k and was truncated under the 256 KB `maxResultBytes`.
+  It now charges the fence, header and marker only where
+  `structuredBody` prints them: a top-level field of a record with at
+  least three lines, at most five. There it charges three fence lengths
+  (the header names the fence, then the two fence lines), the quoted key
+  (cut at 200) and a fixed margin; every other string costs its
+  JSON-escaped length, counted without building it. Each container's
+  closing line now counts its indent too. A test holds the estimate at or
+  above the rendered body for a set of shapes. A content array's estimate
+  adds each fenced block's fences and header.

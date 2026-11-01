@@ -89,8 +89,9 @@ export function toolCall(name, args, options) {
  *
  *   entry: toolCalls('write_file', ({ context }) => context.paths.map((path) => ({ path })), { id: 'w' })
  *
- * Call k (0-based, in list order) gets the id '<id>#k', '<id>' defaulting
- * to the tool name; guard the waiting state with whenCallIn(id), and match
+ * Call k (0-based, in list order) gets the id '<id>*k', '<id>' defaulting
+ * to the tool name. The '*' keeps them apart from a plain toolCall's
+ * default ids ('<name>#<n>'). Guard the waiting state with whenCallIn(id), and match
  * each event to its item by event.args, not the id. An empty
  * list requests nothing, so no event will come: check the list before
  * entering the state (or leave it with an 'always' transition, as the
@@ -123,7 +124,7 @@ export function toolCalls(name, argsList, options) {
       if (typeof resolved !== 'object' || Array.isArray(resolved)) {
         throw new Error('toolCalls("' + name + '") item ' + i + ' must be a plain object');
       }
-      calls.push({ id: prefix + '#' + i, name: name, args: resolved });
+      calls.push({ id: prefix + '*' + i, name: name, args: resolved });
     }
     const queue = __projQueue();
     for (const call of calls) queue.push(call);
@@ -150,13 +151,14 @@ export function whenCall(id) {
 
 /**
  * Guard matching the events of every call one toolCalls(name, list, { id })
- * made: their callIds are '<id>#0', '<id>#1', … Each event's args are its
+ * made: their callIds are '<id>*0', '<id>*1', … — never a plain toolCall's
+ * default '<name>#<n>', so whenCallIn(name) leaves those alone. Each event's args are its
  * call's own arguments: match the item by those, not by the id.
  *
  *   on: { TOOL_RESULT: { guard: whenCallIn('w'), actions: 'seen' } }
  */
 export function whenCallIn(id) {
-  const prefix = String(id) + '#';
+  const prefix = String(id) + '*';
   return function projectionWhenCallIn(guardArgs) {
     const event = guardArgs && guardArgs.event;
     return Boolean(event) && typeof event.callId === 'string' && event.callId.startsWith(prefix);

@@ -84,7 +84,7 @@ export default setup({}).createMachine({
   unguarded region consumes another call's result.
 
   For one gated call per item, use `toolCalls(name, argsList, { id })`:
-  one action queues a call per item (ids `<id>#0`, `<id>#1`, …), so all
+  one action queues a call per item (ids `<id>*0`, `<id>*1`, …, apart from `toolCall`'s `name#N`), so all
   of them share one approval round trip, where a call per state costs one
   each and stops unfinished at `caps.maxRoundTrips` (8). Guard with
   `whenCallIn(id)`, match each answer to its item by `event.args` (not by

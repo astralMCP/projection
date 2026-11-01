@@ -194,11 +194,17 @@ export default drain();
 `;
 }
 
-/** Send host events into the running actor and return the drained state. */
+/**
+ * Send host events into the running actor and return the drained state.
+ * The events go in as a JSON string the VM parses, not as a literal: in an
+ * object literal a `__proto__` key sets the prototype, so a tool result
+ * holding one (server data) would reach the machine as inherited fields
+ * (`event.result.approved` true) instead of an own key.
+ */
 export function sendDriver(events: unknown[]): string {
   return `
 const g = globalThis.__projection;
-const events = ${JSON.stringify(events)};
+const events = JSON.parse(${JSON.stringify(JSON.stringify(events))});
 for (const event of events) {
   g.state.actor.send(event);
 }

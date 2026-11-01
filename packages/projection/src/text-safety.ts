@@ -28,17 +28,49 @@ const HOSTILE_INLINE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u20
 // prettier-ignore
 // eslint-disable-next-line no-control-regex
 const HOSTILE_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+// Same class minus `\n` and `\t`, for text printed verbatim inside a fence.
+// prettier-ignore
+// eslint-disable-next-line no-control-regex
+const HOSTILE_VERBATIM = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 
 /**
  * Replace control and bidi characters with the replacement character.
  * `allowNewline` keeps `\n` (for multi-line blocks whose formatting newlines
- * are part of the rendering, e.g. a pretty-printed JSON block).
+ * are part of the rendering, e.g. a pretty-printed JSON block); `allowTab`
+ * also keeps `\t`, for text printed verbatim between fences (D35), where a
+ * tab is the text's own (a Makefile recipe, a TSV row) and cannot start a
+ * line. `allowTab` takes effect only with `allowNewline`.
  */
 export function neutralizeControlChars(
   text: string,
-  options: { allowNewline?: boolean } = {},
+  options: { allowNewline?: boolean; allowTab?: boolean } = {},
 ): string {
-  return text.replace(options.allowNewline === true ? HOSTILE_BLOCK : HOSTILE_INLINE, '\ufffd');
+  const pattern =
+    options.allowNewline !== true
+      ? HOSTILE_INLINE
+      : options.allowTab === true
+        ? HOSTILE_VERBATIM
+        : HOSTILE_BLOCK;
+  return text.replace(pattern, '\ufffd');
+}
+
+// Invisible characters a name or a literal can hide behind: zero-width
+// space, joiners and directional marks (U+200B–U+200F), word joiner and
+// invisible operators (U+2060–U+2064), BOM (U+FEFF) and the tag block
+// (U+E0000–U+E007F).
+const INVISIBLE_IN_NAME = /[\u200b-\u200f\u2060-\u2064\ufeff\u{E0000}-\u{E007F}]/gu;
+
+/**
+ * Show the invisible characters of a schema name or literal as visible
+ * `\u{…}` escapes rather than stripping them: the model must send the
+ * name the server declared, so it has to see that it differs from the
+ * plain-looking one (S5).
+ */
+export function escapeInvisible(text: string): string {
+  return text.replace(
+    INVISIBLE_IN_NAME,
+    (ch) => `\\u{${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
+  );
 }
 
 // Characters a reader cannot see: Unicode format characters (`\p{Cf}`:

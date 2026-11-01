@@ -450,7 +450,8 @@ async function execute(
       ? 0
       : Math.max(
           Buffer.byteLength(json, 'utf8'),
-          renderedSize(result.result, caps.maxResultBytes + 1),
+          renderedSize(result.result, caps.maxResultBytes + 1) +
+            (result.rawContent === true ? contentFenceSize(result.result) : 0),
         );
   // R35.6: computed on the full result, so a preview carries them too.
   const notes = resultNotes({
@@ -598,19 +599,28 @@ function contentOutcome(value: CallToolOutcome, tool: string, blocks: unknown[])
     if (rendered.native !== undefined) native.push(rendered.native);
   }
   const head = okHead(tool, value.status === 'ok' ? value.notes : undefined);
-  const body = neutralizeControlChars(lines.join('\n\n'), { allowNewline: true });
+  const body = lines.join('\n\n');
   return {
     content: [{ type: 'text', text: `${head}\n\n${body}` }, ...native],
     structuredContent: { ...value },
   };
 }
 
+/**
+ * One content block as inert text (S5). A text block and an embedded text
+ * resource are printed verbatim inside a fence, like a text field (D35):
+ * printed raw at column 0, a block could forge a facade line such as
+ * another call's `call_tool "…": ok` head.
+ */
 function renderBlock(block: unknown): { text: string; native?: NativeBlock } {
-  if (!isRecord(block)) return { text: JSON.stringify(block) ?? 'null' };
+  if (!isRecord(block)) return { text: inertBlock(JSON.stringify(block) ?? 'null') };
   const mime = typeof block['mimeType'] === 'string' ? block['mimeType'] : 'unknown type';
   switch (block['type']) {
     case 'text':
-      if (typeof block['text'] === 'string') return { text: block['text'] };
+      if (typeof block['text'] === 'string')
+        return {
+          text: fenced(block['text'], (fence) => `[text, verbatim between the ${fence} lines]`),
+        };
       break;
     case 'image':
     case 'audio':
@@ -627,7 +637,10 @@ function renderBlock(block: unknown): { text: string; native?: NativeBlock } {
       const rmime = typeof resource['mimeType'] === 'string' ? resource['mimeType'] : undefined;
       const label = `[embedded resource ${inert(resource['uri'])}${rmime !== undefined ? ` (${inert(rmime)})` : ''}`;
       if (typeof resource['text'] === 'string') {
-        return { text: `${label}]\n${resource['text']}` };
+        const text = resource['text'];
+        return {
+          text: fenced(text, (fence) => `${label}, text verbatim between the ${fence} lines]`),
+        };
       }
       if (typeof resource['blob'] === 'string') {
         return {
@@ -653,7 +666,7 @@ function renderBlock(block: unknown): { text: string; native?: NativeBlock } {
       }
       break;
   }
-  return { text: JSON.stringify(block, null, 2) ?? 'null' };
+  return { text: inertBlock(JSON.stringify(block, null, 2) ?? 'null') };
 }
 
 function renderOutcome(value: CallToolOutcome): string {
@@ -672,10 +685,8 @@ function renderOutcome(value: CallToolOutcome): string {
         value.notes,
         value.truncated === true ? ' (result truncated)' : '',
       );
-      const body = neutralizeControlChars(
-        typeof value.output === 'string' ? value.output : structuredBody(value.output),
-        { allowNewline: true },
-      );
+      const body =
+        typeof value.output === 'string' ? inertBlock(value.output) : structuredBody(value.output);
       if (value.truncated === true) {
         return `${head}\n\n${body}\n\nThe call ran, but its result is ${value.outputBytes} bytes, over this server's result limit; the output above is the first ${RESULT_PREVIEW_CHARS} characters of its JSON. Retrying returns the same preview — work from it, or call the tool with arguments that return less.`;
       }
@@ -693,33 +704,137 @@ function renderOutcome(value: CallToolOutcome): string {
  * `value` (a string result is printed as-is), walked without recursion and
  * abandoned once it reaches `stopAt` — so a hostile deeply nested result is
  * measured, never pretty-printed, and costs at most `stopAt` steps.
+ *
+ * Every string costs its JSON-escaped length, except where `structuredBody`
+ * prints one fenced (D35): a top-level field of a record with at least
+ * {@link MIN_TEXT_FIELD_LINES} lines, the first {@link MAX_TEXT_FIELDS} of
+ * them. Only those pay for the fence, the header and the marker. Charging
+ * every string for a fence counted about 100 characters per short id and
+ * truncated ordinary results far under the limit.
  */
 export function renderedSize(value: unknown, stopAt: number): number {
   if (typeof value === 'string') return value.length;
   let size = 0;
-  const stack: [unknown, number][] = [[value, 0]];
+  const stack: [unknown, number][] = [];
+  if (isRecord(value)) {
+    // The top-level record: `{`, `}` and their newlines, then its fields in
+    // the order `structuredBody` reads them.
+    size += 4;
+    let texts = 0;
+    for (const key of Object.keys(value)) {
+      if (size >= stopAt) return size;
+      const field = value[key];
+      size += escapedLength(key, stopAt) + 2;
+      if (typeof field === 'string' && texts < MAX_TEXT_FIELDS && isTextField(field)) {
+        texts += 1;
+        // The marker on its line in the JSON, then the block: a header
+        // naming the fence and quoting the key (cut at 200), the fence
+        // above and below, and the text with its lines unchanged or shorter.
+        size +=
+          4 +
+          field.length +
+          3 * fenceFor(field).length +
+          escapedLength(key.slice(0, TEXT_FIELD_KEY_CHARS + 1), stopAt) +
+          TEXT_FIELD_MARGIN;
+      } else {
+        stack.push([field, 1]);
+      }
+    }
+  } else {
+    stack.push([value, 0]);
+  }
   while (stack.length > 0 && size < stopAt) {
     const [item, depth] = stack.pop() as [unknown, number];
     // A line of its own: indent, then the trailing comma and newline.
     size += 2 * depth + 2;
     if (Array.isArray(item)) {
-      size += 2;
+      // The brackets, and the closing one's own indented line.
+      size += 2 * depth + 4;
       for (const element of item) stack.push([element, depth + 1]);
     } else if (isRecord(item)) {
-      size += 2;
+      size += 2 * depth + 4;
       for (const [key, field] of Object.entries(item)) {
-        size += key.length + 4;
+        size += escapedLength(key, stopAt) + 2;
         stack.push([field, depth + 1]);
       }
     } else if (typeof item === 'string') {
-      // Escaped as a JSON string, or printed fenced when long enough: the
-      // text, a header and two fences one longer than its longest backtick run.
-      const breaks = item.match(/[\r\n]/g)?.length ?? 0;
-      const fence = fenceFor(item).length;
-      size += item.length + 2 + Math.max(breaks, 100 + 2 * fence);
+      size += escapedLength(item, stopAt);
     } else {
-      size += String(item).length;
+      // `NaN` and `Infinity` print as `null`.
+      size += Math.max(4, String(item).length);
     }
+  }
+  return size;
+}
+
+/** Longest key a text field's header quotes (`capLength` adds the ellipsis). */
+const TEXT_FIELD_KEY_CHARS = 200;
+/**
+ * A text field's fixed copy: the JSON marker (`[string: N lines, shown as
+ * text below]`, quoted) and the block's header (`(string, N lines,
+ * verbatim between the  lines):`), the line counts, the separators and
+ * newlines. About 100 characters; charged generously.
+ */
+const TEXT_FIELD_MARGIN = 160;
+
+/**
+ * The length of `text` as a JSON string, quotes included, counted without
+ * building it; once it reaches `stopAt` the rest is counted unescaped.
+ */
+function escapedLength(text: string, stopAt: number): number {
+  let length = text.length + 2;
+  if (length >= stopAt) return length;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x0c) length += 1;
+    else if (code === 0x0a || code === 0x0d || code === 0x09) length += 1;
+    else if (code < 0x20) length += 5;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      // A pair passes through; a lone surrogate is escaped as `\udXXX`.
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) i += 1;
+      else length += 5;
+    } else if (code >= 0xdc00 && code <= 0xdfff) length += 5;
+    if (length >= stopAt) return length;
+  }
+  return length;
+}
+
+/**
+ * Whether `structuredBody` would print `text` as a text field: at least
+ * {@link MIN_TEXT_FIELD_LINES} lines, where `\r\n`, `\r` and `\n` each
+ * end one. Stops counting there.
+ */
+function isTextField(text: string): boolean {
+  let lines = 1;
+  for (let i = 0; i < text.length && lines < MIN_TEXT_FIELD_LINES; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x0a) lines += 1;
+    else if (code === 0x0d) {
+      lines += 1;
+      if (text.charCodeAt(i + 1) === 0x0a) i += 1;
+    }
+  }
+  return lines >= MIN_TEXT_FIELD_LINES;
+}
+
+/**
+ * What {@link contentOutcome} prints beyond a content array's JSON: the
+ * fences and the header of each text block and embedded text resource.
+ */
+function contentFenceSize(blocks: unknown): number {
+  if (!Array.isArray(blocks)) return 0;
+  let size = 0;
+  for (const block of blocks) {
+    if (!isRecord(block)) continue;
+    const resource = block['resource'];
+    const text =
+      block['type'] === 'text'
+        ? block['text']
+        : block['type'] === 'resource' && isRecord(resource)
+          ? resource['text']
+          : undefined;
+    if (typeof text === 'string') size += 3 * fenceFor(text).length + TEXT_FIELD_MARGIN;
   }
   return size;
 }
@@ -741,7 +856,7 @@ const MAX_TEXT_FIELDS = 5;
  * verbatim, and the caller neutralizes the whole body (S5).
  */
 function structuredBody(output: unknown): string {
-  if (!isRecord(output)) return JSON.stringify(output, null, 2) ?? 'null';
+  if (!isRecord(output)) return inertBlock(JSON.stringify(output, null, 2) ?? 'null');
   const texts: [string, string[]][] = [];
   const shown: [string, unknown][] = [];
   for (const key of Object.keys(output)) {
@@ -756,14 +871,34 @@ function structuredBody(output: unknown): string {
   }
   // `Object.fromEntries` defines each key as an own property: keys are
   // server data, and `__proto__` must stay a key, not a prototype.
-  const json = JSON.stringify(Object.fromEntries(shown), null, 2) ?? 'null';
+  const json = inertBlock(JSON.stringify(Object.fromEntries(shown), null, 2) ?? 'null');
   if (texts.length === 0) return json;
-  const blocks = texts.map(([key, lines]) => {
-    const text = lines.join('\n');
-    const fence = fenceFor(text);
-    return `${JSON.stringify(capLength(key, 200))} (string, ${lines.length} lines, verbatim between the ${fence} lines):\n${fence}\n${text}\n${fence}`;
-  });
+  const blocks = texts.map(([key, lines]) =>
+    fenced(
+      lines.join('\n'),
+      (fence) =>
+        `${inertBlock(JSON.stringify(capLength(key, TEXT_FIELD_KEY_CHARS)))} (string, ${lines.length} lines, verbatim between the ${fence} lines):`,
+    ),
+  );
   return [json, ...blocks].join('\n\n');
+}
+
+/** Server text as one inert block: newlines kept, other control and bidi characters neutralized (S5). */
+function inertBlock(text: string): string {
+  return neutralizeControlChars(text, { allowNewline: true });
+}
+
+/**
+ * Server text printed verbatim between two backtick fences it cannot close,
+ * under a header that names the fence (`header(fence)`, facade copy with
+ * any server value in it already inert). Tabs are kept with the newlines —
+ * the text is the server's own, and a model writes it back (D35) — and
+ * every other control or bidi character is neutralized (S5).
+ */
+function fenced(text: string, header: (fence: string) => string): string {
+  const fence = fenceFor(text);
+  const body = neutralizeControlChars(text, { allowNewline: true, allowTab: true });
+  return `${header(fence)}\n${fence}\n${body}\n${fence}`;
 }
 
 /**

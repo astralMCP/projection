@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_PARSE_DEPTH,
   MAX_SERVER_NOTE_CHARS,
   parseJsonContainer,
   resultNotes,
@@ -212,6 +213,37 @@ describe('serverNoteText — mirror or note', () => {
   });
 });
 
+/** `k` text blocks too long to be a note, then a note. */
+const blocks = (k: number) => [
+  ...Array.from({ length: k }, () => ({
+    type: 'text',
+    text: 'x'.repeat(MAX_SERVER_NOTE_CHARS + 1),
+  })),
+  { type: 'text', text: 'Warning: stale index.' },
+];
+
+/** Brackets nested `d` deep. */
+const nest = (d: number): string => '['.repeat(d) + ']'.repeat(d);
+
+describe('serverNoteText — cost', () => {
+  it('stays linear on many text blocks beside a value of many empty arrays', () => {
+    // The structured value was walked once per text block, and only leaves
+    // counted against the budget: 40,000 blocks beside 40,000 empty arrays
+    // took about 20 s.
+    const n = 40_000;
+    const content = Array.from({ length: n }, () => ({ type: 'text', text: 'x' }));
+    const structured = { a: Array.from({ length: n }, () => []) };
+    const start = performance.now();
+    serverNoteText(content, structured);
+    expect(performance.now() - start).toBeLessThan(250);
+  });
+
+  it('reads a note from the first eight text blocks only', () => {
+    expect(serverNoteText(blocks(7), { a: 'zzz' })).toBe('Warning: stale index.');
+    expect(serverNoteText(blocks(8), { a: 'zzz' })).toBe(undefined);
+  });
+});
+
 describe('parseJsonContainer', () => {
   it('parses objects and arrays only', () => {
     expect(parseJsonContainer(' {"a":1} ')).toEqual({ value: { a: 1 } });
@@ -219,5 +251,13 @@ describe('parseJsonContainer', () => {
     expect(parseJsonContainer('"s"')).toBeUndefined();
     expect(parseJsonContainer('42')).toBeUndefined();
     expect(parseJsonContainer('{nope')).toBeUndefined();
+  });
+
+  it('leaves JSON nested deeper than MAX_PARSE_DEPTH unparsed, counting no bracket inside a string', () => {
+    expect(parseJsonContainer(nest(MAX_PARSE_DEPTH))).toBeDefined();
+    expect(parseJsonContainer(nest(MAX_PARSE_DEPTH + 1))).toBeUndefined();
+    expect(parseJsonContainer(nest(1_000))).toBeUndefined();
+    const brackets = JSON.stringify({ s: '['.repeat(500) + '\\"{' });
+    expect(parseJsonContainer(brackets)).toEqual({ value: { s: '['.repeat(500) + '\\"{' } });
   });
 });

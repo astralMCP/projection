@@ -23,7 +23,12 @@
  * line: nothing a server writes can open a line of its own.
  */
 
-import { capLength, neutralizeControlChars, stripInvisible } from '../text-safety.js';
+import {
+  capLength,
+  escapeInvisible,
+  neutralizeControlChars,
+  stripInvisible,
+} from '../text-safety.js';
 import { isRecord } from '../types.js';
 import { safeDefault, sanitizeSchema } from './schema-safety.js';
 
@@ -166,7 +171,8 @@ export function callSignature(
 function renderName(name: string): string | undefined {
   if (name.length > MAX_NAME_CHARS) return undefined;
   if (IDENTIFIER.test(name)) return name;
-  return neutralizeControlChars(JSON.stringify(name));
+  // Invisible characters are shown, not dropped: the model must send them.
+  return neutralizeControlChars(escapeInvisible(JSON.stringify(name)));
 }
 
 /** One (sanitized) property schema's type, compactly. */
@@ -234,7 +240,7 @@ function renderLiterals(values: unknown[], state: Partiality): string {
     if (typeof value === 'string') {
       // A cut member is not a value the server accepts: say so.
       if (value.length > MAX_LITERAL_CHARS) state.cut = true;
-      shown.push(JSON.stringify(capLength(value, MAX_LITERAL_CHARS)));
+      shown.push(escapeInvisible(JSON.stringify(capLength(value, MAX_LITERAL_CHARS))));
     } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
       shown.push(JSON.stringify(value));
     } else {

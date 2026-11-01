@@ -169,6 +169,27 @@ describe('callSignature (D32)', () => {
     expect(signature).toMatchObject({ complete: false, callable: false });
   });
 
+  it('shows invisible and tag characters in names and enum members as \\u{…} escapes, not stripped (S5)', () => {
+    const ZWSP = String.fromCharCode(0x200b);
+    const BOM = String.fromCharCode(0xfeff);
+    const TAG_A = String.fromCodePoint(0xe0041);
+    const signature = callSignature({
+      type: 'object',
+      properties: {
+        [`pa${ZWSP}th`]: { type: 'string' },
+        [`q${TAG_A}`]: { type: 'string' },
+        mode: { enum: [`fast${String.fromCharCode(0x2060)}`, `${BOM}slow`, 'safe'] },
+      },
+      required: [`pa${ZWSP}th`],
+    });
+    expect(signature.text).toBe(
+      '{"pa\\u{200B}th": string, "q\\u{E0041}"?: string, mode?: "fast\\u{2060}"|"\\u{FEFF}slow"|"safe"}',
+    );
+    expect(signature.text).not.toMatch(/[\u200b-\u200f\u2060-\u2064\ufeff]|[\u{E0000}-\u{E007F}]/u);
+    // Error hints quote the same line.
+    expect(signatureLine(signature)).toContain('\\u{200B}');
+  });
+
   it('shows only the defaults the sanitizer keeps (D29)', () => {
     const signature = callSignature({
       type: 'object',

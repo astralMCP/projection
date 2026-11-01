@@ -332,7 +332,9 @@ describe('single facade, 2026-07-28 client', () => {
     expect(text).not.toContain(PNG_BASE64);
     // Text and embedded text resources read as text, under their URI.
     expect(text).toContain('caption');
-    expect(text).toContain('[embedded resource "everything://readme" ("text/plain")]\nREADME body');
+    expect(text).toContain(
+      '[embedded resource "everything://readme" ("text/plain"), text verbatim between the ``` lines]\n```\nREADME body\n```',
+    );
     // A resource_link is described, not passed on: the facade cannot serve it.
     expect(text).toContain('not readable through this facade');
     expect(native.some((block) => block.type === 'resource_link')).toBe(false);

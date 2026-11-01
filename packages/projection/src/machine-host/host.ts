@@ -772,7 +772,7 @@ class SegmentRunner {
           'validate',
           `two tool calls in flight share the id ${JSON.stringify(neutralizeControlChars(capLength(call.id, 200)))}`,
           {
-            hint: "Give each toolCall that can be waiting at the same time its own id; toolCalls(name, list, { id }) uses '<id>#0', '<id>#1', …",
+            hint: "Give each toolCall that can be waiting at the same time its own id; toolCalls(name, list, { id }) uses '<id>*0', '<id>*1', …",
           },
         );
       }

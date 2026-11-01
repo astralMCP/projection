@@ -87,10 +87,10 @@ describe('toolCalls: many gated calls in one round trip', () => {
     );
     expect(isSuspended(first)).toBe(true);
     expect(requestKeys(first).toSorted()).toEqual(
-      Array.from({ length: 14 }, (_, i) => `w#${i}`).toSorted(),
+      Array.from({ length: 14 }, (_, i) => `w*${i}`).toSorted(),
     );
     expect(executor.calls).toEqual([]);
-    expect(elicitation(first, 'w#13').message).toContain('"path": "/f13"');
+    expect(elicitation(first, 'w*13').message).toContain('"path": "/f13"');
     const payload = openBlob(sealedState(first), {
       expectedKind: 'machine',
       code: FAN_OUT,
@@ -99,7 +99,7 @@ describe('toolCalls: many gated calls in one round trip', () => {
       domain: 'single',
     });
     expect(payload.trip).toBe(1);
-    expect(payload.pending['w#5']).toMatchObject({
+    expect(payload.pending['w*5']).toMatchObject({
       name: 'write_file',
       args: { path: '/f5', content: 'hello' },
     });
@@ -110,9 +110,9 @@ describe('toolCalls: many gated calls in one round trip', () => {
     const first = await executeMachine({ code: FAN_OUT, input: { paths: paths(14) } }, d);
     const responses: Record<string, unknown> = {};
     for (let i = 0; i < 14; i += 1) {
-      // Approve the even items; decline the odd ones (w#13 is left unanswered).
+      // Approve the even items; decline the odd ones (w*13 is left unanswered).
       if (i === 13) continue;
-      responses[`w#${i}`] = i % 2 === 0 ? ACCEPT : decline('not that one');
+      responses[`w*${i}`] = i % 2 === 0 ? ACCEPT : decline('not that one');
     }
     const { result, executor } = await resumeWith(FAN_OUT, first, responses, d);
     const out = structured(result)['output'] as Record<string, unknown>;
@@ -127,13 +127,13 @@ describe('toolCalls: many gated calls in one round trip', () => {
     );
     const audit = structured(result)['approvals'] as AuditEntry[];
     expect(audit.filter((e) => e.decision === 'approved').map((e) => e.callId)).toEqual(
-      even.map((_, k) => `w#${2 * k}`),
+      even.map((_, k) => `w*${2 * k}`),
     );
-    expect(audit.find((e) => e.callId === 'w#1')).toMatchObject({
+    expect(audit.find((e) => e.callId === 'w*1')).toMatchObject({
       decision: 'declined',
       reason: 'not that one',
     });
-    expect(audit.find((e) => e.callId === 'w#13')).toMatchObject({ decision: 'declined' });
+    expect(audit.find((e) => e.callId === 'w*13')).toMatchObject({ decision: 'declined' });
   });
 
   it('with batched prompts, puts up to 10 calls in one prompt, approve_k in id order', async () => {
@@ -142,7 +142,7 @@ describe('toolCalls: many gated calls in one round trip', () => {
     expect(requestKeys(first)).toEqual([BATCH_KEY]);
     const { message } = elicitation(first, BATCH_KEY);
     expect(message.split('\n')[0]).toContain('Approve 10 actions?');
-    // Natural order: w#0 … w#9, so approve_1 is /f0 and approve_10 is /f9.
+    // Natural order: w*0 … w*9, so approve_1 is /f0 and approve_10 is /f9.
     expect(message.indexOf('"path": "/f9"')).toBeGreaterThan(message.indexOf('"path": "/f1"'));
     const { result, executor } = await resumeWith(
       FAN_OUT,
@@ -204,7 +204,7 @@ export default setup({
 `;
     const d = deps();
     const first = await executeMachine({ code }, d);
-    const second = await resumeWith(code, first, { 'w#0': ACCEPT, 'w#2': ACCEPT }, d);
+    const second = await resumeWith(code, first, { 'w*0': ACCEPT, 'w*2': ACCEPT }, d);
     expect(second.executor.calls.map((c) => c.args['path'])).toEqual(['/a', '/c']);
     expect(requestKeys(second.result)).toEqual(['clean']);
     const third = await resumeWith(code, second.result, { clean: ACCEPT }, d);
@@ -233,7 +233,7 @@ export default setup({}).createMachine({
 `;
     const executor = new FakeExecutor();
     const result = completed(await executeMachine({ code }, deps({ executor })));
-    expect(structured(result)['output']).toEqual(['read_file#0', 'read_file#1']);
+    expect(structured(result)['output']).toEqual(['read_file*0', 'read_file*1']);
     expect(executor.calls.map((c) => c.args['path'])).toEqual(['/x', '/y']);
   });
 });
@@ -271,8 +271,8 @@ export default setup({}).createMachine({
     });
     const result = completed(await executeMachine({ code }, deps({ executor })));
     expect(seen(result)).toEqual([
-      { type: 'TOOL_RESULT', callId: 'r#0', args: { path: '/x' } },
-      { type: 'TOOL_RESULT', callId: 'r#1', args: { path: '/y' } },
+      { type: 'TOOL_RESULT', callId: 'r*0', args: { path: '/x' } },
+      { type: 'TOOL_RESULT', callId: 'r*1', args: { path: '/y' } },
       { type: 'TOOL_ERROR', callId: 'l', args: { dir: '/' } },
     ]);
   });
@@ -294,19 +294,19 @@ export default setup({}).createMachine({
     const { result } = await resumeWith(
       code,
       first,
-      { 'w#0': ACCEPT, 'w#1': decline('no'), d: ACCEPT },
+      { 'w*0': ACCEPT, 'w*1': decline('no'), d: ACCEPT },
       deps({ policy: { delete_file: 'deny' } }),
     );
     expect(seen(result)).toEqual([
-      { type: 'TOOL_RESULT', callId: 'w#0', args: { path: '/a' } },
-      { type: 'TOOL_DENIED', callId: 'w#1', args: { path: '/b' } },
+      { type: 'TOOL_RESULT', callId: 'w*0', args: { path: '/a' } },
+      { type: 'TOOL_DENIED', callId: 'w*1', args: { path: '/b' } },
       { type: 'TOOL_DENIED', callId: 'd', args: { path: '/c' } },
     ]);
   });
 
   it('maps a fan-out by event.args when answers arrive out of list order', async () => {
-    // write_file#1 fails the structural check (R15a), so its TOOL_ERROR comes
-    // in the first segment; #0 and #2 answer only after the round trip.
+    // write_file*1 fails the structural check (R15a), so its TOOL_ERROR comes
+    // in the first segment; *0 and *2 answer only after the round trip.
     const catalog: ServerCatalog = {
       ...CATALOG,
       tools: CATALOG.tools.map((tool) =>
@@ -340,10 +340,10 @@ export default setup({}).createMachine({
 });
 `;
     const first = await executeMachine({ code }, d);
-    expect(requestKeys(first).toSorted()).toEqual(['w#0', 'w#2']);
-    const { result } = await resumeWith(code, first, { 'w#0': ACCEPT, 'w#2': decline() }, d);
+    expect(requestKeys(first).toSorted()).toEqual(['w*0', 'w*2']);
+    const { result } = await resumeWith(code, first, { 'w*0': ACCEPT, 'w*2': decline() }, d);
     expect(structured(result)['output']).toEqual({
-      order: ['w#1', 'w#0', 'w#2'],
+      order: ['w*1', 'w*0', 'w*2'],
       by: { A: 'TOOL_RESULT', B: 'TOOL_ERROR', C: 'TOOL_DENIED' },
     });
   });
@@ -390,11 +390,62 @@ export default setup({}).createMachine({
 
   it('refuses two gated calls in flight under one id rather than sealing one of them', async () => {
     const error = await errorOf(
-      `toolCalls('write_file', [{ path: '/a' }, { path: '/b' }]), toolCall('write_file', { path: '/c' }, { id: 'write_file#1' })`,
+      `toolCalls('write_file', [{ path: '/a' }, { path: '/b' }]), toolCall('write_file', { path: '/c' }, { id: 'write_file*1' })`,
     );
     expect(error.phase).toBe('validate');
-    expect(error.message).toBe('two tool calls in flight share the id "write_file#1"');
-    expect(error.hint).toContain("'<id>#0', '<id>#1'");
+    expect(error.message).toBe('two tool calls in flight share the id "write_file*1"');
+    expect(error.hint).toContain("'<id>*0', '<id>*1'");
+  });
+});
+
+describe("toolCalls ids stay apart from toolCall's defaults", () => {
+  it("default toolCalls ids ('<name>*k') never collide with a plain toolCall's ('<name>#n')", async () => {
+    // Before, the toolCall below took write_file#1, and so did the list's
+    // second item: a validate error, or one sealed entry for two calls.
+    const code = `
+import { setup } from 'xstate';
+import { toolCall, toolCalls } from '@astral-mcp/tools';
+export default setup({}).createMachine({
+  initial: 'go',
+  states: {
+    go: { entry: [toolCall('write_file', { path: '/c' }), toolCalls('write_file', [{ path: '/a' }, { path: '/b' }])], on: { TOOL_RESULT: 'done' } },
+    done: { type: 'final' },
+  },
+});
+`;
+    const first = await executeMachine({ code }, deps());
+    expect(isSuspended(first)).toBe(true);
+    expect(requestKeys(first).toSorted()).toEqual(['write_file#1', 'write_file*0', 'write_file*1']);
+  });
+
+  it("whenCallIn(name) matches the list's events, not a plain toolCall's of the same tool", async () => {
+    const code = `
+import { setup, assign } from 'xstate';
+import { toolCall, toolCalls, whenCallIn } from '@astral-mcp/tools';
+export default setup({}).createMachine({
+  context: { listed: [], other: [] },
+  initial: 'reading',
+  states: {
+    reading: {
+      entry: [toolCall('read_file', { path: '/p' }), toolCalls('read_file', [{ path: '/x' }, { path: '/y' }])],
+      always: { guard: ({ context }) => context.listed.length + context.other.length === 3, target: 'done' },
+      on: {
+        TOOL_RESULT: [
+          { guard: whenCallIn('read_file'), actions: assign({ listed: ({ context, event }) => [...context.listed, event.callId] }) },
+          { actions: assign({ other: ({ context, event }) => [...context.other, event.callId] }) },
+        ],
+      },
+    },
+    done: { type: 'final' },
+  },
+  output: ({ context }) => context,
+});
+`;
+    const result = completed(await executeMachine({ code }, deps()));
+    expect(structured(result)['output']).toEqual({
+      listed: ['read_file*0', 'read_file*1'],
+      other: ['read_file#1'],
+    });
   });
 });
 
