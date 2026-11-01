@@ -1,6 +1,6 @@
 {
   "flow": "multi-server",
-  "current_round": 17,
+  "current_round": 18,
   "reps": 3,
   "goal": {
     "target": "pass",
@@ -31,9 +31,9 @@
     }
   ],
   "best": {
-    "round": 17,
-    "variant": "v16b",
-    "note": "D34 shared args on box pages, on v15"
+    "round": 18,
+    "variant": "v17",
+    "note": "D35 fenced text on v16b"
   },
   "train_ids": [
     "cross-changelog-to-issue.haiku45.projection",
@@ -834,6 +834,21 @@
       "spend_usd": 7.05,
       "kept": true,
       "decision": "best: vs v15 mongo call errors 47->17, multi-hard haiku +2, sonnet cost -6%; haiku multi 100->96 of 102, most of it the indented-text copy bug (cross-email-to-todo x3) present since v13 -> fixed in v17 (D35)."
+    },
+    {
+      "round": 18,
+      "variant": "v17",
+      "change": "D35: multi-line text fields printed verbatim in a backtick fence, not indented",
+      "commit": "9882ed8",
+      "multi": "204/204",
+      "guard": "119/120",
+      "multiHard": {
+        "haiku45": "24/36 $0.0458",
+        "sonnetLow": "34/36 $0.0442"
+      },
+      "spend_usd": 7.15,
+      "kept": true,
+      "decision": "best: first 204/204 on multi; indented file writes 4-7 per round -> 0; multi-hard within noise of v16b (haiku -1, +8% cost, turns 10.3->11.6, the tier swings that much between rounds)."
     }
   ],
   "rebaseline": "v4",
@@ -909,5 +924,5 @@
     "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user",
     "2026-10-31: user raised the budget from $100 to $150 after v15 (rounds v13-bc 8.30 + v14 7.46 + v15 7.00 on top of 75.75). Basecamp build ($34), summit calibration ($68) and the v15 milestone ($13.37) are tracked outside this budget."
   ],
-  "cumulative_spend_usd": 112.33
+  "cumulative_spend_usd": 119.48
 }
