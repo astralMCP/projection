@@ -493,7 +493,7 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     expect(outcome(res)).toMatchObject({ truncated: true });
   });
 
-  it('estimates an upper bound of the rendered body (R12)', async () => {
+  it('estimates an upper bound of the rendered body, in UTF-8 bytes (R12)', async () => {
     const lone = String.fromCharCode(0xd800);
     let deep: unknown = ['x'];
     for (let i = 0; i < 40; i++) deep = [deep, { k: i }];
@@ -514,6 +514,9 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
       [{ text: 'a\nb\nc' }, 'x', 1, [[[[]]]]],
       { deep },
       'plain string\nwith lines',
+      { a: '\u0080'.repeat(3000) },
+      { body: `${'\u0085'.repeat(500)}\n漢字\n${'\u{1F600}'.repeat(20)}` },
+      { cjk: Array.from({ length: 30 }, () => ['漢字かな'.repeat(20)]) },
       Array.from({ length: 50 }, (_, i) => ({
         id: i,
         tags: ['t', String(i)],
@@ -528,7 +531,7 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
       const res = completed(await callTool({ name: 'read_file', args: { path: '/v' } }, d));
       const text = (res.content[0] as { text: string }).text;
       const body = text.slice('call_tool "read_file": ok\n\n'.length);
-      expect(renderedSize(value, Infinity)).toBeGreaterThanOrEqual(body.length);
+      expect(renderedSize(value, Infinity)).toBeGreaterThanOrEqual(Buffer.byteLength(body));
     }
   });
 

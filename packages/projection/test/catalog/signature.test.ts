@@ -169,7 +169,7 @@ describe('callSignature (D32)', () => {
     expect(signature).toMatchObject({ complete: false, callable: false });
   });
 
-  it('shows invisible and tag characters in names and enum members as \\u{…} escapes, not stripped (S5)', () => {
+  it('shows invisible and tag characters in names and enum members as JSON \\uXXXX escapes, not stripped (S5)', () => {
     const ZWSP = String.fromCharCode(0x200b);
     const BOM = String.fromCharCode(0xfeff);
     const TAG_A = String.fromCodePoint(0xe0041);
@@ -183,11 +183,14 @@ describe('callSignature (D32)', () => {
       required: [`pa${ZWSP}th`],
     });
     expect(signature.text).toBe(
-      '{"pa\\u{200B}th": string, "q\\u{E0041}"?: string, mode?: "fast\\u{2060}"|"\\u{FEFF}slow"|"safe"}',
+      '{"pa\\u200Bth": string, "q\\uDB40\\uDC41"?: string, mode?: "fast\\u2060"|"\\uFEFFslow"|"safe"}',
     );
     expect(signature.text).not.toMatch(/[\u200b-\u200f\u2060-\u2064\ufeff]|[\u{E0000}-\u{E007F}]/u);
     // Error hints quote the same line.
-    expect(signatureLine(signature)).toContain('\\u{200B}');
+    expect(signatureLine(signature)).toContain('\\u200B');
+    // Copied into JSON arguments, the escapes decode to the server's own names.
+    expect(JSON.parse('"pa\\u200Bth"')).toBe(`pa${ZWSP}th`);
+    expect(JSON.parse('"q\\uDB40\\uDC41"')).toBe(`q${TAG_A}`);
   });
 
   it('shows only the defaults the sanitizer keeps (D29)', () => {

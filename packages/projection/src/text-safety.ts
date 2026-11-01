@@ -62,14 +62,20 @@ const INVISIBLE_IN_NAME = /[\u200b-\u200f\u2060-\u2064\ufeff\u{E0000}-\u{E007F}]
 
 /**
  * Show the invisible characters of a schema name or literal as visible
- * `\u{…}` escapes rather than stripping them: the model must send the
+ * JSON `\uXXXX` escapes rather than stripping them: the model must send the
  * name the server declared, so it has to see that it differs from the
  * plain-looking one (S5).
  */
 export function escapeInvisible(text: string): string {
   return text.replace(
     INVISIBLE_IN_NAME,
-    (ch) => `\\u{${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
+    // JSON escapes (a surrogate pair for a tag character), so a name the
+    // model copies into its arguments decodes to the server's own name.
+    (ch) =>
+      Array.from(
+        { length: ch.length },
+        (_, i) => `\\u${ch.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0')}`,
+      ).join(''),
   );
 }
 

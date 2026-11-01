@@ -151,7 +151,8 @@ export function whenCall(id) {
 
 /**
  * Guard matching the events of every call one toolCalls(name, list, { id })
- * made: their callIds are '<id>*0', '<id>*1', … — never a plain toolCall's
+ * made: their callIds are '<id>*0', '<id>*1', … (the index only, so 'a' does
+ * not match the list 'a*b') — never a plain toolCall's
  * default '<name>#<n>', so whenCallIn(name) leaves those alone. Each event's args are its
  * call's own arguments: match the item by those, not by the id.
  *
@@ -161,7 +162,12 @@ export function whenCallIn(id) {
   const prefix = String(id) + '*';
   return function projectionWhenCallIn(guardArgs) {
     const event = guardArgs && guardArgs.event;
-    return Boolean(event) && typeof event.callId === 'string' && event.callId.startsWith(prefix);
+    return (
+      Boolean(event) &&
+      typeof event.callId === 'string' &&
+      event.callId.startsWith(prefix) &&
+      /^[0-9]+$/.test(event.callId.slice(prefix.length))
+    );
   };
 }
 `;

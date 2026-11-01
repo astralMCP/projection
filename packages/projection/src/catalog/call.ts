@@ -732,7 +732,7 @@ export function renderedSize(value: unknown, stopAt: number): number {
         // above and below, and the text with its lines unchanged or shorter.
         size +=
           4 +
-          field.length +
+          escapedLength(field, stopAt) +
           3 * fenceFor(field).length +
           escapedLength(key.slice(0, TEXT_FIELD_KEY_CHARS + 1), stopAt) +
           TEXT_FIELD_MARGIN;
@@ -778,8 +778,11 @@ const TEXT_FIELD_KEY_CHARS = 200;
 const TEXT_FIELD_MARGIN = 160;
 
 /**
- * The length of `text` as a JSON string, quotes included, counted without
- * building it; once it reaches `stopAt` the rest is counted unescaped.
+ * An upper bound, in UTF-8 bytes, of `text` as a JSON string, quotes
+ * included, counted without building it; once it reaches `stopAt` the rest
+ * is not walked. `maxResultBytes` is a byte cap, so a character past ASCII
+ * counts its bytes: 3 for any BMP one (a C1 control the neutralizer turns
+ * into U+FFFD grows from 2 to 3), 4 for a surrogate pair.
  */
 function escapedLength(text: string, stopAt: number): number {
   let length = text.length + 2;
@@ -790,11 +793,14 @@ function escapedLength(text: string, stopAt: number): number {
     else if (code === 0x0a || code === 0x0d || code === 0x09) length += 1;
     else if (code < 0x20) length += 5;
     else if (code >= 0xd800 && code <= 0xdbff) {
-      // A pair passes through; a lone surrogate is escaped as `\udXXX`.
+      // A pair passes through as 4 bytes; a lone surrogate is escaped as `\udXXX`.
       const next = text.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) i += 1;
-      else length += 5;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i += 1;
+        length += 2;
+      } else length += 5;
     } else if (code >= 0xdc00 && code <= 0xdfff) length += 5;
+    else if (code >= 0x80) length += 2;
     if (length >= stopAt) return length;
   }
   return length;
@@ -834,7 +840,15 @@ function contentFenceSize(blocks: unknown): number {
         : block['type'] === 'resource' && isRecord(resource)
           ? resource['text']
           : undefined;
-    if (typeof text === 'string') size += 3 * fenceFor(text).length + TEXT_FIELD_MARGIN;
+    if (typeof text !== 'string') continue;
+    // The JSON already holds the text; a C1 control it carries as 2 bytes
+    // is printed as U+FFFD, 3 bytes.
+    let c1 = 0;
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code >= 0x80 && code <= 0x9f) c1 += 1;
+    }
+    size += 3 * fenceFor(text).length + TEXT_FIELD_MARGIN + c1;
   }
   return size;
 }

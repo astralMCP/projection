@@ -418,7 +418,7 @@ export default setup({}).createMachine({
     expect(requestKeys(first).toSorted()).toEqual(['write_file#1', 'write_file*0', 'write_file*1']);
   });
 
-  it("whenCallIn(name) matches the list's events, not a plain toolCall's of the same tool", async () => {
+  it("whenCallIn(name) matches the list's events, not a plain toolCall's or another list's whose id starts with it", async () => {
     const code = `
 import { setup, assign } from 'xstate';
 import { toolCall, toolCalls, whenCallIn } from '@astral-mcp/tools';
@@ -427,8 +427,12 @@ export default setup({}).createMachine({
   initial: 'reading',
   states: {
     reading: {
-      entry: [toolCall('read_file', { path: '/p' }), toolCalls('read_file', [{ path: '/x' }, { path: '/y' }])],
-      always: { guard: ({ context }) => context.listed.length + context.other.length === 3, target: 'done' },
+      entry: [
+        toolCall('read_file', { path: '/p' }),
+        toolCalls('read_file', [{ path: '/x' }, { path: '/y' }]),
+        toolCalls('read_file', [{ path: '/z' }], { id: 'read_file*b' }),
+      ],
+      always: { guard: ({ context }) => context.listed.length + context.other.length === 4, target: 'done' },
       on: {
         TOOL_RESULT: [
           { guard: whenCallIn('read_file'), actions: assign({ listed: ({ context, event }) => [...context.listed, event.callId] }) },
@@ -444,7 +448,7 @@ export default setup({}).createMachine({
     const result = completed(await executeMachine({ code }, deps()));
     expect(structured(result)['output']).toEqual({
       listed: ['read_file*0', 'read_file*1'],
-      other: ['read_file#1'],
+      other: ['read_file#1', 'read_file*b*0'],
     });
   });
 });

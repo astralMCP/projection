@@ -2058,8 +2058,8 @@ the authority).
 Amendment (2026-10-31): a property name or an enum member that holds a
 zero-width character (U+200B–U+200F), a word joiner or invisible operator
 (U+2060–U+2064), a BOM (U+FEFF) or a tag character (U+E0000–U+E007F) shows
-it as a visible `\u{…}` escape, in the signature and so in argument-error
-hints. Printed as is, `"pa\u{200B}th"` looked like `path` and the model
+it as a visible JSON `\uXXXX` escape (a surrogate pair for a tag character, so a name copied into arguments decodes to the server's own), in the signature and so in argument-error
+hints. Printed as is, `"pa\u200Bth"` looked like `path` and the model
 sent the wrong name; stripped, it would still be the wrong name.
 
 ## D33 — Signed hits gloss the required arguments their names do not explain (2026-10-31)
