@@ -16,6 +16,9 @@ import {
 } from '../../src/catalog/box-guidance.js';
 import type { ToolBox } from '../../src/catalog/boxes.js';
 import { wrapMcpServers, type MultiProjectionFacade } from '../../src/index.js';
+import { buildBoxedCatalog } from '../../src/catalog/boxes.js';
+import { buildMultiInstructions } from '../../src/multi/facade.js';
+import type { ServerCatalog, ToolCatalogEntry } from '../../src/types.js';
 import { structured } from '../mrtr/helpers.js';
 import {
   fsServer,
@@ -235,12 +238,15 @@ describe('overview truncation (R43)', () => {
 describe('search-tool phrase for a single box (R43)', () => {
   it('names search_fs directly', async () => {
     const log: RecordedCall[] = [];
-    facade = await wrapMcpServers({ fs: fsServer(log) }, { blob: { key: KEY } });
+    facade = await wrapMcpServers(
+      { fs: fsServer(log) },
+      { blob: { key: KEY }, projections: { direct: false } },
+    );
     const hint = structured(facade.describeTool({ name: 'nope' }))['hint'];
     expect(hint).toContain('Call search_tools (every box) or search_fs to list');
     const off = await wrapMcpServers(
       { fs: fsServer(log) },
-      { blob: { key: KEY }, catalog: { globalSearch: false } },
+      { blob: { key: KEY }, catalog: { globalSearch: false }, projections: { direct: false } },
     );
     try {
       expect(structured(off.describeTool({ name: 'nope' }))['hint']).toContain(
@@ -250,5 +256,37 @@ describe('search-tool phrase for a single box (R43)', () => {
     } finally {
       await off.close();
     }
+  });
+});
+
+const required = (name: string, args: string[]): ToolCatalogEntry => ({
+  name,
+  description: `${name} things.`,
+  inputSchema: {
+    type: 'object',
+    properties: Object.fromEntries(
+      args.map((arg) => [arg, { type: 'string', description: 'Use "preconfigured".' }]),
+    ),
+    required: args,
+  },
+});
+const catalog = (identity: string, tools: ToolCatalogEntry[]): ServerCatalog => ({
+  alias: 'default',
+  identity,
+  tools,
+});
+
+describe('the shelf leaves shared arguments to the search pages (D34)', () => {
+  const db = catalog('db@1.0.0', [
+    required('find', ['connectionId', 'database']),
+    required('count', ['connectionId', 'database']),
+    required('db-stats', ['connectionId', 'database']),
+  ]);
+
+  it('names no shared arguments under a box', () => {
+    const view = buildBoxedCatalog([{ alias: 'db', catalog: db }]);
+    const instructions = buildMultiInstructions(view, { codeMode: false, catalog: true });
+    expect(instructions).toContain('- db (3 tools)');
+    expect(instructions).not.toContain('shared args');
   });
 });

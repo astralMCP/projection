@@ -11,11 +11,18 @@ import {
   FILESYSTEM_TASKS,
   HARD_TASKS,
   MONGODB_TASKS,
+  MULTI_HARD_TASKS,
+  WORKPLACE_TASKS,
+  SUMMIT_TASKS,
+  HITL_TASKS,
+  SUMMIT_LOCAL_TASKS,
+  MESSY_TASKS,
   MULTI_TASKS,
   promptFor,
   resolveTasks,
   resolveTiers,
   TOOL_CHOICE_TASKS,
+  worldOf,
   type EvalTask,
   type SideEffect,
 } from '../../src/index.js';
@@ -138,6 +145,7 @@ const GOLDEN: Record<string, SideEffect[]> = {
   'branch-from-latest-release-branch': [
     { tool: 'list_branches', args: { ...ACME } },
     { tool: 'list_branches', args: { ...ACME, page: 2 } },
+    { tool: 'list_branches', args: { ...ACME, page: 3 } },
     {
       tool: 'create_branch',
       args: { ...ACME, branch: 'release/1.4', from_branch: 'release/1.3' },
@@ -245,7 +253,7 @@ const WRONG: Record<string, SideEffect[]> = {
     { tool: 'list_issues', args: { ...ACME, labels: ['bug'] } },
     { tool: 'add_issue_comment', args: { ...ACME, issue_number: 30, body: 'Taking a look' } },
   ],
-  // Never saw page 2: guessed release/1.3 from nothing.
+  // Never saw page 3: guessed release/1.3 from nothing.
   'branch-from-latest-release-branch': [
     { tool: 'list_branches', args: { ...ACME } },
     {
@@ -310,6 +318,12 @@ describe('tool-choice tasks', () => {
       ...FILESYSTEM_TASKS,
       ...MONGODB_TASKS,
       ...MULTI_TASKS,
+      ...MULTI_HARD_TASKS,
+      ...WORKPLACE_TASKS,
+      ...HITL_TASKS,
+      ...SUMMIT_LOCAL_TASKS,
+      ...SUMMIT_TASKS,
+      ...MESSY_TASKS,
     ]);
     expect(Object.keys(GOLDEN).toSorted()).toEqual(GITHUB_TASKS.map((t) => t.name).toSorted());
     expect(BASIC_TASKS).toHaveLength(15);
@@ -328,9 +342,9 @@ describe('tool-choice tasks', () => {
       const toolNames = new Set(
         TOOL_CHOICE_TASKS.filter((o) => o.tier === t.tier)
           .flatMap((o) => o.steps.flat())
-          .map((name) => (t.tier === 'multi' ? name.replace(/^[a-z]+\./, '') : name)),
+          .map((name) => (worldOf(t.tier) === 'multi' ? name.replace(/^[a-z]+\./, '') : name)),
       );
-      if (t.tier === 'multi') {
+      if (worldOf(t.tier) === 'multi') {
         // Every box's tools, not only the ones some step names.
         for (const name of ['find', 'count', 'aggregate', 'explain', 'search_files']) {
           toolNames.add(name);
@@ -368,7 +382,7 @@ describe('tool-choice tasks', () => {
     });
   }
 
-  it('list-open-prs: a defaulted state or an open-PR search counts, closed/all do not', () => {
+  it('list-open-prs: a defaulted, open or all state or an open-PR search counts, closed does not', () => {
     const t = task('list-open-prs');
     const list = (args: Record<string, unknown>): SideEffect[] => [
       { tool: 'list_pull_requests', args },
@@ -379,7 +393,8 @@ describe('tool-choice tasks', () => {
     expect(t.expect(list({ ...REPO }))).toBe(true);
     expect(t.expect(list({ ...REPO, state: 'OPEN' }))).toBe(true);
     expect(t.expect(list({ ...REPO, state: 'closed' }))).toBe(false);
-    expect(t.expect(list({ ...REPO, state: 'all' }))).toBe(false);
+    // `all` lists the open PRs too: a correct path (the grader accepts every one).
+    expect(t.expect(list({ ...REPO, state: 'all' }))).toBe(true);
     expect(t.expect(list({ owner: 'someone', repo: 'else' }))).toBe(false);
     expect(t.expect(search({ query: 'repo:modelcontextprotocol/servers is:open' }))).toBe(true);
     expect(t.expect(search({ query: 'is:pr state:open repo:ModelContextProtocol/Servers' }))).toBe(
@@ -795,16 +810,17 @@ describe('tool-choice tasks', () => {
         tool: 'create_branch',
         args: { ...ACME, branch: 'release/1.4', from_branch: from },
       });
-      expect(scores(t, [list({}), list({ page: 2 }), create('release/1.3')])).toBe(true);
-      expect(scores(t, [list({ page: 2 }), create('refs/heads/release/1.3')])).toBe(true);
+      expect(scores(t, [list({}), list({ page: 3 }), create('release/1.3')])).toBe(true);
+      expect(scores(t, [list({ page: 3 }), create('refs/heads/release/1.3')])).toBe(true);
       expect(scores(t, [list({ perPage: 100 }), create('release/1.3')])).toBe(true);
-      expect(scores(t, [list({ perPage: 6 }), create('release/1.3')])).toBe(true);
-      expect(scores(t, [list({ perPage: 5 }), create('release/1.3')])).toBe(false);
+      expect(scores(t, [list({ perPage: 64 }), create('release/1.3')])).toBe(true);
+      expect(scores(t, [list({ perPage: 63 }), create('release/1.3')])).toBe(false);
       expect(scores(t, [list({}), create('release/1.3')])).toBe(false);
-      expect(scores(t, [list({ page: '2' }), create('release/1.3')])).toBe(true);
-      expect(scores(t, [create('release/1.3'), list({ page: 2 })])).toBe(false);
-      expect(scores(t, [list({ page: 2 }), create('release/1.2')])).toBe(false);
-      expect(scores(t, [list({ page: 2 }), create('release/1.2'), create('release/1.3')])).toBe(
+      expect(scores(t, [list({ page: 2 }), create('release/1.3')])).toBe(false);
+      expect(scores(t, [list({ page: '3' }), create('release/1.3')])).toBe(true);
+      expect(scores(t, [create('release/1.3'), list({ page: 3 })])).toBe(false);
+      expect(scores(t, [list({ page: 3 }), create('release/1.2')])).toBe(false);
+      expect(scores(t, [list({ page: 3 }), create('release/1.2'), create('release/1.3')])).toBe(
         false,
       );
       // Listing another repo's branches shows nothing relevant.
@@ -831,10 +847,10 @@ describe('tool-choice tasks', () => {
         tool: 'list_branches',
         args: { ...ACME, ...args },
       });
-      expect(scores(t, [list({}), list({ page: 2 }), create()])).toBe(true);
+      expect(scores(t, [list({}), list({ page: 2 }), list({ page: 3 }), create()])).toBe(true);
       expect(scores(t, [list({ perPage: 100 }), create()])).toBe(true);
       expect(scores(t, [list({}), create()])).toBe(false);
-      expect(scores(t, [list({ page: 2 }), create()])).toBe(false);
+      expect(scores(t, [list({}), list({ page: 2 }), create()])).toBe(false);
       expect(scores(t, [create(), list({ perPage: 100 })])).toBe(false);
       expect(
         scores(t, [

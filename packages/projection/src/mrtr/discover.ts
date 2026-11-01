@@ -68,8 +68,9 @@ export default setup({}).createMachine({
           target: 'done',
           // event.result is the tool's structuredContent when the server
           // returns one (see its Output type in tools.d.ts); otherwise the
-          // text of its single text block, null when empty, or the raw
-          // content array. isError results arrive as TOOL_ERROR instead.
+          // text of its single text block (parsed when it is JSON for an
+          // object or array), null when empty, or the raw content array.
+          // isError results arrive as TOOL_ERROR instead.
           actions: assign({ result: ({ event }) => event.result }),
         },
         TOOL_ERROR: {
@@ -209,6 +210,7 @@ export function buildResources(
   catalog: ServerCatalog,
   dts: string,
   policy?: PolicyOptions,
+  maxRoundTrips?: number,
 ): ProjectionResource[] {
   const subject = codeModeSubject(catalog, policy);
   return [
@@ -224,7 +226,7 @@ export function buildResources(
       name: 'authoring-contract.md',
       description: 'Rules an authored machine must follow.',
       mimeType: 'text/markdown',
-      text: authoringContract(subject.samples),
+      text: authoringContract(subject.samples, maxRoundTrips),
     },
     {
       uri: RESOURCE_URIS.happyPath,
@@ -273,6 +275,14 @@ export interface DiscoverApisOptions {
    */
   searchPhrase?: string;
   /**
+   * Direct listing (`projections.direct`): the full sentence(s) telling the
+   * model where tools are, replacing the R37 pointer's "Call <search tools>
+   * to find tools …" — the served search tools and the boxes listed
+   * directly, so the pointer never names a search tool the facade does not
+   * serve.
+   */
+  findTools?: string;
+  /**
    * The resources the facade serves, when they go beyond
    * {@link buildResources} (a multi-server facade's box overviews, R45):
    * every one but the `ui://` dashboard is linked.
@@ -283,6 +293,8 @@ export interface DiscoverApisOptions {
    * multi-server view (R45, {@link toolSamples}).
    */
   policy?: PolicyOptions;
+  /** The facade's clamped `caps.maxRoundTrips` (R12), quoted by the contract's rule 5. */
+  maxRoundTrips?: number;
 }
 
 /** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
@@ -315,10 +327,15 @@ export function discoverApis(
   const deferred = options.catalog === true && toolCount > threshold;
   let toolsSection = overview;
   if (deferred) {
+    const find = options.findTools;
     toolsSection =
       subject.view !== undefined
-        ? deferredBoxesSection(subject.view, toolCount, options.searchPhrase ?? 'search_tools')
-        : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
+        ? find !== undefined
+          ? `Tools: ${toolCount} across ${boxesLabel(subject.view)} — too many to list here (${boxCounts(subject.view)}). ${find} Call describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`
+          : deferredBoxesSection(subject.view, toolCount, options.searchPhrase ?? 'search_tools')
+        : find !== undefined
+          ? `Tools: ${toolCount} on this server — too many to list here. ${find} Call describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`
+          : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
   }
   const inline = [
     `Projection code mode over ${subject.label}.`,
@@ -327,7 +344,7 @@ export function discoverApis(
     '',
     toolsSection,
     '',
-    authoringContract(subject.samples),
+    authoringContract(subject.samples, options.maxRoundTrips),
   ].join('\n');
 
   const links: ContentBlock[] = (options.resources ?? buildResources(catalog, ''))
@@ -349,8 +366,12 @@ export function discoverApis(
  * R37 on a multi-server facade (R45): the count across every box, the
  * per-box counts, and a pointer at the search tools the facade serves.
  */
+function boxCounts(view: BoxedCatalog): string {
+  return [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
+}
+
 function deferredBoxesSection(view: BoxedCatalog, toolCount: number, search: string): string {
-  const counts = [...view.counts].map(([alias, count]) => `${alias}: ${count}`).join(', ');
+  const counts = boxCounts(view);
   return `Tools: ${toolCount} across ${boxesLabel(view)} — too many to list here (${counts}). Call ${search} to find tools by name or purpose and describe_tool for a tool's arguments by its qualified name, <box>.<tool> (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}, one tools.<box> property per box.`;
 }
 
@@ -358,6 +379,17 @@ function deferredBoxesSection(view: BoxedCatalog, toolCount: number, search: str
 export interface ProjectionSelection {
   codeMode: boolean;
   catalog: boolean;
+  /**
+   * Whether the wrapped tools are also listed directly, as mediated aliases
+   * of `call_tool` (`projections.direct`, resolved at wrap time). Absent
+   * means not listed.
+   */
+  direct?: boolean;
+  /**
+   * Multi-server facade under direct listing: the boxes listed directly, in
+   * sorted alias order (the others keep the catalog path).
+   */
+  directBoxes?: readonly string[];
 }
 
 /**
@@ -386,13 +418,28 @@ export const APPROVAL_SENTENCE_TAIL = `and ask the user to approve that specific
 export const DEFAULT_CODE_MODE_PREAMBLE = `This server runs in code mode: instead of calling its tools directly, author an XState v5 state machine and run it with execute_machine, which orchestrates the tool calls for you. Tools that change something may pause the machine ${APPROVAL_SENTENCE_TAIL} Call discover_apis first for the tool types, the authoring contract, and worked examples.`;
 
 /** Preamble when only the catalog projection is on (R29, R32). */
-export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, describe_tool to see its arguments, then call_tool to run it. Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+export const DEFAULT_CATALOG_PREAMBLE = `This server exposes its tools through a catalog: call search_tools to find a tool, then call_tool to run it, with the args its search hit shows (describe_tool gives any other tool's). Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
 
 /** Preamble when both projections are on: the routing rule (R29). */
-export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, describe_tool to see its arguments, then call_tool to run it. For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+export const DEFAULT_ROUTING_PREAMBLE = `This server offers two ways to use its tools. For a single action, call search_tools to find the tool, then call_tool to run it, with the args its search hit shows (describe_tool gives any other tool's). For several steps, branching on results, computing over a list (counting, filtering, summing, comparing or checking every item), or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for the tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+
+/**
+ * The sentence every direct-listing preamble carries: what a mediated tool
+ * is, and what its results mean (they are `call_tool` results).
+ */
+export const DIRECT_LISTING_SENTENCE = `Each tool's description starts with its approval posture in brackets: [runs immediately], [asks for approval] (the call pauses until the user approves that exact call) or [blocked by policy]; "destructive" means the server marks the tool so. A result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it; "denied_by_policy" means the server's policy blocks the tool.`;
+
+/** Preamble when the catalog is listed directly and code mode is off. */
+export const DEFAULT_DIRECT_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. ${DIRECT_LISTING_SENTENCE}`;
+
+/** Preamble when the catalog is listed directly beside code mode. */
+export const DEFAULT_DIRECT_ROUTING_PREAMBLE = `This server's tools are listed directly: call them by name like any other tool, with no need to search or describe them first. For a single action or a short chain where you look something up and then act on it, call the tools one at a time, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving (call discover_apis first for the tool types, the authoring contract, and worked examples). ${DIRECT_LISTING_SENTENCE}`;
 
 /** The R29 preamble variant for a projection selection. */
 export function defaultPreamble(projections: ProjectionSelection): string {
+  if (projections.direct === true && projections.catalog) {
+    return projections.codeMode ? DEFAULT_DIRECT_ROUTING_PREAMBLE : DEFAULT_DIRECT_PREAMBLE;
+  }
   if (projections.codeMode && projections.catalog) return DEFAULT_ROUTING_PREAMBLE;
   if (projections.catalog) return DEFAULT_CATALOG_PREAMBLE;
   return DEFAULT_CODE_MODE_PREAMBLE;

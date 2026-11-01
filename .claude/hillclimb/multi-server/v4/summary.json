@@ -1,0 +1,45 @@
+{
+  "description": "v4",
+  "target": "system_prompt",
+  "phases": {
+    "guard": {
+      "file": "raw/guard.json",
+      "sha256": "83d434e31cf2bdeedc1c20826a19dfcf953f1d989e81607ba8d63db49fae24a7",
+      "generatedAt": "2026-10-30T03:11:06.861Z",
+      "updatedAt": "2026-10-30T03:15:00.046Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["basic", "hard", "filesystem", "mongodb"],
+      "runs": 1,
+      "tasks": 60,
+      "records": 120,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "boxDescriptions": false,
+      "outputSchemas": true
+    },
+    "multi": {
+      "file": "raw/multi.json",
+      "sha256": "6a606bc26c16448f18780c14000c07905fa2a8167bc82fabb9a3b7d765f6284a",
+      "generatedAt": "2026-10-30T03:03:10.538Z",
+      "updatedAt": "2026-10-30T03:11:04.005Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection", "projection-boxes"],
+      "tiers": ["multi"],
+      "runs": 3,
+      "tasks": 17,
+      "records": 204,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "boxDescriptions": true,
+      "outputSchemas": true
+    }
+  },
+  "rows": 324,
+  "errors": 0,
+  "served_models": {
+    "claude-haiku-4-5 -> claude-haiku-4-5-20251001": 162,
+    "claude-sonnet-5-5 -> claude-sonnet-5-5": 162
+  },
+  "cost_usd": 6.591
+}

@@ -127,9 +127,46 @@ describe('round-trip cap counts round trips exactly (R18)', () => {
 
     const retry = (await approveAll(TWO_WRITES, first, d)) as CallToolResult;
     expect(retry.isError).toBe(true);
-    const error = retry.structuredContent as unknown as { phase: string; message: string };
+    const error = retry.structuredContent as unknown as {
+      phase: string;
+      message: string;
+      hint: string;
+    };
     expect(error.phase).toBe('terminal');
-    expect(error.message).toContain('round trips');
+    // D30: the copy says the workflow did not finish and how to finish it.
+    expect(error.message).toBe(
+      'this workflow stopped unfinished: it reached the limit of 1 round trip (approvals and forwarded server questions), so the machine did not reach its final state',
+    );
+    expect(error.hint).toBe(
+      'The calls the machine had not made yet were not made. Tell the user the task is incomplete, or finish it: issue the remaining gated calls together with toolCalls (one round trip for all of them), leaving out the ones listed as already done, or make them with call_tool.',
+    );
+    // The first write ran; it is listed so it is left out (R15b).
+    const texts = retry.content.map((block) => ('text' in block ? block.text : ''));
+    expect(texts[1]).toBe(
+      'Already done before this error: this call was approved and ran. Do not request it again; continue from the state it left.\n- "write_file" {"path":"/1"}',
+    );
+  });
+
+  it('lists the calls already run when a blob minted before a cap change is over it', async () => {
+    const first = await executeMachine({ code: TWO_WRITES }, deps({ caps: { maxRoundTrips: 2 } }));
+    if (!isSuspended(first)) throw new Error('expected first suspension');
+    const second = await approveAll(TWO_WRITES, first, deps({ caps: { maxRoundTrips: 2 } }));
+    if (!isSuspended(second)) throw new Error('expected second suspension');
+
+    // The cap is lowered to 1 while the second approval is outstanding.
+    const executor = new FakeExecutor();
+    const retry = unwrap(
+      await approveAll(TWO_WRITES, second, deps({ caps: { maxRoundTrips: 1 }, executor })),
+    );
+    expect(retry.isError).toBe(true);
+    expect(retry.structuredContent).toMatchObject({
+      phase: 'terminal',
+      message: expect.stringContaining('this workflow stopped unfinished') as unknown,
+    });
+    // Nothing from the over-cap blob ran; the earlier write is listed.
+    expect(executor.calls).toEqual([]);
+    const texts = retry.content.map((block) => ('text' in block ? block.text : ''));
+    expect(texts.some((text) => text.startsWith('Already done before this error'))).toBe(true);
   });
 });
 

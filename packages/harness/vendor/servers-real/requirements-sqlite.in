@@ -1,0 +1,4 @@
+# The reference SQLite server is archived and predates the 2.x Python MCP SDK
+# (it registers list_resources, which 2.x removed), so it gets its own venv on 1.x.
+mcp-server-sqlite==2025.4.25
+mcp<2

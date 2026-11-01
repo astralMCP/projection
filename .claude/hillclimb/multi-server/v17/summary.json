@@ -1,0 +1,155 @@
+{
+  "description": "v17",
+  "target": "system_prompt",
+  "phases": {
+    "guard": {
+      "file": "raw/guard.json",
+      "sha256": "a9c084c4adbfcc3a0f4fb58ad55d8a9baaaac09038f2a71ea6a343ab206276cd",
+      "generatedAt": "2026-11-01T00:13:38.922Z",
+      "updatedAt": "2026-11-01T00:16:28.607Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["basic", "hard", "filesystem", "mongodb"],
+      "runs": 1,
+      "tasks": 60,
+      "records": 120,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "taskMaxTurns": {},
+      "boxDescriptions": false,
+      "outputSchemas": true,
+      "batch": false
+    },
+    "multi-hard": {
+      "file": "raw/multi-hard.json",
+      "sha256": "06e744f233131c618ae4958e9764c183aba6f2fe6aad62e9c3c94c8df1eac4d9",
+      "generatedAt": "2026-11-01T00:16:31.898Z",
+      "updatedAt": "2026-11-01T00:23:16.468Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection"],
+      "tiers": ["multi-hard"],
+      "runs": 3,
+      "tasks": 12,
+      "records": 72,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "taskMaxTurns": {
+        "hard-gold-order-totals": 70,
+        "hard-log-error-lines": 66,
+        "hard-issues-naming-files": 90,
+        "hard-label-stale-issues": 34,
+        "hard-comment-export-prs": 80,
+        "hard-audit-shipped-orders": 38,
+        "hard-chain-release-reporter": 22,
+        "hard-chain-failing-owner": 22,
+        "hard-page-feature-branches": 16,
+        "hard-page-first-2025-release": 16,
+        "hard-branch-failing-checks": 40,
+        "hard-branch-vip-tiers": 40
+      },
+      "boxDescriptions": true,
+      "outputSchemas": true,
+      "batch": false
+    },
+    "multi": {
+      "file": "raw/multi.json",
+      "sha256": "2d472daa2cae5e0b666b78677f8fec4daab1af8168b298237063c4bd9cfcc405",
+      "generatedAt": "2026-11-01T00:07:19.169Z",
+      "updatedAt": "2026-11-01T00:13:35.544Z",
+      "models": ["haiku45", "sonnet-low"],
+      "modes": ["projection", "projection-boxes"],
+      "tiers": ["multi"],
+      "runs": 3,
+      "tasks": 17,
+      "records": 204,
+      "maxTurns": 12,
+      "maxTotalTurns": 24,
+      "taskMaxTurns": {},
+      "boxDescriptions": true,
+      "outputSchemas": true,
+      "batch": false
+    }
+  },
+  "rows": 396,
+  "errors": 0,
+  "served_models": {
+    "claude-haiku-4-5 -> claude-haiku-4-5-20251001": 198,
+    "claude-sonnet-5-5 -> claude-sonnet-5-5": 198
+  },
+  "cost_usd": 7.1508,
+  "standard_cost_usd": 7.2508,
+  "cells": {
+    "guard|haiku45|projection": {
+      "episodes": 60,
+      "scored": 60,
+      "passes": 59,
+      "context_overflows": 0,
+      "cost_usd": 0.9067,
+      "standard_cost_usd": 0.9063,
+      "standard_cost_per_success": 0.0154
+    },
+    "guard|sonnet-low|projection": {
+      "episodes": 60,
+      "scored": 60,
+      "passes": 60,
+      "context_overflows": 0,
+      "cost_usd": 0.619,
+      "standard_cost_usd": 0.5749,
+      "standard_cost_per_success": 0.0096
+    },
+    "multi-hard|haiku45|projection": {
+      "episodes": 36,
+      "scored": 36,
+      "passes": 24,
+      "context_overflows": 0,
+      "cost_usd": 1.6491,
+      "standard_cost_usd": 1.6503,
+      "standard_cost_per_success": 0.0688
+    },
+    "multi-hard|sonnet-low|projection": {
+      "episodes": 36,
+      "scored": 36,
+      "passes": 34,
+      "context_overflows": 0,
+      "cost_usd": 1.5927,
+      "standard_cost_usd": 1.6915,
+      "standard_cost_per_success": 0.0497
+    },
+    "multi|haiku45|projection": {
+      "episodes": 51,
+      "scored": 51,
+      "passes": 51,
+      "context_overflows": 0,
+      "cost_usd": 0.5167,
+      "standard_cost_usd": 0.5063,
+      "standard_cost_per_success": 0.0099
+    },
+    "multi|haiku45|projection-boxes": {
+      "episodes": 51,
+      "scored": 51,
+      "passes": 51,
+      "context_overflows": 0,
+      "cost_usd": 0.5244,
+      "standard_cost_usd": 0.5095,
+      "standard_cost_per_success": 0.01
+    },
+    "multi|sonnet-low|projection": {
+      "episodes": 51,
+      "scored": 51,
+      "passes": 51,
+      "context_overflows": 0,
+      "cost_usd": 0.6831,
+      "standard_cost_usd": 0.7259,
+      "standard_cost_per_success": 0.0142
+    },
+    "multi|sonnet-low|projection-boxes": {
+      "episodes": 51,
+      "scored": 51,
+      "passes": 51,
+      "context_overflows": 0,
+      "cost_usd": 0.659,
+      "standard_cost_usd": 0.6862,
+      "standard_cost_per_success": 0.0135
+    }
+  }
+}

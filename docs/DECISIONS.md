@@ -151,6 +151,10 @@ forbids. Forwarded upstream copy would be third-party text and MUST get the
 S6 inert-rendering treatment; it must never be conflated with Projection's
 own approval prompts.
 
+Update (D24): forwarding now exists for 2026-07-28 upstreams, opt-in per box
+(`upstreamElicitation: 'forward'`), exactly as sketched here; the default and
+every 2025-era upstream stay fail-closed.
+
 ## D8 — Two views of a run: the dashboard is for hosts, /visualize-workflow is for the person (2026-09-14)
 
 The MCP App dashboard (`src/apps/dashboard.ts`, D5) and the
@@ -1283,3 +1287,1012 @@ comes after both.) Decisions made while building part A:
   projection off is a `validate` error". It exists because nothing would
   reach a locked box; with no locked boxes yet, a code-mode-only facade
   over a URL with a stored token works, so the rule lands with locked boxes.
+
+## D20 — An opt-in `multi-hard` eval tier with per-task turn budgets (2026-10-29)
+
+Every existing tool-choice tier saturated (direct, Projection and its
+variants all within a task or two of full marks), so they could no longer
+separate surfaces on completion or cost. `multi-hard` adds 12 tasks in five
+families (bulk read, bulk write, long chains, pagination, per-item
+branching) over the multi world opened as a `hard` variant, which carries
+much more data in all three boxes.
+
+- **The extra data is gated behind the variant.** Base fixtures and the
+  base GitHub fake answer exactly as before, so no existing task's outcome
+  can move. The variant only adds: extra files, extra shop documents, and
+  acme/widgets answers layered over the base fake's.
+- **Opt-in.** `multi-hard` is not in `DEFAULT_TIERS`, so an unset
+  `PROJ_EVAL_TIERS` (and the runner's default task set) runs what it always
+  ran.
+- **Per-task turn budgets.** A task may set `maxTurns`, and the runner then
+  uses it in place of the run's budget, with a ceiling of twice it. The
+  hard tier sets 2N + 10, where N is the number of per-item calls a
+  one-call-per-item strategy needs. That way a run's length measures
+  strategy, not an arbitrary cap. Results files record these budgets as
+  `taskMaxTurns`.
+- **Grading stays wording-free.** Answers are read from per-item lines (id,
+  then first number) or a final `ANSWER:` line. Writes are graded on the
+  exact recorded set or the real end state, and any write outside the set
+  is forbidden.
+
+## D21 — Eval failure classes, batch hygiene and cost bases for `multi-hard` (2026-10-30)
+
+Review of the batch runner and the `multi-hard` tier (D20) settled how the
+harness classifies and prices what that tier provokes.
+
+- **Running out of context is a scored failure.** A 400
+  `invalid_request_error` about prompt length, or the
+  `model_context_window_exceeded` stop reason, ends the episode with
+  `contextOverflow` and no harness error, on the interactive and batch paths
+  alike. One-call-per-item strategies pile up tool results; dropping those
+  episodes as API errors would hide exactly the cost the tier measures.
+  Summaries count overflows per cell, tier and task.
+- **The batch runner never retries an invalid request and never calls it
+  infra.** The same request fails the same way. A batch it created and then
+  lost (polls past the limit, a results read that throws) is canceled and
+  its id logged for reconciliation. Each tick records cache reads and writes
+  so the 5-minute TTL lapsing between ticks is visible; the TTL stays.
+- **The hard world's search errors on what it does not implement.** Issue
+  and PR search there parses date ranges, `-label:`, `no:label` and
+  `no:assignee`; any other qualifier is a 422-style error, never silently
+  ignored (which returned plausible but wrong lists). Its writes also
+  persist for the episode (issues, labels, comments, reviews show in later
+  reads), so a model that checks its work is not told it failed and does
+  not write again; the state is per world, and graders still read the
+  recorded calls. The base fake is unchanged (stateless, lenient search),
+  so no existing tier moves.
+- **Cost is per call and per tier.** Haiku 5.5 bills a call over 100K
+  prompt tokens at its long-context card. The hill-climb scope gate keys
+  observed costs by tier and refuses a tier with no observation, pilot or
+  prior, except `multi-hard`, which takes a conservative $1/episode at list
+  price. Batch `latency_s` spans lockstep ticks and is not comparable with
+  interactive latency.
+
+## D22 — Search weights rare words and breaks ties by name coverage; measured offline (2026-10-30)
+
+D10's ranking counted every query word the same, so filler ("get", "list",
+"repository") outvoted the one word that names the tool, and ties fell to
+catalog position. Both were measured with a new offline eval
+(`packages/harness/src/eval/offline/`, `pnpm --filter @astral-mcp/harness
+run eval:offline`): 1,173 (surface, query, gold tools) cases — the 467
+distinct queries models actually sent to `search_tools` / `search_<alias>`
+in recorded eval episodes, labelled with the tools they went on to use,
+their lift onto the 130-tool global search, 120 hand-written queries and
+150 generated ones over a 1,003-tool synthetic catalog — run through the
+real facade, no model, deterministic. Cases are split 60/40 by a fixed
+seed; changes were judged on train and kept only if the held-out test
+split improved too.
+
+Decision, two changes (R33, R43 amended):
+
+- **Token weights.** Each token's score is multiplied by `1 + ln(N / df)`,
+  where `df` counts the tools it occurs in. A word every tool has weighs 1,
+  as before; "branches" in "get repository branches" now decides the
+  ranking. Matching is unchanged — any word, substring — so match sets,
+  `total` and page sizes are exactly D10's. The alias token adds a name hit
+  of the heaviest text token, so it keeps its relative strength.
+- **Name-coverage tie-break.** Equal scores rank first the tool whose name
+  the name-hit tokens spell more of (`list_issues` before
+  `list_issue_types` for "list issues"), then catalog order. Ties now
+  depend on the names, not the listing order: shuffling a catalog now
+  moves gold ranks a seventh as much (mean |Δrank| 0.80 → 0.11, invariance
+  0.929 → 0.989 on train).
+
+Measured (train / test): recall@5 89.1 / 89.6 → 91.8 / 94.2, MRR 0.779 /
+0.810 → 0.821 / 0.846, recall@1 69.5 / 74.2 → 74.4 / 77.2, mean first
+page ~741 / ~767 → ~738 / ~764 tokens (chars / 4). One test changed its
+expectation: in a facade test fixture "github issue" now leads with
+`get_issue` instead of `issue_write` (equal score; the name "issue" covers
+more of), and "(issue|branch)+" leads with its rarer word's tool.
+
+S5: weights come from the catalog, so a hostile server can shift a word's
+weight — but uniformly for every tool that has the word, its own included,
+which buys nothing that stuffing its own name did not already buy. Alias
+tokens are still never matched against tool text, so a foreign tool still
+scores nothing for another box's alias.
+
+Tried and rejected on the same eval: splitting camelCase query words
+(`createIssue` → create, issue; train up, test flat; it does fix the
+did-you-mean for camelCase guesses on a snake_case catalog, 0.51 → 1.00 on
+the describe invariance check, so it is worth revisiting on that ground);
+a Lucene-style coordination factor (train down); BM25 length normalization
+of description hits (both splits down); indexing input-schema words —
+`pull_request_read`'s `method` enum, `find`'s `sort` and `limit` (both MRRs
+up, but result pages 21 % larger as a new matching field, and test
+recall@5 down when it only re-ranked). Round log:
+`.claude/hillclimb/multi-server/explore/offline-search.md`.
+
+Still unanswerable by any ranking: 73 distinct queries (310 issued) search
+the catalog for data — "CSV export", "widgets", "grace@example.com order"
+— which is a facade question (what `search_<alias>` is for), not a ranking
+one.
+
+## D23 — call_tool relays content blocks, progress and cancellation (2026-10-30)
+
+The spec-conformance audit (`packages/projection/test/conformance/`) wrapped
+an upstream using the whole 2026-07-28 surface. Three cheap gaps were closed
+on the `call_tool` path only: (1) a raw content array is rendered block by
+block, with image, audio and embedded binary resources attached as native
+content blocks instead of base64 JSON in the text — `structuredContent.output`
+is unchanged (R35.5) and `resource_link` blocks are described, never attached,
+because the facade cannot serve the upstream URI; (2) when the client sends a
+`progressToken`, upstream `notifications/progress` are relayed under the
+client's token, the message attributed `<tool>: …` (qualified on a
+multi-server facade) and neutralized and capped at 200 characters (S5), and
+each report resets the upstream request timeout; (3) the facade request's
+abort signal is passed to the upstream call, so cancelling `call_tool`
+cancels the wrapped tool. The `ToolExecutor` contract gains an optional
+host-side `UpstreamCallOptions` argument; nothing model-authored reaches it.
+Machines relay neither progress nor cancellation yet: a segment can span
+many calls and resumes on another instance, so that needs its own design.
+
+## D24 — Upstream questions: 2026-07-28 to every owned upstream, forwarding opt-in per box (2026-10-30)
+
+The spec-conformance audit (gaps G1, G2) found every upstream driven as a
+2025-era client with no capabilities, so a wrapped server's own question —
+confirm, pick an account, open a link to connect — failed, and `call_tool`
+told the model to check its arguments. PRD R63 and R64 record the result;
+this entry records why.
+
+**G2: the era.** An in-process `McpServer` hand-connected to a transport is
+pinned to the 2025 era by the SDK, and `createMcpHandler` needs a fresh
+instance per request (one shared instance fails concurrent requests). The
+SDK's connection-pinned entry, `serveStdio`, accepts a supplied transport,
+so the introspector serves the caller's instance over an in-memory pair
+through it and pins the client to 2026-07-28: concurrent calls work, one
+instance, no probe round trip. A server given by URL is probed (`'auto'`)
+and falls back to the 2025 handshake. Auto-fulfilment is off everywhere, so
+an `input_required` is data Projection decides about, never a prompt the SDK
+answers. On 2026-07-28 the SDK checks a tool's output schema against
+whatever comes back, `input_required` included, so in manual mode the
+introspector hands the SDK the tool definition without `outputSchema` and
+runs the same check (same validator, same wording) on complete results.
+
+**Capabilities follow the setting.** A refusing box declares nothing, so a
+server that adapts to its client keeps its no-elicitation path, and one that
+asks anyway is refused by its own SDK. A forwarding box declares form and
+URL elicitation, and only on 2026-07-28: a URL source that falls back to the
+2025 era reconnects declaring nothing (one extra handshake at wrap, for that
+case only), because a 2025 server would push its question, which a
+stateless facade cannot hold across the human's answer (D7).
+
+**Default `'refuse'`.** Forwarding gives a wrapped server a direct line to
+the human, in the same client UI that shows Projection's approvals. The copy
+makes it unmistakable that it is the server speaking, but no rendering can
+stop a hostile server from asking for a password in plain words or linking
+to a look-alike sign-in page. That is the same trust extension as
+`approvals: 'destructive-only'` (D17), and it gets the same treatment: the
+integrator opts in per source, for servers they trust. Refusing costs
+little now that the refusal says what happened: the model is told the
+arguments were fine and a retry asks again, so it stops instead of burning
+turns (the cost goal), and nothing changes for servers that never ask.
+
+**No pass-through.** A question is forwarded only from a call that already
+ran under the gate. The answer re-issues the recorded call (name and args
+from the blob, never the retry's), so a question can neither run a gated
+call nor change what an approval authorized. Holds live in a new blob field,
+`upstreamInput`, never in `pending`: like sign-in (R56), an entry an
+`accept` must not execute does not belong in the S2 map. `call_tool` mints a
+new kind, `upstream_input` (it opens both of its kinds), bound to the same
+canonical request as the call; a machine blob carries its holds next to its
+pending approvals, so one round trip can carry both (R15). Replay (R38),
+expiry, identity and D9's deny-wins rule apply unchanged. `BLOB_SCHEMA_VERSION`
+stays 1, as for `call` and `signin`.
+
+**Copy and schema (S5, S6).** First line `Question from <alias> (not an
+approval)`; the server's message quoted with a `│ ` prefix on every line,
+so a forged `Approve:` heading reads as its quoted words; the requested
+schema cut to the elicitation primitives, every string neutralized and
+capped; the answer cut back to the fields the human saw. A link must be
+plain `https:` and shows its origin. Wire keys are Projection's
+(`upstream-<n>`, skipping any machine call id), so a server's keys never
+reach the client.
+
+**Not forwarded.** Sampling and roots (Q2; G6 stays a proposal), more than
+four questions per round, a server state over 16 KB, and — for a source
+given by URL — a server state that would need credential redaction, since
+it would otherwise be sealed into a blob (S1) and must round-trip
+byte-exact.
+
+**Machines.** A step whose server asks is held: the actor keeps waiting for
+that call's event, the segment settles everything else, then suspends. On
+resume the held call is re-issued before the machine continues. A question
+that cannot be forwarded is refused when the call is held, so the machine's
+own `TOOL_ERROR` handling runs; at most four questions are held per
+suspension across calls (a machine could otherwise fan one state out into
+hundreds of prompts). A machine that finishes with only held calls left
+completes without asking. Progress and cancellation are still not relayed
+for machines (G3).
+
+**Review follow-ups.** Two rules came out of the adversarial review. (1) A
+held `auto` call whose tool now asks is not re-issued: before forwarding, a
+call that needed no approval never crossed a round trip, so a new `ask`
+override always applied, and a blob minted earlier must not outlive that.
+(2) A long quoted line is hard-wrapped with each piece prefixed, and form
+labels that mimic approval copy are prefixed `The server's text:`. The
+in-process `serveStdio` path leaves the caller's `McpServer` with the
+2026-07-28 handlers installed after `close()`; re-wrapping works, hand-
+connecting it to a 2025-era client does not. That is documented rather than
+worked around (a per-connection instance would need a factory from the
+integrator). MRTR's state-only "call me again" is re-issued at once, at most
+eight times, as the SDK's own driver would have done for the 2025-era
+client Projection used to be.
+
+## D25 — Approval UX: no prompts for calls that cannot run, refusals the model can see, opt-in batched prompts (2026-10-31)
+
+Measured on the `hitl` eval tier (D26). What is gated did not change: tool
+annotations plus the integrator's `policy` / `approvals` still decide, and
+every approval stays sealed to its call (S1–S6 unchanged). What changed is
+how approvals are presented and recovered from.
+
+- **Decline copy (R15b).** `call_tool`'s declined result said only "Do not
+  retry this call unless the user asks for it". Models filled the gap by
+  abandoning the whole task, independent writes included (3 of 4 baseline
+  fan-out episodes), or by asking the user to confirm a change the user had
+  just asked for in the decline note. The copy now scopes the refusal to
+  that call, forbids a repeat or a workaround, makes a note that asks for a
+  change actionable, asks for the independent rest, and asks for a report.
+  A first version said only "carry on with the rest"; models then announced
+  a cancelled step as done, so it now says to skip what only makes sense if
+  the call had run. Pass on the tier went from 15/20 to 18/20 on the default
+  routing, at the same cost per episode.
+- **Refusals restated on machine results (R15b).** A completed
+  `execute_machine` result showed only the machine's output, which is
+  model-authored: a machine that dropped `TOOL_DENIED` (or returned `null`)
+  hid the refusal, and the model told the user an email was sent that the
+  user had declined. Refused calls now follow the output as a text block.
+  The audit already rode in `structuredContent`, but many hosts never show
+  that to the model. The same reasoning covers `isError` results of a
+  resumed workflow, which now list the approved calls that already ran, so
+  the model does not ask the person for the same write again.
+- **No prompt for a call that cannot run (R15a).** `call_tool` already
+  checked argument shape before suspending; a machine's gated `toolCall`
+  did not, and one Haiku episode put 20 calls with `"[undefined]"`
+  arguments to the person, each approved and then refused by the server.
+  The same structural check now fails such a call as `TOOL_ERROR` before
+  any prompt. Nothing executes either way, so S2 is untouched.
+- **Batched prompts, opt-in (R15).** `approvalPrompts: 'batched'` puts a
+  suspension's several gated calls to the person as one elicitation with
+  one unticked boolean per call. `pending` stays the only source of
+  executable calls, one sealed entry each, and only an exact `true` in an
+  accepted answer runs a call. No crypto change; one optional blob field.
+  Amended after an adversarial review (same date):
+  - **The layout is sealed** (`prompts: 'batched'` in the payload, absent
+    for per-call, never on a `call` blob; any other value is malformed) and
+    the resume answers by the sealed value. The first version re-derived it
+    from the resuming instance's option, and the batch key `approvals`
+    could equal a model-chosen call id: a blob minted batched and resumed
+    per-call read the batched answer as that call's own approval and ran a
+    call the person had unticked.
+  - **The batch key is namespaced** (`projection:approvals`), and a machine
+    `toolCall` id starting with `projection:` is a `validate` error, so no
+    call can be keyed where a Projection answer lives.
+  - **No `default` on the checkboxes.** With `default: true`, a client that
+    applies form defaults (the SDK's `elicitation.form.applyDefaults`)
+    turned an empty accept into "approve all". The fields carry neither
+    `default` nor `required`; an empty accept declines everything.
+  - **Capped.** At most 10 calls and 20 000 characters per batched message;
+    above either, the suspension falls back to per-call prompts (sealed as
+    such).
+  - **Refusal and already-ran blocks** render the sealed arguments through
+    the integrator's redaction hook (failing closed to `[redaction failed]`),
+    neutralize control, C1, separator and bidi characters (S5), and cut on
+    a code-point boundary.
+    The blob schema version stays 1: the field is optional, and the exact
+    `libv` match already fences blobs across releases.
+    It stays opt-in, not the default, because a client that accepts the form
+    without the booleans declines every call (fail-closed, but a regression
+    for such clients), and because on the tier models rarely request several
+    gated calls in one step (default routing used `call_tool` in 19 of 20
+    episodes; under forced code mode about one Haiku fan-out in three did).
+    Offline it turns six prompts into one; its live effect is still
+    unmeasured.
+
+Alternatives not taken: **editable approval forms** (accept with changed
+arguments) would make the approval authorize something other than the
+sealed call, and so break S2's "the approval authorizes the recorded args";
+a person asks for an edit through the decline `reason`, which the copy now
+makes actionable. **Distinguishing cancel from decline** in the copy: R17
+treats them alike, and nothing measured suggested the model should.
+
+Update (integration with D24 and direct listing, 2026-10-30): `prompts`
+is sealed only on a `machine` blob with two or more pending calls; the
+sealer rejects it on `call` and `upstream_input` blobs (both minted by
+`call_tool`, which never batches; an `upstream_input` blob has nothing
+pending to lay out) and on a machine blob with fewer than two pending.
+A machine suspension may hold a batched approval and forwarded server
+questions together: the questions stay their own elicitations under
+`upstream-<n>`, the resume reads both (the batch by the sealed layout, the
+questions by their sealed holds), and no question answer approves a call.
+Directly listed tools (`projections.direct`) call `call_tool`'s handler
+with the same upstream options and client capabilities, so they inherit
+forwarding, progress, cancellation, the decline copy and audit redaction.
+
+## D26 — A HITL layer for the tool-choice eval: personas, prompt records, HITL metrics, the `hitl` tier (2026-10-31)
+
+The harness approved everything and only counted prompts, so nothing
+measured approval UX. Now:
+
+- **Personas** (`PROJ_EVAL_APPROVER`, or a task's own): `approve-all`
+  (default), `deny-destructive`, `deny-matching`, `cancel` (after N
+  approvals), `edit`. A persona reads only the prompt text and schema, as a
+  person would: the tool and arguments it judges are parsed from the text.
+  `edit` accepts with changed content when the schema has the field;
+  Projection's schema carries only `reason` (S2), so it declines with the
+  requested change as the reason.
+- **Direct mode gets a simulated host gate** when an approver is set: every
+  call that is not `readOnlyHint: true` is shown to the same persona first,
+  with a host-style prompt (tool, server, arguments, destructive marker) and
+  a host-style refusal text. Without it direct mode would execute every
+  refused write and could not be compared. It is generous to direct mode: a
+  real host may not mark destructive tools.
+- **Every prompt and answer is recorded** on the episode
+  (`elicitations`), and **HITL metrics** are computed per episode and
+  summarised per cell: prompts per task, per gated call (batching) and per
+  ideal gated write; clarity (the text names the box and the tool, shows
+  every argument value the call sends, or a faithful prefix with a
+  truncation marker, and flags destructiveness exactly when the tool
+  declares it), checked only where the real call is known (the host gate,
+  a `call_tool` request, or an approved code-mode call matched to its
+  execution by agreeing arguments); and denial handling (no repeat of a
+  refused call beyond one retry, no workaround through another call, the
+  final answer says what was not done, the independent parts got done).
+- **The `hitl` tier** (opt-in, not held out): five workplace-world write
+  tasks, each with a persona. Success needs the end state and the denial
+  handling. Offline tests run a reference, a naive retry, a workaround and a
+  silent final answer for each, in direct and Projection modes.
+
+## D27 — Integration security fixes: forwarded-form mimicry, direct-listing annotations, R15b on every failure, question blobs inherit expiry (2026-10-30)
+
+An adversarial review of `integration-hillclimb` found four gaps where two
+merged features met. Each fix keeps the stricter reading.
+
+- **Forwarded forms vs. batched approvals (S6, R64.5).** The look-alike
+  check matched only a leading `⚠`, `Approve` or `Tool:`, written for the
+  per-call prompt. The batched prompt (D25) titles its fields `[k] ⚠
+Approve: …` and names them `approve_<n>`, so a server question could
+  reproduce it: `[1] ⚠ Approve: …` titles, `Approved:` or `1. Approve:`
+  headings, enum values shown raw, and fields named `approve_1` or
+  `Approve_delete_repo`. Now the check skips any leading `[k]`, digits,
+  glyphs and punctuation, matches every `approv…` word and a `⚠` anywhere,
+  and also runs on option values, untitled field names and string
+  defaults. Option values are always shown by a title (marked when needed);
+  look-alike defaults are dropped because a value cannot be marked; the
+  approval forms' own field names (`approve_<n>`, `reason`) are dropped
+  outright. Marking, not dropping, is the rule for labels, so an honest
+  form that says "Approval date" stays usable, marked.
+- **Direct-listing annotations (R35, S5).** A mediated `<alias>__<tool>`
+  advertised the server's own annotations, while `call_tool` carries none.
+  A host that auto-runs read-only tools would skip its own prompt on the
+  server's word, even where Projection asks (an `ask` override) or refuses.
+  The listing now advertises only what Projection decided:
+  `readOnlyHint: true` only for an `auto` call the server also marks
+  read-only and not destructive, `destructiveHint: true` only as a warning,
+  nothing that reassures (`destructiveHint: false`, `idempotentHint`,
+  `openWorldHint`) and no annotation `title`.
+- **R15b after a suspension begins.** Failures raised while building the
+  next suspension (the R18 trip cap, an unknown tool, a question that cannot
+  be forwarded, an oversized blob) returned a bare error. The model re-ran
+  the workflow and the person was asked again to approve a write that had
+  already run. Every such failure now carries the "already done" and
+  refusal blocks.
+- **Question blobs inherit expiry (R38, R64.3).** Each forwarded round
+  minted an `upstream_input` blob with a fresh `callTtlMs`, so an approval
+  could live `maxRoundTrips × callTtlMs`. The blob now keeps the `exp` of
+  the blob it continues (`buildBlobPayload`'s `notAfter`). A replay cache is
+  recommended wherever forwarding is on.
+
+## D28 — `projections.direct` defaults to `'auto'` (2026-10-30)
+
+Context. Direct listing (`projections.direct`, `facade/direct.ts`) shipped
+as an opt-in exploration: each wrapped tool also listed as a mediated
+facade tool (`<tool>` on a single-server facade, `<alias>__<tool>` on a
+multi-server one), a thin alias of `call_tool` under the same gate. The
+hill-climb then ran it live, on the corrected harness, against the
+five-tool surface. Haiku on the multi tier went from 33/34 at $0.022 per
+episode to 34/34 at $0.011. Haiku on the held-out workplace tier went from
+23/28 at $0.048 to 27/28 at $0.023. Sonnet on the multi tier was level on
+both pass rate and cost. The one cost found: on multi-hard, Sonnet spent
+17% more per episode when the listed boxes went unused, since their
+definitions are paid for on every turn whether or not the task touches
+them.
+
+Decision (PRD R1, R32, R43). `projections.direct` defaults to `'auto'`.
+When the estimated definitions of the wrapped tools fit
+`directBudgetTokens` (default 8 000 estimated tokens), they are listed
+directly; on a multi-server facade the budget is filled box by box,
+smallest box first, and the other boxes keep their `search_<alias>`.
+Listed tools stay mediated: validation, policy, the approval prompt, the
+sealed blob and the result are `call_tool`'s, and the advertised
+annotations are Projection's own (D27). `'auto'` stays off when the
+catalog projection is off. `projections: { direct: false }` restores the
+five-tool surface.
+
+Why the default and not an opt-in: the gain is largest for the cheaper
+model and for small catalogs, which is where most integrators start, and
+the loss is bounded by the budget. A catalog large enough for search to
+matter is never listed. R1's rule is unchanged in substance: the wrapped
+tools are still never passed through. What changed is that a mediated
+alias may carry the tool's name.
+
+Consequences.
+
+- The default tool list now depends on catalog size. A small server
+  shows its tools by name plus `describe_tool`, `call_tool` and code mode,
+  without `search_tools`. A large server shows the five tools, as before.
+  Tests that are about the search surface pin `direct: false`.
+- Integrators who prefer a fixed, catalog-independent surface (a host
+  whose own tool search defers tools, or a token budget per turn) set
+  `direct: false`. Those who wrap several boxes, with only some used per
+  task, pay for the listed boxes on every turn: that is the multi-hard +17%
+  case.
+- The eval harness pins `direct: false` in its `projection` and
+  `projection-boxes` modes, and in the offline search evals, so they keep
+  measuring the search surface and stay comparable with earlier rounds.
+  The `projection-auto` mode measures the new default.
+- Adding a tool to a wrapped server can cross the budget and switch its
+  facade from direct listing to search. The listing is decided at wrap
+  time, like the rest of the catalog (R47), so a facade does not switch
+  mid-session.
+
+## D29 — Pass on the signals the server already sent: defaults, partial results, text as text (2026-10-30)
+
+Context. Live eval traces on Haiku 4.5 showed failures where the wrapped
+server had told the facade what the model needed and the facade dropped it
+before the model saw it. A search tool's `limit` defaulted to 10; the
+sanitizer removed `default`, the model omitted `limit`, received 10 of 40
+documents and acted on them as the whole set. Each mechanism below is
+general: it reads only the schema, the arguments and the result, and works
+for any MCP server.
+
+Decision 1 — keep scalar schema defaults (PRD R34). `default` joins the
+sanitizer's allowlist, as a scalar only: a finite number, a boolean,
+`null`, or a string of at most 64 characters with no control, bidi or
+invisible character. A string that would need neutralizing is dropped
+rather than shown altered, since the point is that the model reads the
+value the server applies. Object and array defaults stay dropped: they are
+free-form server data, and the scalar case is the one that changes what a
+call returns. `describe_tool` restates the top-level defaults on one line
+after the input schema (`Defaults the server applies when an argument is
+omitted: "limit" = 10.`), and typegen documents each kept default as
+`@default <JSON value>` on the property, through the same `safeDefault`
+rule. Directly listed tools carry the default in their sanitized
+`inputSchema`.
+
+Decision 2 — a partial-result signal (PRD R35.6). The facade attaches
+notes to a successful result: at most three single lines, printed by
+`call_tool` between its head line and the body, returned in
+`structuredContent.notes`, delivered to a machine on `TOOL_RESULT.notes`,
+and restated after a completed `execute_machine`'s output (at most ten,
+tool-prefixed), since the output is the model's own and the traces showed
+machines that counted a page and returned the count. The detectors are
+`catalog/result-notes.ts`: a total-like integer larger than the one
+top-level array; an array exactly as long as the effective page size (the
+argument sent, else the kept default); and short side text beside
+`structuredContent` that is neither JSON nor a prose restatement of its
+values. The notes sit above the body so the server's own text cannot be
+placed before them; every server-controlled fragment is quoted on one
+line.
+
+Rejected, for false positives: any `/count|total/i` key (`unread_count`,
+`total_pages` and `errorCount` are not the size of the array beside them;
+the total-like key set is closed); results with several arrays (which one
+the total counts is a guess); `has_more`/`nextCursor` fields (the model
+already sees them in the body, and their naming varies too much to quote
+reliably); and passing on every side text (a prose summary like "Oslo:
+21C, clear" beside `{ city, tempC, sky }` is a mirror, and on every call
+it would cost tokens and teach the model to skip notes).
+
+Decision 3 — text as text, and computation to machines.
+
+- `call_tool` prints a top-level string of three or more lines in a
+  structured result as its own lines, indented under its quoted key below
+  the JSON, with `[string: N lines, shown as text below]` in its place (at most
+  five fields). As a JSON string a file's contents was one line of `\n`
+  escapes, which the model had to unescape to count or quote lines.
+  `structuredContent.output` is unchanged.
+- A machine receives a single text block holding JSON for an object or an
+  array parsed, as `TOOL_RESULT.result`, with the text on
+  `TOOL_RESULT.text`. Many servers return their data only as JSON text, and
+  machines looped over the characters of a string. This changes what an
+  existing machine sees: one that called `JSON.parse(event.result)` now
+  throws. The alternatives were a second field (`event.json`), which the
+  traces suggest models would not find, or parsing in the introspector,
+  which would also change `call_tool`'s `output` and its raw text
+  rendering, which models read well. The raw text stays available, scalars
+  and invalid JSON stay strings, and raw content arrays are untouched.
+  The authoring contract, the generated `.d.ts` header, the example and
+  `describe_tool`'s undeclared-output line say so.
+- The routing copy (single- and multi-server preambles, the direct-listing
+  preamble, `call_tool`'s pointer and the routed `execute_machine`
+  description) names computing over a list — counting, filtering, summing,
+  comparing or checking every item — as a reason for a machine. Traces
+  showed the model adding up a long result by hand and getting it wrong.
+  One clause, about 95 characters, in each.
+- The auto-run call cap's error breaks the segment's executed calls down
+  by tool (`— so far: 50 calls to "<tool>" (all failed, first error:
+"…")`), and when every call to the most-called tool failed, its hint
+  says retrying will not get further. The bare "more than 50 calls…
+  batch the work" sent the model to batch a loop whose every call was
+  being rejected.
+
+Consequences. The routing copy grows by about 20 tokens per sentence that
+carries it; the prefix stays below Haiku's 4 096-token cache minimum, as
+before. The `tools.d.ts` header gains five comment lines. `call_tool` results and completed
+`execute_machine` results may carry `notes`; a machine's `TOOL_RESULT` may
+carry `notes` and `text`. Machines that parsed JSON text themselves must
+drop the `JSON.parse` — a minor-version change.
+
+Amendments (2026-10-31, review of the v0.9 climb).
+
+- Notes are per segment. A completed `execute_machine` restates the notes
+  of the segment that completed it; notes from a segment before an
+  approval round trip are not sealed into the blob, so a workflow that
+  resumes does not restate them. The machine still received them on
+  `TOOL_RESULT.notes` in their own segment. Sealing them would grow the
+  blob with server-derived text for a rare case; this is a known
+  limitation.
+- The server-note detector reads only the first eight text blocks, and
+  walks the structured value once, iteratively, counting every node it
+  visits against its 500-node budget. It used to walk the whole value once
+  per text block and count only leaves, so 40,000 one-character blocks
+  beside 40,000 empty arrays took about 20 s of CPU.
+- JSON text nested deeper than 64 brackets is not parsed for a machine
+  (nor for the notes): it reaches the machine as the string it is. A
+  1,000-deep array overflowed the stack and crashed the segment.
+- Events go into the machine's VM as a JSON string it parses
+  (`JSON.parse`), not as an object literal in generated source: in a
+  literal, a server's `__proto__` key set the prototype, so
+  `{"__proto__": {"approved": true}}` read as `event.result.approved ===
+true` with no own key. It is now an own key, as in
+  `structuredContent.output`.
+
+## D30 — Many gated calls in one round trip (`toolCalls`), and copy that says what it means (2026-10-30)
+
+Context. A live eval on Haiku 4.5 asked for 14 writes. The machine looped
+over the items with one gated `toolCall` per state, so each write cost one
+approval round trip. The workflow hit the `maxRoundTrips` cap (8) after 8
+writes and failed with a `terminal` error, and the model told the user the
+task was complete. R15 already batches every gated call a machine has
+outstanding at once into one suspension, but the only way to have several
+outstanding was parallel regions, one region per call, written by hand for
+a fixed number of items.
+
+Decision (PRD R7, R15). The `@astral-mcp/tools` prelude exports
+`toolCalls(name, argsList, { id }?)`: one action that queues one call per
+item, with ids `<id>#0`, `<id>#1`, … in list order (`<id>` defaults to the
+tool name), so the author can map an answer back to its item. `argsList` is
+an array of plain objects or a function of the action arguments returning
+one. Every item is checked like `toolCall`'s arguments before any is
+queued, so a bad item queues nothing. An empty list queues nothing either,
+so no event arrives; the contract's example leaves the state with an
+`always` transition that compares the answers counted with the list's
+length, which also covers the empty case. `whenCallIn(id)` is the guard
+for every event of one `toolCalls`. Each call is still its own sealed
+`pending` entry with its own verdict (S2); only the number of round trips
+changes. Under `approvalPrompts: 'batched'`, up to 10 of them share one
+prompt (D25).
+
+Authoring contract rule 5 says each pause is one approval round trip, that
+a workflow gets at most `maxRoundTrips` of them (the facade's clamped
+value, quoted), and shows the pattern in twelve lines using the facade's
+own gated sample tool. The `tools.d.ts` header names `toolCalls` in two
+comment lines.
+
+No new cap. The host has no limit on how many gated calls one suspension
+holds; what bounds it is the R23 blob ceiling (each pending entry carries
+its arguments), and for calls that run without approval
+`maxReadCallsPerSegment`. Both fail with a structured error, never by
+dropping calls. Above 10 calls, a batched layout falls back to per-call
+prompts for all of them, as before. Two gated calls in flight under one id
+are now a `validate` error: before, the second silently replaced the first
+in the sealed map, which could happen when a `toolCalls` without an
+explicit id met a `toolCall` default id (`write_file#1`).
+
+Rejected: a `callIndex` field on events. The index is in the `callId`
+already, a field would have to be parsed from ids the host does not
+otherwise interpret, and plain `toolCall` ids of the form `name#N` would
+grow an index that means nothing.
+
+The round-trip limit's copy (PRD R18). The `terminal` error read
+`this workflow reached the limit of 8 round trips …` with the hint
+`Restructure the machine …`, followed by the R15b list of calls that had
+already run. The model took the list for the work and the error for a
+detail. Both sites (`mrtr/adapter.ts`: refusing the next suspension, and
+resuming a blob minted under a higher cap) now share one text:
+
+- message: `this workflow stopped unfinished: it reached the limit of N
+round trips (approvals and forwarded server questions), so the machine
+did not reach its final state`
+- hint: `The calls the machine had not made yet were not made. Tell the
+user the task is incomplete, or finish it: issue the remaining gated
+calls together with toolCalls (one round trip for all of them), leaving
+out the ones listed as already done, or make them with call_tool.`
+
+The resume site used to throw before the audit was read, so it listed
+nothing; it now carries the same "Already done before this error" list.
+
+The text-field marker (PRD R35.5, amends D29). `call_tool`'s marker read
+`[N lines, shown as text below]` under a `"key" (N lines):` header. A
+Sonnet trace read that as a list: its machine treated the field as an
+array of content blocks and miscounted. Both now name the type —
+`[string: N lines, shown as text below]` and `"key" (string, N lines):` —
+so the reader knows `result.key` is one string.
+
+Consequences. The contract grows by about 280 tokens. A machine that
+already used parallel regions is unchanged. Tests that matched the old
+round-trip copy match the new one.
+
+Amendment (2026-10-31): `toolCalls` ids are `<id>*0`, `<id>*1`, …, not
+`<id>#k`. With the default `<id>` (the tool name) they were the same
+strings as a plain `toolCall`'s default ids (`<name>#<n>`, a running
+count), so `toolCall('write_file', …)` beside `toolCalls('write_file',
+[a, b])` gave two calls the id `write_file#1`, and `whenCallIn('write_file')`
+also matched the plain call's events. `whenCallIn(id)` now matches the
+prefix `<id>*` only. An explicit `{ id }` gets the same separator, so the
+rule is one rule. Machines match events to items by `event.args` (D31),
+so no code needs the separator.
+
+## D31 — Every tool event carries its call's `args` (2026-10-30)
+
+Context. In a live eval a model used `toolCalls` and mapped each answer
+back to its item with `nums[Number(callId.split('#')[1]) - 1]`, taking the
+ids for 1-based (they are 0-based), and posted 9 comments on the wrong pull
+requests. D30 had rejected an index field because the index is in the id;
+the trace shows that index arithmetic on ids is the footgun.
+
+Decision (PRD R7, R15; amends D30). `TOOL_RESULT`, `TOOL_ERROR` and
+`TOOL_DENIED` each carry `args`: the arguments of the call they answer.
+For a gated call they are the sealed `pending` arguments (S2), so the
+event names what actually ran or was declined, not what the restored
+machine might compute now. Every site that answers a specific call sets
+them: a read run at once, an approved call run on resume, a decline, a
+policy denial (first segment, resume, and a re-issued held call), an
+R15a validation error, a refused forwarded question, and an upstream
+failure. Errors that abort the workflow (caps, unknown tool) answer no
+call and send no event, as before.
+
+Contract rule 4 lists the field with one clause: match a result to its
+item by `args`, not by order or id. Rule 5 drops "call k gets the id
+'<id>#k'" and its example records `event.args.path` per answer; the
+contract is a few characters shorter than before. The `tools.d.ts` header
+says the same in its `toolCalls` lines. Ids are unchanged.
+
+Order. Events need not arrive in list order: within one segment the host
+answers calls in the order they were queued, but a `toolCalls` item that
+fails the R15a check answers in the first segment while its siblings
+answer after the round trip, and a call held for a forwarded server
+question (G1) answers after the calls that did not need one. Matching by
+`args` is correct under any order; `fan-out.test.ts` covers the first case.
+
+Size. Nothing new is sealed: the blob stores `pending` (with its args) and
+the machine snapshot, never events, and resume builds each event from the
+sealed record. An event's `args` are the request's own object sent back
+into the VM, bounded as the request was (sandbox memory, and for a gated
+call the R23 blob ceiling).
+
+## D32 — Search hits show how to call them; argument errors carry the signature (2026-10-31)
+
+Context. On the v13 dev tiers (basecamp harness) every upstream
+`call_tool` cost the model about one `search_<box>` plus 0.6–1.2
+`describe_tool` calls: Haiku on `multi-hard` averaged 11.5 API turns, 2.78
+of them `describe_tool` and 5.22 `call_tool`. On held-out servers
+Projection took about twice the turns of direct mode (9.0 vs 4.9), and with
+prompt caching a large direct tool list is cheap, so each extra turn — the
+whole prompt re-sent — ate the token savings. The search page could not be
+acted on: `search_github {query: "create issue"}` answered 25 one-liners
+with no arguments, so a `describe_tool` turn always sat between the search
+and the call.
+
+Decision (PRD R29, R33, R35.1, R35.5; amends D10/D22's page shape).
+
+- **Signatures on the top hits.** The first three hits of a query
+  (`SIGNATURE_HITS`) carry a compact call signature, one line under the
+  entry: `args: {method: "create"|"update", owner: string, repo: string,
+title?: string, perPage?: number = 30}` — required arguments first, then
+  optional ones, with types, enums (at most 12 members) and the scalar
+  defaults R34 keeps (D29). Only the top level: a nested object or
+  array-of-objects shows as `object` / `object[]`, and the line ends with
+  `(describe_tool has the full schema)`, or with `(call describe_tool
+first: …)` when a required argument is the nested one. Optional
+  arguments stop at 480 characters (`…N more`). `structuredContent` entries
+  carry the same `signature: { text, complete, callable }`. No signature on
+  a listing without a query (catalog order says nothing about intent), past
+  rank 3, or for a tool policy blocks.
+- **Why three.** On the D22 offline corpus (1,173 cases) the tool the
+  model went on to use ranks 1st in 75.5 % of cases, top 3 in 89.9 % (93.4 %
+  of the recorded queries) and top 5 in 92.8 %. Two more signatures would
+  buy 2.9 points on every search; a signature has a median of 109
+  characters (~27 tokens) over the GitHub tools, against ~800–1,400 tokens
+  for a `describe_tool` answer plus the turn that fetches it.
+- **Query pages hold 15.** A ranked page holds 15 tools (a listing still
+  50). The gold tool is in the top 15 in 96.6 % of cases and the top 50 in
+  97.7 %; every row past the 15th cost ~30 tokens on every search that had
+  it. The rest is a cursor away.
+- **Self-correcting errors.** A `validate` error from `call_tool` (or a
+  machine's `toolCall`) restates the signature: `"github.issue_write" takes
+args: {…}. Fix argument "owner" and try again.` An `upstream` failure
+  does too, because the server enforces what the shallow R35.1 check lets
+  through (nested fields, formats, names the schema does not forbid). A
+  call made without `describe_tool` costs at most one retry, where it used
+  to cost a `describe_tool` turn and a retry.
+- **Copy.** The preambles, the search and call descriptions and the page
+  footer say a tool shown with its args can go straight to `call_tool`, and
+  `describe_tool` is for any other tool or for what an argument means.
+
+Measured offline (chars / 4; retrieval metrics unchanged, R@1 75.5 %, R@5
+92.8 %, MRR 0.831). Mean first page over the corpus: 748 → 507 tokens
+(github 788 → 577, multi:github 816 → 613, synthetic 1,046 → 442; the small
+boxes grow by the signatures: mongo 233 → 307, multi:mongo 161 → 244, fs
+339 → 391). One search each: `search_github "create issue"` 832 → 642,
+`"list pull requests"` 1,301 → 805, `"comment on a pull request"` 1,616 →
+641, `"search code"` 557 → 648; `search_mongo "find documents"` 222 → 314,
+`"list collections"` 175 → 212. A `describe_tool` answer the signature
+replaces costs 801–1,392 (github `list_pull_requests`, `issue_write`) and
+885 (mongo `find`). Signatures are complete for 84 of the 95 GitHub tools,
+17 of 21 MongoDB and 13 of 14 filesystem tools, and callable without
+`describe_tool` for all but the seven whose required argument is nested
+(`push_files`, `create_repository_ruleset`,
+`check_dependency_vulnerabilities`, `aggregate`, `create-index`,
+`explain`, `edit_file`); two GitHub tools are cut for length. The surface
+table's sample search page: github 956 → 711, mongodb 208 → 301, multi 1,225
+→ 738. Tool definitions grew ~40 tokens, the preambles 10–40.
+
+S5. Signatures are built from the sanitized schema only (R34's allowlist,
+neutralized strings, `safeDefault`). Property names are server data: a
+plain identifier prints bare, anything else JSON-quoted after
+neutralization, a name over 64 characters is left out rather than cut (a
+cut name is a wrong key); a type word outside the JSON Schema vocabulary
+prints as `any`. The line is ours, indented under the entry it belongs to,
+after the posture label: a hostile schema cannot forge an entry or a
+posture. Approval, gating and the posture labels are unchanged; a signature
+grants nothing — the call still goes through `call_tool`'s gate.
+
+Rejected: argument descriptions in the signature (they are most of a
+`describe_tool` answer's size, and `describe_tool` serves them; D33 brings
+back a capped gloss for the ones a call cannot do without); signatures on every
+hit (a 15-row page of them costs more than the `describe_tool` it saves);
+rejecting unknown arguments the schema does not forbid (D9: the server is
+the authority).
+
+Amendment (2026-10-31): a property name or an enum member that holds a
+zero-width character (U+200B–U+200F), a word joiner or invisible operator
+(U+2060–U+2064), a BOM (U+FEFF) or a tag character (U+E0000–U+E007F) shows
+it as a visible JSON `\uXXXX` escape (a surrogate pair for a tag character, so a name copied into arguments decodes to the server's own), in the signature and so in argument-error
+hints. Printed as is, `"pa\u200Bth"` looked like `path` and the model
+sent the wrong name; stripped, it would still be the wrong name.
+
+## D33 — Signed hits gloss the required arguments their names do not explain (2026-10-31)
+
+Context. D32's `args:` line cut `describe_tool` calls by about 80 % and
+cost by 7–18 %, but it carries names and types, not meanings. Sonnet read
+`rename-collection args: {connectionId: string, database: string, …}`,
+invented `connectionId: "default"`, got an upstream error and gave up;
+before D32 it had called `describe_tool` and read that `connectionId` is
+"the id returned by one of the connect tools, or \"preconfigured\"". GitHub
+has the same kind of argument (`sha` takes a branch or tag name too;
+`after` takes the previous page's `endCursor`). The error hint restated
+only the signature, so the retry had nothing new to go on.
+
+Decision (PRD R33, R35.1, R35.5; amends D32).
+
+- **Glosses on the signed hits.** Each hit that shows an `args:` line (the
+  first three of a query, not blocked) also carries
+  `glosses: [{ name, text }]` for its _required_ arguments, rendered as one
+  more indented line: `  where connectionId: "The connection to run the
+operation against. Use the id returned by one of the connect tools, or
+\"preconfigured\" to use…"`. A required argument is the one a call cannot
+  go without, so it is the one a model invents when it cannot tell what it
+  means; optional ones stay with `describe_tool`.
+- **Only what the name does not say.** An argument gets no gloss when its
+  description is made only of filler words (articles, prepositions,
+  `name`, `number`, `id`, `value`, `new`, `required`, …) and words of the
+  tool's or its arguments' names, matched as prefixes (`Repository name`
+  for `repo`, `The number of the issue` for `issue_number`, `The new name
+for the collection` for `newName`), when it is an `enum` or `const`
+  (the line already lists the values; on the GitHub fixture those
+  descriptions were a third of the gloss text and read "The method to
+  execute" or listed the options again), or when it has no description.
+- **Capped.** A gloss is cut at a word to 120 characters
+  (`MAX_GLOSS_CHARS`), and one tool's glosses stop at 240. 120 keeps the
+  median informative GitHub description whole (48 characters) and, in a
+  longer one (Sentry's median is 124, MongoDB's `connectionId` 173), the
+  instruction in its first sentences; past it are option lists and
+  examples.
+- **Once per page.** A gloss already on the page (same argument, same
+  words) is not repeated on a later hit, so a MongoDB page pays for
+  `connectionId` once. `structuredContent` keeps every hit's glosses.
+- **Errors gloss what was sent.** An `upstream` rejection's hint adds the
+  glosses of the arguments the call sent, optional ones included (`after`,
+  `cursor`, `perPage`), at up to 240 characters each:
+  `… takes args: {…}, where sha: "Commit SHA, branch name, or tag name".
+Fix them and try again, …`. A `validate` hint glosses the argument it
+  names. A rejection is rare and is exactly where the meaning was missed.
+
+Why three hits, not just the first. Measured offline (chars / 4, D22
+corpus, 1,173 cases; retrieval unchanged): glossing only rank 1 adds a
+mean 16 tokens (median 0) and reaches the gold tool with a gloss in 38.1 %
+of cases; ranks 2–3 add 6.5 points for 21 more tokens a page, about 325
+tokens per extra case reached, against 800–1,400 for the `describe_tool`
+answer (plus the turn) or the failed call it replaces. And a signed hit
+without its meaning invites the same invented value.
+
+Measured. Mean first page 507 → 539 tokens (median +31.5, p90 +83): github
+577 → 622, multi:github 613 → 661, mongo 307 → 360, multi:mongo 244 → 289,
+fs 391 → 392, synthetic 442 (no glosses). Surface table's sample search
+page: github 711 → 744, mongodb 301 → 338, multi 738 → 771. Tools with at
+least one gloss: GitHub 42 of 95 (57 glosses), MongoDB 20 of 21 (26), fs 1
+of 14, synthetic 0 of 1,003; the summit fixtures Slack 3 of 8, Stripe 4 of
+22, Notion 17 of 24, Sentry 52 of 66.
+
+S5. A gloss is the server's text, built from the R34-sanitized schema (so
+`description` was already neutralized, and the 16 KB cap may have dropped
+it): invisible characters stripped, whitespace collapsed to one line,
+control and bidi characters neutralized, raw text read to 2,000 characters
+at most, then capped. Each is JSON-quoted on our own indented `where` line
+under the entry, so it cannot end its quote and pass for another
+argument's gloss, open a line, or forge an entry or a posture. A name
+over 64 characters gets no gloss, as it gets no place in the signature.
+
+Rejected: a gloss on optional arguments on the search page (over the
+GitHub tools their glosses come to 9,640 characters against 3,504 for the
+required ones); a first-sentence rule (the
+instruction in `connectionId` is in its second); glossing every hit.
+
+## D34 — A box's shared arguments are shown once, at the head of its pages (2026-10-31)
+
+Context. D32/D33 cut `describe_tool` calls by 60–100 %, but the v15
+transcripts show another wasted turn in most MongoDB episodes: the model
+lists the box (`search_mongo {}`), whose one-liners carry no arguments,
+then calls `mongo.list-databases` with `{}` or an invented
+`connectionId`, reads the `validate` hint's gloss ("Use … or
+\"preconfigured\"") and retries. The argument it lacked is the one almost
+every tool of the box requires. Many servers work this way: MongoDB's
+`connectionId` / `database` / `collection`, GitHub's `owner` / `repo`,
+Sentry's `organizationSlug`, Slack's `channel_id`.
+
+Decision (PRD R33, R44; amends D32, D33).
+
+- **Shared arguments.** Per box (a single server is one box), a required
+  argument is shared when at least half of the box's deduplicated tools,
+  and at least three, require it under the same name with the same
+  rendered type (`SHARED_ARG_SHARE = 0.5`, `MIN_SHARED_ARG_TOOLS = 3`). It
+  must be flat (no nested shape, no cut enum, not `any`) and have no
+  default; a name typed differently across tools counts only the tools of
+  its most common type. At most four (`MAX_SHARED_ARGS`), most shared first,
+  their `{…}` capped at 240 characters. Each carries the D33 gloss that at
+  least half of the tools sharing it give it (so a per-tool description such
+  as Slack's "The ID of the channel containing the thread" is not promoted).
+- **At the head of the page.** A search page leads, above its `Tools …`
+  header, with one line per box it shows calls for:
+  `Shared args (most mongo tools take them): {connectionId: string,
+database: string, collection: string}, where connectionId: "The
+connection to run the operation against. Use the id returned by one of
+the connect tools, or \"preconfigured\" to use…"` — on a listing page
+  for every box with a tool on it (a listing has no `args:` lines, so this
+  is what the model builds a call from), on a query page for every box
+  with a signed hit (an unsigned hit is not called from the page), never
+  for a box listed directly (its schemas are in the tool list). A hit's
+  `where` line leaves out a gloss the shared line shows (D33's once per
+  page).
+- **Signed hits name them.** A signed hit's text writes a required shared
+  argument whose type matches the line's by name alone:
+  `args: {connectionId, database, collection, newName: string, dropTarget?:
+boolean = false}`. `structuredContent` keeps the whole signature and
+  every gloss, so a client reading the structure loses nothing.
+- **Not on the shelf.** v16 first also put one `  shared args: {…}` line
+  under each searched box on the shelf. Round v16 measured it: MongoDB
+  call errors fell 47 → 16, but Haiku asked the user "which database and
+  collection should I query?" before calling any tool (global-who-is-grace,
+  2 of 6, never before), and its multi pass fell 50 → 46. On the shelf,
+  required arguments read as facts the model must already have before it
+  acts. The line was removed (v16b); the shared arguments lead the box's
+  pages only.
+
+The threshold. Run over every offline catalog, the arguments that recur
+are required by 58–95 % of their box's tools — GitHub `owner` 63/95 (66
+%), `repo` 55/95 (58 %); MongoDB `connectionId` 20/21, `database` 19/21,
+`collection` 15/21 (71 %); filesystem `path` 11/14 (79 %); synthetic `id`
+590/1,003 (59 %); Sentry `organizationSlug` 46/66 (70 %); Slack
+`channel_id` 5/8 (63 %) — and the next most required by at most 25 %
+(Notion `page_id` and `block_id` 6/24, Slack `thread_ts` 2/8, GitHub
+`method` 15/95); Notion and Stripe have none. Anything from a third to a
+half separates them; a half is the one the copy can state honestly
+("most … tools take them"). Glossed: MongoDB `connectionId` and Sentry
+`organizationSlug` (46 of 46 give the same gloss); GitHub `owner` gets
+none (49 of its 63 descriptions restate the name).
+
+Abbreviation, measured (D22 corpus, 1,173 cases, chars / 4, retrieval
+unchanged: R@1 75.5 %, R@5 92.8 %, MRR 0.831). Mean first page: v15 539;
+shared line with full signatures 560; names only 551; `...shared` (one
+spread token for a tool that takes them all, names otherwise) 549. The
+spread form saves two more tokens a page on average (12 on the MongoDB
+box) but makes the model expand a token into arguments, and a tool that
+takes only some of them still needs the names; names alone keep every
+argument a call needs on the hit's own line. Chosen: names.
+
+Measured (names). Mean first page 539 → 551 (github 622 → 630,
+multi:github 661 → 669, mongo 360 → 372, multi:mongo 289 → 303, fs 392 →
+400, multi:fs 414 → 422, synthetic 442 → 454). Box listing (first page,
+no query): `search_mongo {}` 585 → 647 tokens (the line with the
+`connectionId` gloss, +62), `search_github {}` 3,298 → 3,316, global
+`search_tools {}` 1,495 → 1,513; single-server `search_tools {}` mongodb
+549 → 611, github 1,413 → 1,431. Query pages: `search_mongo "list
+collections"` 249 → 268, `"rename collection"` 534 → 544, `search_github
+"create issue"` 673 → 683. Multi-server system prompt (shelf) 504 → 535
+tokens in `projection` mode, 493 → 524 in `projection-boxes` (two lines,
+github and mongo; fs is listed directly); single-server prompts unchanged.
+The +62 on the MongoDB listing stands against the extra turn the
+rejected `list-databases` call cost (the whole prompt re-sent, plus the
+error).
+
+S5. Computed from the R34-sanitized schemas only, as signatures and
+glosses are. Names print as a signature prints them (a plain identifier
+bare, anything else JSON-quoted after neutralization; over 64 characters
+never shared), types are the signature's, and glosses are D33's (one
+line, invisible characters stripped, neutralized, cut, JSON-quoted). The
+line is ours, starts with our own words, and sits above the `Tools …`
+header, so a hostile schema cannot forge an entry, a posture or a header;
+on the shelf it is an indented line under the box's own line. A hostile
+server can fill only its own box's line, within the caps. Approval and
+gating are unchanged: the line grants nothing, and a call still goes
+through `call_tool`'s gate.
+
+Rejected: glosses on the shelf (the gloss is ~30 tokens per box in every
+prompt, and the box's first page shows it); a one-third threshold (the
+same arguments on these catalogs, and "most" would no longer be true);
+dropping the shared arguments from the hits altogether (a tool that takes
+only some of them, like `list-databases`, would no longer say which).
+
+## D35 — A text field is printed verbatim in a fence, not indented (2026-10-31)
+
+Context. D29 prints a top-level string of three or more lines (a file's
+contents, a document body) below the JSON as its own lines, indented four
+spaces like the other untrusted blocks. Models copy the indent. Writing a
+file back after reading it, Haiku 4.5 wrote `    - buy milk` for `- buy
+milk`. Across rounds v13-bc to v16b, 4–7 episodes a round wrote
+indented content to a file, and 1–3 of them failed on it
+(cross-email-to-todo, fs-append-todo). These were most of Haiku's
+multi-tier failures.
+
+Decision. The block is printed verbatim, with no indent, between two
+lines of backticks under a header that says so: `"content" (string, 10
+lines, verbatim between the ``` lines):`. The fence is one backtick
+longer than the longest backtick run in the text, and at least three. So
+the server's text cannot close it and continue as facade copy (S5), which
+was the only work the indent did. The JSON marker is unchanged. The
+`renderedSize` estimate now counts the header and fences.
+
+Rejected: keeping the indent and telling the model to strip it (copy
+does not fix a copying habit); a fixed fence such as `<<<`/`>>>` (the
+server could print it); printing the text raw with no fence (a line
+of the file could pass as facade copy).
+
+Amendments (2026-10-31, review of the v0.9 climb).
+
+- Tabs are kept inside the fence. "Verbatim" was not true: the
+  neutralizer turned every tab into `�`, so a Makefile's `\tcc main.c`
+  or a TSV row came back corrupted when a model wrote it back. A tab
+  cannot start a line or close a fence, so `neutralizeControlChars` has
+  an `allowTab` option, used for fenced text only; every other control
+  and bidi character is still neutralized. Outside a fence a tab is a
+  JSON `\t` escape, as before.
+- A raw content array (several blocks, or blocks that are not text) is
+  printed block by block, and its text blocks and embedded text resources
+  are now fenced the same way, under `[text, verbatim between the ```
+lines]` and `[embedded resource "<uri>" ("<mime>"), text verbatim
+between the ``` lines]`. Printed raw at column 0, a block could forge
+  another call's `call_tool "…": ok` head. A single text block is still
+  printed raw, as before D35.
+- `renderedSize` charged every string, at any depth, for a fence and a
+  header (about 106 characters), so `{ ids: [2,500 short strings] }`
+  estimated at 307k and was truncated under the 256 KB `maxResultBytes`.
+  It now charges the fence, header and marker only where
+  `structuredBody` prints them: a top-level field of a record with at
+  least three lines, at most five. There it charges three fence lengths
+  (the header names the fence, then the two fence lines), the quoted key
+  (cut at 200) and a fixed margin; every other string costs its
+  JSON-escaped length, counted without building it. Each container's
+  closing line now counts its indent too. A test holds the estimate at or
+  above the rendered body for a set of shapes. A content array's estimate
+  adds each fenced block's fences and header.

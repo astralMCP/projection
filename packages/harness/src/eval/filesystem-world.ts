@@ -85,9 +85,17 @@ export const FILESYSTEM_FIXTURE: Readonly<Record<string, string | Uint8Array>> =
   'tmp/draft.md': '# Draft\n',
 };
 
-/** Write the fixture tree under `root`. */
-export function writeFilesystemFixture(root: string): void {
-  for (const [relative, content] of Object.entries(FILESYSTEM_FIXTURE)) {
+/**
+ * Write the fixture tree under `root`, plus `extra` files (the multi-hard
+ * world's); `base` replaces {@link FILESYSTEM_FIXTURE} (the summit world's
+ * own tree).
+ */
+export function writeFilesystemFixture(
+  root: string,
+  extra: Readonly<Record<string, string | Uint8Array>> = {},
+  base: Readonly<Record<string, string | Uint8Array>> = FILESYSTEM_FIXTURE,
+): void {
+  for (const [relative, content] of Object.entries({ ...base, ...extra })) {
     const path = join(root, relative);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content);
@@ -112,7 +120,14 @@ export function filesystemServerEntry(): string {
  * server and removes the tree.
  */
 export async function openFilesystemWorld(
-  options: Pick<WorldOptions, 'onCall'> = {},
+  options: Pick<WorldOptions, 'onCall'> & {
+    /** Files written on top of the fixture (the multi-hard world's). */
+    extraFiles?: Readonly<Record<string, string | Uint8Array>>;
+    /** A whole tree replacing the widgets fixture (the summit world's). */
+    baseFiles?: Readonly<Record<string, string | Uint8Array>>;
+    /** The temp directory's name prefix (default `widgets-`). */
+    dirPrefix?: string;
+  } = {},
 ): Promise<ServerWorld> {
   // A neutral prefix: the prompts carry this path, and a name like
   // "projection-eval" would tell the model what it is being measured for.
@@ -127,8 +142,8 @@ export async function openFilesystemWorld(
     // realpath: macOS puts tmpdir under a symlink, and the server compares
     // resolved paths against its allowed directories. Inside the try so a
     // fixture write that fails half-way still removes the directory.
-    root = realpathSync(mkdtempSync(join(tmpdir(), 'widgets-')));
-    writeFilesystemFixture(root);
+    root = realpathSync(mkdtempSync(join(tmpdir(), options.dirPrefix ?? 'widgets-')));
+    writeFilesystemFixture(root, options.extraFiles, options.baseFiles);
 
     const transport = new StdioClientTransport({
       command: process.execPath,

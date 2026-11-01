@@ -10,7 +10,7 @@ describe('sanitizeSchema (R34, S5)', () => {
       type: 'object',
       title: 'Write',
       description: 'Write a file.',
-      properties: { path: { type: 'string', examples: ['/etc/passwd'], default: '/tmp/x' } },
+      properties: { path: { type: 'string', examples: ['/etc/passwd'], default: { p: '/tmp/x' } } },
       required: ['path'],
       additionalProperties: false,
       examples: [{ path: 'a' }],
@@ -30,6 +30,36 @@ describe('sanitizeSchema (R34, S5)', () => {
     for (const key of ['examples', '$comment', 'x-vendor', '$schema']) {
       expect(SCHEMA_KEY_ALLOWLIST.has(key)).toBe(false);
     }
+  });
+
+  it('keeps scalar defaults, and drops structured, long or unprintable ones (D29)', () => {
+    const { schema, truncated } = sanitizeSchema({
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', default: 10 },
+        strict: { type: 'boolean', default: false },
+        cursor: { type: ['string', 'null'], default: null },
+        sort: { type: 'string', default: 'asc' },
+        ratio: { type: 'number', default: Number.NaN },
+        filters: { type: 'object', default: { status: 'open' } },
+        tags: { type: 'array', default: ['a'] },
+        long: { type: 'string', default: 'x'.repeat(65) },
+        ansi: { type: 'string', default: `a${ESC}[31m` },
+        bidi: { type: 'string', default: `a${RLO}b` },
+        hidden: { type: 'string', default: 'a\u200bb' },
+        multi: { type: 'string', default: 'a\nb' },
+      },
+    });
+    expect(truncated).toBe(false);
+    const props = (schema as { properties: Record<string, Record<string, unknown>> }).properties;
+    expect(props['limit']).toEqual({ type: 'integer', default: 10 });
+    expect(props['strict']).toEqual({ type: 'boolean', default: false });
+    expect(props['cursor']).toEqual({ type: ['string', 'null'], default: null });
+    expect(props['sort']).toEqual({ type: 'string', default: 'asc' });
+    for (const dropped of ['ratio', 'filters', 'tags', 'long', 'ansi', 'bidi', 'hidden', 'multi']) {
+      expect(props[dropped], dropped).not.toHaveProperty('default');
+    }
+    expect(SCHEMA_KEY_ALLOWLIST.has('default')).toBe(true);
   });
 
   it('neutralizes control and bidi characters in every string value, but not property names', () => {
@@ -63,7 +93,7 @@ describe('sanitizeSchema (R34, S5)', () => {
       $defs: { Item: { type: 'object', properties: { id: { type: 'integer', examples: [1] } } } },
       properties: {
         list: { type: 'array', items: { $ref: '#/$defs/Item' } },
-        tuple: { prefixItems: [{ type: 'string', default: 'x' }, { type: 'number' }] },
+        tuple: { prefixItems: [{ type: 'string', examples: ['x'] }, { type: 'number' }] },
         either: { anyOf: [{ type: 'string' }, { type: 'null', $comment: 'drop' }] },
         never: { not: { type: 'string', examples: [] } },
         open: { type: 'object', additionalProperties: true },

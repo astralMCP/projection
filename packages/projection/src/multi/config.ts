@@ -18,11 +18,17 @@ import {
   type UpstreamSpec,
 } from '../auth/index.js';
 import { invalidConfig as invalid, ProjectionError } from '../errors.js';
-import type { WrapOptions } from '../facade/options.js';
+import { assertUpstreamElicitationMode, type WrapOptions } from '../facade/options.js';
 import type { ServerSource } from '../introspector/index.js';
 import { assertApprovalsMode } from '../policy/index.js';
 import { capLength, neutralizeControlChars, quoted } from '../text-safety.js';
-import { DEFAULT_SERVER_ALIAS, isPlainObject, isRecord, type ApprovalsMode } from '../types.js';
+import {
+  DEFAULT_SERVER_ALIAS,
+  isPlainObject,
+  isRecord,
+  type ApprovalsMode,
+  type UpstreamElicitationMode,
+} from '../types.js';
 import { ALIAS_PATTERN, splitQualified } from '../catalog/boxes.js';
 
 /** One source with its per-box settings (R39). */
@@ -43,6 +49,12 @@ export interface ServerSourceConfig {
    * `WrapServersOptions.approvals`. A per-tool `policy` override still wins.
    */
   approvals?: ApprovalsMode;
+  /**
+   * Whether this box's server may ask the human questions (G1, DECISIONS
+   * D24); takes precedence over `WrapServersOptions.upstreamElicitation`.
+   * Default `'refuse'`.
+   */
+  upstreamElicitation?: UpstreamElicitationMode;
   /**
    * R47 (skip this source instead of failing the wrap) is not supported yet:
    * `true` fails the wrap with a `validate` error. Wrapping is fail-closed.
@@ -77,6 +89,7 @@ export interface ResolvedSource {
   sdk: boolean;
   description?: string;
   approvals?: ApprovalsMode;
+  upstreamElicitation?: UpstreamElicitationMode;
 }
 
 /** At most this many sources per facade (R48). */
@@ -96,6 +109,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'source',
   'description',
   'approvals',
+  'upstreamElicitation',
   'optional',
 ]);
 
@@ -181,7 +195,7 @@ function resolveSource(alias: string, value: unknown, store: () => TokenStore): 
     if (source === undefined) {
       throw invalid(
         `source ${quoted(alias)} is not an McpServer, a Client, a { url } or a { source } configuration`,
-        'Pass an McpServer instance, a connected Client, { url, oauth? }, or { source, description?, approvals? }.',
+        'Pass an McpServer instance, a connected Client, { url, oauth? }, or { source, description?, approvals?, upstreamElicitation? }.',
       );
     }
     return { alias, source: assertNotConnected(alias, source), sdk: isSdkSource(source) };
@@ -232,6 +246,12 @@ function resolveSource(alias: string, value: unknown, store: () => TokenStore): 
       throw invalid(`source ${quoted(alias)}: ${err.message}`, err.hint);
     }
   }
+
+  const elicitation = assertUpstreamElicitationMode(
+    value['upstreamElicitation'],
+    `source ${quoted(alias)}: upstreamElicitation`,
+  );
+  if (elicitation !== undefined) resolved.upstreamElicitation = elicitation;
 
   // `optional: false` is accepted: it is the fail-closed default.
   const optional = value['optional'];

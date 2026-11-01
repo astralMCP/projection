@@ -11,11 +11,18 @@ import {
   buildBlobPayload,
   type BlobKeyDomain,
 } from '../blob/index.js';
-import { approvalSubject, blobKeyDomain } from '../catalog/boxes.js';
+import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
 import { buildElicitationCopy } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
+import {
+  batchedInputRequests,
+  batchedVerdicts,
+  batchOrder,
+  chooseLayout,
+  type ApprovalPrompts,
+} from './batch.js';
 import { legacySuspendError } from './legacy-gate.js';
 import {
   clampCaps,
@@ -34,7 +41,9 @@ import {
   type PolicyOptions,
   type StructuredError,
   type ToolExecutor,
+  type UpstreamHold,
 } from '../types.js';
+import { answersFor, forwardQuestions } from './upstream-input.js';
 import {
   APPROVAL_SCHEMA,
   inputRequired,
@@ -45,6 +54,7 @@ import {
   type ProtocolEra,
   type RetryEnvelope,
   type ToolCallResult,
+  supportsMrtr,
 } from './protocol.js';
 
 /**
@@ -112,8 +122,21 @@ export interface ApprovalGateDeps extends PolicyOptions {
    * not know) leaves the shim to decide.
    */
   clientCanElicit?: boolean;
+  /**
+   * Whether the connected client declared URL-mode elicitation. A forwarded
+   * server question that is a link (G1) is sent in URL mode only then;
+   * otherwise the link is shown as inert text in a form.
+   */
+  clientUrlElicitation?: boolean;
   /** Optional shared replay cache (R38); consulted after verification, before execution. */
   replayCache?: ReplayCache;
+  /**
+   * How a suspension holding several gated calls is put to the person
+   * (`WrapOptions.approvalPrompts`, batch.ts): one elicitation per call
+   * (default) or one batched elicitation for all of them. Only machine
+   * suspensions can hold several; a `call_tool` suspension holds one.
+   */
+  approvalPrompts?: ApprovalPrompts;
 }
 
 export interface ExecuteMachineDeps extends ApprovalGateDeps {
@@ -138,7 +161,24 @@ export async function executeMachine(
     assertCodeSize(args.code, caps);
     assertInputSize(args.input, caps);
 
-    const resume = args.requestState !== undefined ? await openResume(args, deps, caps) : undefined;
+    const resume = args.requestState !== undefined ? await openResume(args, deps) : undefined;
+
+    // R18: the trip cap bounds a workflow's total round trips. The counter is
+    // authenticated inside the blob, so a client cannot wind it back.
+    //
+    // `trip` is 1 on the first suspension, so a blob carrying trip === N is
+    // the Nth round trip and must be allowed; only N+1 is over the cap. The
+    // cap is also enforced at suspension time, which is what actually refuses
+    // the workflow — this arm only catches a blob minted before a cap change.
+    // Nothing from this blob runs; what earlier round trips ran is listed.
+    if (resume !== undefined && resume.trip > caps.maxRoundTrips) {
+      const limit = roundTripLimit(caps);
+      return withApprovalOutcomes(
+        errorResult({ phase: 'terminal', ...limit, diagnostics: [], logs: [] }),
+        resume.audit,
+        deps.redact,
+      );
+    }
 
     const outcome = await runSegment({
       code: args.code,
@@ -171,6 +211,8 @@ interface ResumeState {
   verdicts: Record<string, ApprovalVerdict>;
   audit: AuditEntry[];
   trip: number;
+  /** Calls held on their server's question, with the answers to send back (G1). */
+  held: Record<string, { hold: UpstreamHold; responses: Record<string, unknown> }>;
 }
 
 /**
@@ -183,7 +225,6 @@ interface ResumeState {
 async function openResume(
   args: ExecuteMachineArgs,
   deps: ExecuteMachineDeps,
-  caps: ResourceCaps,
 ): Promise<ResumeState> {
   const payload = openBlob(args.requestState as string, {
     expectedKind: 'machine',
@@ -194,30 +235,49 @@ async function openResume(
   });
   await assertNotReplayed(payload, deps.replayCache);
 
-  // R18: the trip cap bounds a workflow's total round trips. The counter is
-  // authenticated inside the blob, so a client cannot wind it back.
-  //
-  // `trip` is 1 on the first suspension, so a blob carrying trip === N is
-  // the Nth round trip and must be allowed; only N+1 is over the cap. The
-  // cap is also enforced at suspension time, which is what actually refuses
-  // the workflow — this arm only catches a blob minted before a cap change.
-  if (payload.trip > caps.maxRoundTrips) {
-    throw new ProjectionError(
-      'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
-      {
-        hint: `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips, for example by batching writes into fewer states.`,
-      },
-    );
+  // A batched prompt (batch.ts) is answered by the layout SEALED in the
+  // blob, never by this instance's option or anything the client sends:
+  // one answer, one boolean per call, and only an exact `true` in an
+  // accepted answer runs. Forwarded server questions in the same round trip
+  // are keyed apart and read below either way.
+  const verdicts =
+    payload.prompts === 'batched'
+      ? batchedVerdicts(args.inputResponses, payload.pending, readReason)
+      : perCallVerdicts(args.inputResponses, payload.pending);
+
+  // G1: a held call's answers go back to its server, whatever they are; an
+  // unanswered question is a cancel. No answer approves anything.
+  const held: ResumeState['held'] = {};
+  for (const [id, hold] of Object.entries(payload.upstreamInput ?? {})) {
+    held[id] = { hold, responses: answersFor(hold, args.inputResponses) };
   }
 
+  return {
+    snapshot: payload.snapshot,
+    pending: payload.pending,
+    held,
+    verdicts,
+    // PRD §8: the audit trail spans the whole workflow, so it rides in the
+    // blob — the library keeps no state between round trips (R27).
+    audit: payload.audit,
+    trip: payload.trip,
+  };
+}
+
+/**
+ * One verdict per pending call from per-call prompts, each keyed by its call
+ * id. The SDK's discriminated reader covers every non-approval outcome in
+ * one place: a missing key, a response of another kind (sampling, roots),
+ * and the decline/cancel actions. R17 treats all of them as a decline, so
+ * only an accepted elicitation approves the call.
+ */
+function perCallVerdicts(
+  responses: ExecuteMachineArgs['inputResponses'],
+  pending: Record<string, PendingToolCall>,
+): Record<string, ApprovalVerdict> {
   const verdicts: Record<string, ApprovalVerdict> = {};
-  for (const key of Object.keys(payload.pending)) {
-    // The SDK's discriminated reader covers every non-approval outcome in
-    // one place: a missing key, a response of another kind (sampling,
-    // roots), and the decline/cancel actions. R17 treats all of them as a
-    // decline, so only an accepted elicitation approves the call.
-    const view = inputResponse(args.inputResponses, key);
+  for (const key of Object.keys(pending)) {
+    const view = inputResponse(responses, key);
     if (view.kind !== 'elicit' || view.action !== 'accept') {
       const reason = view.kind === 'elicit' ? readReason(view.content) : undefined;
       verdicts[key] = reason !== undefined ? { kind: 'declined', reason } : { kind: 'declined' };
@@ -225,16 +285,7 @@ async function openResume(
     }
     verdicts[key] = { kind: 'approved' };
   }
-
-  return {
-    snapshot: payload.snapshot,
-    pending: payload.pending,
-    verdicts,
-    // PRD §8: the audit trail spans the whole workflow, so it rides in the
-    // blob — the library keeps no state between round trips (R27).
-    audit: payload.audit,
-    trip: payload.trip,
-  };
+  return verdicts;
 }
 
 const MAX_REASON_CHARS = 500;
@@ -269,12 +320,15 @@ function toToolCallResult(
       return {
         content: [
           { type: 'text', text: JSON.stringify(outcome.output ?? null, null, 2) },
+          ...noteBlocks(outcome.notes),
+          ...refusalBlocks(outcome.audit, deps.redact),
           ...logBlocks(outcome.logs),
         ],
         structuredContent: {
           output: outcome.output ?? null,
           approvals: outcome.audit,
           logs: outcome.logs,
+          ...(outcome.notes !== undefined ? { notes: outcome.notes } : {}),
         },
       };
 
@@ -282,8 +336,23 @@ function toToolCallResult(
       return suspendResult(outcome, args, deps, caps);
 
     case 'error':
-      return errorResult(outcome.error);
+      return withApprovalOutcomes(errorResult(outcome.error), outcome.audit ?? [], deps.redact);
   }
+}
+
+/**
+ * R15b: a workflow that fails after earlier round trips may already have run
+ * approved writes. Say so (and what was refused), or the model, seeing only
+ * the error, runs again and the person is asked to approve the same write
+ * again. Every failure of a segment with an audit goes through here.
+ */
+function withApprovalOutcomes(
+  failed: CallToolResult,
+  audit: AuditEntry[],
+  redact: RedactionHook | undefined,
+): CallToolResult {
+  const extra = approvalOutcomeBlocks(audit, redact);
+  return extra.length === 0 ? failed : { ...failed, content: [...failed.content, ...extra] };
 }
 
 function suspendResult(
@@ -292,30 +361,37 @@ function suspendResult(
   deps: ExecuteMachineDeps,
   caps: ResourceCaps,
 ): ToolCallResult {
-  // This segment's console output rides on every failure below (R31).
+  // This segment's console output rides on every failure below (R31), and
+  // so do the calls already decided in earlier round trips (R15b).
+  const failed = (error: Parameters<typeof errorResult>[0]): ToolCallResult =>
+    withApprovalOutcomes(errorResult(error), outcome.audit, deps.redact);
   const fail = (phase: ErrorPhase, message: string, hint: string): ToolCallResult =>
-    errorResult({ phase, message, diagnostics: [], hint, logs: outcome.logs });
+    failed({ phase, message, diagnostics: [], hint, logs: outcome.logs });
 
   // R28: a client that cannot carry MRTR must fail here rather than silently
   // executing an unapproved write or hanging (see legacy-gate.ts).
+  const onlyQuestions = Object.keys(outcome.pending).length === 0;
   const gate = legacySuspendError(deps, {
     subject: 'this machine',
-    readOnlyAdvice: 'Author a machine that only calls tools that run without approval',
+    readOnlyAdvice: onlyQuestions
+      ? 'Author a machine that avoids the tool whose server asks the user questions'
+      : 'Author a machine that only calls tools that run without approval',
+    ...(onlyQuestions ? { need: "to pass on a question a tool's server asked the user" } : {}),
   });
   if (gate !== undefined) return fail(gate.phase, gate.message, gate.hint);
 
   // R18: refuse to suspend again once the cap is reached, rather than
   // minting a blob the retry would reject.
   if (outcome.trip > caps.maxRoundTrips) {
-    return fail(
-      'terminal',
-      `this workflow reached the limit of ${caps.maxRoundTrips} approval round trips`,
-      `Restructure the machine to need at most ${caps.maxRoundTrips} approval round trips.`,
-    );
+    const limit = roundTripLimit(caps);
+    return fail('terminal', limit.message, limit.hint);
   }
 
-  const inputRequests: InputRequests = {};
-  for (const [key, call] of Object.entries(outcome.pending)) {
+  const keys = batchOrder(outcome.pending);
+  const copies = [];
+  let inputRequests: InputRequests = {};
+  for (const key of keys) {
+    const call = outcome.pending[key] as PendingToolCall;
     const entry = findTool(deps.catalog, call.name);
     if (entry === undefined) {
       return fail(
@@ -333,6 +409,7 @@ function suspendResult(
       ...(subject.box !== undefined ? { box: subject.box } : {}),
       ...(deps.redact !== undefined ? { redact: deps.redact } : {}),
     });
+    copies.push(copy);
     // The 2026-07-28 elicitation params dropped `title` (the revision carries
     // `message` and `requestedSchema` only), so the summary line becomes the
     // first line of the message rather than being silently lost.
@@ -341,6 +418,37 @@ function suspendResult(
       requestedSchema: APPROVAL_SCHEMA,
     });
   }
+  const layout = chooseLayout(deps.approvalPrompts, outcome.pending, copies);
+  if (layout === 'batched') inputRequests = batchedInputRequests(copies);
+
+  // G1: forward each held call's server question in the same round trip,
+  // keyed apart from the approvals (whose keys are the machine's call ids).
+  const upstreamInput: Record<string, UpstreamHold> = {};
+  const clientUrl = supportsMrtr(deps.protocolEra) && deps.clientUrlElicitation === true;
+  let next = 1;
+  for (const held of outcome.held) {
+    const target = routeCall(deps.catalog, held.call.name);
+    let round: ReturnType<typeof forwardQuestions>;
+    try {
+      round = forwardQuestions(
+        held.call,
+        held.decision,
+        held.input,
+        {
+          ...(isBoxedCatalog(deps.catalog) ? { box: target.alias } : {}),
+          tool: held.call.name,
+          clientUrl,
+        },
+        { first: next, taken: new Set(Object.keys(inputRequests)) },
+      );
+    } catch (err) {
+      const structured = toStructuredError(err, outcome.logs);
+      return failed({ ...structured, logs: outcome.logs });
+    }
+    next += Object.keys(round.inputRequests).length;
+    Object.assign(inputRequests, round.inputRequests);
+    upstreamInput[held.call.id] = round.hold;
+  }
 
   const payload = buildBlobPayload({
     code: args.code,
@@ -348,7 +456,9 @@ function suspendResult(
     snapshot: outcome.snapshot,
     pending: outcome.pending,
     audit: outcome.audit,
+    ...(layout === 'batched' ? { prompts: 'batched' as const } : {}),
     trip: outcome.trip,
+    upstreamInput,
     ...(deps.blob.ttlMs !== undefined ? { ttlMs: deps.blob.ttlMs } : {}),
   });
 
@@ -360,7 +470,7 @@ function suspendResult(
     // it must keep this segment's console output (R31) rather than losing it
     // to the generic catch in executeMachine.
     const structured = toStructuredError(err, outcome.logs);
-    return errorResult({ ...structured, logs: outcome.logs });
+    return failed({ ...structured, logs: outcome.logs });
   }
 
   // The SDK's builder enforces the spec's at-least-one rule and stamps the
@@ -374,6 +484,19 @@ function suspendResult(
   // by S6, and logs are model-authored. Every other response (completion,
   // `isError`, and each resumed segment) still carries its own logs.
   return inputRequired({ inputRequests, requestState });
+}
+
+/**
+ * The R18 `terminal` error. The bare "reached the limit" read as a finished
+ * workflow: a model that saw it, with the calls already run listed below,
+ * told the user the task was done (D30). So it says the workflow did not
+ * finish, that the calls not yet made were not made, and how to finish.
+ */
+export function roundTripLimit(caps: ResourceCaps): { message: string; hint: string } {
+  return {
+    message: `this workflow stopped unfinished: it reached the limit of ${caps.maxRoundTrips} ${caps.maxRoundTrips === 1 ? 'round trip' : 'round trips'} (approvals and forwarded server questions), so the machine did not reach its final state`,
+    hint: `The calls the machine had not made yet were not made. Tell the user the task is incomplete, or finish it: issue the remaining gated calls together with toolCalls (one round trip for all of them), leaving out the ones listed as already done, or make them with call_tool.`,
+  };
 }
 
 /**
@@ -401,6 +524,134 @@ export function errorResult(error: StructuredError): CallToolResult {
     content: [{ type: 'text', text: JSON.stringify(error, null, 2) }],
     structuredContent: { ...error },
   };
+}
+
+/**
+ * What to do after any refusal, shared by a declined `call_tool` and the
+ * refusals restated on a completed machine. "Carry on" alone was read as
+ * licence to announce the refused step as done (the `hitl` tier's cancel
+ * task), so it names the steps that depend on the refused call.
+ */
+export const AFTER_REFUSAL =
+  'Carry on with any part of the task that does not depend on it, but skip anything that only makes sense if it had run (such as announcing it as done), and say in your final answer what was not done.';
+
+const MAX_REFUSAL_ARGS_CHARS = 300;
+const MAX_REFUSALS_LISTED = 20;
+
+/**
+ * A completed workflow's refused calls, as a text block after its output.
+ * The output is model-authored, so a machine that drops TOOL_DENIED (or
+ * returns null) used to hide the refusal: the model read "completed",
+ * believed the write ran, and retried it or announced it (the `hitl` eval
+ * tier). The audit trail already rides in `structuredContent`, which many
+ * hosts never show the model, so the refusals are restated here with the
+ * same guidance a declined `call_tool` gets. Tool names come from the
+ * catalog the call was resolved against; the arguments are the machine's
+ * own (model-authored) and the reason is the approver's note, already
+ * neutralized and capped — both rendered as inert JSON.
+ */
+function refusalBlocks(audit: AuditEntry[], redact?: RedactionHook): ContentBlock[] {
+  const refused = audit.filter(
+    (e) => e.decision === 'declined' || e.decision === 'denied_by_policy',
+  );
+  if (refused.length === 0) return [];
+  const line = (e: AuditEntry): string => {
+    if (e.decision === 'denied_by_policy') {
+      return `- ${auditCall(e, redact)}: blocked by this server's policy`;
+    }
+    return `- ${auditCall(e, redact)}: declined by the user${e.reason !== undefined ? ` with this note: ${JSON.stringify(e.reason)}` : ''}`;
+  };
+  const listed = refused.slice(0, MAX_REFUSALS_LISTED).map(line);
+  if (refused.length > listed.length) {
+    listed.push(`- … and ${refused.length - listed.length} more (see the approvals audit)`);
+  }
+  const noted = refused.some((e) => e.decision === 'declined' && e.reason !== undefined);
+  return [
+    {
+      type: 'text',
+      text: [
+        `Not executed: ${refused.length === 1 ? 'this call was' : `these ${refused.length} calls were`} refused, so nothing ran for ${refused.length === 1 ? 'it' : 'them'}, whatever the output above says.`,
+        ...listed,
+        `Each refusal covers only that call: do not make it again or reach its result another way${noted ? ' (if a note asks for a change, make the changed call instead; it asks for approval again)' : ''}. ${AFTER_REFUSAL}`,
+      ].join('\n'),
+    },
+  ];
+}
+
+/**
+ * A completed workflow's result notes (R35.6, D29), as a text block after
+ * its output. The machine saw them on `TOOL_RESULT.notes`, but its output
+ * is model-authored and may drop them; a partial page the machine counted
+ * as the whole set would otherwise read as a complete answer. The notes
+ * are already single neutralized lines, prefixed with the tool and
+ * bounded by the host.
+ */
+function noteBlocks(notes: string[] | undefined): ContentBlock[] {
+  if (notes === undefined || notes.length === 0) return [];
+  return [
+    {
+      type: 'text',
+      text: [
+        'Notes on the tool results this run read (added by this server, not by the machine; check that the output above accounts for them):',
+        ...notes.map((note) => `- ${note}`),
+      ].join('\n'),
+    },
+  ];
+}
+
+/**
+ * For a failed workflow: the approved calls that already ran before the
+ * failure (so they are not asked for again) and the refused ones, after the
+ * structured error. Nothing when no gated call was decided. Same inert
+ * rendering as {@link refusalBlocks}.
+ */
+function approvalOutcomeBlocks(audit: AuditEntry[], redact?: RedactionHook): ContentBlock[] {
+  const ran = audit.filter((e) => e.decision === 'approved');
+  const refused = refusalBlocks(audit, redact);
+  if (ran.length === 0) return refused;
+  const listed = ran.slice(0, MAX_REFUSALS_LISTED).map((e) => `- ${auditCall(e, redact)}`);
+  if (ran.length > listed.length) {
+    listed.push(`- … and ${ran.length - listed.length} more (see the approvals audit)`);
+  }
+  return [
+    {
+      type: 'text',
+      text: [
+        `Already done before this error: ${ran.length === 1 ? 'this call was' : `these ${ran.length} calls were`} approved and ran. Do not request ${ran.length === 1 ? 'it' : 'them'} again; continue from the state ${ran.length === 1 ? 'it' : 'they'} left.`,
+        ...listed,
+      ].join('\n'),
+    },
+    ...refused,
+  ];
+}
+
+/**
+ * `"tool" {args}` for an audit entry, inert and bounded. The audit holds
+ * the SEALED arguments, so they go through the integrator's redaction hook
+ * first (R16: a copy, under the name the hook knows), failing closed to
+ * `[redaction failed]`; then control, C1, line/paragraph-separator and
+ * bidi characters are neutralized (S5) and the text is cut on a code-point
+ * boundary.
+ */
+function auditCall(e: AuditEntry, redact: RedactionHook | undefined): string {
+  let args: string;
+  try {
+    const shownArgs = redact !== undefined ? redact(e.tool, structuredClone(e.args)) : e.args;
+    args = JSON.stringify(shownArgs) ?? '{}';
+  } catch {
+    args = '[redaction failed]';
+  }
+  const safe = neutralizeControlChars(args);
+  return `${JSON.stringify(neutralizeControlChars(capLength(e.tool, 200)))} ${cutAtCodePoint(safe, MAX_REFUSAL_ARGS_CHARS)}`;
+}
+
+/** `text` cut to at most `max` UTF-16 units without splitting a surrogate pair, `…` when cut. */
+export function cutAtCodePoint(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}…`;
 }
 
 function logBlocks(logs: LogEntry[]): ContentBlock[] {

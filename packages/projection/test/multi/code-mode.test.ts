@@ -531,7 +531,7 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
 
   it('defers the list above the threshold counted across every box, with per-box counts', async () => {
     // 7 tools in all, 4 at most in one box: only the total crosses 5.
-    const facade = await wrap({ catalogInlineThreshold: 5 });
+    const facade = await wrap({ catalogInlineThreshold: 5, projections: { direct: false } });
     const inline = textOf(facade.discoverApis());
     expect(inline).toContain(
       'Tools: 7 across the toolboxes fs, github — too many to list here (fs: 3, github: 4). Call search_tools (every box) or the search_<box> tool of a box (search_fs, search_github) to find tools',
@@ -578,6 +578,14 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
       'projection://docs/authoring-contract.md',
     );
     for (const surface of surfaces) expect(JSON.stringify(surface)).not.toContain('search_tools');
+  });
+
+  it('keeps the plain execute_machine description when no call_tool is served', async () => {
+    const c = await connectModern(await wrap({ projections: { catalog: false } }));
+    const { tools } = await c.listTools();
+    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).not.toContain(
+      'call_tool',
+    );
   });
 
   it('keeps the list inline at the threshold, and with the catalog projection off', async () => {
@@ -695,6 +703,16 @@ function sampleView(first: ToolCatalogEntry[]) {
   ]);
 }
 
+describe('the multi-server contract quotes the facade round-trip cap (R18, D30)', () => {
+  it('in discover_apis and the contract resource', async () => {
+    const facade = await wrap({ caps: { maxRoundTrips: 5 } });
+    const text = (facade.discoverApis().content[0] as { text: string }).text;
+    expect(text).toContain('a workflow gets at most 5: one gated call per item');
+    const contract = facade.resources.find((r) => r.name === 'authoring-contract.md');
+    expect(contract?.text).toContain('stops unfinished past 5 items');
+  });
+});
+
 describe('sample tool names in the contract and examples (R45)', () => {
   const NOTE = '(sample names; use the names in tools.d.ts)';
 
@@ -720,6 +738,17 @@ describe('sample tool names in the contract and examples (R45)', () => {
     );
     // Rule 10 always carries the note.
     expect(contract).toContain(`e.g. toolCall('alpha.peek', ...) ${NOTE}.`);
+  });
+
+  it('rule 8 does not call an undeclared result text, and says to look before parsing', () => {
+    for (const contract of [
+      authoringContract(),
+      authoringContract(toolSamples(sampleView([sampleEntry('peek')]))),
+    ]) {
+      expect(contract).not.toContain('usually a string');
+      expect(contract).toContain('that does not mean text');
+      expect(contract).toContain('Never parse a result you have not seen');
+    }
   });
 
   it('decides read-only and gated under the facade policy', () => {

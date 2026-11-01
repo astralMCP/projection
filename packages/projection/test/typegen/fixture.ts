@@ -18,7 +18,12 @@ export const fixtureCatalog: ServerCatalog = {
         type: 'object',
         properties: {
           city: { type: 'string', description: 'City name' },
-          units: { type: 'string', enum: ['c', 'f'], description: 'Temperature units' },
+          units: {
+            type: 'string',
+            enum: ['c', 'f'],
+            description: 'Temperature units',
+            default: 'c',
+          },
         },
         required: ['city'],
         additionalProperties: false,
@@ -74,10 +79,11 @@ export const fixtureCatalog: ServerCatalog = {
               },
             ],
           },
-          limit: { type: 'integer' },
+          limit: { type: 'integer', default: 10 },
           filters: {
             type: 'object',
             additionalProperties: { type: 'string' },
+            default: { status: 'open' },
           },
           range: {
             type: 'array',

@@ -105,6 +105,10 @@ describe('instructions forwarding (R29)', () => {
     expect(instructions.startsWith(wrapped)).toBe(true);
     // Both projections are on by default (R32), so the routing copy applies.
     expect(instructions).toContain(DEFAULT_ROUTING_PREAMBLE);
+    // D29: computation over a list is a reason to author a machine.
+    expect(DEFAULT_ROUTING_PREAMBLE).toContain(
+      'computing over a list (counting, filtering, summing, comparing or checking every item)',
+    );
     expect(instructions).toContain('execute_machine');
     expect(instructions).toContain('discover_apis');
     expect(instructions).toContain('call_tool');

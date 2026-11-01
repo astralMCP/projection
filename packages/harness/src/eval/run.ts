@@ -41,41 +41,77 @@
  * ({@link BoxRouting}): which boxes the task needs, whether the global
  * search was used, whether the first upstream call went to a needed box,
  * and how many calls went elsewhere (detours — counted, never failed).
+ *
+ * With `batch` set (PROJ_EVAL_BATCH=1) the model calls go through the
+ * Message Batches API instead, every live episode in lockstep (see
+ * `batch.ts`): same requests, same records (plus `batch: true`), half the
+ * price. `concurrency` is then replaced by the batch `width`.
  */
 
+import { createHash } from 'node:crypto';
+import type { ApprovalPrompts } from '@astral-mcp/projection';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SideEffect } from '../types.js';
 import {
+  agentTools,
   anthropicCaller,
   type Transcript,
   resolveModelPresets,
   runAgentEpisode,
   type AgentEpisode,
+  type AgentRuntime,
   type EpisodeUsage,
   type ModelCaller,
   type ModelPreset,
+  type PrefixCounter,
+  type PrefixSource,
+  type PtcCallers,
+  type ServerToolUse,
+  type ToolSearchVariant,
   type ToolUseRecord,
+  type TurnUsage,
 } from './agent.js';
 import {
   EVAL_MODES,
   isProjectionMode,
   modeApplies,
+  modeSupportsModel,
   openSession,
   type EvalMode,
   type ModeSession,
 } from './modes.js';
+import { LockstepBatcher, type BatchTick, type BatchesClient } from './batch.js';
+import { estimateUsd, hasStandardCost, MODEL_PRICES, serverToolUsd, standardCost } from './cost.js';
+import { openAiCompatCaller } from './openai-compat.js';
+import { hostPromptPrefix, type HostPromptKind } from './host-prompt.js';
+import {
+  episodeApprover,
+  hitlMetrics,
+  toolNameIndex,
+  type ApproverPersona,
+  type ElicitationRecord,
+  type HitlEpisode,
+} from './hitl.js';
 import { boxOf, taskBoxes } from './multi-tasks.js';
 import {
+  DEFAULT_TIERS,
   promptFor,
   TASK_TIERS,
   TOOL_CHOICE_TASKS,
   worldOf,
+  taskWorldOptions,
   type EvalTask,
   type TaskKind,
   type TaskTier,
 } from './tasks.js';
-import { openWorld, type BoxAlias, type EvalWorld, type WorldName } from './world.js';
+import {
+  isBoxedWorldName,
+  openWorld,
+  type BoxAlias,
+  type EvalWorld,
+  type WorldName,
+} from './world.js';
 
 export type ProjectionRoute = 'call_tool' | 'execute_machine' | 'both' | 'neither';
 
@@ -90,8 +126,12 @@ export interface ProjectionUse {
    * (`search_github` → `github`). `searchTools` counts the global search.
    */
   searchBoxes?: Record<string, number>;
-  /** Approval prompts auto-accepted (MRTR round trips). */
+  /** Calls to directly listed (mediated) tools, `projections.direct` modes only. */
+  directCalls?: number;
+  /** Approval prompts answered (one per elicitation; a batched one counts once). */
   approvals: number;
+  /** MRTR retries sent: approval round trips, each carrying one or more approvals. */
+  roundTrips?: number;
 }
 
 /** How a multi-world episode moved between boxes. */
@@ -106,13 +146,13 @@ export interface BoxRouting {
   wrongBoxCalls: number;
 }
 
-/** The box routing of an episode of `task` (multi tier only; undefined elsewhere). */
+/** The box routing of an episode of `task` (multi-world tiers only; undefined elsewhere). */
 export function boxRouting(
   task: Pick<EvalTask, 'tier' | 'steps'>,
   upstreamCalls: readonly SideEffect[],
   toolUses: readonly ToolUseRecord[],
 ): BoxRouting | undefined {
-  if (task.tier !== 'multi') return undefined;
+  if (!isBoxedWorldName(worldOf(task.tier))) return undefined;
   const needed = taskBoxes(task);
   const isNeeded = (call: SideEffect): boolean => {
     const alias = boxOf(call.tool);
@@ -170,12 +210,72 @@ export interface EpisodeRecord {
   projection?: ProjectionUse;
   /** Multi tier only: how the episode moved between boxes. */
   boxes?: BoxRouting;
+  /** Native modes: the Anthropic server tools the episode used. */
+  serverTools?: ServerToolUse;
+  /**
+   * Native modes: server tool fees at list price ({@link serverToolUsd}),
+   * included in `estimatedUsd` and `standardUsd`. Absent when zero.
+   */
+  serverToolUsd?: number;
+  /**
+   * OpenAI-compatible providers: the sum of what the provider reported each
+   * call cost (OpenRouter's `usage.cost`), next to the list-price
+   * `estimatedUsd`. Absent on the Anthropic API.
+   */
+  providerUsd?: number;
+  /**
+   * Every approval prompt and its answer (Projection's elicitations, or
+   * direct mode's simulated host gate); absent when there were none.
+   */
+  elicitations?: ElicitationRecord[];
+  /**
+   * HITL metrics (hitl.ts): present when the episode ran with an approver
+   * (a `hitl` task, or PROJ_EVAL_APPROVER) or showed any prompt.
+   */
+  hitl?: HitlEpisode;
+  /** Totals over every turn. */
   usage: EpisodeUsage;
+  /**
+   * Per Messages API call: usage and the static prefix size. Absent in
+   * results files from before it was recorded.
+   */
+  turns?: TurnUsage[];
+  /** How `turns[].prefixTokens` was obtained (absent when no call completed). */
+  prefixSource?: PrefixSource;
+  /**
+   * The episode's wall clock. On a batch episode (`batch`) it spans its
+   * lockstep ticks, batch queueing and polling included, so it is not
+   * comparable with an interactive episode's.
+   */
   wallMs: number;
   stopReason?: string;
   finalText: string;
   /** The conversation as the model saw it (absent when the episode never started). */
   transcript?: Transcript;
+  /** Present when the model calls went through the Message Batches API (billed at 50%). */
+  batch?: true;
+  /**
+   * The eval's actual spend on this episode, batch discount included
+   * (`estimateUsd`). Absent in results files from before it was recorded.
+   */
+  estimatedUsd?: number;
+  /**
+   * The standard host cost (`standardCost`): warm static prefix, conversation
+   * cached incrementally, no batch discount. Comparable across modes and
+   * runs. Absent when not measured (no per-turn usage).
+   */
+  standardUsd?: number;
+  /**
+   * Present (with `harnessError`) when the batch runner gave up on a turn
+   * after its retries: an infrastructure failure, not the model's.
+   */
+  infraFailure?: true;
+  /**
+   * Present when the episode ran out of context window (a prompt-too-long
+   * 400, or the `model_context_window_exceeded` stop reason), on either
+   * path. Scored, and never a success: no `harnessError`.
+   */
+  contextOverflow?: true;
 }
 
 export interface ToolChoiceEvalOptions {
@@ -183,13 +283,17 @@ export interface ToolChoiceEvalOptions {
   models?: ModelPreset[];
   /** Default: every mode (`projection-boxes` runs on the multi tier only). */
   modes?: EvalMode[];
-  /** Default: every task. */
+  /** Default: every task of the default tiers (not the opt-in `multi-hard`). */
   tasks?: EvalTask[];
   /** Episodes per model × mode × task. Default 3. */
   runs?: number;
   /** Default: the live Anthropic API. Tests inject a script. */
   caller?: ModelCaller;
-  /** Turn budget per episode (turns that are not pure discovery). Default 12. */
+  /**
+   * Turn budget per episode (turns that are not pure discovery). Default
+   * 12. A task's own `maxTurns` overrides it (and its ceiling) for that
+   * task's episodes.
+   */
   maxTurns?: number;
   /** Absolute ceiling on Messages API calls per episode. Default: twice `maxTurns`. */
   maxTotalTurns?: number;
@@ -206,13 +310,70 @@ export interface ToolChoiceEvalOptions {
    */
   boxDescriptions?: boolean;
   /**
+   * Projection modes: a line appended to the system prompt
+   * (PROJ_EVAL_FORCE_CODE_MODE=1). Default none.
+   */
+  systemSuffix?: string;
+  /**
    * Called as each episode finishes (in completion order) with its record
    * and its index in the returned, plan-ordered array.
    */
   onEpisode?: (record: EpisodeRecord, index: number) => void;
+  /**
+   * Run the model calls through the Message Batches API, in lockstep
+   * (PROJ_EVAL_BATCH=1). `caller` and `concurrency` are then ignored.
+   */
+  batch?: BatchEvalOptions;
+  /**
+   * Counts each episode's static prefix (tools + system), once per distinct
+   * prefix per run (the live test: `anthropicPrefixCounter`). Absent,
+   * or when a count fails: estimated from turn 1 (`prefixSource: 'estimate'`).
+   */
+  countPrefix?: PrefixCounter;
+  /**
+   * The approver persona for every episode (PROJ_EVAL_APPROVER), over each
+   * task's own. Absent: each task's own (`hitl` tasks), else approve-all.
+   */
+  approver?: ApproverPersona;
+  /** Projection modes: `WrapOptions.approvalPrompts` (PROJ_EVAL_APPROVAL_PROMPTS). */
+  approvalPrompts?: ApprovalPrompts;
+  /** `native-search`: the tool search variant (PROJ_EVAL_TOOL_SEARCH). Default `bm25`. */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc`: each tool's `allowed_callers` (PROJ_EVAL_PTC_CALLERS). Default `code`. */
+  ptcCallers?: PtcCallers;
+  /** Every mode: the host system prompt put first (PROJ_EVAL_HOST_PROMPT). Default none. */
+  hostPrompt?: HostPromptKind;
+}
+
+export interface BatchEvalOptions {
+  /** `new Anthropic().messages.batches`, or a fake. */
+  client: BatchesClient;
+  /**
+   * Episodes live (world open, in the lockstep) at once; a finished one's
+   * slot goes to the next planned episode, which joins the next tick.
+   * Default: every planned episode.
+   */
+  width?: number;
+  /** First poll delay (default 10 s); doubles up to `pollMaxMs` (default 60 s). */
+  pollInitialMs?: number;
+  pollMaxMs?: number;
+  /** Batch submissions per request before the episode is an infra failure. Default 3. */
+  maxAttempts?: number;
+  /** Injected for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Called after every tick. */
+  onTick?: (tick: BatchTick) => void;
 }
 
 export const DEFAULT_RUNS = 3;
+
+const PROJECTION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'execute_machine',
+  'discover_apis',
+  'search_tools',
+  'describe_tool',
+  'call_tool',
+]);
 
 /**
  * How an episode used Projection. `world` names the boxes whose
@@ -222,9 +383,17 @@ function summarizeProjectionUse(
   toolUses: ToolUseRecord[],
   approvals: number,
   world: EvalWorld,
+  roundTrips?: number,
 ): ProjectionUse {
   const count = (name: string): number => toolUses.filter((t) => t.name === name).length;
-  const callTool = count('call_tool') > 0;
+  // Direct listing: any tool that is not one of Projection's own is a
+  // mediated call_tool alias, and routes like call_tool.
+  const own = new Set([
+    ...PROJECTION_TOOL_NAMES,
+    ...('boxes' in world ? world.boxes.map((box) => `search_${box.alias}`) : []),
+  ]);
+  const directCalls = toolUses.filter((t) => !own.has(t.name)).length;
+  const callTool = count('call_tool') > 0 || directCalls > 0;
   const machine = count('execute_machine') > 0;
   const route: ProjectionRoute =
     callTool && machine ? 'both' : callTool ? 'call_tool' : machine ? 'execute_machine' : 'neither';
@@ -233,14 +402,16 @@ function summarizeProjectionUse(
     searchTools: count('search_tools'),
     describeTool: count('describe_tool'),
     discoverApis: count('discover_apis'),
-    ...(world.name === 'multi'
+    ...('boxes' in world
       ? {
           searchBoxes: Object.fromEntries(
             world.boxes.map((box) => [box.alias, count(`search_${box.alias}`)]),
           ),
         }
       : {}),
+    ...(directCalls > 0 ? { directCalls } : {}),
     approvals,
+    ...(roundTrips !== undefined ? { roundTrips } : {}),
   };
 }
 
@@ -257,6 +428,30 @@ interface Slot extends PlannedEpisode {
   modelAt: number;
   modeAt: number;
   taskAt: number;
+}
+
+/** A run's prefix counts, keyed by model, system and tools; `undefined` when a count failed. */
+type PrefixCounts = Map<string, Promise<number | undefined>>;
+
+/** The episode's static prefix, counted once per distinct prefix per run (undefined: not counted). */
+function countedPrefix(
+  counter: PrefixCounter | undefined,
+  counts: PrefixCounts,
+  model: ModelPreset,
+  runtime: AgentRuntime,
+): Promise<number | undefined> {
+  // The counting endpoint is Anthropic's: other providers' prefixes are estimated.
+  if (counter === undefined || model.provider !== undefined) return Promise.resolve(undefined);
+  const tools = agentTools(runtime);
+  const key = createHash('sha256')
+    .update(JSON.stringify([model.model, runtime.system, tools]))
+    .digest('hex');
+  let counted = counts.get(key);
+  if (counted === undefined) {
+    counted = counter(model.model, runtime.system, tools).catch(() => undefined);
+    counts.set(key, counted);
+  }
+  return counted;
 }
 
 const EMPTY_USAGE: Readonly<EpisodeUsage> = {
@@ -278,24 +473,41 @@ function errorMessage(err: unknown): string {
 async function scoreEpisode(
   planned: PlannedEpisode,
   world: EvalWorld,
-  approvals: number,
+  session: Pick<ModeSession, 'approvals' | 'roundTrips' | 'elicitations' | 'approver'>,
   episode: AgentEpisode,
+  withApprover: boolean,
 ): Promise<EpisodeRecord> {
   const { model, mode, task, run } = planned;
+  const { approvals, roundTrips } = session;
+  const elicitations = session.elicitations.slice();
   const upstreamCalls = world.calls.slice();
   const scored = episode.harnessError === undefined;
+  const overflowed = episode.contextOverflow === true;
   const forbid = task.forbid;
   const forbidden = forbid !== undefined && upstreamCalls.some((call) => forbid(call));
-  const expected = scored && !forbidden && task.expect(upstreamCalls);
+  // An episode that ran out of context window is a scored failure.
+  const expected = scored && !overflowed && !forbidden && task.expect(upstreamCalls);
   const success =
     expected && task.verify !== undefined
       ? await task.verify({
           calls: upstreamCalls,
           finalText: episode.finalText,
           facts: world.facts,
+          elicitations,
         })
       : expected;
   const boxes = boxRouting(task, upstreamCalls, episode.toolUses);
+  const hitl =
+    withApprover || elicitations.length > 0 || task.hitl !== undefined
+      ? hitlMetrics({
+          approver: session.approver,
+          records: elicitations,
+          calls: upstreamCalls,
+          index: toolNameIndex(world),
+          ...(task.hitl !== undefined ? { checks: task.hitl } : {}),
+          context: { calls: upstreamCalls, finalText: episode.finalText, facts: world.facts },
+        })
+      : undefined;
   return {
     model: model.name,
     modelId: model.model,
@@ -303,7 +515,7 @@ async function scoreEpisode(
     mode,
     task: task.name,
     tier: task.tier,
-    world: world.name,
+    world: worldOf(task.tier),
     kind: task.kind,
     run,
     success,
@@ -319,14 +531,21 @@ async function scoreEpisode(
     toolUses: episode.toolUses,
     upstreamCalls,
     ...(isProjectionMode(mode)
-      ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world) }
+      ? { projection: summarizeProjectionUse(episode.toolUses, approvals, world, roundTrips) }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(episode.serverTools !== undefined ? { serverTools: episode.serverTools } : {}),
+    ...(elicitations.length > 0 ? { elicitations } : {}),
+    ...(hitl !== undefined ? { hitl } : {}),
     usage: episode.usage,
+    turns: episode.turns,
+    ...(episode.prefixSource !== undefined ? { prefixSource: episode.prefixSource } : {}),
     wallMs: episode.wallMs,
     ...(episode.stopReason !== undefined ? { stopReason: episode.stopReason } : {}),
     finalText: episode.finalText,
     transcript: episode.transcript,
+    ...(episode.infraFailure === true ? { infraFailure: true as const } : {}),
+    ...(overflowed ? { contextOverflow: true as const } : {}),
   };
 }
 
@@ -368,10 +587,23 @@ function harnessFailureRecord(
     toolUses,
     upstreamCalls,
     ...(isProjectionMode(mode) && session !== undefined
-      ? { projection: summarizeProjectionUse(toolUses, session.approvals, session.world) }
+      ? {
+          projection: summarizeProjectionUse(
+            toolUses,
+            session.approvals,
+            session.world,
+            session.roundTrips,
+          ),
+        }
       : {}),
     ...(boxes !== undefined ? { boxes } : {}),
+    ...(episode?.serverTools !== undefined ? { serverTools: episode.serverTools } : {}),
+    ...(session !== undefined && session.elicitations.length > 0
+      ? { elicitations: session.elicitations.slice() }
+      : {}),
     usage: episode?.usage ?? { ...EMPTY_USAGE },
+    turns: episode?.turns ?? [],
+    ...(episode?.prefixSource !== undefined ? { prefixSource: episode.prefixSource } : {}),
     wallMs: episode?.wallMs ?? Math.round(performance.now() - startedAt),
     ...(episode?.stopReason !== undefined ? { stopReason: episode.stopReason } : {}),
     finalText: episode?.finalText ?? '',
@@ -379,11 +611,34 @@ function harnessFailureRecord(
   };
 }
 
-/** Run one planned episode; never throws — failures become records. */
+/**
+ * An episode's turn budget: the task's own (`maxTurns`, ceiling twice
+ * that) when it sets one, else the run's options.
+ */
+export function turnBudget(
+  task: Pick<EvalTask, 'maxTurns'>,
+  options: Pick<ToolChoiceEvalOptions, 'maxTurns' | 'maxTotalTurns'>,
+): { maxTurns?: number; maxTotalTurns?: number } {
+  if (task.maxTurns !== undefined) {
+    return { maxTurns: task.maxTurns, maxTotalTurns: 2 * task.maxTurns };
+  }
+  return {
+    ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+    ...(options.maxTotalTurns !== undefined ? { maxTotalTurns: options.maxTotalTurns } : {}),
+  };
+}
+
+/**
+ * Run one planned episode; never throws — failures become records.
+ * `afterAgent` runs as soon as the agent loop is over (before the session
+ * and world close and the episode is scored), however the loop ended.
+ */
 async function runPlanned(
   planned: PlannedEpisode,
   caller: ModelCaller,
   options: ToolChoiceEvalOptions,
+  prefixCounts: PrefixCounts,
+  afterAgent?: () => void,
 ): Promise<EpisodeRecord> {
   const { model, mode, task } = planned;
   const startedAt = performance.now();
@@ -391,37 +646,59 @@ async function runPlanned(
   let session: ModeSession | undefined;
   let episode: AgentEpisode | undefined;
   try {
-    world = await openWorld(
-      worldOf(task.tier),
-      options.serverInstructions === false ? { instructions: false } : {},
-    );
+    world = await openWorld(worldOf(task.tier), {
+      ...(options.serverInstructions === false ? { instructions: false } : {}),
+      ...taskWorldOptions(task),
+    });
     try {
-      session = await openSession(
-        mode,
-        world,
-        options.boxDescriptions === true ? { boxDescriptions: true } : {},
-      );
+      // An approver only when the task or the run asks for one: every other
+      // episode runs exactly as before (approve-all, direct ungated).
+      const withApprover = task.approver !== undefined || options.approver !== undefined;
+      session = await openSession(mode, world, {
+        ...(options.boxDescriptions === true ? { boxDescriptions: true } : {}),
+        ...(options.systemSuffix !== undefined ? { systemSuffix: options.systemSuffix } : {}),
+        ...(withApprover ? { approver: episodeApprover(task, options.approver) } : {}),
+        ...(options.approvalPrompts !== undefined
+          ? { approvalPrompts: options.approvalPrompts }
+          : {}),
+        ...(options.toolSearch !== undefined ? { toolSearch: options.toolSearch } : {}),
+        ...(options.ptcCallers !== undefined ? { ptcCallers: options.ptcCallers } : {}),
+        ...(options.hostPrompt !== undefined
+          ? { hostPrompt: hostPromptPrefix(options.hostPrompt) }
+          : {}),
+      });
       try {
+        const prefixTokens = await countedPrefix(
+          options.countPrefix,
+          prefixCounts,
+          model,
+          session.runtime,
+        );
         episode = await runAgentEpisode(
           caller,
           model,
           session.runtime,
           promptFor(task, world.facts),
           {
-            ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-            ...(options.maxTotalTurns !== undefined
-              ? { maxTotalTurns: options.maxTotalTurns }
-              : {}),
+            ...turnBudget(task, options),
             budgetFreeTools: session.budgetFreeTools,
+            ...(prefixTokens !== undefined ? { prefixTokens } : {}),
           },
         );
       } finally {
+        afterAgent?.();
         // A close that fails must not discard an episode that ran, nor mask
         // the error that is already propagating.
         await session.close().catch(() => {});
       }
       // Score while the world is still up: `verify` reads its end state.
-      return await scoreEpisode(planned, world, session.approvals, episode);
+      return await scoreEpisode(
+        planned,
+        world,
+        session,
+        episode,
+        task.approver !== undefined || options.approver !== undefined,
+      );
     } finally {
       await world.close().catch(() => {});
     }
@@ -443,10 +720,30 @@ export async function runToolChoiceEval(
 ): Promise<EpisodeRecord[]> {
   const models = options.models ?? resolveModelPresets(undefined);
   const modes = options.modes ?? [...EVAL_MODES];
-  const tasks = options.tasks ?? [...TOOL_CHOICE_TASKS];
+  const tasks = options.tasks ?? TOOL_CHOICE_TASKS.filter((t) => DEFAULT_TIERS.includes(t.tier));
   const runs = options.runs ?? DEFAULT_RUNS;
-  const caller = options.caller ?? anthropicCaller();
-  const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
+  const batch = options.batch;
+  if (batch !== undefined && modes.includes('native-ptc')) {
+    // A paused programmatic call times out in ~4 minutes and an idle
+    // container is reclaimed in ~5 (the PTC docs): a batch tick is longer.
+    throw new Error('native-ptc cannot run through the Message Batches API (PROJ_EVAL_BATCH=1)');
+  }
+  if (batch !== undefined && models.some((model) => model.provider !== undefined)) {
+    throw new Error('OpenAI-compatible presets cannot run through the Message Batches API');
+  }
+  // One caller per provider: the injected one for everything, else the
+  // Anthropic API, or the preset's OpenAI-compatible endpoint.
+  const callers = new Map<string, ModelCaller>();
+  const callerFor = (model: ModelPreset): ModelCaller => {
+    if (options.caller !== undefined) return options.caller;
+    const key = model.provider?.name ?? 'anthropic';
+    let found = callers.get(key);
+    if (found === undefined) {
+      found = model.provider === undefined ? anthropicCaller() : openAiCompatCaller(model.provider);
+      callers.set(key, found);
+    }
+    return found;
+  };
 
   // Slots in result order (model → mode → task → run) ...
   const slots: Slot[] = [];
@@ -454,6 +751,7 @@ export async function runToolChoiceEval(
     modes.forEach((mode, modeAt) => {
       tasks.forEach((task, taskAt) => {
         if (!modeApplies(mode, worldOf(task.tier))) return;
+        if (!modeSupportsModel(mode, model.model, model.provider === undefined)) return;
         for (let run = 0; run < runs; run += 1) {
           slots.push({ model, mode, task, run, index: slots.length, modelAt, modeAt, taskAt });
         }
@@ -465,6 +763,22 @@ export async function runToolChoiceEval(
     (a, b) => a.run - b.run || a.taskAt - b.taskAt || a.modelAt - b.modelAt || a.modeAt - b.modeAt,
   );
 
+  // Batch mode: the lockstep width (default: every episode) replaces `concurrency`.
+  const width = batch === undefined ? (options.concurrency ?? 1) : (batch.width ?? order.length);
+  const concurrency = Math.max(1, Math.floor(width));
+  const batcher =
+    batch === undefined
+      ? undefined
+      : new LockstepBatcher({
+          client: batch.client,
+          ...(batch.pollInitialMs !== undefined ? { pollInitialMs: batch.pollInitialMs } : {}),
+          ...(batch.pollMaxMs !== undefined ? { pollMaxMs: batch.pollMaxMs } : {}),
+          ...(batch.maxAttempts !== undefined ? { maxAttempts: batch.maxAttempts } : {}),
+          ...(batch.sleep !== undefined ? { sleep: batch.sleep } : {}),
+          ...(batch.onTick !== undefined ? { onTick: batch.onTick } : {}),
+        });
+
+  const prefixCounts: PrefixCounts = new Map();
   const records: EpisodeRecord[] = [];
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -472,7 +786,26 @@ export async function runToolChoiceEval(
       const slot = order[next];
       next += 1;
       if (slot === undefined) return;
-      const record = await runPlanned(slot, caller, options);
+      let record: EpisodeRecord;
+      if (batcher === undefined) {
+        record = await runPlanned(slot, callerFor(slot.model), options, prefixCounts);
+      } else {
+        // Enter the lockstep before the world opens, so no tick runs without
+        // this episode's first request; leave it however the episode ends
+        // (`done` is idempotent).
+        const lane = batcher.register(`ep${String(slot.index).padStart(4, '0')}`);
+        try {
+          // Leave as soon as the loop is over: closing the world and scoring
+          // must not hold up everyone else's next tick.
+          record = {
+            ...(await runPlanned(slot, lane.caller, options, prefixCounts, lane.done)),
+            batch: true,
+          };
+        } finally {
+          lane.done();
+        }
+      }
+      record = withCosts(record);
       records[slot.index] = record;
       try {
         options.onEpisode?.(record, slot.index);
@@ -488,20 +821,53 @@ export async function runToolChoiceEval(
 // ---------------------------------------------------------------------------
 // Summary and report
 
-/** USD per million tokens, Anthropic list prices. */
-export const MODEL_PRICES: Readonly<Record<string, { input: number; output: number }>> = {
-  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
-  'claude-haiku-4-5': { input: 1, output: 5 },
-  'claude-sonnet-5-5': { input: 2, output: 10 },
-};
+/** The eval's actual spend on a record: list price, halved for a batch episode. */
+function recordEstimatedUsd(record: EpisodeRecord): number {
+  return (
+    estimateUsd(record.modelId, record.usage, record.batch === true, record.turns) +
+    serverToolUsd(record.serverTools)
+  );
+}
 
-/** Cache reads at 10% of input, cache writes at 125%; unknown models cost 0. */
-export function estimateUsd(modelId: string, usage: EpisodeUsage): number {
-  const price = MODEL_PRICES[modelId];
-  if (price === undefined) return 0;
-  const input =
-    usage.inputTokens + usage.cacheReadInputTokens * 0.1 + usage.cacheCreationInputTokens * 1.25;
-  return (input * price.input + usage.outputTokens * price.output) / 1_000_000;
+/**
+ * The record's standard host cost ({@link standardCost}); undefined when it
+ * made calls but has no per-turn usage (a results file from before it was
+ * recorded): not measured, never $0.
+ */
+function recordStandardUsd(record: EpisodeRecord): number | undefined {
+  if (record.turns === undefined) return record.apiTurns === 0 ? 0 : undefined;
+  // A non-Anthropic model caches on its provider's terms: its host cost is
+  // what it was billed at list price, without a batch discount.
+  if (!hasStandardCost(record.modelId) && MODEL_PRICES[record.modelId] !== undefined) {
+    return estimateUsd(record.modelId, record.usage, false, record.turns);
+  }
+  return standardCost(record.turns, record.modelId) + serverToolUsd(record.serverTools);
+}
+
+/** The sum, or undefined when any term is not measured. */
+function sumMeasured(values: (number | undefined)[]): number | undefined {
+  let total = 0;
+  for (const value of values) {
+    if (value === undefined) return undefined;
+    total += value;
+  }
+  return total;
+}
+
+/** The record with its actual spend and standard host cost attached. */
+function withCosts(record: EpisodeRecord): EpisodeRecord {
+  const standard = recordStandardUsd(record);
+  const fees = serverToolUsd(record.serverTools);
+  const reported = (record.turns ?? []).flatMap((turn) =>
+    turn.providerCostUsd !== undefined ? [turn.providerCostUsd] : [],
+  );
+  return {
+    ...record,
+    ...(fees > 0 ? { serverToolUsd: fees } : {}),
+    ...(reported.length > 0 ? { providerUsd: reported.reduce((a, b) => a + b, 0) } : {}),
+    estimatedUsd: recordEstimatedUsd(record),
+    ...(standard !== undefined ? { standardUsd: standard } : {}),
+  };
 }
 
 export interface CellSummary {
@@ -516,6 +882,8 @@ export interface CellSummary {
   harnessErrors: number;
   /** Scored episodes that stopped at the turn cap. */
   turnCapped: number;
+  /** Scored episodes that ran out of context window (all failures). */
+  contextOverflows: number;
   meanTurns: number;
   /** Mean turns that consumed the budget. */
   meanBudgetTurns: number;
@@ -524,7 +892,10 @@ export interface CellSummary {
   meanOutputTokens: number;
   /** cache-read / (uncached + cache-read + cache-write) input tokens. */
   cacheReadShare: number;
+  /** Actual eval spend, batch discount included. */
   estimatedUsd: number;
+  /** Standard host cost (`standardCost`); absent when any episode's was not measured. */
+  standardUsd?: number;
   /** Projection mode only. */
   routes?: Record<ProjectionRoute, number>;
   meanSearchTools?: number;
@@ -533,6 +904,69 @@ export interface CellSummary {
   /** Mean `search_<alias>` calls per multi-world episode, by alias (absent without one). */
   meanSearchBoxes?: Record<string, number>;
   meanApprovals?: number;
+  /** Over the cell's episodes that carry HITL metrics; absent when none does. */
+  hitl?: HitlSummary;
+}
+
+/** HITL metrics over a cell's episodes (those with an approver or a prompt). */
+export interface HitlSummary {
+  /** Scored episodes with HITL metrics. */
+  episodes: number;
+  /** Mean approval prompts per episode (per task run). */
+  meanPrompts: number;
+  /** Prompts / gated calls presented (1.0 unbatched; below 1 when prompts carry several calls). */
+  promptsPerCall: number;
+  /**
+   * Prompts / the tasks' ideal gated writes, over episodes whose task names
+   * that number (absent when none does): above 1 means extra asks (retries,
+   * failed attempts, gated reads).
+   */
+  promptsPerGatedWrite?: number;
+  /** Prompts checkable for clarity, and of those the clear ones. */
+  clarityChecked: number;
+  clarityOk: number;
+  /** Episodes with a refused call, and how they handled it. */
+  refusedEpisodes: number;
+  handled: number;
+  noRepeat: number;
+  /** Episodes where a later call reached a refused call's effect another way. */
+  workaround: number;
+  /** Episodes whose final answer said what was not done (of those with the check). */
+  reported: number;
+  reportChecked: number;
+  /** Episodes that still did the independent parts (of those with the check). */
+  independentDone: number;
+  independentChecked: number;
+}
+
+export function summarizeHitl(records: readonly EpisodeRecord[]): HitlSummary | undefined {
+  const withHitl = records.filter((r) => r.harnessError === undefined && r.hitl !== undefined);
+  if (withHitl.length === 0) return undefined;
+  const h = (r: EpisodeRecord): HitlEpisode => r.hitl as HitlEpisode;
+  const prompts = withHitl.reduce((a, r) => a + h(r).prompts, 0);
+  const items = withHitl.reduce((a, r) => a + h(r).items, 0);
+  const sized = withHitl.filter((r) => h(r).gatedWrites !== undefined);
+  const ideal = sized.reduce((a, r) => a + (h(r).gatedWrites ?? 0), 0);
+  const denials = withHitl.flatMap((r) => (h(r).denial !== undefined ? [h(r).denial] : []));
+  const d = denials as NonNullable<HitlEpisode['denial']>[];
+  return {
+    episodes: withHitl.length,
+    meanPrompts: mean(withHitl.map((r) => h(r).prompts)),
+    promptsPerCall: items === 0 ? 0 : prompts / items,
+    ...(ideal > 0
+      ? { promptsPerGatedWrite: sized.reduce((a, r) => a + h(r).prompts, 0) / ideal }
+      : {}),
+    clarityChecked: withHitl.reduce((a, r) => a + h(r).clarityChecked, 0),
+    clarityOk: withHitl.reduce((a, r) => a + h(r).clarityOk, 0),
+    refusedEpisodes: d.length,
+    handled: d.filter((x) => x.handled).length,
+    noRepeat: d.filter((x) => x.noRepeat).length,
+    workaround: d.filter((x) => x.workaround === true).length,
+    reported: d.filter((x) => x.reported === true).length,
+    reportChecked: d.filter((x) => x.reported !== null).length,
+    independentDone: d.filter((x) => x.independentDone === true).length,
+    independentChecked: d.filter((x) => x.independentDone !== null).length,
+  };
 }
 
 export interface TaskCellSummary {
@@ -544,6 +978,8 @@ export interface TaskCellSummary {
   successes: number;
   scored: number;
   episodes: number;
+  /** Scored episodes that ran out of context window (all failures). */
+  contextOverflows: number;
 }
 
 /** Multi tier: how a cell's episodes moved between boxes ({@link BoxRouting}). */
@@ -576,6 +1012,8 @@ export interface TierCellSummary {
   toolCorrect: number;
   /** Scored episodes that made a forbidden call. */
   forbidden: number;
+  /** Scored episodes that ran out of context window (all failures). */
+  contextOverflows: number;
   scored: number;
   episodes: number;
   /** Mean Messages API calls per episode. */
@@ -584,7 +1022,10 @@ export interface TierCellSummary {
   meanBudgetTurns: number;
   meanInputTokens: number;
   meanOutputTokens: number;
+  /** Actual eval spend, batch discount included. */
   estimatedUsd: number;
+  /** Standard host cost; absent when any episode's was not measured. */
+  standardUsd?: number;
   /** Projection modes only: mean discovery calls per episode. */
   meanSearchTools?: number;
   meanSearchBoxes?: Record<string, number>;
@@ -596,6 +1037,10 @@ export interface TierCellSummary {
 
 export interface ToolChoiceSummary {
   episodes: number;
+  /** Actual eval spend over every episode, batch discount included. */
+  estimatedUsd: number;
+  /** Standard host cost over every episode; absent when any was not measured. */
+  standardUsd?: number;
   cells: CellSummary[];
   /** Per tier × cell, in tier order (TASK_TIERS). */
   tiers: TierCellSummary[];
@@ -617,7 +1062,9 @@ function spendOf(records: EpisodeRecord[]): {
   meanInputTokens: number;
   meanOutputTokens: number;
   estimatedUsd: number;
+  standardUsd?: number;
 } {
+  const standard = sumMeasured(records.map(recordStandardUsd));
   return {
     meanTurns: mean(records.map((r) => r.apiTurns)),
     meanBudgetTurns: mean(records.map((r) => r.budgetTurns)),
@@ -628,7 +1075,8 @@ function spendOf(records: EpisodeRecord[]): {
       ),
     ),
     meanOutputTokens: mean(records.map((r) => r.usage.outputTokens)),
-    estimatedUsd: records.reduce((a, r) => a + estimateUsd(r.modelId, r.usage), 0),
+    estimatedUsd: records.reduce((a, r) => a + recordEstimatedUsd(r), 0),
+    ...(standard !== undefined ? { standardUsd: standard } : {}),
   };
 }
 
@@ -693,6 +1141,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     toolCorrect: scored.filter((r) => r.toolCorrect).length,
     harnessErrors: records.length - scored.length,
     turnCapped: scored.filter((r) => r.turnCapped).length,
+    contextOverflows: scored.filter((r) => r.contextOverflow === true).length,
     meanTurns: spend.meanTurns,
     meanBudgetTurns: spend.meanBudgetTurns,
     meanUpstreamCalls: mean(records.map((r) => r.upstreamCalls.length)),
@@ -700,6 +1149,7 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     meanOutputTokens: spend.meanOutputTokens,
     cacheReadShare: totalInput === 0 ? 0 : cacheRead / totalInput,
     estimatedUsd: spend.estimatedUsd,
+    ...(spend.standardUsd !== undefined ? { standardUsd: spend.standardUsd } : {}),
   };
   if (isProjectionMode(first.mode)) {
     const uses = records.flatMap((r) => (r.projection !== undefined ? [r.projection] : []));
@@ -720,6 +1170,8 @@ function summarizeCell(records: EpisodeRecord[]): CellSummary {
     }
     summary.meanApprovals = mean(uses.map((u) => u.approvals));
   }
+  const hitl = summarizeHitl(records);
+  if (hitl !== undefined) summary.hitl = hitl;
   return summary;
 }
 
@@ -744,6 +1196,7 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
       successes: scored.filter((r) => r.success).length,
       scored: scored.length,
       episodes: group.length,
+      contextOverflows: scored.filter((r) => r.contextOverflow === true).length,
     };
   });
   const tiers: TierCellSummary[] = [];
@@ -762,6 +1215,7 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
         successes: scored.filter((r) => r.success).length,
         toolCorrect: scored.filter((r) => r.toolCorrect).length,
         forbidden: scored.filter((r) => r.forbidden).length,
+        contextOverflows: scored.filter((r) => r.contextOverflow === true).length,
         scored: scored.length,
         episodes: inTier.length,
         ...spendOf(inTier),
@@ -770,8 +1224,11 @@ export function summarizeToolChoice(records: EpisodeRecord[]): ToolChoiceSummary
       });
     }
   }
+  const total = spendOf(records);
   return {
     episodes: records.length,
+    estimatedUsd: total.estimatedUsd,
+    ...(total.standardUsd !== undefined ? { standardUsd: total.standardUsd } : {}),
     cells: [...byCell.values()].map(summarizeCell),
     tiers,
     tasks,
@@ -829,7 +1286,9 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'out-tok',
       'cache-read',
       'est $',
+      'std $',
       'turn-capped',
+      'ctx-overflow',
       'harness-err',
     ],
   ];
@@ -846,7 +1305,9 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       Math.round(cell.meanOutputTokens).toString(),
       pct(cell.cacheReadShare, 1),
       cell.estimatedUsd.toFixed(4),
+      usdOrDash(cell.standardUsd),
       cell.turnCapped.toString(),
+      cell.contextOverflows.toString(),
       cell.harnessErrors.toString(),
     ]);
   }
@@ -884,11 +1345,13 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
       'success',
       'tool-ok',
       'forbidden',
+      'ctx-overflow',
       'turns',
       'counted',
       'in-tok',
       'out-tok',
       'est $',
+      'std $',
       'discovery per episode',
       ...(routed ? ['global search (ok)', '1st call right box', 'detours (mean calls)'] : []),
     ];
@@ -900,17 +1363,19 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
         `${cell.successes}/${cell.scored} ${pct(cell.successes, cell.scored)}`,
         `${cell.toolCorrect}/${cell.scored}`,
         cell.forbidden.toString(),
+        cell.contextOverflows.toString(),
         cell.meanTurns.toFixed(1),
         cell.meanBudgetTurns.toFixed(1),
         Math.round(cell.meanInputTokens).toString(),
         Math.round(cell.meanOutputTokens).toString(),
         cell.estimatedUsd.toFixed(4),
+        usdOrDash(cell.standardUsd),
         formatDiscovery(cell),
         ...(routed
           ? routing === undefined
             ? ['-', '-', '-']
             : [
-                cell.mode === 'direct'
+                !isProjectionMode(cell.mode)
                   ? '-'
                   : `${routing.usedGlobalSearch}/${routing.scored} (${routing.successWithGlobalSearch} ok)`,
                 `${routing.firstCallRightBox}/${routing.scored}`,
@@ -967,6 +1432,11 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
     lines.push('');
   }
 
+  const hitlCells = summary.cells.filter((c) => c.hitl !== undefined);
+  if (hitlCells.length > 0) {
+    lines.push(formatHitlTable(hitlCells), '');
+  }
+
   const errors = records.filter((r) => r.harnessError !== undefined);
   if (errors.length > 0) {
     lines.push('Harness errors (excluded from success rates):');
@@ -977,12 +1447,67 @@ export function formatToolChoiceReport(records: EpisodeRecord[]): string {
   }
 
   lines.push(
-    'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50, Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
+    'Cost model: Haiku 4.5 $1/$5, Haiku 5.5 $0.10/$0.50 ($0.50/$2.50 for a call whose prompt is over 100K tokens), Sonnet 5.5 $2/$10 per MTok; cache reads 10%, cache writes 125% of input. ' +
+      (records.some((r) => r.batch === true)
+        ? 'Episodes run through the Message Batches API are billed at 50% of that. '
+        : '') +
+      'est $ is that actual spend; std $ is the standard host cost (static prefix warm and read every turn ' +
+      "when at or above the model's minimum cacheable size, conversation cached incrementally, no batch " +
+      'discount), comparable across modes and runs; - where not measured. ' +
       'The turn budget counts action turns (Projection discovery turns are free, up to an absolute ceiling of twice the budget); ' +
       'turn-capped episodes are scored on the upstream calls made before the cap; harness errors are not scored; ' +
+      'an episode that runs out of context window (ctx-overflow) is scored as a failure; ' +
       "an episode that makes a call its task forbids, or whose end state fails the task's verify, is not a success.",
   );
   return lines.join('\n');
+}
+
+/** The HITL table: one row per cell with HITL metrics. */
+export function formatHitlTable(cells: readonly CellSummary[]): string {
+  const rows: string[][] = [
+    [
+      'HITL (cell)',
+      'episodes',
+      'prompts/ep',
+      'prompts/call',
+      'prompts/write',
+      'clarity',
+      'refused eps',
+      'handled',
+      'no-repeat',
+      'workaround',
+      'reported',
+      'independent done',
+    ],
+  ];
+  for (const cell of cells) {
+    const h = cell.hitl as HitlSummary;
+    rows.push([
+      `${cell.model}/${cell.mode}`,
+      h.episodes.toString(),
+      h.meanPrompts.toFixed(1),
+      h.promptsPerCall.toFixed(2),
+      h.promptsPerGatedWrite === undefined ? '-' : h.promptsPerGatedWrite.toFixed(2),
+      `${h.clarityOk}/${h.clarityChecked} ${pct(h.clarityOk, h.clarityChecked).trim()}`,
+      h.refusedEpisodes.toString(),
+      `${h.handled}/${h.refusedEpisodes}`,
+      `${h.noRepeat}/${h.refusedEpisodes}`,
+      h.workaround.toString(),
+      `${h.reported}/${h.reportChecked}`,
+      `${h.independentDone}/${h.independentChecked}`,
+    ]);
+  }
+  return [
+    table(rows),
+    'prompts/call: prompts per gated call presented (below 1 = batched); prompts/write: prompts per gated write the task ideally needs; ' +
+      'clarity: prompts naming the box, the tool, every argument value and the destructive flag (of those whose real call is known); ' +
+      'handled: after a refusal, no repeat beyond one retry, no workaround, the final answer says what was not done, independent parts done.',
+  ].join('\n');
+}
+
+/** USD to 4 places, or `-` when not measured. */
+function usdOrDash(usd: number | undefined): string {
+  return usd === undefined ? '-' : usd.toFixed(4);
 }
 
 /** A tier cell's discovery means, or `-` outside the Projection modes. */
@@ -1004,19 +1529,28 @@ export function formatEpisodeLine(record: EpisodeRecord): string {
   const verdict =
     record.harnessError !== undefined
       ? `ERR ${record.harnessError}`
-      : record.success
-        ? 'ok'
-        : record.forbidden
-          ? 'forbidden-call'
-          : record.toolCorrect
-            ? 'tool-ok/args-wrong'
-            : 'miss';
+      : record.contextOverflow === true
+        ? 'context-overflow'
+        : record.success
+          ? 'ok'
+          : record.forbidden
+            ? 'forbidden-call'
+            : record.toolCorrect
+              ? 'tool-ok/args-wrong'
+              : 'miss';
   const route = record.projection !== undefined ? ` via ${record.projection.route}` : '';
+  const hitl =
+    record.hitl !== undefined
+      ? `; prompts ${record.hitl.prompts}` +
+        (record.hitl.denial !== undefined
+          ? ` (refused ${record.hitl.denial.refused}, ${record.hitl.denial.handled ? 'handled' : 'mishandled'})`
+          : '')
+      : '';
   const capped = record.turnCapped ? ' (turn-capped)' : '';
   const budget = record.budgetTurns !== record.apiTurns ? ` (${record.budgetTurns} counted)` : '';
   const upstream = record.upstreamCalls.map((c) => c.tool).join(',') || '-';
   return (
-    `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}${capped}; ` +
+    `${record.model}/${record.mode} ${record.task} #${record.run}: ${verdict}${route}${capped}${hitl}; ` +
     `turns ${record.apiTurns}${budget}, upstream [${upstream}], ${record.wallMs}ms`
   );
 }
@@ -1029,11 +1563,31 @@ export interface ResultsMeta {
    */
   boxDescriptions?: boolean;
   /**
+   * Whether the recording proxy mirrors the real servers' output schemas
+   * (true since it does; absent in older files, whose filesystem and MongoDB
+   * tools reached Projection with no output schema).
+   */
+  outputSchemas?: boolean;
+  /**
    * Whether every mode's system prompt starts with the world's host framing
    * (true since the framing was added to the Projection modes; absent in
    * older files, whose Projection prompts had none).
    */
   hostFraming?: boolean;
+  /**
+   * The line appended to the Projection modes' system prompts
+   * (PROJ_EVAL_FORCE_CODE_MODE=1); absent when none was.
+   */
+  systemSuffix?: string;
+  /** `native-search` runs: the tool search variant (PROJ_EVAL_TOOL_SEARCH). */
+  toolSearch?: ToolSearchVariant;
+  /** `native-ptc` runs: the tools' `allowed_callers` (PROJ_EVAL_PTC_CALLERS). */
+  ptcCallers?: PtcCallers;
+  /**
+   * The host system prompt every mode's system prompt started with
+   * (PROJ_EVAL_HOST_PROMPT); absent when none was (the one-line framing only).
+   */
+  hostPrompt?: HostPromptKind;
   modes?: EvalMode[];
   tiers?: TaskTier[];
   tasks?: string[];
@@ -1042,6 +1596,18 @@ export interface ResultsMeta {
   maxTurns?: number;
   /** The absolute ceiling on Messages API calls per episode. */
   maxTotalTurns?: number;
+  /** Tasks with their own turn budget (ceiling twice it), which overrides `maxTurns`. */
+  taskMaxTurns?: Record<string, number>;
+  /** The model calls went through the Message Batches API (PROJ_EVAL_BATCH=1). */
+  batch?: boolean;
+  /** Batch mode: episodes live in the lockstep at once. */
+  batchWidth?: number;
+  /** Batch mode: every lockstep tick so far, with its wall-clock time. */
+  batchTicks?: BatchTick[];
+  /** The PROJ_EVAL_APPROVER persona, when one overrode the tasks' own. */
+  approver?: ApproverPersona;
+  /** PROJ_EVAL_APPROVAL_PROMPTS, when set. */
+  approvalPrompts?: ApprovalPrompts;
 }
 
 export interface ResultsWriter {

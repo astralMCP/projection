@@ -138,6 +138,27 @@ describe('describe_tool (R34)', () => {
     expect(described(result).inputSchema['required']).toEqual([name]);
   });
 
+  it('an undeclared output is not called text; a read-only tool that runs immediately says to look first', () => {
+    const readOnly = text(describeTool(RICH, { name: 'read_file' }));
+    expect(readOnly).toContain('Output schema: none declared');
+    expect(readOnly).not.toContain('arrive as text');
+    expect(readOnly).toContain('structured object');
+    expect(readOnly).toContain('call it once with call_tool');
+    const gated = text(
+      describeTool(
+        { ...RICH, tools: [entry({ name: 'poke', description: 'Poke.' })] },
+        { name: 'poke' },
+      ),
+    );
+    expect(gated).toContain('Output schema: none declared');
+    expect(gated).not.toContain('call_tool');
+    expect(gated).toContain('a result shape you have not seen');
+    // A declared schema keeps the schema block and none of this copy.
+    const declared = text(describeTool(RICH, { name: 'write_file' }));
+    expect(declared).toContain('Output schema (JSON Schema):');
+    expect(declared).not.toContain('none declared');
+  });
+
   it('shows the destructive marker and policy overrides in the posture line', () => {
     const rendered = text(
       describeTool(CATALOG, { name: 'delete_file' }, { policy: { delete_file: 'deny' } }),
@@ -201,6 +222,46 @@ describe('describe_tool (R34)', () => {
       expect(error.hint).toMatch(/^Did you mean "delete_file"/);
       expect(error.hint).toContain('then describe_tool with one of those names exactly');
     }
+  });
+
+  it('shows kept scalar defaults in the schema, restated on one line, and in the types (D29)', () => {
+    const catalog: ServerCatalog = {
+      ...CATALOG,
+      tools: [
+        entry({
+          name: 'find',
+          description: 'Find documents.',
+          annotations: { readOnlyHint: true },
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              limit: { type: 'integer', default: 10 },
+              sort: { type: 'string', default: 'asc' },
+              filter: { type: 'object', default: { open: true } },
+              [`odd${ESC}name`]: { type: 'boolean', default: true },
+            },
+          },
+        }),
+      ],
+    };
+    const result = describeTool(
+      catalog,
+      { name: 'find', types: true },
+      { toolTypes: generateToolTypes(catalog).toolTypes },
+    );
+    const props = described(result).inputSchema['properties'] as Record<string, unknown>;
+    expect(props['limit']).toEqual({ type: 'integer', default: 10 });
+    expect(props['filter']).toEqual({ type: 'object' });
+    const rendered = text(result);
+    expect(rendered).toContain('"default": 10');
+    expect(rendered).toContain(
+      'Defaults the server applies when an argument is omitted: "limit" = 10, "sort" = "asc", "odd�name" = true.',
+    );
+    expect(rendered).not.toContain(ESC);
+    expect(rendered).toContain('/** @default 10 */');
+    // No line for a tool without defaults.
+    expect(text(describeTool(RICH, { name: 'write_file' }))).not.toContain('Defaults the server');
   });
 
   it('omits types unless asked for them (types: true), even when a typegen map is available', () => {

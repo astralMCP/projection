@@ -58,8 +58,17 @@ function buildWrappedServer(): McpServer {
 let facade: ProjectionFacade | undefined;
 let client: Client | undefined;
 
-async function connect(options: Partial<WrapOptions> = {}): Promise<Client> {
-  facade = await wrapMcpServer(buildWrappedServer(), { blob: { key: KEY }, ...options });
+/**
+ * These tests are about the catalog surface, so direct listing is pinned off
+ * (D28) unless `asDefault` asks for the facade exactly as configured.
+ */
+async function connect(options: Partial<WrapOptions> = {}, asDefault = false): Promise<Client> {
+  facade = await wrapMcpServer(
+    buildWrappedServer(),
+    asDefault
+      ? { blob: { key: KEY }, ...options }
+      : { blob: { key: KEY }, ...options, projections: { direct: false, ...options.projections } },
+  );
   const served = facade.createServer({ era: 'modern' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'catalog-test', version: '1.0.0' }, { capabilities: {} });
@@ -81,8 +90,26 @@ afterEach(async () => {
 });
 
 describe('projections switch (R1, R32)', () => {
-  it('defaults to both projections: five tools, routing preamble', async () => {
-    const c = await connect();
+  it('defaults to both projections, listing a small catalog directly (D28)', async () => {
+    const c = await connect({}, true);
+    expect(await toolNames(c)).toEqual([
+      'call_tool',
+      'delete_file',
+      'describe_tool',
+      'discover_apis',
+      'execute_machine',
+      'read_file',
+      'write_file',
+    ]);
+    expect(facade?.projections).toEqual({ codeMode: true, catalog: true, direct: true });
+    expect(Object.isFrozen(facade?.projections)).toBe(true);
+    expect(facade?.instructions).toMatch(
+      /^A tiny file server\.\n\nThis server's tools are listed directly: call them by name/,
+    );
+  });
+
+  it('with direct: false, serves the five tools and the routing preamble', async () => {
+    const c = await connect({ projections: { direct: false } }, true);
     expect(await toolNames(c)).toEqual([
       'call_tool',
       'describe_tool',
@@ -99,6 +126,9 @@ describe('projections switch (R1, R32)', () => {
     const c = await connect({ projections: { catalog: false } });
     expect(await toolNames(c)).toEqual(['discover_apis', 'execute_machine']);
     expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_CODE_MODE_PREAMBLE}`);
+    // No call_tool to route to: execute_machine keeps its plain description.
+    const { tools } = await c.listTools();
+    expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain('call_tool');
   });
 
   it('with both projections on, both surfaces are served and the routing preamble applies (R29)', async () => {
@@ -113,8 +143,20 @@ describe('projections switch (R1, R32)', () => {
     expect(facade?.instructions).toContain(DEFAULT_ROUTING_PREAMBLE);
     expect(facade?.instructions).toContain('call_tool');
     expect(facade?.instructions).toContain('execute_machine');
-    // The catalog tools are reads: annotated so hosts never prompt for them.
     const { tools } = await c.listTools();
+    // The short-chain routing copy is multi-server only: a single-server
+    // facade keeps the plain execute_machine and call_tool descriptions.
+    expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain(
+      'lookup-then-act',
+    );
+    expect(tools.find((t) => t.name === 'call_tool')?.description).not.toContain(
+      'successive call_tool calls',
+    );
+    expect(tools.find((t) => t.name === 'call_tool')?.description).toContain(
+      'computing over a list (counting, filtering, summing, comparing or checking every item)',
+    );
+    expect(facade?.instructions).not.toContain('short chain');
+    // The catalog tools are reads: annotated so hosts never prompt for them.
     for (const name of ['search_tools', 'describe_tool']) {
       expect(tools.find((t) => t.name === name)?.annotations?.readOnlyHint).toBe(true);
     }

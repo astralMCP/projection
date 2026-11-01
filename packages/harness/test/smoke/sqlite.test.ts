@@ -193,9 +193,10 @@ describe('mcp-sqlite through Projection (PRD §13 matrix #3: opaque SQL, unannot
 
     expect(result.status).toBe('completed');
     expect(result.rounds).toBe(1); // unannotated -> ask, despite being a read
-    const output = result.output as { status: string; rows: string };
+    const output = result.output as { status: string; rows: unknown };
     expect(output.status).toBe('read');
-    expect(output.rows).toContain('ada');
+    // The server returns rows as JSON text; a machine receives it parsed (D29).
+    expect(output.rows).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'ada' })]));
 
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain('read_records');
@@ -254,9 +255,9 @@ describe('mcp-sqlite through Projection (PRD §13 matrix #3: opaque SQL, unannot
     );
     expect(listed.status).toBe('completed');
     expect(listed.rounds).toBe(0);
-    const listOutput = listed.output as { status: string; tables: string };
+    const listOutput = listed.output as { status: string; tables: unknown };
     expect(listOutput.status).toBe('listed');
-    expect(listOutput.tables).toContain('users');
+    expect(listOutput.tables).toEqual([{ name: 'users' }]);
 
     // query overridden to deny: no prompt, canonical policy reason, no change.
     const denied = await runScenario(

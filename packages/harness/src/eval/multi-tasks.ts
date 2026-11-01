@@ -16,7 +16,7 @@
  *   a customer's email becomes a todo line. The write must follow the read
  *   that justified it, and must carry the value read (exact fixture values:
  *   `- Add CSV export`, 4 shipped orders, `app.log`, `1.2.0`, the four open
- *   PRs of acme/widgets — paged three at a time — and grace@example.com).
+ *   PRs of acme/widgets — one page at GitHub's 30 — and grace@example.com).
  * - **Box choice** (4): two boxes have a similarly named tool — the
  *   project's README (filesystem) vs acme/widgets' readme (GitHub's
  *   `get_file_contents`), the project's `src` folder vs acme/widgets'.
@@ -56,7 +56,7 @@ import { FIXTURE_TODO } from './filesystem-world.js';
 import {
   branchesListed,
   GITHUB_CATALOG,
-  HARD_BRANCHES,
+  ACME_BRANCHES,
   HARD_PULLS,
   HARD_REPO,
 } from './github-fake.js';
@@ -83,7 +83,11 @@ import {
 import { SHOP_DB, withMongodb } from './mongodb-world.js';
 import { qualifiedName } from './multi-world.js';
 import { containsText, sameText, type EvalTask, type TaskKind } from './task-core.js';
-import type { BoxAlias } from './world.js';
+import { SUMMIT_WRITE_TOOLS } from './summit-local-world.js';
+import { SAAS_WRITE_TOOLS } from './summit-world.js';
+import { WORKPLACE_WRITE_TOOLS } from './workplace-world.js';
+import { isBillingWrite } from './messy-billing.js';
+import { BOX_ALIASES, type BoxAlias } from './world.js';
 
 /** The bare call, when `call` went to box `alias`. */
 export function unboxCall(call: SideEffect, alias: BoxAlias): SideEffect | undefined {
@@ -110,7 +114,7 @@ export function unbox(calls: SideEffect[], alias: BoxAlias): { calls: SideEffect
 /** The box a qualified call (or step name) belongs to, if it names one. */
 export function boxOf(qualified: string): BoxAlias | undefined {
   const alias = qualified.split('.', 1)[0];
-  return alias === 'github' || alias === 'fs' || alias === 'mongo' ? alias : undefined;
+  return BOX_ALIASES.find((known) => known === alias);
 }
 
 /** The boxes a multi-tier task needs: the aliases its step groups name. */
@@ -150,7 +154,9 @@ const MONGO_WRITES: ReadonlySet<string> = new Set([
 /**
  * A qualified call that changes its box's world: a GitHub tool not
  * annotated read-only, a filesystem write (a `dryRun` edit is a read), a
- * MongoDB write.
+ * MongoDB write, a workplace box's write tool (WORKPLACE_WRITE_TOOLS), a
+ * summit-local box's write tool (SUMMIT_WRITE_TOOLS), a summit SaaS fake's
+ * write tool (SAAS_WRITE_TOOLS).
  */
 export function isBoxWrite(call: SideEffect): boolean {
   const alias = boxOf(call.tool);
@@ -163,6 +169,21 @@ export function isBoxWrite(call: SideEffect): boolean {
       return FS_WRITES.has(bare) && !(bare === 'edit_file' && call.args['dryRun'] === true);
     case 'mongo':
       return MONGO_WRITES.has(bare);
+    case 'fetch':
+    case 'git':
+    case 'memory':
+    case 'sqlite':
+    case 'time':
+      return SUMMIT_WRITE_TOOLS[alias].includes(bare);
+    case 'notion':
+    case 'sentry':
+    case 'slack':
+    case 'stripe':
+      return SAAS_WRITE_TOOLS[alias].includes(bare);
+    case 'billing':
+      return isBillingWrite(bare);
+    default:
+      return WORKPLACE_WRITE_TOOLS[alias].includes(bare);
   }
 }
 
@@ -486,7 +507,7 @@ export const MULTI_TASKS: readonly EvalTask[] = [
         const from = branchName(call.args['from_branch']);
         return (
           sameText(branchName(call.args['branch']), RELEASE_BRANCH) &&
-          (from === undefined || from === '' || HARD_BRANCHES.includes(from.toLowerCase()))
+          (from === undefined || from === '' || ACME_BRANCHES.includes(from))
         );
       });
       return read >= 0 && created > read;
@@ -500,8 +521,8 @@ export const MULTI_TASKS: readonly EvalTask[] = [
           (!inRepo(c.args, HARD) || !sameText(branchName(c.args['branch']), RELEASE_BRANCH)),
       ),
   },
-  // --- Cross-box: github -> fs. Four open PRs, listed three per page by
-  // default: the file must hold all four titles.
+  // --- Cross-box: github -> fs. Four open PRs (one page at GitHub's
+  // default of 30): the file must hold all four titles.
   {
     name: 'cross-open-prs-to-notes',
     tier: 'multi',
@@ -654,7 +675,7 @@ export const MULTI_TASKS: readonly EvalTask[] = [
     prompt:
       'What version is the widgets project on, and is there a release branch for that version?',
     // The version is only in the project (acme/widgets' package.json is a
-    // 404); the branches are only on GitHub, release/1.2 on page 2.
+    // 404); the branches are only on GitHub, release/1.2 on page 3.
     steps: [inBox('fs', FILE_READ_TOOLS), inBox('github', ['list_branches'])],
     expect: (calls) =>
       any(

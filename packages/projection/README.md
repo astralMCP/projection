@@ -13,7 +13,7 @@ Both SDK packages are pinned at `2.0.0` in Projection's own dependencies, so
 install the same version to match the pin.
 
 Projection wraps an existing MCP server and exposes two projections of it —
-five tools in all, never the wrapped server's own:
+five tools in all, never a pass-through to the wrapped server's own:
 
 - **Code mode** — `execute_machine` runs an LLM-authored XState v5 state
   machine in a QuickJS WebAssembly sandbox (read-only calls, or, under
@@ -22,12 +22,17 @@ five tools in all, never the wrapped server's own:
   approve that exact call via MRTR elicitation); `discover_apis` returns
   the generated TypeScript definitions and the authoring contract.
 - **Catalog** — `search_tools` lists the wrapped tools with their approval
-  posture, `describe_tool` returns one tool's schemas (and its generated
+  posture (a query's top three hits with their arguments), `describe_tool` returns one tool's schemas (and its generated
   types on request, `types: true`), and `call_tool` runs one tool by name
   under the same approval gate. The instructions route the model: one step
   → `call_tool`; a workflow → `execute_machine`. Either projection can be
   disabled (`projections: { codeMode: false }` or `{ catalog: false }`; not
   both).
+- **Direct listing** (default `projections.direct: 'auto'`) — when the
+  wrapped tools' estimated definitions fit `directBudgetTokens` (8 000),
+  each is also listed by name (`<box>__<tool>` on a multi-server facade) as
+  a mediated alias of `call_tool` under the same gate, and `search_tools`
+  is dropped. `projections: { direct: false }` keeps the five tools.
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
 (read-only, `auto` by policy, or, under `destructive-only`, a non-destructive
@@ -40,6 +45,13 @@ approval, a tool whose annotations declare `destructiveHint: false` exactly
 over the mode. The mode extends the trust Projection places in
 `readOnlyHint` to `destructiveHint: false`, and a hostile server can
 mislabel a damaging tool — enable it only for servers you trust.
+
+`upstreamElicitation: 'forward'` lets a trusted wrapped server ask the user
+questions mid-call (a form, or a link to open): each is relayed over MRTR as
+`Question from <box> (not an approval)` with the server's words quoted and
+its form allowlisted, after the call itself passed the approval gate. The
+default, `'refuse'`, fails such a call with a result telling the model the
+tool needs the user's input. Per box on `wrapMcpServers`.
 
 All suspension state rides the MRTR `requestState` payload, so Projection is
 fully stateless: any server instance can resume any workflow.
@@ -54,6 +66,7 @@ const facade = await wrapMcpServer(myMcpServer, {
   blob: { key: myThirtyTwoByteKey }, // shared across instances
   policy: { query: 'ask' }, // override annotations per tool
   // approvals: 'destructive-only', // skip approval for destructiveHint: false writes (trusted servers only)
+  // upstreamElicitation: 'forward', // pass the server's own questions on to the user (trusted servers only)
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
 
@@ -106,6 +119,9 @@ fails with an `auth` error. See "Upstream authentication" in
 Known limitation: unless you supply a shared `replayCache` (R38), an approved
 retry can be replayed until its blob expires (by default 5 min for
 `call_tool`, 15 for machines; `blob.callTtlMs` and `blob.ttlMs` override).
+A forwarded server question's blob keeps the expiry of the approval it
+follows. With `upstreamElicitation: 'forward'` on, a `replayCache` is
+recommended.
 See
 [Lifecycle](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#lifecycle-and-operations).
 

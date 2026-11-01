@@ -13,7 +13,19 @@
  * - **mongodb**: the official MongoDB MCP server on a seeded throwaway
  *   `mongod`, likewise behind a recording proxy (mongodb-world.ts);
  * - **multi**: all three at once, each a box under an alias (`github`,
- *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts).
+ *   `fs`, `mongo`), with one call log across the boxes (multi-world.ts);
+ * - **workplace**: five in-process fakes of other popular servers (chat,
+ *   docs, errors, mail, tracker) as boxes, stateful per episode
+ *   (workplace-world.ts) — the opt-in `workplace` tier's world;
+ * - **summit-local**: six real servers (filesystem, git, memory, SQLite,
+ *   fetch, time) as boxes on one seeded company (summit-local-world.ts) —
+ *   the opt-in, held-out `summit-local` tier's world;
+ * - **summit**: high-fidelity fakes of the Notion, Sentry, Slack and
+ *   Stripe MCP servers plus the real filesystem server, as boxes
+ *   (summit-world.ts) — the opt-in, held-out `summit-saas` tier's world;
+ * - **messy**: badly built servers — three workplace fakes and a 315-tool
+ *   generated billing API, each behind `messify` with a defect profile
+ *   (messy-world.ts) — the held-out `summit-messy` tier's world.
  *
  * Real-server effects land for real; tasks verify the end state (on disk,
  * in the database) as well as the recorded calls.
@@ -24,11 +36,42 @@ import type { SideEffect } from '../types.js';
 import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
+import { openMessyWorld, type MessyState } from './messy-world.js';
 import { openMultiWorld } from './multi-world.js';
+import { openSummitLocalWorld } from './summit-local-world.js';
+import { openSummitWorld, type SummitState } from './summit-world.js';
+import { openWorkplaceWorld, type WorkplaceState } from './workplace-world.js';
 
-export type WorldName = 'github' | 'filesystem' | 'mongodb' | 'multi';
-/** The worlds that are one upstream server. */
-export type ServerWorldName = Exclude<WorldName, 'multi'>;
+export type WorldName =
+  'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace' | 'summit-local' | 'summit' | 'messy';
+/** The worlds made of several boxes. */
+export type BoxedWorldName = 'multi' | 'workplace' | 'summit-local' | 'summit' | 'messy';
+/** The workplace world's boxes (each a server world named by its alias). */
+export type WorkplaceBoxAlias = 'chat' | 'docs' | 'errors' | 'mail' | 'tracker';
+/** The summit-local world's boxes: real servers, each named by its alias (`fs` is the filesystem world). */
+export type SummitBoxAlias = 'fetch' | 'fs' | 'git' | 'memory' | 'sqlite' | 'time';
+/** The summit world's boxes: four SaaS fakes and the real filesystem server. */
+export type SaasBoxAlias = 'fs' | 'notion' | 'sentry' | 'slack' | 'stripe';
+/** The messy world's boxes: three workplace fakes and the generated billing API. */
+export type MessyBoxAlias = 'billing' | 'chat' | 'mail' | 'tracker';
+/** The worlds that are one upstream server (a workplace, summit-local, summit or messy box is one too, though never opened alone). */
+export type ServerWorldName =
+  | Exclude<WorldName, BoxedWorldName>
+  | WorkplaceBoxAlias
+  | Exclude<SummitBoxAlias, 'fs'>
+  | SaasBoxAlias
+  | MessyBoxAlias;
+
+/** Whether a world name is a boxed (multi-server) world. */
+export function isBoxedWorldName(name: WorldName): name is BoxedWorldName {
+  return (
+    name === 'multi' ||
+    name === 'workplace' ||
+    name === 'summit-local' ||
+    name === 'summit' ||
+    name === 'messy'
+  );
+}
 
 /** One tool as a world serves it (the model sees name, description, schema). */
 export interface WorldTool {
@@ -36,6 +79,12 @@ export interface WorldTool {
   title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /**
+   * The output JSON Schema the upstream declares, when it declares one. The
+   * recording proxy re-registers it; direct mode never shows it to the model
+   * (the Messages API tool definition has no output schema).
+   */
+  outputSchema?: Record<string, unknown>;
   annotations?: {
     title?: string;
     readOnlyHint?: boolean;
@@ -51,10 +100,27 @@ export interface WorldFacts {
   root?: string;
   /** mongodb: the episode's deployment, for `verify` to query through the driver. */
   mongoUri?: string;
+  /** workplace: every box's live state, for `verify` to read the end state. */
+  workplace?: WorkplaceState;
+  /** summit-local: the intranet's base URL (`http://127.0.0.1:<port>`). */
+  intranet?: string;
+  /** summit-local: the memory server's graph file (JSONL). */
+  memoryFile?: string;
+  /** summit-local: the SQLite server's database file. */
+  sqliteDb?: string;
+  /** summit-local: the private HOME every git command runs with. */
+  gitHome?: string;
+  /** summit-local: every fixture commit's full hash, by its key (summit-local-fixtures.ts). */
+  commits?: Readonly<Record<string, string>>;
+  /** summit: the four SaaS fakes' live state (plus `root`, the fs box's directory). */
+  summit?: SummitState;
+  /** messy: every box's live state, for `verify` to read the end state. */
+  messy?: MessyState;
 }
 
 interface WorldBase {
-  name: WorldName;
+  /** A world's name; a workplace, summit-local, summit or messy box (never opened alone) is named by its alias. */
+  name: WorldName | ServerWorldName;
   readonly tools: readonly WorldTool[];
   /** The `instructions` the upstream advertises (undefined when none). */
   readonly instructions: string | undefined;
@@ -80,12 +146,37 @@ export interface ServerWorld extends WorldBase {
 }
 
 /** The aliases of the multi world's boxes. */
-export type BoxAlias = 'github' | 'fs' | 'mongo';
+export type MultiBoxAlias = 'github' | 'fs' | 'mongo';
+/** Any box alias: multi, workplace, summit-local, summit or messy. */
+export type BoxAlias =
+  MultiBoxAlias | WorkplaceBoxAlias | SummitBoxAlias | SaasBoxAlias | MessyBoxAlias;
+export const BOX_ALIASES: readonly BoxAlias[] = [
+  'billing',
+  'github',
+  'fs',
+  'mongo',
+  'chat',
+  'docs',
+  'errors',
+  'mail',
+  'tracker',
+  'fetch',
+  'git',
+  'memory',
+  'sqlite',
+  'time',
+  'notion',
+  'sentry',
+  'slack',
+  'stripe',
+];
 
-/** One box of the multi world: a single-server world under its alias. */
+/** One box of a boxed world: a single-server world under its alias. */
 export interface WorldBox {
   alias: BoxAlias;
   world: ServerWorld;
+  /** The host's description of the box (passed to Projection only with PROJ_EVAL_BOX_DESCRIPTIONS=1). */
+  description?: string;
 }
 
 /**
@@ -95,7 +186,7 @@ export interface WorldBox {
  * undefined (each box keeps its own); `facts` merges the boxes' facts.
  */
 export interface MultiWorld extends WorldBase {
-  name: 'multi';
+  name: BoxedWorldName;
   readonly boxes: readonly WorldBox[];
 }
 
@@ -112,6 +203,14 @@ export interface WorldOptions {
    * one ordered log across its boxes.
    */
   onCall?: (call: SideEffect) => void;
+  /**
+   * multi only: `'hard'` opens the boxes with the `multi-hard` tier's
+   * additional fixture data (multi-hard-fixtures.ts, multi-hard-github.ts).
+   * Absent: the base fixtures, exactly as every other tier sees them.
+   */
+  variant?: 'hard';
+  /** messy only: the boxes to open (default all). */
+  boxes?: readonly MessyBoxAlias[];
 }
 
 /** A fresh world for one episode. */
@@ -125,5 +224,13 @@ export function openWorld(name: WorldName, options: WorldOptions = {}): Promise<
       return openMongodbWorld(options);
     case 'multi':
       return openMultiWorld(options);
+    case 'workplace':
+      return Promise.resolve(openWorkplaceWorld(options));
+    case 'summit-local':
+      return openSummitLocalWorld(options);
+    case 'summit':
+      return openSummitWorld(options);
+    case 'messy':
+      return openMessyWorld(options);
   }
 }

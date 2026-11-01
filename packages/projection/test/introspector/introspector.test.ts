@@ -488,6 +488,38 @@ async function connectNonConforming(): Promise<{ client: Client; server: Server 
   return { client, server };
 }
 
+describe('Introspector server notes (D29)', () => {
+  it('keeps short text beside structuredContent that is not a mirror of it, and drops a mirror', async () => {
+    const mcp = new McpServer({ name: 'notes', version: '1.0.0' });
+    const data = { total: 40, docs: [{ id: 'a1', title: 'Alpha' }] };
+    mcp.registerTool('find', { inputSchema: z.object({}) }, () => ({
+      content: [
+        { type: 'text', text: JSON.stringify(data) },
+        { type: 'text', text: 'Query resulted in 40 documents. Returning 1.' },
+      ],
+      structuredContent: data,
+    }));
+    mcp.registerTool('mirror', { inputSchema: z.object({}) }, () => ({
+      content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+      structuredContent: data,
+    }));
+    const introspector = await createIntrospector({ default: mcp });
+    try {
+      expect(await introspector.callTool('default', 'find', {})).toEqual({
+        ok: true,
+        result: data,
+        serverNote: 'Query resulted in 40 documents. Returning 1.',
+      });
+      expect(await introspector.callTool('default', 'mirror', {})).toEqual({
+        ok: true,
+        result: data,
+      });
+    } finally {
+      await introspector.close();
+    }
+  });
+});
+
 describe('Introspector output-schema validation', () => {
   it('rejects non-conforming structuredContent before and after tools/list_changed', async () => {
     const { client, server } = await connectNonConforming();
@@ -510,6 +542,58 @@ describe('Introspector output-schema validation', () => {
       expect(after).toEqual(before);
     } finally {
       await client.close();
+    }
+  });
+});
+
+describe('Introspector on 2026-07-28 (G2, manual MRTR mode)', () => {
+  it('a tool whose outputSchema cannot compile fails before it runs, as through the SDK', async () => {
+    let ran = 0;
+    const mcp = new McpServer({ name: 'bad-schema', version: '1.0.0' });
+    mcp.registerTool('report', { inputSchema: z.object({}) }, () => {
+      ran += 1;
+      return { content: [], structuredContent: { a: 1 } };
+    });
+    mcp.server.setRequestHandler('tools/list', () => ({
+      tools: [
+        {
+          name: 'report',
+          inputSchema: { type: 'object' as const },
+          outputSchema: { type: 'object' as const, properties: { a: { type: 'no-such-type' } } },
+        },
+      ],
+    }));
+    const introspector = await createIntrospector({ default: mcp });
+    try {
+      const outcome = await introspector.callTool('default', 'report', {});
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.error.message).toContain('invalid outputSchema');
+      expect(ran).toBe(0);
+    } finally {
+      await introspector.close();
+    }
+  });
+
+  it('non-conforming structured content is refused with the SDK wording', async () => {
+    const mcp = new McpServer({ name: 'liar', version: '1.0.0' });
+    mcp.registerTool(
+      'count',
+      { inputSchema: z.object({}), outputSchema: z.object({ n: z.number() }) },
+      () => ({ content: [], structuredContent: { n: 1 } }),
+    );
+    mcp.server.setRequestHandler('tools/call', () => ({
+      content: [],
+      structuredContent: { n: 'many' },
+    }));
+    const introspector = await createIntrospector({ default: mcp });
+    try {
+      const outcome = await introspector.callTool('default', 'count', {});
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error.message).toContain("does not match the tool's output schema");
+      }
+    } finally {
+      await introspector.close();
     }
   });
 });

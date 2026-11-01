@@ -39,10 +39,14 @@ import {
   type UpstreamSpec,
 } from './auth/index.js';
 import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
+import { markDirectListed } from './catalog/search.js';
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   approvalGateDeps,
+  assertUpstreamElicitationMode,
+  assertApprovalPrompts,
   freezePolicySettings,
+  resolveDirectSetting,
   resolveIntrospectTimeout,
   resolveProjections,
   type PolicySettings,
@@ -53,9 +57,16 @@ import {
   createProjectionServer,
   registerCatalogTools,
   registerCodeModeTools,
+  registerDirectTools,
   registerResources,
   type CatalogToolCopy,
 } from './facade/server.js';
+import {
+  decideDirect,
+  planDirectTools,
+  reservedToolNames,
+  type DirectTool,
+} from './facade/direct.js';
 import { createIntrospector, type Introspector } from './introspector/index.js';
 import {
   buildInstructions,
@@ -73,7 +84,7 @@ import {
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
 import { assertApprovalsMode } from './policy/index.js';
-import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
+import { clampCaps, DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
 
 export type { ProjectionsOptions, RegisterOptions, WrapOptions } from './facade/options.js';
 
@@ -96,12 +107,15 @@ export interface ProjectionFacade {
   /**
    * Run `execute_machine` for one `tools/call`, first attempt or retry.
    * `clientCanElicit` reports whether the connected client declared the
-   * `elicitation` capability (legacy compat only; omit when unknown).
+   * `elicitation` capability (legacy compat only; omit when unknown), and
+   * `clientUrlElicitation` whether it declared URL mode (a forwarded
+   * server link, G1, is otherwise shown as text in a form).
    */
   executeMachine(
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
   /** Run `discover_apis`. */
   discoverApis(): CallToolResult;
@@ -111,12 +125,13 @@ export interface ProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult;
   /**
    * Run `call_tool` (R35) for one `tools/call`, first attempt or retry.
-   * `era` / `clientCanElicit` as for `executeMachine`.
+   * `era`, `clientCanElicit` and `clientUrlElicitation` as for `executeMachine`.
    */
   callTool(
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
   /** The projections this facade serves (R32). Frozen: fixed at wrap time. */
   readonly projections: Readonly<ProjectionSelection>;
@@ -144,11 +159,11 @@ Call discover_apis first for the tool types, the full authoring contract, and wo
 
 const DISCOVER_APIS_DESCRIPTION = `Return this server's tool type definitions, the machine authoring contract, and worked examples. Call this before authoring a machine for execute_machine.`;
 
-const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more), so a guessed name like create_issue or a phrase like "comment on a pull request" works. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive. Call describe_tool before calling a tool whose arguments you have not seen.`;
+const SEARCH_TOOLS_DESCRIPTION = `List this server's tools, one page at a time, optionally matched against a query: the query is split into words, a tool matches if any word appears in its name, title or description, and matches are ranked (name hits weigh more), so a guessed name like create_issue or a phrase like "comment on a pull request" works. Each entry gives the tool's name, a one-line purpose, whether it runs immediately, asks the user for approval, or is blocked by policy, and whether the server marks it destructive; a query's top hits also show their args, enough to call call_tool directly. Call describe_tool before calling any other tool.`;
 
-const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
+const CALL_TOOL_DESCRIPTION = `Run one of this server's tools by name with a JSON object of arguments: the args a search hit shows, or those describe_tool gives. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. For several steps, branching on results, computing over a list (counting, filtering, summing, comparing or checking every item), or a workflow worth saving, author a machine and use execute_machine instead.`;
 
-const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
+const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture. Call this before call_tool when no search hit showed the tool's args, or to learn what an argument means. Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
 
 const CATALOG_TOOL_COPY: CatalogToolCopy = {
   searches: [
@@ -163,6 +178,18 @@ const CATALOG_TOOL_COPY: CatalogToolCopy = {
   callDescription: CALL_TOOL_DESCRIPTION,
   toolName: 'Tool name as listed by search_tools.',
   describeTypes: 'Also return the generated TypeScript for this tool (for authoring a machine).',
+};
+
+/**
+ * The catalog tools' copy under direct listing: no search tool (every tool
+ * is listed), and describe_tool / call_tool point at the listed tools.
+ */
+const DIRECT_CATALOG_TOOL_COPY: CatalogToolCopy = {
+  searches: [],
+  describeDescription: `Return one tool's description, its input and output JSON Schemas, and its approval posture. Every tool is already listed directly with its input schema; call this only to see a tool's output schema, or pass types: true for its generated TypeScript when authoring a machine for execute_machine.`,
+  callDescription: `Run one of this server's tools by name with a JSON object of arguments. Every tool is also listed directly, taking the same arguments: prefer calling it that way. Approvals, "declined" and "denied_by_policy" results work the same either way.`,
+  toolName: 'Tool name as the server declares it.',
+  describeTypes: CATALOG_TOOL_COPY.describeTypes,
 };
 
 const CODE_MODE_COPY = {
@@ -182,9 +209,12 @@ export async function wrapMcpServer(
   // Validate the selection, the approvals mode, the token store and a URL
   // source BEFORE connecting: the throw must not leave an in-process wrapped
   // server attached to a transport nobody will close.
-  const projections = resolveProjections(options.projections);
+  const selected = resolveProjections(options.projections);
+  const direct = resolveDirectSetting(options.projections, selected.catalog);
   const approvals = assertApprovalsMode(options.approvals);
+  assertApprovalPrompts(options.approvalPrompts);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
+  const upstreamElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)
     ? new UpstreamConnector(
@@ -199,6 +229,9 @@ export async function wrapMcpServer(
     {
       timeoutMs: introspectTimeoutMs,
       describe: () => connector?.where ?? 'the wrapped server',
+      ...(upstreamElicitation === 'forward'
+        ? { forwardElicitation: new Set([DEFAULT_SERVER_ALIAS]) }
+        : {}),
     },
   );
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
@@ -218,8 +251,27 @@ export async function wrapMcpServer(
   // be the posture `describe_tool` and the approval gate decide with.
   const policySettings = freezePolicySettings({ policy: options.policy, approvals });
 
+  // Direct listing: planned under the same frozen policy, so each mediated
+  // tool's posture line is the posture call_tool decides with.
+  const plan =
+    direct.mode === 'off'
+      ? []
+      : planDirectTools(catalog, { ...policySettings, reserved: reservedToolNames([]) });
+  const listed = decideDirect(direct, plan);
+  // The unknown-name hint must not point at search_tools, which direct
+  // listing does not serve.
+  if (listed) markDirectListed(catalog);
+  const projections: Readonly<ProjectionSelection> = listed
+    ? Object.freeze({ ...selected, direct: true })
+    : selected;
+
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
-  const resources = buildResources(catalog, dts);
+  const resources = buildResources(
+    catalog,
+    dts,
+    undefined,
+    clampCaps(options.caps ?? {}).maxRoundTrips,
+  );
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
 
   return new Facade({
@@ -234,6 +286,7 @@ export async function wrapMcpServer(
     options,
     policySettings,
     projections,
+    directTools: listed ? plan : [],
     ...(connector !== undefined ? { connector } : {}),
   });
 }
@@ -254,6 +307,8 @@ interface FacadeDeps {
    */
   policySettings: PolicySettings;
   projections: Readonly<ProjectionSelection>;
+  /** The mediated tools listed directly (`projections.direct`); empty when not listed. */
+  directTools: readonly DirectTool[];
   /** The source given by URL, when the facade wraps one (R51). */
   connector?: UpstreamConnector;
 }
@@ -282,9 +337,10 @@ class Facade implements ProjectionFacade {
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
     return executeMachine(args, {
-      ...this.gateDeps(era, clientCanElicit),
+      ...this.gateDeps(era, clientCanElicit, clientUrlElicitation),
       bridgeSource: this.deps.bridgeSource,
     });
   }
@@ -293,8 +349,9 @@ class Facade implements ProjectionFacade {
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
-    return callTool(args, this.gateDeps(era, clientCanElicit));
+    return callTool(args, this.gateDeps(era, clientCanElicit, clientUrlElicitation));
   }
 
   /**
@@ -305,6 +362,7 @@ class Facade implements ProjectionFacade {
   private gateDeps(
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
+    clientUrlElicitation?: boolean,
   ): ApprovalGateDeps {
     return approvalGateDeps({
       catalog: this.deps.catalog,
@@ -314,6 +372,7 @@ class Facade implements ProjectionFacade {
       policySettings: this.deps.policySettings,
       era,
       clientCanElicit,
+      clientUrlElicitation,
     });
   }
 
@@ -321,7 +380,12 @@ class Facade implements ProjectionFacade {
     const { catalogInlineThreshold } = this.deps.options;
     return discoverApis(this.deps.catalog, this.deps.overview, {
       catalog: this.projections.catalog,
+      // R37 pointer: direct listing serves no search_tools.
+      ...(this.projections.direct === true
+        ? { findTools: "This server's tools are listed directly as tools of their own." }
+        : {}),
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
+      maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
     });
   }
 
@@ -365,7 +429,15 @@ class Facade implements ProjectionFacade {
     if (this.projections.codeMode) {
       registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.catalog);
     }
-    if (this.projections.catalog) registerCatalogTools(server, era, this, CATALOG_TOOL_COPY);
+    if (this.projections.catalog) {
+      registerCatalogTools(
+        server,
+        era,
+        this,
+        this.projections.direct === true ? DIRECT_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY,
+      );
+      registerDirectTools(server, era, this, this.deps.directTools);
+    }
     registerResources(server, this.resources);
   }
 

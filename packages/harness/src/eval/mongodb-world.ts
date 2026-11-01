@@ -174,6 +174,15 @@ export const NAMED_PRODUCTS: readonly Doc[] = [
 export const MONGODB_QUERY_CAP = 100;
 
 /**
+ * How many documents a `find` without a `limit` returns: the tool's own
+ * schema default (`limit: z.number().optional().default(10)` in the vendored
+ * `@mongodb-js/mcp-tools-mongodb` 3.2.1, tools/read/find.js), well below
+ * {@link MONGODB_QUERY_CAP}. The result text says how many matched
+ * ("resulted in 120 documents. Returning 10 documents.").
+ */
+export const MONGODB_FIND_DEFAULT_LIMIT = 10;
+
+/**
  * Deterministic filler: "Part NNN", category `parts`, every price strictly
  * below the cheapest named top-three product (Gadget Mini, 34.5).
  */
@@ -191,9 +200,11 @@ function part(n: number): Doc {
 /**
  * 120 products: the six named ones spread through 114 filler parts, with
  * the most expensive (Gadget Max) past the server's {@link MONGODB_QUERY_CAP}
- * in insertion order. An unsorted, unlimited `find` therefore cannot read
- * off the top three, which is what justifies the strict sort + limit
- * expectation of `db-top3-expensive`.
+ * in insertion order. An unsorted `find` therefore cannot read off the top
+ * three — without a `limit` it returns only the first
+ * {@link MONGODB_FIND_DEFAULT_LIMIT}, and even at the cap Gadget Max is
+ * beyond it — which is what justifies the strict sort + limit expectation
+ * of `db-top3-expensive`.
  */
 export const FIXTURE_PRODUCTS: readonly Doc[] = (() => {
   const products: Doc[] = [];
@@ -291,8 +302,16 @@ export const SHOP_COLLECTIONS: readonly string[] = Object.keys(
   MONGODB_FIXTURE[SHOP_DB] ?? {},
 ).toSorted();
 
-/** Seed the fixture into the deployment at `uri`. */
-export async function seedMongodbFixture(uri: string): Promise<void> {
+/**
+ * Seed the fixture into the deployment at `uri`, then `extraShop`: more
+ * documents for the shop database's collections (the multi-hard world's),
+ * inserted after the fixture's so insertion order keeps the base documents
+ * first.
+ */
+export async function seedMongodbFixture(
+  uri: string,
+  extraShop: Readonly<Record<string, readonly Doc[]>> = {},
+): Promise<void> {
   const client = new MongoClient(uri);
   try {
     await client.connect();
@@ -304,6 +323,13 @@ export async function seedMongodbFixture(uri: string): Promise<void> {
           .collection(collection)
           .insertMany(docs.map((doc) => ({ ...doc })));
       }
+    }
+    for (const [collection, docs] of Object.entries(extraShop)) {
+      if (docs.length === 0) continue;
+      await client
+        .db(SHOP_DB)
+        .collection(collection)
+        .insertMany(docs.map((doc) => ({ ...doc })));
     }
   } finally {
     await client.close();
@@ -345,7 +371,10 @@ function serverEnv(uri: string): Record<string, string> {
  * server and the `mongod`.
  */
 export async function openMongodbWorld(
-  options: Pick<WorldOptions, 'onCall'> = {},
+  options: Pick<WorldOptions, 'onCall'> & {
+    /** More shop documents seeded after the fixture (the multi-hard world's). */
+    extraShop?: Readonly<Record<string, readonly Doc[]>>;
+  } = {},
 ): Promise<ServerWorld> {
   const entry = mongodbServerEntry();
   const mongod = await MongoMemoryServer.create({
@@ -368,7 +397,7 @@ export async function openMongodbWorld(
     await mongod.stop().catch(() => {});
   };
   try {
-    await seedMongodbFixture(uri);
+    await seedMongodbFixture(uri, options.extraShop);
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [

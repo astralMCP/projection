@@ -8,7 +8,11 @@
  * exactly like a single-server one.
  */
 
-import { McpServer } from '@modelcontextprotocol/server';
+import {
+  McpServer,
+  type ServerContext,
+  type StandardSchemaWithJSON,
+} from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { DASHBOARD_RESOURCE_URI } from '../apps/dashboard.js';
 import { boxSearchTool } from '../catalog/boxes.js';
@@ -21,7 +25,9 @@ import type {
   ToolCallResult,
 } from '../mrtr/index.js';
 import { WORKFLOW_PROMPTS } from '../prompts/workflow-prompts.js';
-import { clampCaps, type ServerCatalog } from '../types.js';
+import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { clampCaps, type ServerCatalog, type UpstreamCallOptions } from '../types.js';
+import type { DirectTool } from './direct.js';
 import type { WrapOptions } from './options.js';
 
 /** The model-facing copy of the catalog tools: what differs between facade kinds. */
@@ -59,6 +65,7 @@ export interface CatalogHandlers {
     args: CallToolArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
 }
 
@@ -68,6 +75,7 @@ export interface CodeModeHandlers {
     args: ExecuteMachineArgs,
     era?: ProtocolEra,
     clientCanElicit?: boolean,
+    clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
   discoverApis(): CallToolResult;
 }
@@ -164,7 +172,12 @@ export function registerCatalogTools(
       description: copy.callDescription,
       inputSchema: z.object({
         name: z.string().describe(copy.toolName),
-        args: z.unknown().optional().describe('JSON object of arguments per describe_tool.'),
+        args: z
+          .unknown()
+          .optional()
+          .describe(
+            "JSON object of arguments, as a search hit's args or describe_tool shows them.",
+          ),
       }),
     },
     async (args, ctx) =>
@@ -176,11 +189,115 @@ export function registerCatalogTools(
           ...(ctx.mcpReq.inputResponses !== undefined
             ? { inputResponses: ctx.mcpReq.inputResponses }
             : {}),
+          upstream: upstreamCallOptions(args.name, ctx),
         },
         era,
         clientCanElicit(server),
+        clientUrlElicitation(server),
       ),
   );
+}
+
+/**
+ * Direct listing (`projections.direct`, `facade/direct.ts`): one mediated
+ * tool per wrapped tool, each a thin alias of `call_tool` — the handler is
+ * the facade's `callTool`, given the tool's catalog name, the model's
+ * arguments as `args`, the MRTR retry envelope, the upstream progress and
+ * cancellation options and the client's elicitation capabilities, read from
+ * the transport exactly as for `call_tool` (so a forwarded upstream question,
+ * decline copy and audit redaction are `call_tool`'s own). The annotations
+ * are Projection's own, from its decided posture (`advertisedAnnotations`),
+ * never the server's: a host that auto-runs read-only tools may only skip
+ * its prompt where Projection would not ask either.
+ */
+export function registerDirectTools(
+  server: McpServer,
+  era: ProtocolEra | undefined,
+  handlers: Pick<CatalogHandlers, 'callTool'>,
+  tools: readonly DirectTool[],
+): void {
+  for (const tool of tools) {
+    server.registerTool(
+      tool.name,
+      {
+        ...(tool.title !== undefined ? { title: tool.title } : {}),
+        description: tool.description,
+        inputSchema: advertisedSchema(tool.inputSchema),
+        annotations: { ...tool.annotations },
+      },
+      async (args: unknown, ctx) =>
+        await handlers.callTool(
+          {
+            name: tool.target,
+            ...(args !== undefined ? { args } : {}),
+            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
+            ...(ctx.mcpReq.inputResponses !== undefined
+              ? { inputResponses: ctx.mcpReq.inputResponses }
+              : {}),
+            // Progress and cancellation as for `call_tool`, attributed to the
+            // catalog name so a relayed message reads the same either way.
+            upstream: upstreamCallOptions(tool.target, ctx),
+          },
+          era,
+          clientCanElicit(server),
+          clientUrlElicitation(server),
+        ),
+    );
+  }
+}
+
+/**
+ * A pass-through Standard Schema advertising `schema` in `tools/list`.
+ * Arguments are not validated by the SDK: `call_tool`'s own R35 validation
+ * runs on them, so a mediated tool fails exactly as `call_tool` would.
+ */
+function advertisedSchema(schema: Record<string, unknown>): StandardSchemaWithJSON {
+  return {
+    '~standard': {
+      version: 1,
+      vendor: 'astral-mcp-projection',
+      validate: (value: unknown) => ({ value }),
+      jsonSchema: { input: () => schema, output: () => schema },
+    },
+  };
+}
+
+/** Upstream progress messages are server prose (S5): inert and bounded. */
+const MAX_PROGRESS_MESSAGE_CHARS = 200;
+
+/**
+ * The upstream half of a `call_tool` request: cancelling the facade request
+ * cancels the upstream call, and when the client asked for progress (a
+ * `progressToken` in `_meta`), the upstream's progress reports are relayed
+ * under the client's own token. A relayed message is the wrapped server's
+ * text (S5): attributed to the tool (`<tool>: <message>`; a qualified name
+ * on a multi-server facade names the box, R40), control and bidi characters
+ * neutralized, capped. `name` only reaches a report once the catalog has
+ * accepted it — an unknown tool never runs.
+ */
+function upstreamCallOptions(name: string, ctx: ServerContext): UpstreamCallOptions {
+  const token = ctx.mcpReq._meta?.progressToken;
+  if (token === undefined) return { signal: ctx.mcpReq.signal };
+  return {
+    signal: ctx.mcpReq.signal,
+    onProgress: (report) => {
+      const params: {
+        progressToken: string | number;
+        progress: number;
+        total?: number;
+        message?: string;
+      } = { progressToken: token, progress: report.progress };
+      if (report.total !== undefined) params.total = report.total;
+      if (report.message !== undefined) {
+        params.message = neutralizeControlChars(
+          capLength(`${name}: ${report.message}`, MAX_PROGRESS_MESSAGE_CHARS),
+        );
+      }
+      // Best effort: a client that went away misses a progress report, and
+      // the call itself carries on.
+      ctx.mcpReq.notify({ method: 'notifications/progress', params }).catch(() => undefined);
+    },
+  };
 }
 
 /** One search tool (R33, R43): `{ query?, cursor? }`, read-only. */
@@ -250,6 +367,7 @@ export function registerCodeModeTools(
         },
         era,
         clientCanElicit(server),
+        clientUrlElicitation(server),
       ),
   );
 
@@ -307,6 +425,14 @@ function clientCanElicit(server: McpServer): boolean | undefined {
   return (
     elicitation !== undefined && (elicitation.form !== undefined || elicitation.url === undefined)
   );
+}
+
+/**
+ * Whether the client declared URL-mode elicitation (G1: a forwarded link is
+ * sent in URL mode only then). Read per call, like {@link clientCanElicit}.
+ */
+function clientUrlElicitation(server: McpServer): boolean {
+  return server.server.getClientCapabilities()?.elicitation?.url !== undefined;
 }
 
 /**

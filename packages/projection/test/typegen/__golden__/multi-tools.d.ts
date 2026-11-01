@@ -10,7 +10,15 @@
 // Tool functions are the transport used by the library-supplied
 // `toolCall` action. Do NOT wrap them in fromPromise / invoked actors
 // (banned pattern R7) — emit toolCall(name, args) and handle the
-// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead.
+// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead. For one call per
+// item, toolCalls(name, argsList, { id }) requests them all in one step
+// (guard with whenCallIn(id)). Every event carries `event.args`, its
+// call's own arguments: match a result to its item by them.
+//
+// A TOOL_RESULT's `result` is the tool's structuredContent (its Output
+// type below), else its single text block's text, parsed when that text
+// is JSON for an object or array (the raw text is then `event.text`).
+// `event.notes`, when present, says the result looks partial.
 
 // Box delete: tools.delete.<tool>, called as toolCall('delete.<tool>', args).
 

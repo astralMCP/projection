@@ -105,17 +105,93 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return proto === Object.prototype || proto === null;
 }
 
+/**
+ * One wrapped-server progress report (MCP `notifications/progress`), as the
+ * upstream sent it: `message` is server-authored text (S5), not yet
+ * neutralized.
+ */
+export interface UpstreamProgress {
+  progress: number;
+  total?: number;
+  message?: string;
+}
+
+/**
+ * Host-side options for one upstream call: never model-authored. `signal`
+ * cancels the upstream request (MCP `notifications/cancelled`) when the
+ * facade's own request is cancelled; `onProgress` receives the upstream's
+ * progress reports, and its presence asks the upstream for them.
+ */
+export interface UpstreamCallOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: UpstreamProgress) => void;
+  /**
+   * Re-issue a call whose upstream asked for input (G1, DECISIONS D24): the
+   * answers keyed by the upstream's own keys, and the upstream's own
+   * `requestState` echoed verbatim. Read only from a verified blob and the
+   * human's responses, never from tool arguments.
+   */
+  input?: UpstreamInputResume;
+}
+
+/**
+ * What a wrapped server asked for when its tool answered `input_required`
+ * (MCP 2026-07-28 MRTR), as received: untrusted server data (S5), not yet
+ * sanitized. Present only for a box that forwards upstream elicitation.
+ */
+export interface UpstreamInputRequest {
+  /** The upstream's embedded requests, keyed by its own keys. */
+  requests: Record<string, unknown>;
+  /** The upstream's opaque state, to be echoed back verbatim. */
+  requestState?: string;
+}
+
+/**
+ * Whether a box passes its server's own questions (MCP elicitation, form or
+ * URL mode) on to the human (G1, DECISIONS D24). `'refuse'` (the default)
+ * declares no elicitation capability to the server, and a question fails the
+ * call with a result that says so. `'forward'` declares the capability and
+ * relays each question over MRTR, attributed to the box and never shaped
+ * like an approval. Sampling and roots are never forwarded.
+ */
+export type UpstreamElicitationMode = 'forward' | 'refuse';
+
+/** The answers and state that re-issue a call whose upstream asked for input. */
+export interface UpstreamInputResume {
+  /** Bare `ElicitResult`s keyed by the upstream's own request keys. */
+  responses: Record<string, unknown>;
+  requestState?: string;
+}
+
 /** Executes a tool call against the wrapped server. Implemented by the introspector. */
 export interface ToolExecutor {
   callTool(
     alias: ServerAlias,
     name: string,
     args: Record<string, unknown>,
+    options?: UpstreamCallOptions,
   ): Promise<ToolCallOutcome>;
 }
 
 export type ToolCallOutcome =
-  | { ok: true; result: unknown }
+  | {
+      ok: true;
+      result: unknown;
+      /**
+       * Set when `result` is the upstream's raw `content` array (no
+       * `structuredContent`, not a single text block), so a renderer can
+       * tell content blocks from structured data that happens to be an
+       * array.
+       */
+      rawContent?: true;
+      /**
+       * Short text the server sent beside its `structuredContent` that is
+       * not a JSON mirror of it (a warning such as "returning 10 of 40"),
+       * raw but redacted like the result (S1). Shown to the model only as
+       * a neutralized, quoted result note (D29, `catalog/result-notes.ts`).
+       */
+      serverNote?: string;
+    }
   | {
       ok: false;
       error: { message: string; detail?: unknown };
@@ -125,6 +201,19 @@ export type ToolCallOutcome =
        * phase with this library-copy hint, not as an `upstream` failure.
        */
       auth?: { hint: string };
+      /**
+       * The upstream asked the user for input and its box forwards upstream
+       * elicitation (G1): the gated entry points turn this into their own
+       * `input_required`. A consumer that does not handle it sees an
+       * ordinary failure, so nothing is ever forwarded by accident.
+       */
+      upstreamInput?: UpstreamInputRequest;
+      /**
+       * The upstream asked the user for input that is not forwarded (its
+       * box refuses upstream elicitation, or it asked for sampling or
+       * roots). `error.message` says so; the arguments were not the problem.
+       */
+      inputRefused?: true;
     };
 
 // ---------------------------------------------------------------------------
@@ -210,9 +299,27 @@ export interface PendingToolCall {
 
 /** Events the host injects into the machine. The machine never performs I/O itself. */
 export type HostEvent =
-  | { type: 'TOOL_RESULT'; callId: string; result: unknown }
-  | { type: 'TOOL_ERROR'; callId: string; error: { message: string; detail?: unknown } }
-  | { type: 'TOOL_DENIED'; callId: string; reason?: string };
+  | {
+      type: 'TOOL_RESULT';
+      callId: string;
+      /** The call's own arguments — as sealed, for an approved call (S2). */
+      args: Record<string, unknown>;
+      result: unknown;
+      /**
+       * The upstream's text, when `result` is that text parsed: a single
+       * text block holding JSON for an object or an array (D29).
+       */
+      text?: string;
+      /** The facade's notes on the result (R35.6, D29); absent when there are none. */
+      notes?: string[];
+    }
+  | {
+      type: 'TOOL_ERROR';
+      callId: string;
+      args: Record<string, unknown>;
+      error: { message: string; detail?: unknown };
+    }
+  | { type: 'TOOL_DENIED'; callId: string; args: Record<string, unknown>; reason?: string };
 
 // ---------------------------------------------------------------------------
 // Structured errors and logs (PRD R25, R31)
@@ -356,8 +463,13 @@ export function clampCaps(requested: Partial<ResourceCaps>): ResourceCaps {
 
 export const BLOB_SCHEMA_VERSION = 1;
 
-/** Which tool minted a blob (R36): a blob opened by the other tool is rejected. */
-export type BlobKind = 'machine' | 'call';
+/**
+ * Which tool minted a blob (R36): a blob opened by the other tool is
+ * rejected. `upstream_input` is minted by `call_tool` when the wrapped
+ * tool's own server asked the human a question (G1, D24); `call_tool`
+ * opens both of its kinds.
+ */
+export type BlobKind = 'machine' | 'call' | 'upstream_input';
 
 export interface BlobPayload {
   /** Blob schema version; unknown versions are rejected. */
@@ -388,14 +500,68 @@ export interface BlobPayload {
    * of its final segment.
    */
   audit: AuditEntry[];
+  /**
+   * How this suspension was put to the person (R15): present, and
+   * `'batched'`, only when it was one batched elicitation; absent means
+   * one elicitation per pending call. Sealed so the resume answers the
+   * prompt that was actually shown, whatever the resuming instance's
+   * option (D25). Only on `machine` blobs with two or more pending calls;
+   * never on `call` or `upstream_input` blobs (both minted by `call_tool`,
+   * which never batches).
+   */
+  prompts?: 'batched';
   /** Round-trip counter (R18). */
   trip: number;
+  /**
+   * Calls that already ran under the gate and are waiting on their own
+   * server's question (G1, D24), keyed by call id: the call, how it was
+   * authorized, the server's sealed `requestState`, and the questions.
+   * Never part of `pending` (S2): an answer re-issues the recorded call
+   * and approves nothing. Exactly one entry keyed `call` for an
+   * `upstream_input` blob; absent from `call` blobs.
+   */
+  upstreamInput?: Record<string, UpstreamHold>;
   /** Random nonce for replay scoping. */
   nonce: string;
   /** Issued-at, Unix ms. */
   iat: number;
   /** Expiry, Unix ms (default TTL 15 min). */
   exp: number;
+}
+
+/** A sanitized MCP elicitation schema: a flat object of primitive fields (G1). */
+export interface ElicitationSchema {
+  type: 'object';
+  properties: Record<string, Record<string, unknown>>;
+  required?: string[];
+}
+
+/** One forwarded question as sealed: enough to map and check the answer (G1). */
+export interface ForwardedQuestion {
+  /** The server's own key for this request. */
+  key: string;
+  /**
+   * `form`: the human filled the sanitized form in `schema`. `url`: the
+   * human was shown a link (as URL mode, or as a form with the link as inert
+   * text when the client cannot open links); accepting sends no content.
+   */
+  mode: 'form' | 'url';
+  /** The sanitized schema the human answered (`form` only). */
+  schema?: ElicitationSchema;
+}
+
+/**
+ * A call that ran under the gate and is waiting on its server's question
+ * (G1, D24), sealed in the blob's `upstreamInput` — never in the S2
+ * `pending` map: an answer re-issues the recorded call, it approves nothing.
+ */
+export interface UpstreamHold extends PendingToolCall {
+  /** How the call was authorized when it first ran. */
+  decision: 'auto' | 'approved';
+  /** The server's own opaque state, echoed verbatim on the re-issue. */
+  requestState?: string;
+  /** The questions, keyed by the facade's keys. */
+  questions: Record<string, ForwardedQuestion>;
 }
 
 export interface BlobSealerConfig {
@@ -445,6 +611,9 @@ export interface ReplayCache {
 export type ApprovalVerdict = { kind: 'approved' } | { kind: 'declined'; reason?: string };
 
 /** Outcome of running one execution segment. */
+/** Most result notes a completed segment reports (D29). */
+export const MAX_SEGMENT_NOTES = 10;
+
 export type SegmentOutcome =
   | {
       status: 'completed';
@@ -453,11 +622,22 @@ export type SegmentOutcome =
       /** Per-call approval audit trail. */
       audit: AuditEntry[];
       logs: LogEntry[];
+      /**
+       * The result notes of this segment's tool calls (R35.6, D29), each
+       * prefixed with its tool's name, at most {@link MAX_SEGMENT_NOTES};
+       * absent when there are none.
+       */
+      notes?: string[];
     }
   | {
       status: 'suspended';
       /** Gated calls awaiting approval, keyed by inputRequest key. */
       pending: Record<string, PendingToolCall>;
+      /**
+       * Calls that ran and whose server asked the human a question (G1):
+       * the adapter forwards each question and seals the hold.
+       */
+      held: HeldCall[];
       /** Actor snapshot to seal into the blob. */
       snapshot: unknown;
       trip: number;
@@ -467,7 +647,20 @@ export type SegmentOutcome =
   | {
       status: 'error';
       error: StructuredError;
+      /**
+       * The workflow's audit trail up to the failure (earlier segments'
+       * included), so the result can say which approved calls already ran
+       * and which were refused. Absent when nothing was audited.
+       */
+      audit?: AuditEntry[];
     };
+
+/** A call whose server answered `input_required` on a box that forwards (G1). */
+export interface HeldCall {
+  call: PendingToolCall;
+  decision: 'auto' | 'approved';
+  input: UpstreamInputRequest;
+}
 
 export interface AuditEntry {
   callId: string;

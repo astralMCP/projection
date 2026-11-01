@@ -1,21 +1,34 @@
 /**
  * Tool-choice tasks, every tier: the GitHub tiers (`basic`, `hard` —
  * github-tasks.ts), `filesystem` (filesystem-tasks.ts), `mongodb`
- * (mongodb-tasks.ts) and `multi` (multi-tasks.ts), plus the
+ * (mongodb-tasks.ts), `multi` (multi-tasks.ts) and the opt-in
+ * `multi-hard` (multi-hard-tasks.ts) and the opt-in, held-out
+ * `workplace` (workplace-tasks.ts), `hitl` (hitl-tasks.ts) and the opt-in,
+ * held-out `summit-local` (summit-local-tasks.ts), `summit-saas`
+ * (summit-tasks.ts) and `summit-messy` (messy-tasks.ts), plus the
  * PROJ_EVAL_TIERS / PROJ_EVAL_TASKS resolvers.
  */
 
 import { FILESYSTEM_TASKS } from './filesystem-tasks.js';
+import { HITL_TASKS } from './hitl-tasks.js';
 import { BASIC_TASKS, HARD_TASKS } from './github-tasks.js';
+import { MESSY_TASKS } from './messy-tasks.js';
 import { MONGODB_TASKS } from './mongodb-tasks.js';
+import { MULTI_HARD_TASKS } from './multi-hard-tasks.js';
 import { MULTI_TASKS } from './multi-tasks.js';
-import { TASK_TIERS, type EvalTask, type TaskTier } from './task-core.js';
+import { SUMMIT_LOCAL_TASKS } from './summit-local-tasks.js';
+import { SUMMIT_TASKS } from './summit-tasks.js';
+import { WORKPLACE_TASKS } from './workplace-tasks.js';
+import { DEFAULT_TIERS, TASK_TIERS, type EvalTask, type TaskTier } from './task-core.js';
 
 export {
   promptFor,
+  DEFAULT_TIERS,
   TASK_TIERS,
   TIER_WORLDS,
   worldOf,
+  worldOptionsOf,
+  taskWorldOptions,
   type EvalTask,
   type TaskKind,
   type TaskTier,
@@ -29,11 +42,21 @@ export const TOOL_CHOICE_TASKS: readonly EvalTask[] = [
   ...FILESYSTEM_TASKS,
   ...MONGODB_TASKS,
   ...MULTI_TASKS,
+  ...MULTI_HARD_TASKS,
+  ...WORKPLACE_TASKS,
+  ...HITL_TASKS,
+  ...SUMMIT_LOCAL_TASKS,
+  ...SUMMIT_TASKS,
+  ...MESSY_TASKS,
 ];
 
-/** Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names throw. */
+/**
+ * Resolve a comma list of tier names (PROJ_EVAL_TIERS); unknown names
+ * throw. Unset selects {@link DEFAULT_TIERS} (`multi-hard`, `workplace`, `hitl`, `summit-local`,
+ * `summit-saas` and `summit-messy` are opt-in).
+ */
 export function resolveTiers(spec: string | undefined): TaskTier[] {
-  if (spec === undefined || spec.trim() === '') return [...TASK_TIERS];
+  if (spec === undefined || spec.trim() === '') return [...DEFAULT_TIERS];
   return spec
     .split(',')
     .map((s) => s.trim())

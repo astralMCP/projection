@@ -32,6 +32,11 @@ export interface LegacyGateCopy {
   subject: string;
   /** The read-only alternative the hint leads with, e.g. `Author a machine that only calls tools that run without approval`. */
   readOnlyAdvice: string;
+  /**
+   * What the suspension is for. Default `approval for a non-read-only tool
+   * call`; a forwarded server question (G1) names itself instead.
+   */
+  need?: string;
 }
 
 /**
@@ -43,10 +48,11 @@ export function legacySuspendError(
   copy: LegacyGateCopy,
 ): ProjectionError | undefined {
   if (supportsMrtr(input.protocolEra)) return undefined;
+  const need = copy.need ?? 'approval for a non-read-only tool call';
   if (input.legacyElicitation !== true) {
     return new ProjectionError(
       'protocol',
-      `${copy.subject} needs approval for a non-read-only tool call, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${input.protocolEra ?? 'legacy'} protocol era)`,
+      `${copy.subject} needs ${need}, which requires MCP protocol revision ${MRTR_PROTOCOL_REVISION} or later (this request is being served on the ${input.protocolEra ?? 'legacy'} protocol era)`,
       {
         hint: `${copy.readOnlyAdvice}, or connect with a client that negotiates the ${MRTR_PROTOCOL_REVISION} revision (SDK v2: \`versionNegotiation: { mode: "auto" }\`).`,
       },
@@ -55,7 +61,7 @@ export function legacySuspendError(
   if (input.clientCanElicit === false) {
     return new ProjectionError(
       'protocol',
-      `${copy.subject} needs approval for a non-read-only tool call, but the connected client cannot receive approval prompts (it did not declare the MCP elicitation capability on this pre-${MRTR_PROTOCOL_REVISION} connection)`,
+      `${copy.subject} needs ${need}, but the connected client cannot receive prompts (it did not declare the MCP elicitation capability on this pre-${MRTR_PROTOCOL_REVISION} connection)`,
       {
         hint: `${copy.readOnlyAdvice}, or connect with a client that supports elicitation or negotiates the ${MRTR_PROTOCOL_REVISION} revision.`,
       },

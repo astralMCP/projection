@@ -70,7 +70,10 @@ correct arguments** for a task when the wrapped server (or, on the multi
 tier, servers) is exposed (A) directly as native tools or (B) through
 Projection's five tools
 (`search_tools`, `describe_tool`, `call_tool`, `discover_apis`,
-`execute_machine`). Each episode gets a fresh **world** (`openWorld`): an
+`execute_machine`). The `projection` and `projection-boxes` modes wrap with
+`projections.direct: false`, so they measure the search surface even though
+the library default is `'auto'` (D28); the opt-in `projection-auto` and
+`projection-direct` modes measure direct listing. Each episode gets a fresh **world** (`openWorld`): an
 MCP server whose tool executions are recorded, so the same task scores
 identically in both modes. Two kinds exist. The GitHub world is an offline
 fake of the remote GitHub MCP server (`createGithubFake`): the real 95-tool
@@ -80,10 +83,14 @@ answering from a small canned world. The filesystem world is the _real_
 filesystem reference server (`@modelcontextprotocol/server-filesystem`, a
 pinned devDependency) spawned over stdio on a throwaway fixture tree, behind
 a recording proxy (`createRecordingProxy`) that re-registers its tools
-verbatim and forwards every call. Tasks (`TOOL_CHOICE_TASKS`) say what to
-do, never how, and score the recorded upstream calls — plus, where effects
-are real, a `verify` of the end state (the file really moved; the answer
-names the right file). In projection mode a scripted approve-all client
+verbatim, output schemas included, and forwards every call. The GitHub fake
+registers no output schemas: its canned answers are JSON text that does not
+conform to GitHub's real output schemas, so its tools show "none declared"
+through Projection while the filesystem and MongoDB tools show theirs.
+Tasks (`TOOL_CHOICE_TASKS`) say what to do, never how, and score the
+recorded upstream calls — plus, where effects are real, a `verify` of the
+end state (the file really moved; the answer names the right file). In
+projection mode a scripted approve-all client
 auto-fulfils every approval round trip, so the model only sees results.
 Every mode's system prompt starts with the same one-line host framing
 ("You operate the user's … through the tools provided. Complete the user's
@@ -158,9 +165,14 @@ The server is spawned with a minimal environment (never the inherited
 Atlas tools), tools that reach outside the deployment (`connect`, `export`,
 the knowledge-base search, the Atlas categories) are disabled, and the world
 asserts the listed tools are exactly the expected 21. The recording proxy
-forwards each result's `structuredContent` along with its content blocks, so
-Projection sees what it would in production and its `call_tool` renders the
-structured result rather than an escaped content array.
+mirrors each tool's declared output schema (all 21 declare one, as do all
+14 filesystem tools) and forwards each result's `structuredContent` along
+with its content blocks, so Projection sees what it would in production:
+`describe_tool` shows the output schema, and `call_tool` renders the
+structured result rather than an escaped content array. The proxy's SDK
+validates each forwarded result against the mirrored schema; both servers'
+results conform, and the worlds' golden-fidelity tests fail on any error
+result.
 
 The **multi** tier (17 tasks) runs against all three at once: the **multi
 world** (`openMultiWorld`) opens the GitHub fake, the filesystem world and
@@ -233,6 +245,108 @@ whether the global search earns its place, which settles the
 totals; the report's per-tier blocks break each tier out on its own anyway.
 The approvals-mode comparison §13 also asks for is not run yet.
 
+The opt-in, held-out **summit-local** tier (24 tasks, `summit-local-tasks.ts`)
+runs against six **real** MCP servers that run locally for free, each a box
+on one seeded company (a billing service called tidepool) in the
+`summit-local` world (`summit-local-world.ts`, fixtures in
+`summit-local-fixtures.ts`):
+
+| Box      | Server (pinned)                                                    | Seeded with                                                                                                    |
+| -------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `fs`     | `@modelcontextprotocol/server-filesystem` 1.0.0 (devDependency)    | the tidepool checkout                                                                                          |
+| `git`    | `mcp-server-git` 2026.10.19 (Python)                               | the same checkout: 27 commits on main, a revert, 5 branches, 4 tags, a dirty working tree                      |
+| `memory` | `@modelcontextprotocol/server-memory` 2.0.0                        | the team knowledge graph (people, teams, services, a former contractor)                                        |
+| `sqlite` | `mcp-server-sqlite` 2025.4.25 (Python, the archived reference one) | the support database: agents, customers, tickets, comments, invoices, deploys                                  |
+| `fetch`  | `mcp-server-fetch` 2026.10.19 (Python)                             | a loopback HTTP intranet: status, team page, on-call rota, releases, a paged incidents API, an incident report |
+| `time`   | `mcp-server-time` 2026.10.19 (Python)                              | (IANA time zone data)                                                                                          |
+
+Install them once with `pnpm run setup:servers-real` in `packages/harness`
+(needs npm and [uv](https://docs.astral.sh/uv/); uv fetches Python 3.12 if
+needed): the memory server from `vendor/servers-real/package-lock.json`, the
+Python servers from hash-pinned `requirements*.txt` into two venvs (the
+archived SQLite server needs the 1.x Python MCP SDK, the others 2.x).
+Without them the world's tests skip with that message and a live run that
+selects the tier fails before spending anything. The world checks each
+server's reported name and version and its exact tool list. It is offline
+by construction: the fetch server runs behind an unreachable proxy for
+everything but the loopback intranet, and without Node on its PATH (so its
+HTML extraction never runs `npm install`); git runs with a private HOME and
+no global config; the git history is built with `git fast-import` from fixed
+identities and dates, so its hashes are the same in every episode. Ten tasks
+need one box and fourteen need two or three; they mix lookups, counted and
+aggregated bulk reads, bulk and branching writes, cross-box chains, paging
+(git's default 10-commit log, fetch's 5000-character pages, the incidents
+API's pages) and tasks where the obvious tool or query is wrong (`git_diff`
+takes no range and a commit in the range is reverted; there is no tag
+listing; `not_contains: main` also lists branches already fast-forwarded
+into main; the time tool converts on today's date, not the ticket's; rows
+from an old helpdesk sort wrong as strings; `append_insight` is not a ticket
+comment). Answers are read from an `ANSWER:` line or row by row; writes are
+graded on the real end state (database, graph file, repository) and forbid
+harmful writes; each task's budget is 2N + 10 action turns. Box descriptions
+(`SUMMIT_BOX_DESCRIPTIONS`) are one line each. Calibrated in `direct` mode
+only (the tier is held out: never tune the facade on it); latest
+calibration, 2 runs: Sonnet (`sonnet-low`) 47/48, Haiku (`haiku45`) 35/48.
+
+The opt-in, **held-out** **summit-saas** tier (24 tasks,
+`src/eval/summit-tasks.ts`) runs against the **summit world**
+(`openSummitWorld`, `src/eval/summit-world.ts`): high-fidelity in-process
+fakes of four popular SaaS MCP servers whose definitions are public, plus
+the real filesystem server on the user's files, as boxes `fs`, `notion`,
+`sentry`, `slack` and `stripe`. Each fake serves its real server's tool
+list verbatim, from a pinned release, and reproduces that server's
+argument handling, result format and the API semantics behind it:
+
+| Box      | Real server (pinned)                                                                     | Surface                                                                                                                                                 | Notable semantics                                                                                                                                                                                                                                                                               |
+| -------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notion` | `@notionhq/notion-mcp-server` v2.5.2 (`730ae78`)                                         | 24 OpenAPI-generated `API-*` tools, every schema with all `$defs` (`test/fixtures/summit/notion-tools.json`, checked against the server's own snapshot) | no argument validation; JSON-string arguments parsed; API errors as ordinary JSON text; `start_cursor`/`has_more`/`next_cursor`, page size ≤ 100; blocks need their own children calls; data sources (API 2025-09-03); filter/sort JSON; markdown read/write                                    |
+| `sentry` | `@sentry/mcp-server` 0.42.0 (`54f66d8`), skills `inspect,seer,triage`, no embedded agent | 9 direct tools; the rest of the catalog only via `search_sentry_tools` / `execute_sentry_tool` (`sentry-tools.json`)                                    | markdown answers, structured JSON for some; issue-search syntax passed through; `limit` default 10, ≤ 100, no cursor; period-window counts in search, all-time in details; numeric IDs and short IDs both resolve                                                                               |
+| `slack`  | reference `server-slack` (servers-archived `52db0d9`)                                    | 8 `slack_*` tools, no annotations                                                                                                                       | raw Web API JSON (`ok:false` errors, never `isError`); `users.list`/`conversations.list` cursor paging via `response_metadata.next_cursor`; history newest-first with `has_more` but no cursor parameter; channel IDs everywhere except posting, which also takes names                         |
+| `stripe` | `@stripe/mcp` 0.2.5 / agent-toolkit 0.8.1 (`72d20b9`)                                    | 22 tools (zod schemas as listed by SDK 1.17)                                                                                                            | zod validation (`-32602`), unknown keys stripped; compact JSON of `.data` only — no `has_more` or `starting_after`, `limit` default 10, ≤ 100; `list_customers` returns IDs only; amounts in integer cents; refunds bounded by the refundable remainder; failures as the string `"Failed to …"` |
+
+The fakes are seeded fresh per episode (Fernhill, the user Raj Mehta, now =
+2026-10-28 15:00 UTC; no clock, no network) with realistic noise:
+near-duplicate people across products, decoy threads and payments, items
+just outside every filter. Ten tasks use one server and fourteen cross
+servers (Sentry → Slack, Slack → Stripe refunds in cents, Stripe → a Notion
+page, Notion people → Slack mentions, the local CHANGELOG → Sentry, …); they
+include paging past the first page, money arithmetic in cents, ID-vs-name
+resolution and bulk writes. Write tasks are graded on the boxes' end state
+(`facts.summit`), read tasks on the `ANSWER:` line, harmful writes are
+`forbid`den, and every task has its own turn budget. Like `workplace`, a
+hill-climb may see only this tier's aggregate scores, and it is calibrated
+in `direct` mode only. Run it with `PROJ_EVAL_TIERS=summit-saas` (no
+`mongod` needed).
+
+The opt-in, held-out **summit-messy** tier (21 tasks, `messy-tasks.ts`)
+measures robustness to other people's badly built servers, for comparing
+the facade against raw servers. Its **messy world** (`messy-world.ts`)
+opens up to four boxes, each a working server behind
+`messify(world, profile)` (`messify.ts`): a reusable proxy that serves a
+degraded surface over any in-process single-server world (a workplace
+fake, the GitHub fake, a recording proxy) and maps each call back, so the
+wrapped server still records canonical names and arguments. Its defects
+are ones real servers ship: missing, one-word or multi-KB descriptions;
+parameters with no description; schemas with no `type` or Pydantic-style
+`anyOf`/`$ref`/`oneOf`; unknown arguments dropped silently; no
+annotations or no `readOnlyHint`; generic names (`search`, `get`,
+`create`, `list`) that collide across boxes; camelCase on some tools and
+snake_case on others; errors sent as ordinary results; JSON as one text
+block (compact or Python `repr`) with no `structuredContent`; output
+schemas that drifted from the payload; 100 KB+ results; the next page
+mentioned only in prose; no or rambling `instructions`; slow tools. The
+boxes are `tracker` (terse, generic names), `chat` (verbose, camelCase
+mix, 100 KB history), `mail` (Pydantic schemas, `repr` results) and
+`billing`, a 315-tool catalog generated from a payments-style OpenAPI
+document (`messy-billing.ts`: operationId names, HTML or empty
+descriptions, a nested `requestBody`, cursor, page-number and offset
+pagination). A task opens only the boxes it names (`EvalTask.boxes`), so
+the catalog is in the ten tasks that need it. The prompts are ordinary
+requests; graders read the end state or a final `ANSWER:` line, accept
+every correct path, and each task has a `forbid` and its own turn budget.
+Calibrate it in `direct` mode only (`PROJ_EVAL_TIERS=summit-messy
+PROJ_EVAL_MODES=direct`).
+
 Run it (explicit opt-in; needs `ANTHROPIC_API_KEY`):
 
 ```bash
@@ -243,10 +357,15 @@ Knobs: `PROJ_EVAL_MODELS` (comma list of presets: `haiku45`, `sonnet-low`, `haik
 `sonnet-medium`; default `haiku45,sonnet-low`), `PROJ_EVAL_MODES` (`direct,projection,projection-boxes`,
 the default), `PROJ_EVAL_TIERS`
 (`basic,hard,filesystem,mongodb,multi`, the default; `mongodb` and `multi` need
-`pnpm run setup:mongodb`), `PROJ_EVAL_TASKS` (comma list of task names
+`pnpm run setup:mongodb`; the opt-in `multi-hard`, `workplace`, `hitl`,
+`summit-local`, which needs `pnpm run setup:servers-real`, `summit-saas` and `summit-messy`), `PROJ_EVAL_TASKS` (comma list of task names
 within the selected tiers), `PROJ_EVAL_RUNS` (default 3),
 `PROJ_EVAL_CONCURRENCY` (default 4), `PROJ_EVAL_BOX_DESCRIPTIONS=1` (multi
-tier: host box descriptions; default off). The report (success %,
+tier: host box descriptions; default off), `PROJ_EVAL_FORCE_CODE_MODE=1`
+(Projection modes: append "Use code mode (discover_apis, execute_machine)
+for this task." to the system prompt, recorded as `systemSuffix`; default
+off). Projection records also count `roundTrips`, the approval round trips
+(MRTR retries) next to `approvals`, one per gated call. The report (success %,
 tool-correct %, turns, upstream calls, tokens, cache-read share, estimated
 cost, turn-capped and harness-error counts, a per-tier summary, a block per
 tier with that tier's own success, turns — total and counted — tokens, cost

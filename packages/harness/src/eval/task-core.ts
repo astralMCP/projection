@@ -10,18 +10,98 @@
  */
 
 import type { SideEffect } from '../types.js';
-import type { WorldFacts, WorldName } from './world.js';
+import type { ElicitationRecord, HitlChecks, TaskApprover } from './hitl.js';
+import type { MessyBoxAlias, WorldFacts, WorldName, WorldOptions } from './world.js';
 
-export type TaskKind = 'single' | 'multi';
+/**
+ * `single` / `multi`: one tool call or several (the original tiers). The
+ * `multi-hard` tier tags each task with its family instead: `bulk-read`
+ * (one answer over N ≥ 25 items), `bulk-write` (8–20 approved writes),
+ * `chain` (five or more dependent hops across boxes), `pagination` (the
+ * answer hides past a default page or result cap), `branching` (a per-item
+ * choice between two different writes). The `workplace` tier adds
+ * `lookup` (one box, not named), `fan-out` (per-item gated writes),
+ * `idempotency` (part or all of the work is already done), `conflict`
+ * (two sources disagree; the prompt names the authority), `injection` (a
+ * data field carries an instruction) and `degradation` (one tool fails).
+ * The `hitl` tier tags every task `approval`: a write task whose approver
+ * refuses, cancels or edits part of it.
+ */
+export type TaskKind =
+  | 'single'
+  | 'multi'
+  | 'bulk-read'
+  | 'bulk-write'
+  | 'chain'
+  | 'pagination'
+  | 'branching'
+  | 'lookup'
+  | 'fan-out'
+  | 'idempotency'
+  | 'conflict'
+  | 'injection'
+  | 'degradation'
+  | 'approval';
 
 /**
  * Tiers: `basic` and `hard` run against the offline GitHub fake;
  * `filesystem` against the real filesystem reference server; `mongodb`
  * against the real MongoDB MCP server on a throwaway deployment; `multi`
- * against all three at once, each a box under an alias (multi-world.ts).
+ * against all three at once, each a box under an alias (multi-world.ts);
+ * `multi-hard` against the same three boxes with much more data in them
+ * (multi-hard-tasks.ts) — opt-in only, never part of the default matrix;
+ * `workplace` against five in-process fakes of other popular servers
+ * (workplace-world.ts, workplace-tasks.ts) — opt-in only, and held out:
+ * a hill-climb sees its aggregate scores, never its tasks or traces;
+ * `hitl` against the same workplace world, each task paired with an
+ * approver persona that declines, cancels or edits part of the work
+ * (hitl-tasks.ts) — opt-in only, and NOT held out: it is the target the
+ * approval UX is tuned on;
+ * `summit-local` against six real servers that run locally — filesystem,
+ * git, memory, SQLite, fetch (on a loopback intranet) and time — seeded
+ * with one company's data (summit-local-world.ts, summit-local-tasks.ts):
+ * opt-in only, needs `pnpm run setup:servers-real`, and held out like
+ * `workplace` (calibrated in `direct` mode only);
+ * `summit-saas` against high-fidelity fakes of the Notion, Sentry, Slack and
+ * Stripe MCP servers plus the real filesystem server (summit-world.ts,
+ * summit-tasks.ts) — opt-in only, and held out like `workplace`;
+ * `summit-messy` against the messy world — the
+ * same kinds of servers badly built, each behind a defect profile
+ * (messy-world.ts, messy-tasks.ts) — opt-in only, and held out.
  */
-export type TaskTier = 'basic' | 'hard' | 'filesystem' | 'mongodb' | 'multi';
-export const TASK_TIERS: readonly TaskTier[] = ['basic', 'hard', 'filesystem', 'mongodb', 'multi'];
+export type TaskTier =
+  | 'basic'
+  | 'hard'
+  | 'filesystem'
+  | 'mongodb'
+  | 'multi'
+  | 'multi-hard'
+  | 'workplace'
+  | 'hitl'
+  | 'summit-local'
+  | 'summit-saas'
+  | 'summit-messy';
+export const TASK_TIERS: readonly TaskTier[] = [
+  'basic',
+  'hard',
+  'filesystem',
+  'mongodb',
+  'multi',
+  'multi-hard',
+  'workplace',
+  'hitl',
+  'summit-local',
+  'summit-saas',
+  'summit-messy',
+];
+/** The tiers an unset PROJ_EVAL_TIERS selects: every tier but the opt-in `multi-hard`, `workplace`, `hitl`, `summit-local`, `summit-saas` and `summit-messy`. */
+export const DEFAULT_TIERS: readonly TaskTier[] = [
+  'basic',
+  'hard',
+  'filesystem',
+  'mongodb',
+  'multi',
+];
 
 /** The world each tier's tasks run in. */
 export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
@@ -30,10 +110,31 @@ export const TIER_WORLDS: Readonly<Record<TaskTier, WorldName>> = {
   filesystem: 'filesystem',
   mongodb: 'mongodb',
   multi: 'multi',
+  'multi-hard': 'multi',
+  workplace: 'workplace',
+  hitl: 'workplace',
+  'summit-local': 'summit-local',
+  'summit-saas': 'summit',
+  'summit-messy': 'messy',
 };
 
 export function worldOf(tier: TaskTier): WorldName {
   return TIER_WORLDS[tier];
+}
+
+/** World options a tier needs beyond its world's name: `multi-hard` opens the hard variant. */
+export function worldOptionsOf(tier: TaskTier): Pick<WorldOptions, 'variant'> {
+  return tier === 'multi-hard' ? { variant: 'hard' } : {};
+}
+
+/** World options one task needs: its tier's, plus the boxes it names (`summit-messy`). */
+export function taskWorldOptions(
+  task: Pick<EvalTask, 'tier' | 'boxes'>,
+): Pick<WorldOptions, 'variant' | 'boxes'> {
+  return {
+    ...worldOptionsOf(task.tier),
+    ...(task.boxes !== undefined ? { boxes: task.boxes } : {}),
+  };
 }
 
 /** What `verify` sees once the episode is over and before the world is torn down. */
@@ -44,6 +145,8 @@ export interface VerifyContext {
   finalText: string;
   /** Per-episode facts (the filesystem root, the MongoDB connection string). */
   facts: WorldFacts;
+  /** Every approval prompt the episode showed and its answer (hitl.ts); empty when none. */
+  elicitations?: readonly ElicitationRecord[];
 }
 
 export interface EvalTask {
@@ -84,6 +187,29 @@ export interface EvalTask {
    * the recorded verdict for such tasks instead of re-running `verify`.
    */
   needsWorld?: boolean;
+  /**
+   * The task's own turn budget (action turns, as `maxTurns`), overriding
+   * the run's; its absolute ceiling is then twice this. The `multi-hard`
+   * tier sets 2N + 10, so a strategy that spends one turn per item can
+   * finish.
+   */
+  maxTurns?: number;
+  /**
+   * `multi-hard`: the number of items the task iterates over (records to
+   * total, writes to make, hops to follow, pages to read, checks to
+   * branch on) — what its {@link maxTurns} is derived from.
+   */
+  n?: number;
+  /**
+   * `hitl` tier: who answers the episode's approval prompts (a persona and
+   * its task-specific predicate). PROJ_EVAL_APPROVER overrides the persona.
+   * Absent: approve-all.
+   */
+  approver?: TaskApprover;
+  /** `hitl` tier: the task's ideal prompt count and its denial-handling checks. */
+  hitl?: HitlChecks;
+  /** `summit-messy` tier: the boxes the episode opens (default: all of the messy world's). */
+  boxes?: readonly MessyBoxAlias[];
 }
 
 /** The prompt text for one episode. */

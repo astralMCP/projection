@@ -1,0 +1,187 @@
+diff --git a/docs/PRD.md b/docs/PRD.md
+index ab85007..e47a1b2 100644
+--- a/docs/PRD.md
++++ b/docs/PRD.md
+@@ -223,7 +223,7 @@ R43. **Tool boxes in the catalog projection** (amends R32–R35, R37). With the
+ - **Search-tool naming.** Every piece of library copy that names `search_tools` — the unknown-name hint (R34, R40), the `describe_tool` and `call_tool` argument descriptions, the R37 pointer, the preamble (R29, R44) — names the search tools the facade actually serves: `search_tools` and the `search_<alias>` tools, or only the latter when `globalSearch` is `false`.
+ - **Locked boxes** (R54) change what these surfaces show, never which tools are served: a locked box's `search_<alias>` suspends for sign-in, its description is fixed at wrap time, and its tools are absent from `search_tools` until it unlocks.
+ 
+-R44. **Instructions** (amends R29). On a multi-server facade the `instructions` are Projection's multi-server preamble — the R29 routing rule, naming the served search tools (R43), and that a box's own guidance is its overview — followed by the **shelf**. The shelf header states the qualified-name rule (tools are `<alias>.<name>`), so a `codeModePreamble` override cannot drop it. Below it, one line per box: its alias, then its `description` unquoted, else the first sentence of the server's `instructions` quoted and attributed (`<alias> — "…" (server's words)`, neutralized and capped per S5), and its tool count; no posture counts. A locked box's line reads `<alias> — sign-in required`, followed by its `description` when one is given, with no tool count (R54). The wrapped servers' full instructions are not concatenated into the system prompt; the box overview (R43, R45) is where they are read. `codeModePreamble` replaces Projection's preamble wholesale; the shelf, header included, is kept, like a single server's forwarded instructions under R29. Single-server facades keep R29 as is.
++R44. **Instructions** (amends R29). On a multi-server facade the `instructions` are Projection's multi-server preamble — the R29 routing rule, naming the served search tools (R43), and that a box's own guidance is its overview — followed by the **shelf**. With both projections on, the multi-server routing rule also sends a short chain that looks something up and then acts on it to `call_tool`, one step at a time, reading each result before the next, and keeps `execute_machine` for work that loops or branches over results, takes many steps, or is a workflow worth saving; the multi-server `execute_machine` and `call_tool` descriptions carry the same rule (`execute_machine`'s only when `call_tool` is also served). The shelf header states the qualified-name rule (tools are `<alias>.<name>`), so a `codeModePreamble` override cannot drop it. Below it, one line per box: its alias, then its `description` unquoted, else the first sentence of the server's `instructions` quoted and attributed (`<alias> — "…" (server's words)`, neutralized and capped per S5), and its tool count; no posture counts. A locked box's line reads `<alias> — sign-in required`, followed by its `description` when one is given, with no tool count (R54). The wrapped servers' full instructions are not concatenated into the system prompt; the box overview (R43, R45) is where they are read. `codeModePreamble` replaces Projection's preamble wholesale; the shelf, header included, is kept, like a single server's forwarded instructions under R29. Single-server facades keep R29 as is.
+ 
+ R45. **Code mode** (amends R3, R4, R7, R30, R37). Typegen emits one object-type property per box — `export declare const tools: { fs: { read_file: …; "github.delete_repo": … }; … }` — never TypeScript namespaces, so reserved words are valid aliases; tool names that are not identifiers use today's quoted form. Type aliases are `<alias>_<Pascal>Input` / `<alias>_<Pascal>Output` (`fs_ReadFileInput`): an alias contains no `_` (R39), so the names are unique across boxes and independent of which other boxes are wrapped. `describe_tool({ types: true })` returns the `tools.<alias>.<name>` slice under the header `// Member of tools.<alias>:`. Machines call `toolCall('<alias>.<name>', args)`, the bridge's `tools.<alias>.<name>` members bind the same qualified name, and the host routes by alias. `discover_apis`' inline overview groups the tool list per box; above the R37 threshold, counted across all boxes, it prints per-box counts and points at the served search tools (R43). It also links each box overview as a resource (`projection://boxes/<alias>/overview.md`, R3), so a box's guidance is reachable with the catalog projection off. The authoring contract gains one rule: on a multi-server facade, tool names are qualified. The examples (`happy-path`, `denial-fallback`, the authoring-contract samples) use qualified names from the facade's first box in sorted alias order — its own tools where it has a suitable read-only and gated one, else generic names marked as sample names. One machine may span boxes; each gated call is approved separately, and R15 batching applies unchanged (parallel gated calls to different boxes share one round trip, one elicitation each). A locked box (R54) is absent from the types, the bridge and the overview until it unlocks; a `toolCall` to it gets a `TOOL_ERROR` event naming the box's search tool (phase 1b: it suspends for sign-in).
+ 
+diff --git a/docs/server-authors.md b/docs/server-authors.md
+index cc49293..5d5210f 100644
+--- a/docs/server-authors.md
++++ b/docs/server-authors.md
+@@ -316,7 +316,7 @@ the **shelf**, one line per box in sorted alias order. The servers' own
+ instructions are not forwarded; each is its box's overview:
+ 
+ ```text
+-This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call search_tools to find a tool in any box, … author an XState v5 state machine and run it with execute_machine … each tool's listing says whether it runs immediately or asks for approval.
++This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call search_tools to find a tool in any box, … Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving … each tool's listing says whether it runs immediately or asks for approval.
+ 
+ Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:
+ - fs — "Read and write files under /srv." (server's words) (3 tools)
+@@ -324,6 +324,9 @@ Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> t
+ - notes (1 tool)
+ ```
+ 
++The routing sentence is the multi-server one: a short chain that looks
++something up and then acts on it goes through `call_tool` one step at a
++time, and a single-server facade keeps the plain R29 rule.
+ `codeModePreamble` replaces the preamble; the shelf, header included, is
+ always kept, so the qualified-name rule cannot be dropped. Approval blobs
+ bind the whole alias → server mapping and are keyed separately from
+diff --git a/packages/projection/src/multi/facade.ts b/packages/projection/src/multi/facade.ts
+index d32e725..b856fc9 100644
+--- a/packages/projection/src/multi/facade.ts
++++ b/packages/projection/src/multi/facade.ts
+@@ -290,11 +290,12 @@ export function defaultMultiPreamble(options: MultiPreambleOptions): string {
+   const find = globalSearch
+     ? "search_tools to find a tool in any box, or a box's own search_<box> tool to look inside that box"
+     : "a box's search_<box> tool to look inside that box";
+-  const steps = `${find}; without a query, a box's search lists the box and leads with its own guidance. Then call describe_tool to see a tool's arguments and call_tool to run it.`;
++  const listing = `${find}; without a query, a box's search lists the box and leads with its own guidance.`;
++  const steps = `${listing} Then call describe_tool to see a tool's arguments and call_tool to run it.`;
+   if (!projections.codeMode) {
+     return `This server fronts several toolboxes, each wrapping another server. Call ${steps} Tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+   }
+-  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call ${steps} For several steps, branching on results, or a workflow worth saving, author an XState v5 state machine and run it with execute_machine (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
++  return `This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call ${listing} Then call describe_tool to see a tool's arguments and call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, takes many steps, or is a workflow worth saving (call discover_apis first for every box's tool types, the authoring contract, and worked examples). Either way, tools that change something may pause ${APPROVAL_SENTENCE_TAIL}`;
+ }
+ 
+ /**
+@@ -345,25 +346,41 @@ const SEARCH_TOOLS_DESCRIPTION = `Search the tools of every toolbox at once, one
+ 
+ const DESCRIBE_TOOL_DESCRIPTION = `Return one tool's description, its input and output JSON Schemas, and its approval posture, by its qualified name (<box>.<tool>). Call this before call_tool.`;
+ 
+-const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool.`;
++const CALL_TOOL_DESCRIPTION = `Run one tool from any toolbox by its qualified name (<box>.<tool>) with a JSON object of arguments. Call describe_tool first to see the tool's arguments. A tool marked "asks for approval" first asks the user to approve this exact call; a result with status "declined" means the user said no — nothing ran, and you must not retry the same call unless the user asks for it. Status "denied_by_policy" means the server's policy blocks the tool. Chains of a few calls are best done as successive call_tool calls, reading each result before the next.`;
+ 
+ /** The catalog tools point at execute_machine only when code mode is served (R29). */
+ const DESCRIBE_TOOL_TYPES_POINTER = ` Pass types: true to also get the tool's generated TypeScript when authoring a machine for execute_machine.`;
+ 
+-const CALL_TOOL_CODE_MODE_POINTER = ` For several steps, branching on results, or a workflow worth saving, author a machine and use execute_machine instead.`;
++const CALL_TOOL_CODE_MODE_POINTER = ` For loops or branching over results, many steps, or a workflow worth saving, author a machine and use execute_machine instead.`;
+ 
+-const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.
+-
+-Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
++const EXECUTE_MACHINE_BODY = `Author a module that default-exports a machine built with XState v5 setup(...).createMachine(...), and request tools with the toolCall action from '@astral-mcp/tools' by qualified name: toolCall('<box>.<tool>', args). One machine may use tools from several boxes. A tool marked "asks for approval" pauses the machine until the user approves that exact call, so handle TOOL_RESULT, TOOL_ERROR and TOOL_DENIED. Machine context must stay JSON-serializable, and invoke/fromPromise is rejected.
+ 
+ Call discover_apis first for the tool types, the full authoring contract, and worked examples.`;
+ 
+ const DISCOVER_APIS_DESCRIPTION = `Return the tool type definitions of every toolbox (tools.<box>.<tool>), the machine authoring contract, worked examples and each box's guidance. Call this before authoring a machine for execute_machine.`;
+ 
+-const CODE_MODE_COPY = {
+-  executeMachine: EXECUTE_MACHINE_DESCRIPTION,
+-  discoverApis: DISCOVER_APIS_DESCRIPTION,
+-};
++/** execute_machine when it is the only way to run a tool (code mode only). */
++const EXECUTE_MACHINE_DESCRIPTION = `Run an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes.\n\n${EXECUTE_MACHINE_BODY}`;
++
++/**
++ * execute_machine beside the catalog (R29): leads with when a machine is
++ * worth it and sends short lookup-then-act chains to call_tool, where the
++ * model reads each result before the next step.
++ */
++const EXECUTE_MACHINE_ROUTED_DESCRIPTION = `Run a multi-step workflow — loops, branching over results, many steps, or one worth saving — as an LLM-authored XState v5 state machine that orchestrates the tools of this server's toolboxes. For a short lookup-then-act chain, use call_tool for each step instead.\n\n${EXECUTE_MACHINE_BODY}`;
++
++/** The code-mode tool copy for a projection selection (R29). */
++function codeModeCopy(projections: Readonly<ProjectionSelection>): {
++  executeMachine: string;
++  discoverApis: string;
++} {
++  return {
++    executeMachine: projections.catalog
++      ? EXECUTE_MACHINE_ROUTED_DESCRIPTION
++      : EXECUTE_MACHINE_DESCRIPTION,
++    discoverApis: DISCOVER_APIS_DESCRIPTION,
++  };
++}
+ 
+ /**
+  * The `search_<alias>` copy (R43): `Search the <alias> toolbox.`, the box's
+@@ -562,7 +579,7 @@ class MultiFacade implements MultiProjectionFacade {
+     const era = options?.era;
+     if (this.projections.codeMode) {
+       // The workflow prompts name the boxes by alias (R39): they read the view.
+-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.deps.view);
++      registerCodeModeTools(server, era, this, codeModeCopy(this.projections), this.deps.view);
+     }
+     if (this.projections.catalog) {
+       registerCatalogTools(server, era, this, this.copy);
+diff --git a/packages/projection/test/integration/catalog-projection.test.ts b/packages/projection/test/integration/catalog-projection.test.ts
+index 6a24d81..2eac97f 100644
+--- a/packages/projection/test/integration/catalog-projection.test.ts
++++ b/packages/projection/test/integration/catalog-projection.test.ts
+@@ -99,6 +99,9 @@ describe('projections switch (R1, R32)', () => {
+     const c = await connect({ projections: { catalog: false } });
+     expect(await toolNames(c)).toEqual(['discover_apis', 'execute_machine']);
+     expect(facade?.instructions).toBe(`A tiny file server.\n\n${DEFAULT_CODE_MODE_PREAMBLE}`);
++    // No call_tool to route to: execute_machine keeps its plain description.
++    const { tools } = await c.listTools();
++    expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain('call_tool');
+   });
+ 
+   it('with both projections on, both surfaces are served and the routing preamble applies (R29)', async () => {
+@@ -113,8 +116,17 @@ describe('projections switch (R1, R32)', () => {
+     expect(facade?.instructions).toContain(DEFAULT_ROUTING_PREAMBLE);
+     expect(facade?.instructions).toContain('call_tool');
+     expect(facade?.instructions).toContain('execute_machine');
+-    // The catalog tools are reads: annotated so hosts never prompt for them.
+     const { tools } = await c.listTools();
++    // The short-chain routing copy is multi-server only: a single-server
++    // facade keeps the plain execute_machine and call_tool descriptions.
++    expect(tools.find((t) => t.name === 'execute_machine')?.description).not.toContain(
++      'lookup-then-act',
++    );
++    expect(tools.find((t) => t.name === 'call_tool')?.description).not.toContain(
++      'successive call_tool calls',
++    );
++    expect(facade?.instructions).not.toContain('short chain');
++    // The catalog tools are reads: annotated so hosts never prompt for them.
+     for (const name of ['search_tools', 'describe_tool']) {
+       expect(tools.find((t) => t.name === name)?.annotations?.readOnlyHint).toBe(true);
+     }
+diff --git a/packages/projection/test/multi/code-mode.test.ts b/packages/projection/test/multi/code-mode.test.ts
+index d8dadb8..8ae4f52 100644
+--- a/packages/projection/test/multi/code-mode.test.ts
++++ b/packages/projection/test/multi/code-mode.test.ts
+@@ -580,6 +580,14 @@ describe('discover_apis on a multi-server facade (R3, R37, R45)', () => {
+     for (const surface of surfaces) expect(JSON.stringify(surface)).not.toContain('search_tools');
+   });
+ 
++  it('keeps the plain execute_machine description when no call_tool is served', async () => {
++    const c = await connectModern(await wrap({ projections: { catalog: false } }));
++    const { tools } = await c.listTools();
++    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).not.toContain(
++      'call_tool',
++    );
++  });
++
+   it('keeps the list inline at the threshold, and with the catalog projection off', async () => {
+     expect(textOf((await wrap({ catalogInlineThreshold: 7 })).discoverApis())).toContain(
+       '- fs.read_file',
+diff --git a/packages/projection/test/multi/wire.test.ts b/packages/projection/test/multi/wire.test.ts
+index f5fd907..af001c3 100644
+--- a/packages/projection/test/multi/wire.test.ts
++++ b/packages/projection/test/multi/wire.test.ts
+@@ -114,6 +114,15 @@ describe('a multi-server facade over the 2026-07-28 wire', () => {
+     expect(tools.find((tool) => tool.name === 'execute_machine')?.description).toContain(
+       "toolCall('<box>.<tool>', args)",
+     );
++    expect(tools.find((tool) => tool.name === 'execute_machine')?.description).toContain(
++      'For a short lookup-then-act chain, use call_tool for each step instead.',
++    );
++    expect(tools.find((tool) => tool.name === 'call_tool')?.description).toContain(
++      'successive call_tool calls, reading each result before the next',
++    );
++    expect(c.getInstructions()).toContain(
++      'call_tool for each step, reading each result before the next. Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results',
++    );
+     const prompts = await c.listPrompts();
+     expect(prompts.prompts.map((prompt) => prompt.name).toSorted()).toEqual([
+       'save-workflow',

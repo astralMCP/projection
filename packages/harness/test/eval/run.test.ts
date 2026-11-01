@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
+import { APIError } from '@anthropic-ai/sdk';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createResultsWriter,
@@ -33,6 +34,7 @@ import {
   type ModelCaller,
   type ModelPreset,
 } from '../../src/index.js';
+import { GITHUB_FAKE_ANSWERS } from '../../src/eval/github-fake.js';
 import { toolNames } from './tool-names.js';
 
 function message(content: unknown[], stop: Anthropic.StopReason): Anthropic.Message {
@@ -98,6 +100,12 @@ const preset: ModelPreset = { name: 'scripted', model: 'scripted-model', params:
 const tmp = mkdtempSync(join(tmpdir(), 'tool-choice-eval-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
+/** The system prompt's text, whether the request sent a string or text blocks. */
+function systemText(system: string | readonly { text: string }[] | undefined): string {
+  if (system === undefined) return '';
+  return typeof system === 'string' ? system : system.map((block) => block.text).join('');
+}
+
 describe('tool-choice eval plumbing (offline)', () => {
   let records: EpisodeRecord[];
   const seen: Anthropic.MessageStreamParams[] = [];
@@ -148,7 +156,7 @@ describe('tool-choice eval plumbing (offline)', () => {
       expect(record.servedModel).toBe('scripted');
       const transcript = record.transcript;
       expect(transcript?.system).toBe(
-        String(
+        systemText(
           seen.find((p) => toolNames(p.tools).includes('call_tool') === (record.mode !== 'direct'))
             ?.system,
         ),
@@ -193,10 +201,10 @@ describe('tool-choice eval plumbing (offline)', () => {
     const directRequest = seen.find((p) => toolNames(p.tools).includes('get_me'));
     const projectionRequest = seen.find((p) => toolNames(p.tools).includes('call_tool'));
     expect(directRequest?.tools).toHaveLength(95);
-    expect(String(directRequest?.system)).toContain(
+    expect(systemText(directRequest?.system)).toContain(
       'You operate GitHub through the tools provided.',
     );
-    expect(String(directRequest?.system)).toContain('Tool selection guidance');
+    expect(systemText(directRequest?.system)).toContain('Tool selection guidance');
 
     const projectionNames = toolNames(projectionRequest?.tools).toSorted();
     expect(projectionNames).toEqual([
@@ -206,12 +214,20 @@ describe('tool-choice eval plumbing (offline)', () => {
       'execute_machine',
       'search_tools',
     ]);
-    expect(String(projectionRequest?.system)).toContain('Tool selection guidance');
+    expect(systemText(projectionRequest?.system)).toContain('Tool selection guidance');
     // The host's framing comes first in every mode; then the facade's instructions.
-    expect(String(projectionRequest?.system).startsWith(GITHUB_DIRECT_SYSTEM_PROMPT)).toBe(true);
+    expect(systemText(projectionRequest?.system).startsWith(GITHUB_DIRECT_SYSTEM_PROMPT)).toBe(
+      true,
+    );
 
     // The request shape: streaming params with the cache marker and no forced tool_choice.
     expect(directRequest?.cache_control).toEqual({ type: 'ephemeral' });
+    // A second breakpoint on the system prompt caches the static prefix (tools + system).
+    expect(
+      Array.isArray(directRequest?.system) && directRequest.system.at(-1)?.cache_control,
+    ).toEqual({
+      type: 'ephemeral',
+    });
     expect(directRequest?.tool_choice).toBeUndefined();
     expect(directRequest?.max_tokens).toBe(16000);
   });
@@ -226,8 +242,9 @@ describe('tool-choice eval plumbing (offline)', () => {
       const block = Array.isArray(last?.content) ? last.content[0] : undefined;
       return block !== undefined && block.type === 'tool_result' ? String(block.content) : '';
     });
-    expect(texts.some((t) => t === '{"login":"vibdev"}')).toBe(true); // direct
-    expect(texts.some((t) => t.includes('vibdev') && t !== '{"login":"vibdev"}')).toBe(true); // via call_tool
+    const me = JSON.stringify(GITHUB_FAKE_ANSWERS['get_me']);
+    expect(texts.some((t) => t === me)).toBe(true); // direct
+    expect(texts.some((t) => t.includes('vibdev') && t !== me)).toBe(true); // via call_tool
   });
 
   it('summarizes, formats and writes the results', () => {
@@ -275,6 +292,104 @@ describe('tool-choice eval plumbing (offline)', () => {
     const summary = summarizeToolChoice([record as EpisodeRecord]);
     expect(summary.cells[0]).toMatchObject({ scored: 0, successes: 0, harnessErrors: 1 });
     expect(formatToolChoiceReport([record as EpisodeRecord])).toContain('Harness errors');
+  });
+
+  describe('context overflow is a scored failure', () => {
+    /** Makes the right call on turn 1; turn 2 overflows as `overflow` says. */
+    const overflowingCaller =
+      (overflow: () => Anthropic.Message): ModelCaller =>
+      async (params) => {
+        const last = params.messages.at(-1);
+        if (Array.isArray(last?.content) && last.content.some((b) => b.type === 'tool_result')) {
+          return overflow();
+        }
+        return message([toolUse('tu_me', 'get_me', {})], 'tool_use');
+      };
+    const run = (caller: ModelCaller) =>
+      runToolChoiceEval({
+        models: [preset],
+        modes: ['direct'],
+        tasks: resolveTasks('who-am-i'),
+        runs: 1,
+        caller,
+      });
+
+    it(
+      'a 400 prompt-too-long ends the episode scored, as a failure',
+      { timeout: 60_000 },
+      async () => {
+        const [record] = await run(
+          overflowingCaller(() => {
+            throw APIError.generate(
+              400,
+              {
+                type: 'error',
+                error: {
+                  type: 'invalid_request_error',
+                  message: 'prompt is too long: 215000 tokens > 200000 maximum',
+                },
+              },
+              undefined,
+              new Headers(),
+            );
+          }),
+        );
+        expect(record?.contextOverflow).toBe(true);
+        expect(record?.harnessError).toBeUndefined();
+        expect(record?.infraFailure).toBeUndefined();
+        // The right call was made, and it is still a failure.
+        expect(record?.toolCorrect).toBe(true);
+        expect(record?.success).toBe(false);
+        expect(record?.stopReason).toBe('model_context_window_exceeded');
+        const summary = summarizeToolChoice([record as EpisodeRecord]);
+        expect(summary.cells[0]).toMatchObject({
+          scored: 1,
+          successes: 0,
+          harnessErrors: 0,
+          contextOverflows: 1,
+        });
+        expect(summary.tiers[0]).toMatchObject({ scored: 1, contextOverflows: 1 });
+        expect(summary.tasks[0]).toMatchObject({ scored: 1, contextOverflows: 1 });
+        const report = formatToolChoiceReport([record as EpisodeRecord]);
+        expect(report).toContain('ctx-overflow');
+        expect(report).not.toContain('Harness errors');
+        expect(formatEpisodeLine(record as EpisodeRecord)).toContain('context-overflow');
+      },
+    );
+
+    it('so does the model_context_window_exceeded stop reason', { timeout: 60_000 }, async () => {
+      const [record] = await run(
+        overflowingCaller(() =>
+          message(
+            [{ type: 'text', text: 'partial' }],
+            'model_context_window_exceeded' as Anthropic.StopReason,
+          ),
+        ),
+      );
+      expect(record?.contextOverflow).toBe(true);
+      expect(record?.harnessError).toBeUndefined();
+      expect(record?.success).toBe(false);
+      expect(summarizeToolChoice([record as EpisodeRecord]).cells[0]?.contextOverflows).toBe(1);
+    });
+
+    it('any other 400 is still an excluded API error', { timeout: 60_000 }, async () => {
+      const [record] = await run(
+        overflowingCaller(() => {
+          throw APIError.generate(
+            400,
+            { type: 'error', error: { type: 'invalid_request_error', message: 'tools.0: bad' } },
+            undefined,
+            new Headers(),
+          );
+        }),
+      );
+      expect(record?.contextOverflow).toBeUndefined();
+      expect(record?.harnessError).toMatch(/^api error: /);
+      expect(summarizeToolChoice([record as EpisodeRecord]).cells[0]).toMatchObject({
+        scored: 0,
+        contextOverflows: 0,
+      });
+    });
   });
 
   it(
@@ -688,7 +803,9 @@ describe('tool-choice eval plumbing (offline)', () => {
         }
       }
       expect(errorBlocks.size).toBe(2);
-      for (const block of errorBlocks) expect(String(block.content)).toMatch(/404/);
+      for (const block of errorBlocks) {
+        expect(String(block.content)).toContain('Failed to get file contents.');
+      }
       const summary = summarizeToolChoice(hard);
       expect(
         summary.tiers.map((t) => [t.tier, t.mode, t.successes, t.scored, t.forbidden]),

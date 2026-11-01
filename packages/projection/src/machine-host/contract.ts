@@ -16,6 +16,8 @@
  * actors, which would re-execute an already-approved write.
  */
 
+import { DEFAULT_CAPS } from '../types.js';
+
 /**
  * Prelude + `toolCall` implementation, appended to the generated bridge.
  *
@@ -81,6 +83,55 @@ export function toolCall(name, args, options) {
 }
 
 /**
+ * Request one call of the same tool per item, all from one action, so they
+ * are outstanding together: the gated ones go to the user in ONE round trip
+ * (R15), where a call per state would cost a round trip each.
+ *
+ *   entry: toolCalls('write_file', ({ context }) => context.paths.map((path) => ({ path })), { id: 'w' })
+ *
+ * Call k (0-based, in list order) gets the id '<id>*k', '<id>' defaulting
+ * to the tool name. The '*' keeps them apart from a plain toolCall's
+ * default ids ('<name>#<n>'). Guard the waiting state with whenCallIn(id), and match
+ * each event to its item by event.args, not the id. An empty
+ * list requests nothing, so no event will come: check the list before
+ * entering the state (or leave it with an 'always' transition, as the
+ * contract's example does). Every item is checked before any is queued.
+ *
+ * @param name  Tool name exactly as catalogued.
+ * @param argsList  Array of plain objects, or a function of the XState
+ *              action arguments ({ context, event }) returning one.
+ * @param options  Optional { id }: the prefix of the calls' ids.
+ */
+export function toolCalls(name, argsList, options) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('toolCalls(name, argsList): name must be a non-empty tool name string');
+  }
+  const prefix = options && options.id !== undefined ? String(options.id) : name;
+  return function projectionToolCalls(actionArgs) {
+    let list;
+    try {
+      list = typeof argsList === 'function' ? argsList(actionArgs) : argsList;
+    } catch (err) {
+      throw new Error('toolCalls("' + name + '") argument function threw: ' + String(err));
+    }
+    if (!Array.isArray(list)) {
+      throw new Error('toolCalls("' + name + '") argsList must resolve to an array of plain objects');
+    }
+    const calls = [];
+    for (let i = 0; i < list.length; i += 1) {
+      let resolved = list[i];
+      if (resolved === undefined || resolved === null) resolved = {};
+      if (typeof resolved !== 'object' || Array.isArray(resolved)) {
+        throw new Error('toolCalls("' + name + '") item ' + i + ' must be a plain object');
+      }
+      calls.push({ id: prefix + '*' + i, name: name, args: resolved });
+    }
+    const queue = __projQueue();
+    for (const call of calls) queue.push(call);
+  };
+}
+
+/**
  * Guard matching the event for one specific call id.
  *
  * XState delivers an event to every region that can handle it, so a machine
@@ -95,6 +146,28 @@ export function whenCall(id) {
   return function projectionWhenCall(guardArgs) {
     const event = guardArgs && guardArgs.event;
     return Boolean(event) && event.callId === wanted;
+  };
+}
+
+/**
+ * Guard matching the events of every call one toolCalls(name, list, { id })
+ * made: their callIds are '<id>*0', '<id>*1', … (the index only, so 'a' does
+ * not match the list 'a*b') — never a plain toolCall's
+ * default '<name>#<n>', so whenCallIn(name) leaves those alone. Each event's args are its
+ * call's own arguments: match the item by those, not by the id.
+ *
+ *   on: { TOOL_RESULT: { guard: whenCallIn('w'), actions: 'seen' } }
+ */
+export function whenCallIn(id) {
+  const prefix = String(id) + '*';
+  return function projectionWhenCallIn(guardArgs) {
+    const event = guardArgs && guardArgs.event;
+    return (
+      Boolean(event) &&
+      typeof event.callId === 'string' &&
+      event.callId.startsWith(prefix) &&
+      /^[0-9]+$/.test(event.callId.slice(prefix.length))
+    );
   };
 }
 `;
@@ -136,8 +209,14 @@ export function sampleNote(sample: SampleTool): string {
  * qualified names, a placeholder's line says so, and one rule is added —
  * tool names are qualified. Without it the text is the single-server
  * contract, byte for byte.
+ *
+ * `maxRoundTrips` is the facade's clamped `caps.maxRoundTrips` (R12, R18),
+ * quoted by rule 5.
  */
-export function authoringContract(samples?: ToolSamples): string {
+export function authoringContract(
+  samples?: ToolSamples,
+  maxRoundTrips: number = DEFAULT_CAPS.maxRoundTrips,
+): string {
   const read = samples?.read ?? { name: 'read_file', placeholder: false };
   const gated = samples?.gated ?? { name: 'write_file', placeholder: false };
   const qualifiedRule =
@@ -169,9 +248,11 @@ Rules:
    fromPromise/invoke — restored snapshots restart invoked actors, which
    would re-execute an approved write. Machines using invoke are rejected.
 4. After a toolCall, wait in a state for one of these events:
-     TOOL_RESULT { callId, result }   the call succeeded
-     TOOL_ERROR  { callId, error }    the call failed
-     TOOL_DENIED { callId, reason }   the user declined, or policy denies it
+     TOOL_RESULT { callId, args, result, notes? }  succeeded
+     TOOL_ERROR  { callId, args, error }           failed
+     TOOL_DENIED { callId, args, reason }          the user declined, or policy denies it
+   args: the call's own arguments — match a result to its item by them, not
+   by order or id. notes, if any, say the result looks partial.
    Denial is not an abort: handle TOOL_DENIED and continue or finish.
    IMPORTANT: if your machine has more than one call outstanding at the same
    time (parallel regions), give each toolCall an explicit id and guard every
@@ -183,15 +264,37 @@ Rules:
      on: { TOOL_RESULT: { guard: whenCall('a'), target: 'done' } },
 5. Tools marked "asks for approval" pause the machine for user approval;
    tools marked "runs immediately" do not. The arguments captured at that
-   moment are the arguments that execute.
+   moment are the arguments that execute. Each pause is one approval round
+   trip and a workflow gets at most ${maxRoundTrips}: one gated call per item, each in
+   its own state, stops unfinished past ${maxRoundTrips} items. Make them together with
+   toolCalls (one round trip for all), guarded by whenCallIn(id). An empty
+   list makes no calls; the always transition below leaves at once:
+
+     import { toolCalls, whenCallIn } from '@astral-mcp/tools';
+     setup({ actions: { seen: assign({ seen: ({ context, event }) => [...context.seen, [event.args.path, event.type]] }) } })
+     // context: ({ input }) => ({ paths: input.paths, seen: [] })
+     writing: {
+       entry: toolCalls('${gated.name}', ({ context }) => context.paths.map((path) => ({ path, content: 'hello' })), { id: 'w' }),${sampleNote(gated)}
+       always: { guard: ({ context }) => context.seen.length === context.paths.length, target: 'done' },
+       on: {
+         TOOL_RESULT: { guard: whenCallIn('w'), actions: 'seen' },
+         TOOL_DENIED: { guard: whenCallIn('w'), actions: 'seen' },
+         TOOL_ERROR: { guard: whenCallIn('w'), actions: 'seen' },
+       },
+     },
 6. Only 'xstate' and '@astral-mcp/tools' resolve as imports. There is no
    filesystem, no network, no fetch. All working state lives in context.
 7. Finish by reaching a final state. Use the machine's output for the result.
 8. TOOL_RESULT.result is the tool's structuredContent when the server returns
    one (see its Output type in tools.d.ts); otherwise the text of its single
-   text block, null for an empty result, or the raw content array for
-   anything else. A tool that returns isError arrives as TOOL_ERROR. Tools
-   without an Output type are typed unknown — usually a string.
+   text block — already parsed when that text is JSON for an object or an
+   array (the raw text is then event.text) — null for an empty result, or
+   the raw content array for anything else. A tool that returns isError
+   arrives as TOOL_ERROR. Tools without an Output type are typed unknown,
+   and that does not mean text: many servers return an object without
+   declaring it. Never parse a result you have not seen: run the read on
+   its own first (call_tool, or a machine whose output is event.result)
+   and write the machine against the shape it returns.
 9. Tool inputs such as paths, ids and names are server-specific. Do not guess
    them: take them from the machine's input, or discover them first with a
    read-only call (a list/search tool) and keep what you learn in context.

@@ -69,10 +69,13 @@ export default setup({}).createMachine({
   `packages/projection/test/multi/code-mode.test.ts` and the recording
   servers in `test/multi/helpers.ts`.
 - After a `toolCall`, wait in a state for one of these events, each carrying
-  the `callId` of the call it answers:
-  - `TOOL_RESULT { callId, result }` — the call succeeded
-  - `TOOL_ERROR { callId, error }` — the call failed
-  - `TOOL_DENIED { callId, reason }` — the user declined, or policy denies it
+  the `callId` and the `args` of the call it answers (for an approved call,
+  the sealed arguments that ran or were declined; D31):
+  - `TOOL_RESULT { callId, args, result, notes? }` — the call succeeded; `notes`
+    (D29), when present, are one-line remarks such as "Partial result: …"
+    or "Page full: …", also restated after a completed run's output
+  - `TOOL_ERROR { callId, args, error }` — the call failed
+  - `TOOL_DENIED { callId, args, reason }` — the user declined, or policy denies it
 
   `toolCall(name, args, { id })` sets the id; the default is `name#N`. If
   more than one call is outstanding at once (parallel regions), give each
@@ -80,12 +83,23 @@ export default setup({}).createMachine({
   `whenCall(id)` — events reach every region that can handle them, so an
   unguarded region consumes another call's result.
 
+  For one gated call per item, use `toolCalls(name, argsList, { id })`:
+  one action queues a call per item (ids `<id>*0`, `<id>*1`, …, apart from `toolCall`'s `name#N`), so all
+  of them share one approval round trip, where a call per state costs one
+  each and stops unfinished at `caps.maxRoundTrips` (8). Guard with
+  `whenCallIn(id)`, match each answer to its item by `event.args` (not by
+  parsing the index out of the id, nor by arrival order, which can differ),
+  and finish once every call has one (contract rule 5, D30, D31).
+
 - `event.result` on `TOOL_RESULT` is the tool's `structuredContent` when the
   server returns one (see its Output type in `tools.d.ts`); otherwise the
-  text of its single text block, `null` for an empty result, or the raw
-  content array for anything else. Tools without an Output type are typed
-  `unknown` — usually a string. A tool returning `isError` arrives as
-  `TOOL_ERROR`.
+  text of its single text block — parsed when it is JSON for an object or
+  an array, with the raw text on `event.text` (D29) — `null` for an empty
+  result, or the raw content array for anything else. Tools without an Output type are typed
+  `unknown` — not necessarily a string: many servers return
+  `structuredContent` without declaring a schema (the MongoDB server's
+  `count` returns `{ count: 4 }`). A
+  tool returning `isError` arrives as `TOOL_ERROR`.
 - Contract item 5: tools marked "asks for approval" suspend the machine for
   approval; tools marked "runs immediately" (read-only, `auto` by policy, or,
   under `approvals: 'destructive-only'`, a declared non-destructive write)

@@ -17,14 +17,21 @@
  * Facts merge: `root` (the filesystem box's directory) and `mongoUri` (the
  * deployment), so prompts and `verify` read them as in the single-server
  * tiers. `close` tears down all three.
+ *
+ * `variant: 'hard'` (the `multi-hard` tier) opens the same three boxes with
+ * more data: extra project files, extra shop documents and a much larger
+ * acme/widgets (multi-hard-fixtures.ts, multi-hard-github.ts). Without it
+ * every box holds exactly its base fixture.
  */
 
 import type { SideEffect } from '../types.js';
 import { openFilesystemWorld } from './filesystem-world.js';
 import { githubWorld } from './github-world.js';
 import { openMongodbWorld } from './mongodb-world.js';
+import { HARD_FILESYSTEM_FILES, hardMongoSeed } from './multi-hard-fixtures.js';
+import { hardGithubAnswers } from './multi-hard-github.js';
 import type {
-  BoxAlias,
+  MultiBoxAlias,
   MultiWorld,
   ServerWorld,
   WorldBox,
@@ -33,7 +40,10 @@ import type {
 } from './world.js';
 
 /** The boxes, in shelf (alias) order, and the single-server world each wraps. */
-export const MULTI_BOXES: readonly { alias: BoxAlias; world: ServerWorld['name'] }[] = [
+export const MULTI_BOXES: readonly {
+  alias: MultiBoxAlias;
+  world: 'github' | 'filesystem' | 'mongodb';
+}[] = [
   { alias: 'fs', world: 'filesystem' },
   { alias: 'github', world: 'github' },
   { alias: 'mongo', world: 'mongodb' },
@@ -48,9 +58,9 @@ export const MULTI_DIRECT_SYSTEM_PROMPT =
  * `boxDescriptions` variant is on (PROJ_EVAL_BOX_DESCRIPTIONS=1); by
  * default the boxes carry none.
  */
-export const MULTI_BOX_DESCRIPTIONS: Readonly<Record<BoxAlias, string>> = {
+export const MULTI_BOX_DESCRIPTIONS: Readonly<Record<MultiBoxAlias, string>> = {
   github: 'GitHub: issues, PRs and repos for acme/widgets',
-  fs: "The user's project files",
+  fs: "The user's local checkout of the widgets project: source, docs, CHANGELOG, notes and logs",
   mongo: 'The shop MongoDB deployment',
 };
 
@@ -66,13 +76,14 @@ export function qualifiedName(alias: string, name: string): string {
 export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiWorld> {
   const calls: SideEffect[] = [];
   const recorder =
-    (alias: BoxAlias) =>
+    (alias: MultiBoxAlias) =>
     (call: SideEffect): void => {
       const qualified = { tool: qualifiedName(alias, call.tool), args: call.args };
       calls.push(qualified);
       options.onCall?.(qualified);
     };
 
+  const hard = options.variant === 'hard';
   const opened = await Promise.allSettled(
     MULTI_BOXES.map(({ alias, world }): Promise<ServerWorld> => {
       const onCall = recorder(alias);
@@ -82,12 +93,16 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
             githubWorld({
               onCall,
               ...(options.instructions === false ? { instructions: false } : {}),
+              ...(hard ? { answers: { ...hardGithubAnswers() } } : {}),
             }),
           );
         case 'filesystem':
-          return openFilesystemWorld({ onCall });
+          return openFilesystemWorld({
+            onCall,
+            ...(hard ? { extraFiles: HARD_FILESYSTEM_FILES } : {}),
+          });
         case 'mongodb':
-          return openMongodbWorld({ onCall });
+          return openMongodbWorld({ onCall, ...(hard ? { extraShop: hardMongoSeed() } : {}) });
       }
     }),
   );
@@ -95,8 +110,13 @@ export async function openMultiWorld(options: WorldOptions = {}): Promise<MultiW
   const failures: unknown[] = [];
   opened.forEach((result, i) => {
     const box = MULTI_BOXES[i] as (typeof MULTI_BOXES)[number];
-    if (result.status === 'fulfilled') boxes.push({ alias: box.alias, world: result.value });
-    else failures.push(result.reason);
+    if (result.status === 'fulfilled') {
+      boxes.push({
+        alias: box.alias,
+        world: result.value,
+        description: MULTI_BOX_DESCRIPTIONS[box.alias],
+      });
+    } else failures.push(result.reason);
   });
   const close = async (): Promise<void> => {
     await Promise.all(boxes.map((box) => box.world.close().catch(() => {})));

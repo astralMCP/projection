@@ -1,0 +1,914 @@
+{
+  "flow": "multi-server",
+  "current_round": 18,
+  "reps": 3,
+  "goal": {
+    "target": "pass",
+    "direction": "higher",
+    "hold": ["guard_pass"]
+  },
+  "approve_each_round": false,
+  "gating_cells": [
+    {
+      "mode": "projection",
+      "model": "haiku45"
+    },
+    {
+      "mode": "projection",
+      "model": "sonnet-low"
+    }
+  ],
+  "tracked_cells": [
+    {
+      "mode": "projection-boxes",
+      "model": "haiku45"
+    },
+    {
+      "mode": "projection-boxes",
+      "model": "sonnet-low"
+    }
+  ],
+  "best": {
+    "round": 18,
+    "variant": "v17",
+    "note": "D35 fenced text on v16b"
+  },
+  "train_ids": [
+    "cross-changelog-to-issue.haiku45.projection",
+    "cross-shipped-to-comment.haiku45.projection",
+    "cross-largest-log-to-audit.haiku45.projection",
+    "cross-version-to-branch.haiku45.projection",
+    "cross-open-prs-to-notes.haiku45.projection",
+    "cross-email-to-todo.haiku45.projection",
+    "box-readme-fs.haiku45.projection",
+    "box-readme-github.haiku45.projection",
+    "box-src-fs.haiku45.projection",
+    "box-src-github.haiku45.projection",
+    "global-version-branch.haiku45.projection",
+    "global-who-is-grace.haiku45.projection",
+    "global-csv-released.haiku45.projection",
+    "global-last-log-entry.haiku45.projection",
+    "ctl-comment-newest-open-bug.haiku45.projection",
+    "ctl-fs-largest-log.haiku45.projection",
+    "ctl-db-count-shipped.haiku45.projection",
+    "cross-changelog-to-issue.sonnet-low.projection",
+    "cross-shipped-to-comment.sonnet-low.projection",
+    "cross-largest-log-to-audit.sonnet-low.projection",
+    "cross-version-to-branch.sonnet-low.projection",
+    "cross-open-prs-to-notes.sonnet-low.projection",
+    "cross-email-to-todo.sonnet-low.projection",
+    "box-readme-fs.sonnet-low.projection",
+    "box-readme-github.sonnet-low.projection",
+    "box-src-fs.sonnet-low.projection",
+    "box-src-github.sonnet-low.projection",
+    "global-version-branch.sonnet-low.projection",
+    "global-who-is-grace.sonnet-low.projection",
+    "global-csv-released.sonnet-low.projection",
+    "global-last-log-entry.sonnet-low.projection",
+    "ctl-comment-newest-open-bug.sonnet-low.projection",
+    "ctl-fs-largest-log.sonnet-low.projection",
+    "ctl-db-count-shipped.sonnet-low.projection",
+    "cross-changelog-to-issue.haiku45.projection-boxes",
+    "cross-shipped-to-comment.haiku45.projection-boxes",
+    "cross-largest-log-to-audit.haiku45.projection-boxes",
+    "cross-version-to-branch.haiku45.projection-boxes",
+    "cross-open-prs-to-notes.haiku45.projection-boxes",
+    "cross-email-to-todo.haiku45.projection-boxes",
+    "box-readme-fs.haiku45.projection-boxes",
+    "box-readme-github.haiku45.projection-boxes",
+    "box-src-fs.haiku45.projection-boxes",
+    "box-src-github.haiku45.projection-boxes",
+    "global-version-branch.haiku45.projection-boxes",
+    "global-who-is-grace.haiku45.projection-boxes",
+    "global-csv-released.haiku45.projection-boxes",
+    "global-last-log-entry.haiku45.projection-boxes",
+    "ctl-comment-newest-open-bug.haiku45.projection-boxes",
+    "ctl-fs-largest-log.haiku45.projection-boxes",
+    "ctl-db-count-shipped.haiku45.projection-boxes",
+    "cross-changelog-to-issue.sonnet-low.projection-boxes",
+    "cross-shipped-to-comment.sonnet-low.projection-boxes",
+    "cross-largest-log-to-audit.sonnet-low.projection-boxes",
+    "cross-version-to-branch.sonnet-low.projection-boxes",
+    "cross-open-prs-to-notes.sonnet-low.projection-boxes",
+    "cross-email-to-todo.sonnet-low.projection-boxes",
+    "box-readme-fs.sonnet-low.projection-boxes",
+    "box-readme-github.sonnet-low.projection-boxes",
+    "box-src-fs.sonnet-low.projection-boxes",
+    "box-src-github.sonnet-low.projection-boxes",
+    "global-version-branch.sonnet-low.projection-boxes",
+    "global-who-is-grace.sonnet-low.projection-boxes",
+    "global-csv-released.sonnet-low.projection-boxes",
+    "global-last-log-entry.sonnet-low.projection-boxes",
+    "ctl-comment-newest-open-bug.sonnet-low.projection-boxes",
+    "ctl-fs-largest-log.sonnet-low.projection-boxes",
+    "ctl-db-count-shipped.sonnet-low.projection-boxes"
+  ],
+  "test_ids": [
+    "create-issue.haiku45.projection",
+    "list-open-prs.haiku45.projection",
+    "read-readme.haiku45.projection",
+    "who-am-i.haiku45.projection",
+    "search-repos.haiku45.projection",
+    "trigger-workflow.haiku45.projection",
+    "comment-on-pr.haiku45.projection",
+    "star-repo.haiku45.projection",
+    "list-notifications.haiku45.projection",
+    "merge-pr-squash.haiku45.projection",
+    "create-branch.haiku45.projection",
+    "fork-repo.haiku45.projection",
+    "find-issue-then-comment.haiku45.projection",
+    "list-prs-then-merge.haiku45.projection",
+    "me-then-star-dotfiles.haiku45.projection",
+    "close-issue-not-planned.haiku45.projection",
+    "label-issue-keep-existing.haiku45.projection",
+    "reply-in-review-thread.haiku45.projection",
+    "rerun-failed-jobs.haiku45.projection",
+    "merge-alice-changelog-pr.haiku45.projection",
+    "comment-newest-open-bug.haiku45.projection",
+    "branch-from-latest-release-branch.haiku45.projection",
+    "branch-off-main-or-default.haiku45.projection",
+    "read-lowercase-readme.haiku45.projection",
+    "upsert-issue-exists.haiku45.projection",
+    "upsert-issue-missing.haiku45.projection",
+    "star-unless-starred.haiku45.projection",
+    "dependabot-summary-issue.haiku45.projection",
+    "url-close-pr-with-comment.haiku45.projection",
+    "url-request-changes.haiku45.projection",
+    "fs-move-todo-into-archive.haiku45.projection",
+    "fs-bump-version.haiku45.projection",
+    "fs-largest-log.haiku45.projection",
+    "fs-find-logs.haiku45.projection",
+    "fs-append-todo.haiku45.projection",
+    "fs-make-nested-dir.haiku45.projection",
+    "fs-view-logo.haiku45.projection",
+    "fs-which-debug.haiku45.projection",
+    "fs-archive-tmp.haiku45.projection",
+    "fs-readme-info.haiku45.projection",
+    "fs-retitle-changelog-from-package.haiku45.projection",
+    "fs-head-of-log.haiku45.projection",
+    "fs-create-unless-exists.haiku45.projection",
+    "fs-dry-run-colour.haiku45.projection",
+    "fs-src-tree.haiku45.projection",
+    "db-count-shipped.haiku45.projection",
+    "db-list-collections.haiku45.projection",
+    "db-schema-customers.haiku45.projection",
+    "db-top3-expensive.haiku45.projection",
+    "db-index-email.haiku45.projection",
+    "db-cancel-stale-pending.haiku45.projection",
+    "db-drop-tmp.haiku45.projection",
+    "db-add-product.haiku45.projection",
+    "db-rename-audit-log.haiku45.projection",
+    "db-which-db-has-daily.haiku45.projection",
+    "db-delete-cancelled.haiku45.projection",
+    "db-add-customer-unless-exists.haiku45.projection",
+    "db-gold-in-austin.haiku45.projection",
+    "db-orders-per-status.haiku45.projection",
+    "db-explain-email-lookup.haiku45.projection",
+    "create-issue.sonnet-low.projection",
+    "list-open-prs.sonnet-low.projection",
+    "read-readme.sonnet-low.projection",
+    "who-am-i.sonnet-low.projection",
+    "search-repos.sonnet-low.projection",
+    "trigger-workflow.sonnet-low.projection",
+    "comment-on-pr.sonnet-low.projection",
+    "star-repo.sonnet-low.projection",
+    "list-notifications.sonnet-low.projection",
+    "merge-pr-squash.sonnet-low.projection",
+    "create-branch.sonnet-low.projection",
+    "fork-repo.sonnet-low.projection",
+    "find-issue-then-comment.sonnet-low.projection",
+    "list-prs-then-merge.sonnet-low.projection",
+    "me-then-star-dotfiles.sonnet-low.projection",
+    "close-issue-not-planned.sonnet-low.projection",
+    "label-issue-keep-existing.sonnet-low.projection",
+    "reply-in-review-thread.sonnet-low.projection",
+    "rerun-failed-jobs.sonnet-low.projection",
+    "merge-alice-changelog-pr.sonnet-low.projection",
+    "comment-newest-open-bug.sonnet-low.projection",
+    "branch-from-latest-release-branch.sonnet-low.projection",
+    "branch-off-main-or-default.sonnet-low.projection",
+    "read-lowercase-readme.sonnet-low.projection",
+    "upsert-issue-exists.sonnet-low.projection",
+    "upsert-issue-missing.sonnet-low.projection",
+    "star-unless-starred.sonnet-low.projection",
+    "dependabot-summary-issue.sonnet-low.projection",
+    "url-close-pr-with-comment.sonnet-low.projection",
+    "url-request-changes.sonnet-low.projection",
+    "fs-move-todo-into-archive.sonnet-low.projection",
+    "fs-bump-version.sonnet-low.projection",
+    "fs-largest-log.sonnet-low.projection",
+    "fs-find-logs.sonnet-low.projection",
+    "fs-append-todo.sonnet-low.projection",
+    "fs-make-nested-dir.sonnet-low.projection",
+    "fs-view-logo.sonnet-low.projection",
+    "fs-which-debug.sonnet-low.projection",
+    "fs-archive-tmp.sonnet-low.projection",
+    "fs-readme-info.sonnet-low.projection",
+    "fs-retitle-changelog-from-package.sonnet-low.projection",
+    "fs-head-of-log.sonnet-low.projection",
+    "fs-create-unless-exists.sonnet-low.projection",
+    "fs-dry-run-colour.sonnet-low.projection",
+    "fs-src-tree.sonnet-low.projection",
+    "db-count-shipped.sonnet-low.projection",
+    "db-list-collections.sonnet-low.projection",
+    "db-schema-customers.sonnet-low.projection",
+    "db-top3-expensive.sonnet-low.projection",
+    "db-index-email.sonnet-low.projection",
+    "db-cancel-stale-pending.sonnet-low.projection",
+    "db-drop-tmp.sonnet-low.projection",
+    "db-add-product.sonnet-low.projection",
+    "db-rename-audit-log.sonnet-low.projection",
+    "db-which-db-has-daily.sonnet-low.projection",
+    "db-delete-cancelled.sonnet-low.projection",
+    "db-add-customer-unless-exists.sonnet-low.projection",
+    "db-gold-in-austin.sonnet-low.projection",
+    "db-orders-per-status.sonnet-low.projection",
+    "db-explain-email-lookup.sonnet-low.projection"
+  ],
+  "phases": {
+    "multi": {
+      "episodes": 204,
+      "split": "train"
+    },
+    "guard": {
+      "episodes": 120,
+      "split": "test"
+    },
+    "direct": {
+      "episodes": 102,
+      "split": "reference"
+    },
+    "multi-hard": {
+      "episodes": 72,
+      "split": "hard"
+    }
+  },
+  "metrics": [
+    {
+      "id": "pass",
+      "kind": "binary",
+      "label": "Pass (task expect + verify held, no forbidden call)"
+    },
+    {
+      "id": "tool_ok",
+      "kind": "binary",
+      "label": "Tool-correct (right upstream tools, any args)"
+    }
+  ],
+  "perf_fields": [
+    {
+      "id": "cost_usd",
+      "label": "Cost",
+      "unit": "$"
+    },
+    {
+      "id": "standard_cost_usd",
+      "label": "Std cost",
+      "unit": "$"
+    },
+    {
+      "id": "latency_s",
+      "label": "Latency",
+      "unit": "s"
+    },
+    {
+      "id": "tool_calls",
+      "label": "Tool calls"
+    }
+  ],
+  "prices": {
+    "claude-haiku-5-5": {
+      "in": 0.1,
+      "out": 0.5,
+      "long_context": {
+        "above_tokens": 100000,
+        "in": 0.5,
+        "out": 2.5
+      }
+    },
+    "claude-haiku-4-5": {
+      "in": 1,
+      "out": 5
+    },
+    "claude-sonnet-5-5": {
+      "in": 2,
+      "out": 10
+    }
+  },
+  "harness_paths": [
+    ".claude/hillclimb/multi-server/export.mjs",
+    ".claude/hillclimb/multi-server/render-instructions.ts",
+    ".claude/hillclimb/multi-server/run-round.sh",
+    ".claude/hillclimb/multi-server/scope.ts",
+    ".claude/hillclimb/multi-server/stats.mjs",
+    "packages/harness/package.json",
+    "packages/harness/scripts/rescore.ts",
+    "packages/harness/src/env.ts",
+    "packages/harness/src/eval/agent.ts",
+    "packages/harness/src/eval/batch.ts",
+    "packages/harness/src/eval/cost.ts",
+    "packages/harness/src/eval/filesystem-tasks.ts",
+    "packages/harness/src/eval/filesystem-world.ts",
+    "packages/harness/src/eval/github-fake.ts",
+    "packages/harness/src/eval/github-predicates.ts",
+    "packages/harness/src/eval/github-tasks.ts",
+    "packages/harness/src/eval/github-world.ts",
+    "packages/harness/src/eval/modes.ts",
+    "packages/harness/src/eval/mongodb-tasks.ts",
+    "packages/harness/src/eval/mongodb-world.ts",
+    "packages/harness/src/eval/multi-hard-fixtures.ts",
+    "packages/harness/src/eval/multi-hard-github.ts",
+    "packages/harness/src/eval/multi-hard-tasks.ts",
+    "packages/harness/src/eval/multi-tasks.ts",
+    "packages/harness/src/eval/multi-world.ts",
+    "packages/harness/src/eval/recording-proxy.ts",
+    "packages/harness/src/eval/rescore.ts",
+    "packages/harness/src/eval/run.ts",
+    "packages/harness/src/eval/task-core.ts",
+    "packages/harness/src/eval/tasks.ts",
+    "packages/harness/src/eval/world.ts",
+    "packages/harness/src/index.ts",
+    "packages/harness/src/reasoning/anthropic.ts",
+    "packages/harness/src/reasoning/author.ts",
+    "packages/harness/src/reasoning/loop.ts",
+    "packages/harness/src/reasoning/metrics.ts",
+    "packages/harness/src/reasoning/tasks.ts",
+    "packages/harness/src/recording-server.ts",
+    "packages/harness/src/runner.ts",
+    "packages/harness/src/scenarios.ts",
+    "packages/harness/src/types.ts",
+    "packages/harness/test/fixtures/github-catalog.json",
+    "packages/harness/test/tool-choice.live.test.ts",
+    "packages/harness/vendor/mongodb-mcp-server/package-lock.json",
+    "packages/harness/vendor/mongodb-mcp-server/package.json",
+    "packages/harness/vitest.config.ts"
+  ],
+  "budget_usd": 150,
+  "stop": {
+    "target": "all gating tasks pass in all reps for both models",
+    "plateau_rounds": 3
+  },
+  "runner": ".claude/hillclimb/multi-server/run-round.sh <variant>",
+  "reference": "reference-direct/ (direct mode, multi tier, both models, 3 reps; context only, not a round)",
+  "harness_sha": "bc89affd791ed94f5828cbc65aaf6a237eee1209c5a5e33721c1d9c9b8943d04",
+  "baseline": {
+    "gating_pass": 0.8431,
+    "noise_floor_gating_pooled_pts": 6.7,
+    "noise_floor_haiku45_pts": 10.9,
+    "noise_floor_sonnet-low_pts": 7.7,
+    "guard_pass": 0.95,
+    "guard_noise_floor_pts": {
+      "haiku45": 9.9,
+      "sonnet-low": 4.6
+    }
+  },
+  "spend_note": "cumulative spend = node export.mjs spend <flow> (sum of cost_usd over every variant dir incl. _preflight). cost_usd is the actual eval spend (list price, x0.5 for batch episodes); standard_cost_usd is the comparable host-cost metric (harness standardUsd), not spend.",
+  "rounds": [
+    {
+      "round": 1,
+      "variant": "v1",
+      "change": "shelf tool-name samples + look-before-asking rule",
+      "commit": "c742bdd",
+      "train_gating_pass": 0.8529,
+      "gating_tasks_all_reps": {
+        "haiku45": "9/17",
+        "sonnet-low": "16/17"
+      },
+      "guard_pass": {
+        "haiku45": 0.8833,
+        "sonnet-low": 0.9833
+      },
+      "guard_pass_pooled": 0.9333,
+      "spend_usd": 6.36,
+      "cumulative_spend_usd": 14.02,
+      "decision": "not best: +1.0 pt pooled gating (noise ±6.7), 25/34 task-cells fully passing as at baseline; guard haiku -3.3 pts within ±9.9",
+      "kept": false
+    },
+    {
+      "round": 2,
+      "variant": "v2",
+      "change": "revert v1; truthful result-shape copy in describe_tool (undeclared output) and contract rule 8",
+      "commit": "db931df",
+      "train_gating_pass": 0.8529,
+      "gating_tasks_all_reps": {
+        "haiku45": "11/17",
+        "sonnet-low": "15/17"
+      },
+      "tracked_boxes_pass": {
+        "haiku45": 0.8235,
+        "sonnet-low": 0.9412
+      },
+      "guard_pass": {
+        "haiku45": 0.9833,
+        "sonnet-low": 0.9833
+      },
+      "guard_pass_pooled": 0.9833,
+      "haiku_machine_episodes": {
+        "projection": "9/51 (3 pass)",
+        "projection-boxes": "10/51 (5 pass)"
+      },
+      "spend_usd": 6.48,
+      "cumulative_spend_usd": 20.5,
+      "kept": true,
+      "decision": "best (tie-break): pooled gating 87/102 vs baseline 86/102 (+1.0 pt, noise ±6.1), task-cells 26/34 vs 25/34; guard haiku +6.7 (within ±9.9), sonnet flat. Target task cross-shipped-to-comment stayed 0/3 in both haiku cells: mechanism did not engage (6/6 episodes went straight to execute_machine, no call_tool peek)."
+    },
+    {
+      "round": 3,
+      "variant": "v3",
+      "change": "route short lookup-then-act chains to call_tool; machines only for loops/branching over results, many steps, or a saved workflow (routing preamble single+multi, execute_machine and call_tool descriptions)",
+      "commit": "911d64d",
+      "train_gating_pass": 0.8824,
+      "gating_tasks_all_reps": {
+        "haiku45": "12/17",
+        "sonnet-low": "14/17"
+      },
+      "tracked_boxes_pass": {
+        "haiku45": 0.7451,
+        "sonnet-low": 0.9804
+      },
+      "guard_pass": {
+        "haiku45": 0.8833,
+        "sonnet-low": 0.9833
+      },
+      "guard_pass_pooled": 0.9333,
+      "haiku_machine_episodes": {
+        "projection": "3/51 (1 pass)",
+        "projection-boxes": "4/51 (1 pass)"
+      },
+      "spend_usd": 6.56,
+      "cumulative_spend_usd": 27.06,
+      "kept": false,
+      "decision": "not best: pooled gating 90/102 vs v2 87/102 (+2.9 pts, paired noise ±7.2), task-cells 26/34 tied; haiku gating +7.8 (±10.9), sonnet -2.0. Guard haiku 59/60 -> 53/60 (-10.0) is 0 up / 6 down vs v2, outside the paired ±7.7 floor (vs baseline -3.3 within ±9.3; vs v1 0.0), so the guard hold fails against the current best. Mechanism engaged: haiku machine episodes 9->3 gating, 10->4 boxes; cross-shipped-to-comment got its first pass ever (gating rep0, via call_tool), the 5 remaining failures still went to execute_machine. Tracked haiku boxes 42->38 (-7.8, ±9.4) with 4 turn-capped global-* call_tool episodes. Code left on the branch pending a guard re-rep decision."
+    },
+    {
+      "round": 4,
+      "variant": "v4",
+      "change": "v2 + v3 routing copy scoped to multi-server facades (single-server surface byte-identical to v2); run under harness change 2 (re-baseline)",
+      "commit": "ab8b9d4",
+      "harness_commit": "8a3eb8e",
+      "train_gating_pass": 0.9314,
+      "gating_tasks_all_reps": {
+        "haiku45": "16/17",
+        "sonnet-low": "15/17"
+      },
+      "gating_episodes": {
+        "haiku45": "48/51",
+        "sonnet-low": "47/51"
+      },
+      "tracked_boxes_pass": {
+        "haiku45": 0.9412,
+        "sonnet-low": 0.9216
+      },
+      "guard_pass": {
+        "haiku45": 0.9667,
+        "sonnet-low": 0.9833
+      },
+      "guard_pass_pooled": 0.975,
+      "spend_usd": 6.59,
+      "cumulative_spend_usd": 33.65,
+      "kept": true,
+      "decision": "re-baseline (best). Not comparable to rounds 0-3 (harness change 2).",
+      "categorization": "v4/categorization.md: 14 remaining failures. global-csv-released 12/12 fail in both modes and models: the host box descriptions steer the first turn to GitHub only (v3 5/6 sonnet opened search_fs, v4 0/6); no episode read CHANGELOG.md. Harness-config shift, not a grader error (0 grader disagreements) and not a Projection copy regression. global-last-log-entry sonnet-low 2 misses (gating rep0, boxes rep0): variance, same path and rate as v3."
+    },
+    {
+      "round": 5,
+      "variant": "v5",
+      "change": "multi preamble (catalog on): look in the other boxes before answering that it is not there, when the user does not name the box",
+      "commit": "5db5e5d",
+      "probe": {
+        "file": "v5/probe/2026-10-30T03-29-01.764Z.json",
+        "mode": "projection",
+        "box_descriptions": true,
+        "reps": 5,
+        "episodes": 20,
+        "spend_usd": 0.67,
+        "results": {
+          "global-csv-released": {
+            "haiku45": "1/5 (3 turn-capped)",
+            "sonnet-low": "1/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v4": {
+          "global-csv-released": {
+            "haiku45": "0/3",
+            "sonnet-low": "0/3"
+          },
+          "global-last-log-entry": {
+            "haiku45": "3/3",
+            "sonnet-low": "2/3"
+          }
+        }
+      },
+      "full_round_run": false,
+      "kept": false,
+      "reverted": true,
+      "decision": "probe: no effect (csv <=1/5 both models), full round not run, source reverted to v4. Mechanism engaged (csv episodes reaching fs 9/10 vs v4 2/12) but sonnet stops after one non-recursive fs.search_files miss and haiku turn-caps on GitHub first.",
+      "cumulative_spend_usd": 34.32
+    },
+    {
+      "round": 6,
+      "variant": "v6",
+      "change": "multi preamble (catalog on): a lookup that finds nothing is weak evidence; before concluding absence, browse or list instead of matching a name, broaden the query, or check another box",
+      "commit": "a6c6903",
+      "probe": {
+        "file": "v6/probe/2026-10-30T03-39-58.533Z.json",
+        "mode": "projection",
+        "box_descriptions": true,
+        "reps": 5,
+        "episodes": 20,
+        "spend_usd": 0.85,
+        "results": {
+          "global-csv-released": {
+            "haiku45": "0/5 (5 turn-capped)",
+            "sonnet-low": "2/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v5_probe": {
+          "global-csv-released": {
+            "haiku45": "1/5",
+            "sonnet-low": "1/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v4": {
+          "global-csv-released": {
+            "haiku45": "0/3",
+            "sonnet-low": "0/3"
+          },
+          "global-last-log-entry": {
+            "haiku45": "3/3",
+            "sonnet-low": "2/3"
+          }
+        },
+        "after_decisive_empty_lookup": {
+          "varied_and_found": 12,
+          "stopped_concluded_absence": 3,
+          "repeated_to_turn_cap": 5
+        }
+      },
+      "full_round_run": false,
+      "kept": false,
+      "reverted": true,
+      "decision": "probe only — superseded by v7 (just-in-time empty-result hints). Coordinator ruled out the full round before the probe result was known; the probe would not have cleared the bar anyway (csv haiku 0/5, sonnet 2/5; pooled 2/10 = v5). Source reverted to v4. csv misses stop at three different empty signals (box never visited, non-recursive glob miss, search_<box> 'No tools matching' read as a data miss); haiku 5/5 turn-capped hunting GitHub.",
+      "cumulative_spend_usd": 35.17
+    },
+    {
+      "round": 7,
+      "variant": "v7",
+      "change": "just-in-time hints (catalog projection, single + multi): search tools that match no tools say they searched tool names/descriptions, not data, and name read tools (browsing first); a read-only call_tool whose result is empty or whose upstream error reads as not-found gets one appended line naming other read tools and, multi-server, the other boxes (src/catalog/empty-hint.ts)",
+      "commit": "e09cb80",
+      "probe": {
+        "file": "v7/probe/2026-10-30T03-52-38.741Z.json",
+        "mode": "projection",
+        "box_descriptions": true,
+        "reps": 5,
+        "episodes": 20,
+        "spend_usd": 0.63,
+        "results": {
+          "global-csv-released": {
+            "haiku45": "2/5 (3 turn-capped)",
+            "sonnet-low": "0/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v6_probe": {
+          "global-csv-released": {
+            "haiku45": "0/5 (5 turn-capped)",
+            "sonnet-low": "2/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v5_probe": {
+          "global-csv-released": {
+            "haiku45": "1/5 (3 turn-capped)",
+            "sonnet-low": "1/5"
+          },
+          "global-last-log-entry": {
+            "haiku45": "5/5",
+            "sonnet-low": "5/5"
+          }
+        },
+        "v4": {
+          "global-csv-released": {
+            "haiku45": "0/3",
+            "sonnet-low": "0/3"
+          },
+          "global-last-log-entry": {
+            "haiku45": "3/3",
+            "sonnet-low": "2/3"
+          }
+        },
+        "hints": {
+          "episodes_with_a_hint": "20/20",
+          "search_miss_hints": 16,
+          "search_miss_followed": 4,
+          "empty_result_hints": 37,
+          "empty_result_next_call_named_tool_same_box": 10,
+          "empty_result_next_call_named_other_box": 1,
+          "per_cell": {
+            "csv haiku45": {
+              "miss": 10,
+              "miss_followed": 3,
+              "empty": 12,
+              "same_box_followed": 1,
+              "other_box_followed": 1
+            },
+            "csv sonnet-low": {
+              "miss": 5,
+              "miss_followed": 0,
+              "empty": 10,
+              "same_box_followed": 0,
+              "other_box_followed": 0
+            },
+            "last-log haiku45": {
+              "miss": 1,
+              "miss_followed": 1,
+              "empty": 5,
+              "same_box_followed": 4,
+              "other_box_followed": 0
+            },
+            "last-log sonnet-low": {
+              "miss": 0,
+              "miss_followed": 0,
+              "empty": 10,
+              "same_box_followed": 5,
+              "other_box_followed": 0
+            }
+          },
+          "detection": "no hint on any non-empty result or on the 10 validate errors; 2 of 4 GitHub 404 hints were on existing items called with bad args",
+          "haiku_tool_name_search_misses_per_csv_episode": {
+            "v7": [2, 2, 1, 3, 2],
+            "v6": [4, 4, 4, 4, 3]
+          }
+        }
+      },
+      "full_round_run": false,
+      "kept": false,
+      "reverted": true,
+      "decision": "probe insufficient: csv haiku 2/5 (best of v4-v7, 3 capped), sonnet 0/5 (pooled 2/10 = v5 = v6), last-log 10/10; bar (csv >=3/5 either model) not met, full round not run, source reverted to v4. Sonnet read the other-box pointer on 10/10 decisive empty GitHub results and answered from GitHub anyway; haiku tool-name-search misses halved (3.8 -> 2.0/episode) but turns still ran out in GitHub. Guard not measured.",
+      "cumulative_spend_usd": 35.8
+    },
+    {
+      "round": 8,
+      "variant": "v10-base",
+      "change": "re-baseline under harness change 3 (user-approved 2026-10-30): integration build (v4 surface + IDF search + upstream elicitation + batched-approval option), direct off",
+      "commit": "77ac115",
+      "multi": {
+        "haiku45": "102/102 $0.0218",
+        "sonnetLow": "102/102 $0.0165"
+      },
+      "guard": "114/120",
+      "multiHard": {
+        "haiku45": "21/36 $0.0565",
+        "sonnetLow": "35/36 $0.0448"
+      },
+      "spend_usd": 9.42,
+      "kept": false,
+      "decision": "control for v10"
+    },
+    {
+      "round": 9,
+      "variant": "v10",
+      "change": "projections.direct defaults to auto (D28)",
+      "commit": "cfa47e0",
+      "multi": {
+        "haiku45": "102/102 $0.0110",
+        "sonnetLow": "102/102 $0.0147"
+      },
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "26/36 $0.0509",
+        "sonnetLow": "36/36 $0.0538"
+      },
+      "spend_usd": 8.06,
+      "kept": true,
+      "decision": "best: multi saturated both, Haiku cost -50%; guard +3; multi-hard haiku +5, sonnet +1 at +20% cost"
+    },
+    {
+      "round": 10,
+      "variant": "v11",
+      "change": "D29 signals: schema defaults kept, partial-result notes, text fields as lines, JSON text parsed for machines, routing to computation, cap breakdown",
+      "commit": "2996dae",
+      "multi": "203/204",
+      "guard": "119/120",
+      "multiHard": {
+        "haiku45": "28/36 $0.0381",
+        "sonnetLow": "33/36 $0.0473"
+      },
+      "spend_usd": 7.42,
+      "kept": false,
+      "decision": "mixed: haiku +2 at -25% cost, guard +2; sonnet -3 (text-field marker hid string type -> machine miscounted; root-caused), haiku export-prs 0/3 (sequential gated writes hit 8 round trips; model reported success). Fixed in D30, re-run as v12"
+    },
+    {
+      "round": 11,
+      "variant": "v12",
+      "change": "D30: toolCalls/whenCallIn fan-out, round-trip-limit copy says unfinished, typed text-field marker",
+      "commit": "662d390",
+      "multi": "204/204",
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "23/36 $0.0412",
+        "sonnetLow": "32/36 $0.0500"
+      },
+      "spend_usd": 7.56,
+      "kept": false,
+      "decision": "worse: sonnet export-prs 0/3 — fan-out results mapped by 1-based index guess (ids 0-based) -> comments on wrong PRs. Fix D31: events carry args"
+    },
+    {
+      "round": 12,
+      "variant": "v13",
+      "change": "D31: machine tool events carry the call args (map results by args, not index); on top of D29 signals + D30 fan-out",
+      "commit": "cc37510",
+      "multi": "203/204",
+      "guard": "120/120",
+      "multiHard": {
+        "haiku45": "29/36 $0.0390",
+        "sonnetLow": "36/36 $0.0474"
+      },
+      "spend_usd": 7.49,
+      "kept": true,
+      "decision": "best: vs v10 multi-hard haiku +3 at -23% cost, sonnet equal at -12% cost; guard 120/120 (+3); multi -1 (noise)"
+    },
+    {
+      "round": 13,
+      "variant": "v13-bc",
+      "change": "re-baseline: v13 facade unchanged, basecamp harness (mock fidelity fixes, github-mcp-server eb47a99 behaviour) approved by the user 2026-10-31",
+      "commit": "652d14f",
+      "multi": "203/204",
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "23/36 $0.0482",
+        "sonnetLow": "33/36 $0.0550"
+      },
+      "spend_usd": 8.3,
+      "kept": true,
+      "decision": "new baseline for the basecamp harness; drops vs v13 on old harness come from the harder mocks (check-run summaries no longer leak the failing file, search no longer matches every PR)"
+    },
+    {
+      "round": 14,
+      "variant": "v14",
+      "change": "D32: top-3 search hits carry a compact args signature; call_tool validation errors carry it; query pages 15 (was 50)",
+      "commit": "edc5a78",
+      "multi": "202/204",
+      "guard": "117/120",
+      "multiHard": {
+        "haiku45": "24/36 $0.0447",
+        "sonnetLow": "35/36 $0.0451"
+      },
+      "spend_usd": 7.46,
+      "kept": true,
+      "decision": "best: vs v13-bc describe_tool calls per episode fall 1.18->0.20 (haiku multi), 0.59->0.00 (sonnet multi), 2.78->1.08 / 1.11->0.31 (multi-hard); cost multi -18%/-8%, multi-hard -7%/-18%; multi-hard +1/+2. Regression seen: signature hides arg descriptions, so Sonnet guessed mongo connectionId \"default\" once (db-rename-audit-log). issue_write missing-method errors (12) self-correct via the hint."
+    },
+    {
+      "round": 15,
+      "variant": "v15",
+      "change": "D33: signed hits gloss required args whose description adds meaning; upstream/validate errors gloss the args sent",
+      "commit": "1c2dd86",
+      "multi": "202/204",
+      "guard": "120/120",
+      "multiHard": {
+        "haiku45": "23/36 $0.0403",
+        "sonnetLow": "34/36 $0.0459"
+      },
+      "spend_usd": 7,
+      "kept": true,
+      "decision": "best: vs v14 guard 117->120 (mongodb 15/15 both models), multi cost -5%/-9%, haiku multi-hard cost -10%, turns down 0.3-0.6 per episode; multi-hard -1/-1 within noise (new haiku vip-tiers fails are machine logic). Next: empty-query box listing shows no args, so models still guess connectionId once per mongo episode and self-correct via the validate hint."
+    },
+    {
+      "round": 16,
+      "variant": "v16",
+      "change": "D34: shared args lead box pages and sit on the shelf",
+      "commit": "9a5f97f",
+      "multi": "196/204",
+      "guard": "119/120",
+      "multiHard": {
+        "haiku45": "25/36 $0.0424",
+        "sonnetLow": "34/36 $0.0400"
+      },
+      "spend_usd": 6.77,
+      "kept": false,
+      "decision": "mongo call errors 47->16 and cost down, but haiku multi 50->46 (projection) / 50->48 (boxes): on global-who-is-grace haiku asked which database/collection before calling any tool (2/6, never before). Shelf line removed -> v16b."
+    },
+    {
+      "round": 17,
+      "variant": "v16b",
+      "change": "D34 without the shelf line: shared args lead box pages only",
+      "commit": "30d2dc4",
+      "multi": "198/204",
+      "guard": "119/120",
+      "multiHard": {
+        "haiku45": "25/36 $0.0424",
+        "sonnetLow": "34/36 $0.0430"
+      },
+      "spend_usd": 7.05,
+      "kept": true,
+      "decision": "best: vs v15 mongo call errors 47->17, multi-hard haiku +2, sonnet cost -6%; haiku multi 100->96 of 102, most of it the indented-text copy bug (cross-email-to-todo x3) present since v13 -> fixed in v17 (D35)."
+    },
+    {
+      "round": 18,
+      "variant": "v17",
+      "change": "D35: multi-line text fields printed verbatim in a backtick fence, not indented",
+      "commit": "9882ed8",
+      "multi": "204/204",
+      "guard": "119/120",
+      "multiHard": {
+        "haiku45": "24/36 $0.0458",
+        "sonnetLow": "34/36 $0.0442"
+      },
+      "spend_usd": 7.15,
+      "kept": true,
+      "decision": "best: first 204/204 on multi; indented file writes 4-7 per round -> 0; multi-hard within noise of v16b (haiku -1, +8% cost, turns 10.3->11.6, the tier swings that much between rounds)."
+    }
+  ],
+  "rebaseline": "v4",
+  "rebaseline_note": "Harness change 2 (harness-change-2.md: output schemas through the recording proxy; host box descriptions on for the multi tier) landed before v4. v4 is the post-harness-change reference. Rounds 0-3 (baseline, v1-v3) ran under the old harness and are not directly comparable to v4 onward.",
+  "rebaseline_ref": {
+    "variant": "v4",
+    "harness_sha": "c7a5ded0b32f73094ac32f5c9746642615f83399fadf824138b002b3a52f0138",
+    "gating": {
+      "haiku45": {
+        "tasks_all_reps": "16/17",
+        "episodes": "48/51",
+        "pass": 0.9412,
+        "noise_floor_paired_pts": 0,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 2
+      },
+      "sonnet-low": {
+        "tasks_all_reps": "15/17",
+        "episodes": "47/51",
+        "pass": 0.9216,
+        "noise_floor_paired_pts": 5.4,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 0
+      },
+      "pooled": {
+        "task_cells": "31/34",
+        "episodes": "95/102",
+        "pass": 0.9314,
+        "noise_floor_paired_pts": 2.7,
+        "noise_floor_crude_pts": 9.9
+      }
+    },
+    "tracked_boxes": {
+      "haiku45": {
+        "tasks_all_reps": "16/17",
+        "episodes": "48/51",
+        "pass": 0.9412,
+        "noise_floor_paired_pts": 0,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 3
+      },
+      "sonnet-low": {
+        "tasks_all_reps": "15/17",
+        "episodes": "47/51",
+        "pass": 0.9216,
+        "noise_floor_paired_pts": 5.4,
+        "noise_floor_crude_pts": 14,
+        "turn_capped": 0
+      }
+    },
+    "guard": {
+      "haiku45": {
+        "episodes": "58/60",
+        "pass": 0.9667,
+        "noise_floor_paired_pts": 6.4,
+        "noise_floor_crude_pts": 12.9
+      },
+      "sonnet-low": {
+        "episodes": "59/60",
+        "pass": 0.9833,
+        "noise_floor_paired_pts": 4.6,
+        "noise_floor_crude_pts": 12.9
+      }
+    },
+    "noise_note": "Paired floors from stats.mjs v4 (one round only, so ±0.0 for haiku means no within-round task variance to pair; use the crude ±14.0 or the old-harness ±9-11 as the practical floor for haiku). One task 0/3->3/3 in one cell is ~5.9 pts.",
+    "spend_usd": 6.59
+  },
+  "spend_notes": [
+    "export.mjs spend sums cost_usd over variant results.jsonl files only; probes outside the round layout are added here by hand.",
+    "v5 probe (v5/probe/, 20 episodes): $0.67 (exact, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 = $34.32.",
+    "v6 probe (v6/probe/, 20 episodes): $0.85 (exact $0.8483, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5 probe) + $0.85 = $35.17.",
+    "v7 probe (v7/probe/, 20 episodes): $0.63 (exact $0.6254, export.mjs costUsd pricing). Cumulative = $33.65 (export.mjs) + $0.67 (v5) + $0.85 (v6) + $0.63 = $35.80.",
+    "2026-10-30: budget raised 50 -> 100 (user: high performance, good HITL, low cost — do whatever it takes); harness change 3 (world fidelity + host-like prefix caching) approved by the user",
+    "2026-10-31: user raised the budget from $100 to $150 after v15 (rounds v13-bc 8.30 + v14 7.46 + v15 7.00 on top of 75.75). Basecamp build ($34), summit calibration ($68) and the v15 milestone ($13.37) are tracked outside this budget."
+  ],
+  "cumulative_spend_usd": 119.48
+}

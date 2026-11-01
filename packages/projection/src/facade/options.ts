@@ -13,6 +13,7 @@ import type { TokenStore } from '../auth/token-store.js';
 import { DEFAULT_INTROSPECT_TIMEOUT_MS } from '../introspector/constants.js';
 import type { BlobKeyDomain } from '../blob/index.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
+import type { ApprovalPrompts } from '../mrtr/batch.js';
 import type {
   ApprovalsMode,
   PolicyOptions,
@@ -23,6 +24,7 @@ import type {
   ResourceCaps,
   ServerCatalog,
   ToolExecutor,
+  UpstreamElicitationMode,
 } from '../types.js';
 
 export interface WrapOptions {
@@ -54,6 +56,19 @@ export interface WrapOptions {
    * apart; on `wrapMcpServer` it is the server's own tool name.
    */
   redact?: RedactionHook;
+  /**
+   * How a machine suspension holding several gated calls is put to the
+   * person (R15 amendment; DECISIONS D25). `'per-call'` (default) sends one
+   * elicitation per call. `'batched'` sends one elicitation listing every
+   * call in its full approval copy, with one unticked boolean per call (no
+   * default): each call still runs only if its own box comes back ticked,
+   * on the arguments sealed for it (S2). A client that answers the form
+   * without the booleans declines every call. The layout is sealed in the
+   * blob; a batch is capped at 10 calls and 20 000 characters, falling back
+   * to per-call prompts above that. Read once, at wrap time; any other
+   * value fails the wrap (`validate`).
+   */
+  approvalPrompts?: ApprovalPrompts;
   /**
    * Replaces the whole R29 preamble, whichever projections are on (the
    * code-mode, catalog or routing copy).
@@ -100,6 +115,21 @@ export interface WrapOptions {
    */
   tokenStore?: TokenStore;
   /**
+   * Whether the wrapped server's own questions reach the human (G1,
+   * DECISIONS D24). `'refuse'` (default): Projection declares no
+   * elicitation capability to the server, and a tool that asks anyway fails
+   * with a result saying it needs the user's input. `'forward'`: the
+   * capability is declared, and each question — a form, or a link to open —
+   * is relayed to the human over MRTR in Projection's own prompt, headed
+   * `Question from <box> (not an approval)` with the server's words quoted,
+   * after the call itself passed the approval gate. Enable it only for
+   * servers you trust to ask your users things: a hostile server can still
+   * word a phishing question. On `wrapMcpServers` this is the default for
+   * every box, and a source configuration can override it per box.
+   * Read once, at wrap time; any other value fails the wrap (`validate`).
+   */
+  upstreamElicitation?: UpstreamElicitationMode;
+  /**
    * Bound, in milliseconds, on each wrapped source's connect and `tools/list`
    * introspection at wrap time (R47). A source that has not finished in time
    * fails the wrap with a `protocol` error, and every connection Projection
@@ -112,6 +142,76 @@ export interface WrapOptions {
 export interface ProjectionsOptions {
   codeMode?: boolean;
   catalog?: boolean;
+  /**
+   * Direct listing (see `facade/direct.ts`): also register one
+   * **mediated** facade tool per wrapped tool, a thin alias of
+   * `call_tool({ name, args })` under exactly the same gate, so the model
+   * sees every tool's name, description and schema without searching.
+   * `true` always lists them; `'auto'` lists them when their estimated
+   * definitions fit `directBudgetTokens` (on a multi-server facade box by
+   * box, smallest box first; the other boxes keep the catalog path);
+   * `false` never. Default `'auto'` (DECISIONS D28). Needs the
+   * catalog projection: `true` with `catalog: false` fails the wrap
+   * (`validate`); `'auto'` then stays off.
+   */
+  direct?: 'auto' | boolean;
+  /**
+   * `direct: 'auto'`: the largest estimated size, in tokens, of all mediated
+   * tool definitions (name, description, input schema; characters / 3.5)
+   * that is still listed directly. Default {@link DEFAULT_DIRECT_BUDGET_TOKENS}.
+   */
+  directBudgetTokens?: number;
+}
+
+/**
+ * Default `projections.directBudgetTokens`: about 8k estimated tokens of
+ * tool definitions. Measured (explore/adaptive-surface.md): listing wins
+ * clearly at 2k and 5.4k estimated tokens and breaks even on Sonnet 5.5 at
+ * about 11k, whose tokenizer counts ~1.3–1.4× the estimate.
+ */
+export const DEFAULT_DIRECT_BUDGET_TOKENS = 8_000;
+
+/** The validated direct-listing settings (see {@link ProjectionsOptions.direct}). */
+export interface DirectSetting {
+  mode: 'auto' | 'on' | 'off';
+  budgetTokens: number;
+}
+
+/**
+ * `projections.direct` / `directBudgetTokens`, validated at wrap time;
+ * `catalog` is the resolved catalog switch. Anything malformed is a
+ * `validate` error, before any source is connected.
+ */
+export function resolveDirectSetting(
+  options: ProjectionsOptions | undefined,
+  catalog: boolean,
+): DirectSetting {
+  const direct: unknown = options?.direct;
+  const budget: unknown = options?.directBudgetTokens;
+  if (direct !== undefined && typeof direct !== 'boolean' && direct !== 'auto') {
+    throw new ProjectionError('validate', "projections.direct must be true, false or 'auto'", {
+      hint: 'Pass projections: { direct: false } to always search, or omit it to list small catalogs directly.',
+    });
+  }
+  if (
+    budget !== undefined &&
+    (typeof budget !== 'number' || !Number.isInteger(budget) || budget < 0)
+  ) {
+    throw new ProjectionError(
+      'validate',
+      'projections.directBudgetTokens must be a whole number of tokens',
+      {
+        hint: `Pass e.g. directBudgetTokens: ${DEFAULT_DIRECT_BUDGET_TOKENS}, or omit it for the default.`,
+      },
+    );
+  }
+  if (direct === true && !catalog) {
+    throw new ProjectionError('validate', 'projections.direct needs the catalog projection', {
+      hint: 'Directly listed tools are aliases of call_tool: keep projections.catalog on, or drop direct.',
+    });
+  }
+  const mode = direct === true ? 'on' : direct !== false && catalog ? 'auto' : 'off';
+  return { mode, budgetTokens: (budget as number | undefined) ?? DEFAULT_DIRECT_BUDGET_TOKENS };
 }
 
 /** Options for registering the projections on a server the caller built. */
@@ -207,8 +307,10 @@ export function approvalGateDeps(input: {
   policySettings: PolicySettings;
   era: ProtocolEra | undefined;
   clientCanElicit: boolean | undefined;
+  /** Whether the client declared URL-mode elicitation (G1); omit when unknown. */
+  clientUrlElicitation?: boolean | undefined;
 }): ApprovalGateDeps {
-  const { options, era, clientCanElicit } = input;
+  const { options, era, clientCanElicit, clientUrlElicitation } = input;
   return {
     catalog: input.catalog,
     blobDomain: input.blobDomain,
@@ -220,6 +322,32 @@ export function approvalGateDeps(input: {
     ...(era !== undefined ? { protocolEra: era } : {}),
     ...(options.compat?.legacyElicitation === true ? { legacyElicitation: true } : {}),
     ...(clientCanElicit !== undefined ? { clientCanElicit } : {}),
+    ...(clientUrlElicitation !== undefined ? { clientUrlElicitation } : {}),
     ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
+    ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   };
+}
+
+/**
+ * `upstreamElicitation` (G1), validated: `'forward'`, `'refuse'`, or absent
+ * (the default, `'refuse'`); anything else is a `validate` error at wrap time.
+ */
+export function assertUpstreamElicitationMode(
+  value: unknown,
+  label = 'upstreamElicitation',
+): UpstreamElicitationMode | undefined {
+  if (value === undefined || value === 'forward' || value === 'refuse') return value;
+  throw new ProjectionError('validate', `${label} must be "forward" or "refuse"`, {
+    hint: "Pass upstreamElicitation: 'forward' to pass a trusted server's own questions on to the user, or omit it to refuse them (the default).",
+  });
+}
+
+/** Validate `WrapOptions.approvalPrompts` at wrap time: absent, or one of the two layouts. */
+export function assertApprovalPrompts(value: unknown): ApprovalPrompts | undefined {
+  if (value === undefined || value === 'per-call' || value === 'batched') return value;
+  throw new ProjectionError(
+    'validate',
+    `approvalPrompts must be 'per-call' or 'batched', got ${JSON.stringify(value) ?? String(value)}`,
+    { hint: "Set approvalPrompts to 'per-call' (the default) or 'batched', or leave it out." },
+  );
 }

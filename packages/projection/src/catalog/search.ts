@@ -12,9 +12,12 @@
  * matches when ANY word is a case-insensitive substring of its name, its
  * annotation title, or its full description. Each word scores +2 when it is
  * in the name and, independently, +1 when it is in the title or description
- * (a word in both scores 3); matches are ranked by score, ties in catalog
- * order, so a guessed name like `create_issue` finds `issue_write` instead
- * of nothing. A title hit counts like a description hit — it catches words
+ * (a word in both scores 3), times the word's weight — higher the fewer
+ * tools it occurs in (D22), so "branches" decides "get repository branches"
+ * rather than "get" and "repository". Matches are ranked by score; ties
+ * rank the tool whose name the query covers more of first, then keep
+ * catalog order. A guessed name like `create_issue` finds `issue_write`
+ * instead of nothing. A title hit counts like a description hit — it catches words
  * the description lacks — but never outweighs a name hit, so "pull request"
  * lists the `*pull_request*` tools before a tool whose title merely mentions
  * them. No regex is ever built from the query (S5: descriptions are hostile
@@ -38,6 +41,17 @@ import {
 import type { CallToolResult } from '../mrtr/protocol.js';
 import { boxOverview, renderOverviewBlock, toolCount } from './box-guidance.js';
 import {
+  argGlosses,
+  callSignature,
+  glossLine,
+  sharedArgs,
+  sharedArgsText,
+  signatureLine,
+  type ArgGloss,
+  type CallSignature,
+  type SharedArg,
+} from './signature.js';
+import {
   boxSearchTool,
   isBoxedCatalog,
   splitQualified,
@@ -46,6 +60,7 @@ import {
 } from './boxes.js';
 import {
   dedupeTools,
+  findTool,
   type PolicyContext,
   type PolicyOptions,
   type ServerCatalog,
@@ -64,12 +79,44 @@ export interface SearchToolsArgs {
 
 /** The policy options (R14, R49) decide the rendered posture. */
 export interface SearchToolsOptions extends PolicyOptions {
-  /** Tools per page. Default {@link DEFAULT_SEARCH_PAGE_SIZE}, clamped to [1, 200]. */
+  /**
+   * Tools per page, for listings and queries alike. Default {@link DEFAULT_SEARCH_PAGE_SIZE}
+   * for a listing (no query) and {@link DEFAULT_QUERY_PAGE_SIZE} for a
+   * query; clamped to [1, 200].
+   */
   pageSize?: number;
 }
 
-/** Page size — a transport bound, independent of the R37 inline threshold. */
+/** Page size of a listing — a transport bound, independent of the R37 inline threshold. */
 export const DEFAULT_SEARCH_PAGE_SIZE = 50;
+
+/**
+ * Page size of a ranked (queried) search (D32). On the offline search
+ * corpus (1,173 cases, D22) the gold tool is in the top 15 in 96.6 % of
+ * cases and in the top 50 in 97.7 %, while every row past the 15th costs
+ * about 30 tokens on every search that has it: "create issue" in the
+ * GitHub box matched 25. The rest stay a cursor away.
+ */
+export const DEFAULT_QUERY_PAGE_SIZE = 15;
+
+/**
+ * How many of a query's best hits carry their call signature (D32). On the
+ * offline corpus the gold tool ranks 1st in 75.5 % of cases, top 3 in
+ * 89.9 % (93.4 % of the queries models actually sent) and top 5 in 92.8 %:
+ * the 4th and 5th signatures would buy 2.9 points for two more lines on
+ * every search. A signature's optional arguments are cut at 480
+ * characters (`MAX_SIGNATURE_CHARS`); over the GitHub tools the median is
+ * 109 (~27 tokens), so the three typically cost ~80 tokens, against
+ * ~800–1,400 for one `describe_tool` answer plus the turn that fetches it.
+ */
+export const SIGNATURE_HITS = 3;
+
+/**
+ * How many of a query's best hits also gloss their required arguments
+ * (D33): all of the signed ones. A page shows a gloss once; a later hit
+ * with the same argument and the same words leaves it out.
+ */
+export const GLOSS_HITS = SIGNATURE_HITS;
 const MAX_PAGE_SIZE = 200;
 /** `query` is capped (R33): its words are matched as plain substrings, never a regex. */
 export const MAX_QUERY_CHARS = 200;
@@ -80,6 +127,17 @@ export interface ToolSummary {
   purpose: string;
   posture: ToolPosture;
   destructive: boolean;
+  /**
+   * The tool's compact call signature (D32): on the first
+   * {@link SIGNATURE_HITS} hits of a query, unless the tool is blocked.
+   */
+  signature?: CallSignature;
+  /**
+   * What the tool's required arguments mean, where the name alone does not
+   * say (D33): on the first {@link GLOSS_HITS} signed hits, when any
+   * required argument has such a description.
+   */
+  glosses?: ArgGloss[];
 }
 
 export interface SearchToolsPage {
@@ -89,14 +147,44 @@ export interface SearchToolsPage {
   nextCursor?: string;
 }
 
-/** Summarize one catalog entry (R33); `context` decides its posture (R14, R49). */
-export function summarizeTool(entry: ToolCatalogEntry, context?: PolicyContext): ToolSummary {
+/**
+ * Summarize one catalog entry (R33); `context` decides its posture (R14,
+ * R49). With `withSignature`, a tool that is not blocked also carries its
+ * call signature (D32): there is no point showing how to call a tool the
+ * gate refuses. With `withGlosses` too, it carries its required
+ * arguments' glosses (D33), when it has any.
+ */
+export function summarizeTool(
+  entry: ToolCatalogEntry,
+  context?: PolicyContext,
+  withSignature = false,
+  withGlosses = false,
+): ToolSummary {
+  const posture = postureOf(decidePolicy(entry, context));
+  const glosses =
+    withSignature && withGlosses && posture !== 'blocked by policy'
+      ? argGlosses(entry.name, entry.inputSchema)
+      : [];
   return {
     name: entry.name,
     purpose: purposeSentence(entry.description) ?? '(no description)',
-    posture: postureOf(decidePolicy(entry, context)),
+    posture,
     destructive: entry.annotations?.destructiveHint === true,
+    ...(withSignature && posture !== 'blocked by policy'
+      ? { signature: callSignature(entry.inputSchema) }
+      : {}),
+    ...(glosses.length > 0 ? { glosses } : {}),
   };
+}
+
+/** Whether the hit at 0-based `rank` of a search for `query` shows its signature (D32). */
+function signed(query: string, rank: number): boolean {
+  return query.length > 0 && rank < SIGNATURE_HITS;
+}
+
+/** Whether the hit at 0-based `rank` of a search for `query` glosses its required arguments (D33). */
+function glossed(query: string, rank: number): boolean {
+  return query.length > 0 && rank < GLOSS_HITS;
 }
 
 /**
@@ -116,12 +204,106 @@ export function searchTools(
     undefined,
     // First occurrence wins, as for `findTool` and typegen (S5).
     (q) => rankTools(dedupeTools(catalog.tools), q),
-    (entry) => summarizeTool(entry, context),
+    (entry, rank, q) => summarizeTool(entry, context, signed(q, rank), glossed(q, rank)),
   );
+  const shared = sharedArgsOf(catalog);
+  const head = sharedHead(page.tools, query, () => ({ box: '', scope: 'tools here', shared }));
+  const sharedView: SharedView = {
+    heads: head,
+    signatureOf: (entry) =>
+      abbreviated(findTool(catalog, entry.name), head.length > 0 ? shared : []),
+  };
   return {
-    content: [{ type: 'text', text: renderPage(catalog, page, query, offset, queryTruncated) }],
+    content: [
+      {
+        type: 'text',
+        text: renderPage(catalog, page, query, offset, queryTruncated, sharedView),
+      },
+    ],
     structuredContent: { ...page },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared arguments (D34)
+// ---------------------------------------------------------------------------
+
+/** Shared arguments per catalog: the catalog is immutable once introspected. */
+const sharedCache = new WeakMap<ServerCatalog, SharedArg[]>();
+
+/**
+ * The shared arguments of one server's catalog (D34), computed once per
+ * catalog over its deduplicated tools. For a box, pass the box's own
+ * catalog (bare names), never the merged view.
+ */
+export function sharedArgsOf(catalog: ServerCatalog): SharedArg[] {
+  let shared = sharedCache.get(catalog);
+  if (shared === undefined) {
+    shared = sharedArgs(dedupeTools(catalog.tools));
+    sharedCache.set(catalog, shared);
+  }
+  return shared;
+}
+
+/** A box and its shared arguments, as the head of a page names them (D34). */
+interface SharedBox {
+  /** The box's alias; `''` for a single server. */
+  box: string;
+  /** Shown after `most`: `tools here`, `mongo tools`. */
+  scope: string;
+  shared: readonly SharedArg[];
+}
+
+/** One shared-args line at the head of a page (D34). */
+interface SharedHeadLine {
+  box: string;
+  line: string;
+  /** The glosses it shows: a hit's `where` line leaves them out. */
+  glosses: ArgGloss[];
+}
+
+/** What a page renders for shared arguments (D34). */
+interface SharedView {
+  heads: SharedHeadLine[];
+  /** A signed entry's signature as the text shows it: abbreviated when its box's line is shown. */
+  signatureOf: (entry: ToolSummary) => CallSignature | undefined;
+}
+
+/**
+ * The head lines of a page (D34): the shared-args line of each box the
+ * page's calls can be built from — every box with a tool on a listing
+ * page, and every box with a signed hit on a query page (a hit without
+ * args is not called from the page) — in order of first appearance.
+ * `boxOf` names an entry's box and its shared arguments.
+ */
+function sharedHead(
+  tools: readonly ToolSummary[],
+  query: string,
+  boxOf: (entry: ToolSummary) => SharedBox | undefined,
+): SharedHeadLine[] {
+  const heads = new Map<string, SharedBox>();
+  for (const entry of tools) {
+    if (query.length > 0 && entry.signature === undefined) continue;
+    const box = boxOf(entry);
+    if (box === undefined || box.shared.length === 0 || heads.has(box.box)) continue;
+    heads.set(box.box, box);
+  }
+  return [...heads.values()].map(({ box, scope, shared }) => ({
+    box,
+    line: `Shared args (most ${scope} take them): ${sharedArgsText(shared)}`,
+    glosses: shared.flatMap((arg) =>
+      arg.gloss !== undefined ? [{ name: arg.name, text: arg.gloss }] : [],
+    ),
+  }));
+}
+
+/** The signature a signed hit's text shows, with `shared` abbreviated (D34). */
+function abbreviated(
+  entry: ToolCatalogEntry | undefined,
+  shared: readonly SharedArg[],
+): CallSignature | undefined {
+  if (entry === undefined) return undefined;
+  return callSignature(entry.inputSchema, { shared });
 }
 
 /** One page of a search, with the normalized query it answered. */
@@ -147,12 +329,14 @@ function paginate<T, S>(
   pageSizeOption: number | undefined,
   tool: string | undefined,
   rank: (query: string) => readonly T[],
-  summarize: (item: T) => S,
+  /** `rank` is the item's 0-based position in the whole ranking. */
+  summarize: (item: T, rank: number, query: string) => S,
 ): Paged<S> {
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? DEFAULT_SEARCH_PAGE_SIZE));
   // Slice, not capLength: an ellipsis would change what the filter matches.
   const rawQuery = args.query ?? '';
   const query = rawQuery.slice(0, MAX_QUERY_CHARS);
+  const fallback = query.length > 0 ? DEFAULT_QUERY_PAGE_SIZE : DEFAULT_SEARCH_PAGE_SIZE;
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, pageSizeOption ?? fallback));
   const queryTruncated = rawQuery.length > MAX_QUERY_CHARS;
   const offset = decodeCursor(args.cursor, query, tool);
 
@@ -167,7 +351,7 @@ function paginate<T, S>(
   const end = offset + slice.length;
   return {
     page: {
-      tools: slice.map(summarize),
+      tools: slice.map((item, i) => summarize(item, offset + i, query)),
       total: matches.length,
       ...(end < matches.length ? { nextCursor: encodeCursor(query, end, tool) } : {}),
     },
@@ -214,7 +398,8 @@ export interface SearchBoxesOptions extends SearchToolsOptions {
  * scored per tool against its bare name, title and description; across
  * boxes a query token equal to an alias is an alias token (see
  * {@link scoreBoxedTools}), inside one box there is nothing for it to
- * select. Ties keep sorted alias order, then catalog order. Entries are
+ * select. Ties rank by name coverage, then sorted alias order, then
+ * catalog order. Entries are
  * `{ name, box, purpose, posture, destructive }` with `name` qualified;
  * `posture` is decided on the qualified entry, so it is the posture the gate
  * applies (R42). Cursors carry the issuing tool (`{ t, q, o }`) and are
@@ -245,11 +430,29 @@ export function searchBoxes(
     options.pageSize,
     tool,
     (q) => (q.length === 0 ? members : scoreBoxedTools(members, q, aliases).map((i) => i.member)),
-    (member): BoxedToolSummary => ({
-      ...summarizeTool(member.qualified, context),
+    (member, rank, q): BoxedToolSummary => ({
+      ...summarizeTool(member.qualified, context, signed(q, rank), glossed(q, rank)),
       box: member.alias,
     }),
   );
+  const heads = sharedHead(page.tools, query, (entry) => {
+    const owner = catalog.boxes.get((entry as BoxedToolSummary).box);
+    // A box listed directly has its schemas in the tool list already.
+    if (owner === undefined || catalog.directBoxes.includes(owner.alias)) return undefined;
+    return { box: owner.alias, scope: `${owner.alias} tools`, shared: sharedArgsOf(owner.catalog) };
+  });
+  const headed = new Set(heads.map((head) => head.box));
+  const sharedView: SharedView = {
+    heads,
+    signatureOf: (entry) => {
+      const member = catalog.members.get(entry.name);
+      if (member === undefined) return undefined;
+      const owner = catalog.boxes.get(member.alias);
+      const shared =
+        owner !== undefined && headed.has(member.alias) ? sharedArgsOf(owner.catalog) : [];
+      return abbreviated(member.qualified, shared);
+    },
+  };
   const firstListing = query.length === 0 && offset === 0;
   const overview =
     scope !== undefined && firstListing ? boxOverview(scope.catalog.instructions) : undefined;
@@ -273,11 +476,8 @@ export function searchBoxes(
     scopeLabel = `in boxes ${[...aliases].join(', ')}`;
   }
   const where = box !== undefined ? `in the ${box} box` : 'in any box';
-  lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel));
-  lines.push(
-    '',
-    'Tool names are qualified as <box>.<tool>. Call describe_tool with a name before calling a tool whose arguments you have not seen.',
-  );
+  lines.push(...renderEntries(result, query, offset, tool, where, scopeLabel, sharedView));
+  lines.push('', `Tool names are qualified as <box>.<tool>. ${nextStep(result.tools)}`);
   return {
     content: [{ type: 'text', text: lines.join('\n') }],
     structuredContent: { ...result },
@@ -378,6 +578,16 @@ export function unknownToolError(
 ): ProjectionError {
   const didYouMean = didYouMeanHint(catalog, name);
   if (isBoxedCatalog(catalog)) return unknownBoxedToolError(catalog, name, via, didYouMean);
+  if (directListed.has(catalog)) {
+    // Direct listing serves no search tool: point at the listed tools.
+    return new ProjectionError(
+      'validate',
+      `Unknown tool ${inertName(name)}: the wrapped server does not declare it`,
+      {
+        hint: `${didYouMean}This server's tools are listed directly as tools of their own: call one of those, or ${via} with one of their names exactly.`,
+      },
+    );
+  }
   return new ProjectionError(
     'validate',
     `Unknown tool ${inertName(name)}: the wrapped server does not declare it`,
@@ -400,17 +610,79 @@ function unknownBoxedToolError(
   let search: string;
   if (split !== undefined && catalog.boxes.has(split.alias)) {
     why = `the ${split.alias} box does not declare it`;
+    if (catalog.directBoxes.includes(split.alias)) {
+      return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
+        hint: `${didYouMean}The ${split.alias} box's tools are listed directly as ${split.alias}__<tool>: call one of those, or ${via} with its qualified name (${split.alias}.<tool>) exactly.`,
+      });
+    }
     search = `Call ${boxSearchTool(split.alias)} to list the tools the ${split.alias} box declares`;
   } else {
     why =
       split === undefined
         ? `tool names here are qualified as <box>.<tool> (boxes: ${boxes})`
         : `there is no box ${inertName(split.alias)} (boxes: ${boxes})`;
-    search = `Call ${searchToolsPhrase(catalog)} to list the tools the boxes declare`;
+    const phrase = searchToolsPhrase(catalog);
+    const listed = listedBoxesSentence(catalog);
+    if (listed !== undefined) {
+      const find = phrase !== undefined ? ` Call ${phrase} to list the other boxes' tools.` : '';
+      return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
+        hint: `${didYouMean}${listed}${find} Pass ${via} a qualified name exactly.`,
+      });
+    }
+    search = `Call ${phrase ?? 'search_tools'} to list the tools the boxes declare`;
   }
   return new ProjectionError('validate', `Unknown tool ${inertName(name)}: ${why}`, {
     hint: `${didYouMean}${search}, then ${via} with one of those qualified names exactly.`,
   });
+}
+
+/** Single-server catalogs whose facade lists every tool directly (no search tool served). */
+const directListed = new WeakSet<ServerCatalog>();
+
+/**
+ * Mark a single-server catalog as listed directly, so the unknown-name hint
+ * points at the listed tools instead of a search tool the facade does not
+ * serve. The catalog is the facade's own introspected one.
+ */
+export function markDirectListed(catalog: ServerCatalog): void {
+  directListed.add(catalog);
+}
+
+/** Aliases in prose: `fs`, `fs and mongo`, `fs, git and mongo`. */
+export function aliasList(aliases: readonly string[]): string {
+  if (aliases.length <= 1) return aliases.join('');
+  return `${aliases.slice(0, -1).join(', ')} and ${aliases.at(-1) ?? ''}`;
+}
+
+/**
+ * The sentence naming the boxes listed directly (`projections.direct`), or
+ * `undefined` when none is: `The tools of fs and mongo are listed directly
+ * as <box>__<tool>.` (every box: `Every box's tools are …`).
+ */
+export function listedBoxesSentence(catalog: BoxedCatalog): string | undefined {
+  const listed = catalog.directBoxes;
+  if (listed.length === 0) return undefined;
+  const whose =
+    listed.length === catalog.boxes.size
+      ? "Every box's tools are"
+      : listed.length === 1
+        ? `The ${listed[0] ?? ''} box's tools are`
+        : `The tools of ${aliasList(listed)} are`;
+  return `${whose} listed directly as <box>__<tool>.`;
+}
+
+/**
+ * How copy points a model at a tool it has to find (R37, R43): the served
+ * search tools, then the boxes listed directly. `find` completes "Call
+ * <search tools> …" (e.g. `to find tools by name or purpose`).
+ */
+export function findToolsSentence(catalog: BoxedCatalog, find: string): string {
+  const phrase = searchToolsPhrase(catalog);
+  const listed = listedBoxesSentence(catalog);
+  return [
+    ...(phrase !== undefined ? [`Call ${phrase} ${find}.`] : []),
+    ...(listed !== undefined ? [listed] : []),
+  ].join(' ');
 }
 
 /**
@@ -422,13 +694,17 @@ function unknownBoxedToolError(
  * code-mode projection (the R37 pointer in `discover_apis`, R45), so every
  * surface names the same tools.
  */
-export function searchToolsPhrase(catalog: BoxedCatalog): string {
-  const [only, ...others] = [...catalog.boxes.keys()].map(boxSearchTool);
+export function searchToolsPhrase(catalog: BoxedCatalog): string | undefined {
+  const names = catalog.searchBoxes.map(boxSearchTool);
+  const [only, ...others] = names;
   const perBox =
-    only !== undefined && others.length === 0
-      ? only
-      : `the search_<box> tool of a box (${[only, ...others].join(', ')})`;
-  return catalog.globalSearch ? `search_tools (every box) or ${perBox}` : perBox;
+    only === undefined
+      ? undefined
+      : others.length === 0
+        ? only
+        : `the search_<box> tool of a box (${names.join(', ')})`;
+  if (!catalog.globalSearch) return perBox;
+  return perBox === undefined ? 'search_tools' : `search_tools (every box) or ${perBox}`;
 }
 
 /**
@@ -470,48 +746,112 @@ function rankTools(tools: ToolCatalogEntry[], query: string): ToolCatalogEntry[]
 /** One matching tool with the D10 score that ranked it. */
 interface ScoredTool {
   entry: ToolCatalogEntry;
-  /** `2 × nameHits + (tokens in the title or description)`. */
+  /** Σ over tokens of `weight × (2 × in name + 1 × in title or description)`. */
   score: number;
   /** Tokens that are substrings of the name (`suggestTools` requires one). */
   nameHits: number;
+  /** Share of the name's characters the name-hit tokens spell (the tie-break). */
+  coverage: number;
+}
+
+/** Best first: higher score, then a name the query covers more of; else input order. */
+function byRank(
+  a: { score: number; coverage: number },
+  b: { score: number; coverage: number },
+): number {
+  return b.score - a.score || b.coverage - a.coverage;
 }
 
 /**
  * The tools a query matches, best first (D10): a token scores +2 in the
- * name and, independently, +1 in the title or description. The sort is
- * stable, so equal scores keep catalog order and paging stays deterministic
- * for a given query. A query with no token matches nothing.
+ * name and, independently, +1 in the title or description, times its
+ * weight ({@link tokenWeights}). Equal scores rank by name coverage
+ * ({@link nameCoverage}); the sort is stable, so full ties keep catalog
+ * order and paging stays deterministic for a given query. A query with no
+ * token matches nothing.
  */
 function scoreTools(tools: ToolCatalogEntry[], query: string): ScoredTool[] {
   // Deduplicated: a repeated word must not count twice.
-  const tokens = new Set(tokenize(query));
-  if (tokens.size === 0) return [];
+  const tokens = [...new Set(tokenize(query))];
+  if (tokens.length === 0) return [];
+  const hits = tools.map((entry) => hitsOf(entry, tokens));
+  const weights = tokenWeights(hits, tools.length);
   const scored: ScoredTool[] = [];
-  for (const entry of tools) {
-    const { score, nameHits } = scoreEntry(entry, tokens);
-    if (score > 0) scored.push({ entry, score, nameHits });
-  }
-  return scored.sort((a, b) => b.score - a.score);
+  tools.forEach((entry, i) => {
+    const { score, nameHits } = weighted(hits[i] ?? [], weights);
+    if (score > 0) {
+      scored.push({ entry, score, nameHits, coverage: nameCoverage(entry.name, tokens) });
+    }
+  });
+  return scored.sort(byRank);
 }
 
-/** One tool's D10 score for a set of tokens (shared by every ranking). */
-function scoreEntry(
-  entry: ToolCatalogEntry,
-  tokens: ReadonlySet<string>,
-): { score: number; nameHits: number } {
+/** Where one token occurs in one tool. */
+interface TokenHit {
+  name: boolean;
+  /** In the annotation title or the description. */
+  text: boolean;
+}
+
+/** Each token's occurrences in one tool (shared by every ranking). */
+function hitsOf(entry: ToolCatalogEntry, tokens: readonly string[]): TokenHit[] {
   const name = entry.name.toLowerCase();
   const title = (entry.annotations?.title ?? '').toLowerCase();
   const description = (entry.description ?? '').toLowerCase();
+  return tokens.map((token) => ({
+    name: name.includes(token),
+    text: title.includes(token) || description.includes(token),
+  }));
+}
+
+/**
+ * Each token's weight over the tools searched: `1 + ln(N / df)`, where `df`
+ * is how many of the `N` tools the token occurs in at all (an inverse
+ * document frequency). A word every tool has ("get", "the") weighs 1, as
+ * every word did before; a word few tools have ("branches") weighs more,
+ * so it decides the ranking instead of being outvoted by filler.
+ */
+function tokenWeights(hits: readonly TokenHit[][], n: number): number[] {
+  const width = hits[0]?.length ?? 0;
+  const weights: number[] = [];
+  for (let t = 0; t < width; t++) {
+    let df = 0;
+    for (const row of hits) if (row[t]?.name === true || row[t]?.text === true) df += 1;
+    weights.push(df === 0 ? 0 : 1 + Math.log(n / df));
+  }
+  return weights;
+}
+
+/**
+ * How much of `name` the tokens that occur in it spell, 0–1: `list_issues`
+ * is covered more by "list issues" than `list_issue_types` is. Ranks ties
+ * by how specifically the name matches rather than by catalog position.
+ */
+function nameCoverage(name: string, tokens: readonly string[]): number {
+  const lower = name.toLowerCase();
+  const letters = lower.replace(/[^\p{L}\p{M}\p{N}]+/gu, '').length;
+  if (letters === 0) return 0;
+  let covered = 0;
+  for (const token of tokens) if (lower.includes(token)) covered += token.length;
+  return Math.min(1, covered / letters);
+}
+
+/** One tool's D10 score from its token hits and the token weights. */
+function weighted(
+  hits: readonly TokenHit[],
+  weights: readonly number[],
+): { score: number; nameHits: number } {
   let nameHits = 0;
   let score = 0;
-  for (const token of tokens) {
-    // Additive: a token in both the name and the description scores 3.
-    if (name.includes(token)) {
+  hits.forEach((hit, t) => {
+    const weight = weights[t] ?? 0;
+    // Additive: a token in both the name and the description scores 3×.
+    if (hit.name) {
       nameHits += 1;
-      score += 2;
+      score += 2 * weight;
     }
-    if (title.includes(token) || description.includes(token)) score += 1;
-  }
+    if (hit.text) score += weight;
+  });
   return { score, nameHits };
 }
 
@@ -520,19 +860,24 @@ interface ScoredBoxedTool {
   member: BoxedTool;
   score: number;
   nameHits: number;
+  coverage: number;
 }
 
-/** Score an alias token adds to every tool of its box (R43). */
+/**
+ * What an alias token adds to every tool of its box (R43): a name hit of
+ * the query's heaviest text token (weight 1 when there is none).
+ */
 const ALIAS_TOKEN_SCORE = 2;
 
 /**
  * R43 ranking across boxes: D10 against each tool's BARE name, title and
  * description, except that a token equal to a wrapped alias (in `aliases`)
- * is an alias token — it adds 2 to every tool in that box and is matched
- * against no tool's text, so a server cannot outrank another box's tools for
- * that box's alias by writing the alias into its own text (S5). The sort is
- * stable over `members`, which arrive in sorted-alias-then-catalog order:
- * that is the tie-break.
+ * is an alias token — it adds a name hit's score to every tool in that box
+ * and is matched against no tool's text, so a server cannot outrank another
+ * box's tools for that box's alias by writing the alias into its own text
+ * (S5). Token weights are counted over the tools searched. Equal scores
+ * rank by name coverage; the sort is stable over `members`, which arrive in
+ * sorted-alias-then-catalog order: that is the last tie-break.
  */
 function scoreBoxedTools(
   members: readonly BoxedTool[],
@@ -543,15 +888,21 @@ function scoreBoxedTools(
   // under two characters, so a one-letter alias still boosts its box in a
   // multi-word query ("a files").
   const aliasTokens = new Set(splitWords(query).filter((word) => aliases.has(word)));
-  const textTokens = new Set(tokenize(query).filter((token) => !aliasTokens.has(token)));
-  if (aliasTokens.size === 0 && textTokens.size === 0) return [];
+  const textTokens = [...new Set(tokenize(query).filter((token) => !aliasTokens.has(token)))];
+  if (aliasTokens.size === 0 && textTokens.length === 0) return [];
+  const hits = members.map((member) => hitsOf(member.entry, textTokens));
+  const weights = tokenWeights(hits, members.length);
+  const aliasScore = ALIAS_TOKEN_SCORE * Math.max(1, ...weights);
   const scored: ScoredBoxedTool[] = [];
-  for (const member of members) {
-    const { score, nameHits } = scoreEntry(member.entry, textTokens);
-    const boost = aliasTokens.has(member.alias) ? ALIAS_TOKEN_SCORE : 0;
-    if (score + boost > 0) scored.push({ member, score: score + boost, nameHits });
-  }
-  return scored.sort((a, b) => b.score - a.score);
+  members.forEach((member, i) => {
+    const { score, nameHits } = weighted(hits[i] ?? [], weights);
+    const boost = aliasTokens.has(member.alias) ? aliasScore : 0;
+    if (score + boost > 0) {
+      const coverage = nameCoverage(member.entry.name, textTokens);
+      scored.push({ member, score: score + boost, nameHits, coverage });
+    }
+  });
+  return scored.sort(byRank);
 }
 
 function renderPage(
@@ -560,6 +911,7 @@ function renderPage(
   query: string,
   offset: number,
   queryTruncated: boolean,
+  sharedView: SharedView,
 ): string {
   const lines: string[] = [];
   if (queryTruncated) {
@@ -573,13 +925,23 @@ function renderPage(
       'search_tools',
       `on server ${inertIdentity(catalog.identity)}`,
       `server ${inertIdentity(catalog.identity)}`,
+      sharedView,
     ),
   );
-  lines.push(
-    '',
-    'Call describe_tool with a name before calling a tool whose arguments you have not seen.',
-  );
+  lines.push('', nextStep(page.tools));
   return lines.join('\n');
+}
+
+/**
+ * The page's closing pointer (R33, D32): with an `args:` line on the page,
+ * those tools can go straight to `call_tool`; every other one needs
+ * `describe_tool` first.
+ */
+function nextStep(tools: readonly ToolSummary[]): string {
+  if (!tools.some((tool) => tool.signature !== undefined)) {
+    return 'Call describe_tool with a name before calling a tool whose arguments you have not seen.';
+  }
+  return 'A tool shown with its args can be called with call_tool right away; call describe_tool first for any other tool, or for what an argument means.';
 }
 
 /**
@@ -593,7 +955,8 @@ function renderEntries(
   offset: number,
   tool: string,
   where: string,
-  scopeLabel?: string,
+  scopeLabel: string | undefined,
+  sharedView: SharedView,
 ): string[] {
   const lines: string[] = [];
   const scope =
@@ -601,6 +964,14 @@ function renderEntries(
   if (page.tools.length === 0) {
     lines.push(`No tools${scope} ${where}.`);
   } else {
+    // A gloss already on this page (same argument, same words) is not repeated (D33).
+    const shownGlosses = new Set<string>();
+    // The shared-args lines lead (D34): ours, built from the sanitized
+    // schemas, with names and glosses quoted as on an args line.
+    for (const head of sharedView.heads) {
+      lines.push(head.line);
+      for (const gloss of head.glosses) shownGlosses.add(JSON.stringify([gloss.name, gloss.text]));
+    }
     const label = scopeLabel !== undefined ? ` (${scopeLabel})` : '';
     lines.push(
       `Tools ${offset + 1}–${offset + page.tools.length} of ${page.total}${scope}${label}:`,
@@ -613,6 +984,20 @@ function renderEntries(
       const name = capLength(neutralizeControlChars(entry.name), MAX_IDENTITY_CHARS);
       const flags = entry.destructive ? `${entry.posture}, destructive` : entry.posture;
       lines.push(`- ${name} — ${entry.purpose} [${flags}]`);
+      // One line built by `callSignature` from the sanitized schema, under
+      // the entry and indented: it cannot forge an entry or a posture.
+      if (entry.signature !== undefined) {
+        lines.push(`  ${signatureLine(sharedView.signatureOf(entry) ?? entry.signature)}`);
+      }
+      // The glosses are server text, each JSON-quoted on our own indented
+      // line (`glossLine`), so they cannot forge an entry either.
+      const fresh = (entry.glosses ?? []).filter((gloss) => {
+        const key = JSON.stringify([gloss.name, gloss.text]);
+        if (shownGlosses.has(key)) return false;
+        shownGlosses.add(key);
+        return true;
+      });
+      if (fresh.length > 0) lines.push(`  ${glossLine(fresh)}`);
     }
   }
   if (page.nextCursor !== undefined) {

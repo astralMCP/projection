@@ -2,7 +2,7 @@
 
 Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a **tool catalog** (search, describe, call), with **human-approved side effects** over MCP MRTR (Multi Round-Trip Requests).
 
-Projection wraps an existing MCP server and exposes two projections of it — five tools in all, never the wrapped server's own:
+Projection wraps an existing MCP server and exposes two projections of it — five tools in all, never a pass-through to the wrapped server's own (a small catalog's tools are also listed by name, each a mediated alias of `call_tool`; see below):
 
 **Code mode** — for workflows:
 
@@ -11,13 +11,15 @@ Projection wraps an existing MCP server and exposes two projections of it — fi
 
 **Catalog** — for single actions and large tool surfaces:
 
-- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more.
+- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more. A query's top three hits also show their arguments on one line, with a short gloss of each required argument whose name does not say what it takes, so `call_tool` can follow the search directly. Arguments most of a server's tools require (MongoDB's `connectionId`, GitHub's `owner` and `repo`) are shown once, glossed, at the head of the page.
 - **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
 - **`call_tool`** — runs one tool by name, under exactly the same gate: read-only (or, under `destructive-only`, a non-destructive write) runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
 
 Alongside the tools it serves `projection://` resources (generated types, the authoring contract, example machines), a `ui://projection/dashboard.html` MCP App that app-capable hosts render for `execute_machine` results, and, with code mode on, the `/save-workflow` and `/visualize-workflow` prompts.
 
-The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
+The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, computing over a list (counting, filtering, summing, checking every item), or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
+
+When the wrapped tools' definitions are small (about 8k estimated tokens, `projections.directBudgetTokens`), each is also listed under its own name (`<box>__<tool>` on a multi-server facade) as a thin alias of `call_tool` under the same approval gate, and `search_tools` is dropped: the model calls them without searching first. This is the default (`projections.direct: 'auto'`); `projections: { direct: false }` keeps the five-tool surface whatever the size.
 
 Because all suspension state travels in the MRTR `requestState` payload, Projection is fully stateless: any server instance can resume any workflow.
 
@@ -38,7 +40,8 @@ const facade = await wrapMcpServer(myMcpServer, {
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
 
-// Serves the five Projection tools, with the routing instructions attached.
+// Serves the Projection tools (plus a small catalog's tools, mediated), with
+// the routing instructions attached.
 export default createMcpHandler(facade.serverFactory);
 ```
 

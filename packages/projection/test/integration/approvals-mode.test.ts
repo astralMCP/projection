@@ -528,3 +528,15 @@ export default setup({}).createMachine({
     expect(files['/a.txt']).toBe('a+touched+touched+touched');
   });
 });
+
+describe('the contract quotes the facade round-trip cap (R18, D30)', () => {
+  it('in discover_apis and the contract resource', async () => {
+    const f = await wrap({ caps: { maxRoundTrips: 3 } });
+    const text = completed(f.discoverApis())
+      .content.map((c) => ('text' in c ? c.text : ''))
+      .join('');
+    expect(text).toContain('a workflow gets at most 3: one gated call per item');
+    const contract = f.resources.find((r) => r.name === 'authoring-contract.md');
+    expect(contract?.text).toContain('stops unfinished past 3 items');
+  });
+});

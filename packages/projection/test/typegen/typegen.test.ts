@@ -249,6 +249,29 @@ describe('schemaToTsType — converter edge cases', () => {
     expect(schemaToTsType({ type: ['string', 'null'] })).toBe('string | null');
   });
 
+  it('documents a kept scalar default as @default, and only a kept one (D29)', () => {
+    const rendered = schemaToTsType({
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', default: 10 },
+        sort: { type: 'string', description: 'Sort order', default: 'asc' },
+        strict: { type: 'boolean', default: false },
+        cursor: { type: ['string', 'null'], default: null },
+        filters: { type: 'object', default: { open: true } },
+        tags: { type: 'array', default: ['a'] },
+        long: { type: 'string', default: 'x'.repeat(65) },
+        hostile: { type: 'string', default: 'a*/\nb' },
+      },
+    });
+    expect(rendered).toContain('/** @default 10 */\n  limit?: number;');
+    expect(rendered).toContain(
+      '/**\n   * Sort order\n   * @default "asc"\n   */\n  sort?: string;',
+    );
+    expect(rendered).toContain('/** @default false */');
+    expect(rendered).toContain('/** @default null */');
+    expect(rendered.match(/@default/g)).toHaveLength(4);
+  });
+
   it('handles arrays, tuples, and unions of objects', () => {
     expect(schemaToTsType({ type: 'array', items: { type: 'string' } })).toBe('string[]');
     expect(

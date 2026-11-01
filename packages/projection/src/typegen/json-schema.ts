@@ -10,6 +10,7 @@
  * correctness gate (G5: no host-side type checking in the hot path).
  */
 
+import { safeDefault } from '../catalog/schema-safety.js';
 import { neutralizeControlChars } from '../text-safety.js';
 import { isRecord } from '../types.js';
 
@@ -95,6 +96,22 @@ export function docComment(description: string, indent: string): string {
   ].join('\n');
 }
 
+/**
+ * A property's doc text: its description, then an `@default` tag when the
+ * schema declares a default the sanitizer keeps (D29) — the same rule as
+ * `describe_tool`, so an omitted argument's value is visible in the types
+ * too. The value is a JSON literal; `docComment` neutralizes the whole.
+ */
+function propertyDoc(schema: unknown): string | undefined {
+  if (!isRecord(schema)) return undefined;
+  const description = schema['description'];
+  const text = typeof description === 'string' && description.length > 0 ? description : undefined;
+  const kept = 'default' in schema ? safeDefault(schema['default']) : undefined;
+  const tag = kept !== undefined ? `@default ${JSON.stringify(kept.value)}` : undefined;
+  if (text === undefined) return tag;
+  return tag === undefined ? text : `${text}\n${tag}`;
+}
+
 function renderEnum(values: unknown[]): string {
   if (values.length === 0) return 'never';
   return values.map(literalType).join(' | ');
@@ -139,10 +156,8 @@ function renderObject(schema: Record<string, unknown>, ctx: RenderContext): stri
   const childIndent = `${ctx.indent}  `;
   const lines: string[] = ['{'];
   for (const [name, propSchema] of Object.entries(properties)) {
-    const description = isRecord(propSchema) ? propSchema['description'] : undefined;
-    if (typeof description === 'string' && description.length > 0) {
-      lines.push(docComment(description, childIndent));
-    }
+    const doc = propertyDoc(propSchema);
+    if (doc !== undefined) lines.push(docComment(doc, childIndent));
     const optional = required.has(name) ? '' : '?';
     const type = render(propSchema, { ...deeper(ctx), indent: childIndent });
     lines.push(`${childIndent}${propertyKey(name)}${optional}: ${type};`);

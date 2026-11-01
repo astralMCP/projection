@@ -1,0 +1,30 @@
+{
+  "id": "gen-1761900100-muse01",
+  "provider": "Meta",
+  "model": "meta/muse-spark-1.3",
+  "object": "chat.completion",
+  "created": 1761900100,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "native_finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "acme/widgets has 3 open issues and acme/gadgets has 1.",
+        "refusal": null,
+        "reasoning": null
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 2048,
+    "completion_tokens": 21,
+    "total_tokens": 2069,
+    "cost": 0.00267,
+    "is_byok": false,
+    "prompt_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 0 },
+    "completion_tokens_details": { "reasoning_tokens": 0 }
+  }
+}

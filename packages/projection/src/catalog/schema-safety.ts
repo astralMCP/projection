@@ -8,8 +8,11 @@
  * model it passes through:
  *
  * 1. a key allowlist — only the keywords a model needs to build arguments
- *    survive; everything else (examples, defaults, comments, vendor keys)
- *    is dropped;
+ *    survive; everything else (examples, comments, vendor keys) is dropped.
+ *    `default` survives only as a scalar the model can act on (a number, a
+ *    boolean, `null`, or a short plain string — {@link safeDefault}): an
+ *    omitted argument silently takes it, and a model that cannot see a
+ *    default page size reads a page as the whole set (D29);
  * 2. string neutralization — every string VALUE has control and bidi
  *    characters replaced and is length-capped. Property NAMES and
  *    `required` entries are kept verbatim: they are the keys the model must
@@ -24,7 +27,7 @@
  * Pure and total: never throws, never returns anything but plain JSON.
  */
 
-import { capLength, neutralizeControlChars } from '../text-safety.js';
+import { capLength, neutralizeControlChars, stripInvisible } from '../text-safety.js';
 import { isRecord } from '../types.js';
 
 /** Keywords that survive sanitization (R34). */
@@ -51,6 +54,7 @@ export const SCHEMA_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
   'minLength',
   'maxLength',
   'pattern',
+  'default',
 ]);
 
 /** Rendered-schema cap per tool, in characters of its JSON text (R34). */
@@ -188,11 +192,37 @@ function sanitizeNode(
       out[key] = sanitizeLiteral(value, 0, state);
     } else if (PROSE_KEYS.has(key) || STRING_KEYS.has(key)) {
       if (typeof value === 'string') out[key] = neutralize(value);
+    } else if (key === 'default') {
+      const kept = safeDefault(value);
+      if (kept !== undefined) out[key] = kept.value;
     } else if (NUMBER_KEYS.has(key)) {
       if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
     }
   }
   return out;
+}
+
+/** Longest string `default` kept; a longer one is dropped, never cut (a cut default is a wrong one). */
+export const MAX_DEFAULT_CHARS = 64;
+
+/**
+ * A schema `default` the model may see (R34, D29), boxed so `null` is
+ * distinguishable from "dropped": finite numbers, booleans and `null` as
+ * they are; a string only when it is at most {@link MAX_DEFAULT_CHARS}
+ * characters and carries no control, bidi or invisible character — such a
+ * string is shown as it is or not at all, so what the model reads is the
+ * value the server applies. Object and array defaults are dropped: they
+ * are free-form server data, and the scalar case is the one that changes
+ * what a call returns (a page size, a flag). Shared with typegen's
+ * `@default` doc tag.
+ */
+export function safeDefault(
+  value: unknown,
+): { value: string | number | boolean | null } | undefined {
+  if (value === null || typeof value === 'boolean') return { value };
+  if (typeof value === 'number') return Number.isFinite(value) ? { value } : undefined;
+  if (typeof value !== 'string' || value.length > MAX_DEFAULT_CHARS) return undefined;
+  return neutralizeControlChars(stripInvisible(value)) === value ? { value } : undefined;
 }
 
 /**

@@ -5,7 +5,8 @@
  * types match, enum membership for top-level primitives, and no unknown
  * top-level properties when the schema forbids them. It exists so a human
  * is never asked to approve a call the wrapped server would reject on
- * shape, and so the model gets a `validate` hint naming the property. Full
+ * shape, and so the model gets a `validate` hint naming the property and
+ * showing the tool's call signature (D32). Full
  * JSON Schema validation would run twice — the wrapped server is the
  * authority — for nothing but a nicer error message (D9).
  *
@@ -16,6 +17,13 @@
 import { ProjectionError } from '../errors.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { isRecord } from '../types.js';
+import {
+  argGlosses,
+  callSignature,
+  glossLine,
+  MAX_HINT_GLOSS_CHARS,
+  signatureLine,
+} from './signature.js';
 
 const MAX_NAME_CHARS = 200;
 
@@ -24,12 +32,28 @@ export function validateArgsShape(
   toolName: string,
   args: Record<string, unknown>,
   schema: Record<string, unknown>,
+  caller: 'call_tool' | 'toolCall' = 'call_tool',
 ): void {
   const safeTool = inert(toolName);
-  const fail = (property: string, why: string): ProjectionError =>
-    new ProjectionError('validate', `call_tool ${safeTool}: argument ${inert(property)} ${why}`, {
-      hint: `Call describe_tool with name ${safeTool} and fix argument ${inert(property)} to match its input schema.`,
+  // The hint carries the tool's call signature (D32), so a call made
+  // straight from a search hit, or from a guess, is fixed in one retry
+  // instead of a describe_tool turn and a retry. It glosses the offending
+  // argument when its description says what the name does not (D33), so a
+  // missing `connectionId` comes with where to get one. Built only on failure.
+  const fail = (property: string, why: string): ProjectionError => {
+    const glosses = argGlosses(toolName, schema, {
+      names: [property],
+      maxChars: MAX_HINT_GLOSS_CHARS,
     });
+    const meaning = glosses.length > 0 ? `, ${glossLine(glosses)}` : '';
+    return new ProjectionError(
+      'validate',
+      `${caller} ${safeTool}: argument ${inert(property)} ${why}`,
+      {
+        hint: `${safeTool} takes ${signatureLine(callSignature(schema))}${meaning}. Fix argument ${inert(property)} and try again.`,
+      },
+    );
+  };
 
   const properties = isRecord(schema['properties']) ? schema['properties'] : {};
 

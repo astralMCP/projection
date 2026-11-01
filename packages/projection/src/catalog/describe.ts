@@ -27,6 +27,7 @@ import type { CallToolResult } from '../mrtr/protocol.js';
 import type { ToolTypeText } from '../typegen/index.js';
 import {
   findTool,
+  isRecord,
   type PolicyOptions,
   type ServerCatalog,
   type ToolAnnotations,
@@ -68,7 +69,7 @@ export interface ToolDescription {
   types?: string;
 }
 
-const MAX_DESCRIPTION_CHARS = 2_000;
+export const MAX_DESCRIPTION_CHARS = 2_000;
 
 /**
  * Run `describe_tool`. Throws a `validate`-phase {@link ProjectionError}
@@ -111,7 +112,7 @@ export function describeTool(
   };
 }
 
-function sanitizeAnnotations(annotations: ToolAnnotations | undefined): ToolAnnotations {
+export function sanitizeAnnotations(annotations: ToolAnnotations | undefined): ToolAnnotations {
   if (annotations === undefined) return {};
   const out: ToolAnnotations = {};
   if (typeof annotations.readOnlyHint === 'boolean') out.readOnlyHint = annotations.readOnlyHint;
@@ -152,10 +153,12 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
   // it reads as data and cannot forge one of the labelled lines above.
   lines.push('What the server says it does:', indentBlock(tool.description ?? '(no description)'));
   lines.push('', 'Input schema (JSON Schema):', jsonBlock(tool.inputSchema));
+  const defaults = defaultsLine(tool.inputSchema);
+  if (defaults !== undefined) lines.push(defaults);
   if (tool.outputSchema !== undefined) {
     lines.push('', 'Output schema (JSON Schema):', jsonBlock(tool.outputSchema));
   } else {
-    lines.push('', 'Output schema: none declared — results arrive as text.');
+    lines.push('', undeclaredOutput(tool));
   }
   if (tool.schemaTruncated) {
     lines.push(
@@ -173,6 +176,50 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * The output line for a tool that declares no `outputSchema`. Such a tool's
+ * result is not necessarily text: servers often return `structuredContent`
+ * without declaring a schema, and JSON text for an object or array reaches
+ * a machine parsed (D29), so the `TOOL_RESULT.result` a machine receives
+ * (R35.5) can be an object or a string the model has never seen. A model told "text" writes
+ * `parseInt(event.result)` against `{ count: 4 }`. The line says the shape
+ * is unknown and, for a tool that only reads and runs without approval,
+ * says how to see it before code depends on it. Library copy; the posture
+ * and `readOnlyHint` it branches on are already shown or applied (R14, R33).
+ */
+function undeclaredOutput(tool: ToolDescription): string {
+  const head =
+    'Output schema: none declared — the result may be a structured object or text (JSON text for an object or array reaches a machine parsed).';
+  if (tool.posture === 'runs immediately' && tool.annotations.readOnlyHint === true) {
+    return `${head} Before a machine reads its fields, call it once with call_tool and look at the result: event.result is that same value, JSON text parsed (call_tool prints an object as indented JSON, text as it is).`;
+  }
+  return `${head} Do not write code that depends on a result shape you have not seen.`;
+}
+
+const MAX_DEFAULTS_LISTED = 12;
+
+/**
+ * The top-level defaults the sanitizer kept (D29), restated on one line: an
+ * omitted argument silently takes its default, and a page-size default the
+ * model never noticed is how a page gets read as the whole set. Built from
+ * the sanitized schema only — every value already passed `safeDefault` —
+ * with each name neutralized, capped and quoted.
+ */
+function defaultsLine(schema: Record<string, unknown>): string | undefined {
+  const properties = schema['properties'];
+  if (!isRecord(properties)) return undefined;
+  const pairs: string[] = [];
+  for (const [name, property] of Object.entries(properties)) {
+    if (!isRecord(property) || !Object.hasOwn(property, 'default')) continue;
+    const key = JSON.stringify(capLength(neutralizeControlChars(name), 64));
+    pairs.push(`${key} = ${JSON.stringify(property['default'])}`);
+  }
+  if (pairs.length === 0) return undefined;
+  const listed = pairs.slice(0, MAX_DEFAULTS_LISTED);
+  const more = pairs.length > listed.length ? `, and ${pairs.length - listed.length} more` : '';
+  return `Defaults the server applies when an argument is omitted: ${listed.join(', ')}${more}.`;
 }
 
 /**

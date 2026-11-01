@@ -1,8 +1,9 @@
 # Projection for server authors
 
 You have an MCP server. `wrapMcpServer` turns it into a Projection server:
-clients see five tools (fewer if you turn a projection off) — never your own —
-plus `projection://` resources.
+clients see Projection's tools — plus, when your catalog is small, each of
+your tools listed by name as a mediated alias of `call_tool` (never a
+pass-through; see below) — and `projection://` resources.
 **Code mode** (`discover_apis`, `execute_machine`) lets models author XState v5
 machines against generated types; the **catalog projection** (`search_tools`,
 `describe_tool`, `call_tool`) lets them find and run one tool at a time. Both
@@ -103,6 +104,10 @@ const facade = await wrapMcpServer(myServer, {
   // Fails closed: if this throws, the prompt shows a placeholder, never args.
   redact: (tool, args) => (tool === 'send_email' ? { ...args, body: '[hidden]' } : args),
 
+  // Put a machine step's several gated calls to the person as ONE prompt
+  // (see "Batched approval prompts" below). Default 'per-call'.
+  // approvalPrompts: 'batched',
+
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
   // Bound on connecting to the server and reading its tools at wrap time;
@@ -150,6 +155,46 @@ places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come
 from the wrapped server, and a hostile or careless server can label a
 damaging tool non-destructive — enable the mode only for servers you trust,
 and pin anything you doubt with a per-tool `ask` or `deny`.
+
+### What the person and the model see around an approval
+
+- **Before asking.** A gated call whose arguments cannot fit the tool's
+  input schema (a required argument missing, a top-level value of the wrong
+  type, an argument the schema forbids) is never put to the person:
+  `call_tool` returns a `validate` error, and a machine step gets a
+  `TOOL_ERROR` naming the argument, without a prompt.
+- **After a decline.** `call_tool` tells the model the refusal covers only
+  that call; not to make it again or reach its result another way (unless
+  the person's note asks for a change, which it then makes as a new call
+  that asks again); to carry on with the parts of the task that do not
+  depend on it; and to say in its answer what was not done. A machine's
+  completed result restates every refused call after its output, with the
+  same guidance, so a machine that ignores `TOOL_DENIED` cannot hide a
+  refusal; a failed one also lists the approved calls that already ran.
+
+### Batched approval prompts
+
+When one machine step requests several gated calls at once (parallel
+regions, or several `toolCall`s in one action), the default
+`approvalPrompts: 'per-call'` sends one elicitation per call in a single
+round trip, and most hosts show one prompt per call.
+`approvalPrompts: 'batched'` sends one elicitation instead: a header, then
+each call's usual approval copy under `[1]`, `[2]`, … and a form with one
+unticked boolean per call (`approve_1`, …) plus the optional `reason`.
+The fields have no default, so a client that applies form defaults to an
+empty accept approves nothing.
+
+What runs does not change. Each call is still sealed on its own in the
+blob, and runs only if its own boolean comes back exactly `true` in an
+accepted answer; a declined, cancelled or missing answer, or one without
+the booleans, declines every call in it. The layout is sealed in the blob
+when the prompt is minted, so a resume is always read the way the prompt
+was asked, whichever setting the resuming instance has. A batch holds at
+most 10 calls and 20 000 characters; past either, the step falls back to
+per-call prompts. `call_tool` and a step with one gated call keep the
+per-call prompt. Machine `toolCall` ids may not start with `projection:`
+(that namespace holds the batched answer's key). Enable it when your
+clients render boolean form fields; any other value fails the wrap.
 
 ## What your metadata becomes
 
@@ -199,6 +244,36 @@ normal result (`{ status: "declined" }`), so the model does not retry it; a
 `deny` policy comes back as `{ status: "denied_by_policy" }`; a failure from
 your tool is an `isError` result with phase `upstream`.
 
+What your tool returns reaches the client through `call_tool` as follows.
+`structuredContent` becomes `output`; a single text block becomes `output` as
+a string (a machine receives it parsed when it is JSON for an object or an
+array, with the text on `event.text`). In the text the model reads, a
+top-level string field of three or more lines (a file's contents, say) is
+printed as its own indented lines below the JSON rather than as an escaped
+one-liner; `output` keeps it as it is. Any other content array is rendered block by block in the text —
+text as text, an embedded text resource under its URI — and image, audio and
+embedded binary resources are attached as native content blocks after it, so
+base64 never lands in the model's text. A `resource_link` is described, not
+attached: the facade does not serve your resources. `structuredContent.output`
+always carries the array verbatim. When the client asks for progress on a
+`call_tool`, your `notifications/progress` reports are relayed under the
+client's token, the message prefixed with the tool name (`<alias>.<tool>` on a
+multi-server facade), neutralized and capped at 200 characters; cancelling the
+`call_tool` cancels your call. Machine steps relay neither yet, and log
+messages, resources, prompts and completions of the wrapped server are not
+projected.
+
+A successful result can also carry short notes from the facade (PRD R35.6):
+when your result has one array and a `total`/`count`-style field larger than
+it, when the array is exactly as long as the page-size argument (`limit`,
+`per_page`, … — sent, or your schema's `default`), and when you put a short
+remark beside `structuredContent` in a text block ("40 matches, returning
+10"). The model reads them above the result, and a machine gets them on
+`TOOL_RESULT.notes`. To be read right, report totals as numbers next to the
+array, declare page-size defaults in the schema (scalar defaults are shown,
+R34), and keep the JSON mirror of `structuredContent` and any remark in
+separate text blocks.
+
 For servers with many tools, `describe_tool` is how the model learns a
 schema without paying for the whole catalog up front. With the catalog
 projection on, above 40 tools (`catalogInlineThreshold`) `discover_apis`
@@ -206,17 +281,91 @@ stops listing tools inline and points at `search_tools` / `describe_tool`;
 with it off the list is always inline, whatever the size. The `.d.ts`
 resource stays complete either way.
 
+Small catalogs are also listed directly (the default, `projections.direct:
+'auto'`; D28): Projection registers one tool per wrapped tool —
+`<box>__<tool>` on a multi-server facade, the tool's own name otherwise —
+when their estimated definitions fit `directBudgetTokens` (default 8 000),
+and falls back to the search tools when they do not. Each listed tool is a
+thin alias of `call_tool({ name, args })`: same validation, policy, approval
+prompt and sealed blob, forwarded server questions (below), decline copy,
+progress and cancellation, its description led by its posture
+(`[asks for approval]`) and the server's own text indented beneath. In this
+mode the search tools are dropped, except a box's `search_<box>` when its
+server sends guidance; `describe_tool`, `call_tool` and code mode stay.
+On a multi-server facade the budget is filled box by box, smallest box
+first; the boxes that do not fit keep their `search_<box>`. Direct listing
+is part of the catalog projection: with `catalog: false` it stays off.
+`direct: true` lists them whatever the size; `direct: false` never does,
+leaving the five tools (`search_tools`, `describe_tool`, `call_tool`,
+`discover_apis`, `execute_machine`).
+
+A listed tool advertises Projection's own annotations, never your server's:
+`readOnlyHint: true` only when Projection runs the call without asking and
+your tool is read-only (never under an `ask` or `deny` override), and
+`destructiveHint: true` when your tool says so. A host that auto-runs
+read-only tools therefore skips its prompt only where Projection would too.
+
 Approval blobs for `call_tool` live 5 minutes by default (`blob.callTtlMs`),
 shorter than machine blobs: once approved there is no further step, so a
 captured approved retry is a standing capability until it expires (see
-"Lifecycle" on replay).
+"Lifecycle" on replay). A forwarded question's blob keeps the expiry of the
+approval it follows; it is never given a fresh 5 minutes.
 
-If one of your tools raises its own elicitation mid-call, it is refused:
-Projection's introspector client declares no `elicitation` capability, so the
-upstream request fails with a named error and the machine receives an ordinary
-`TOOL_ERROR` (through `call_tool`, an `upstream` error). Projection never
-forwards upstream elicitations (D7). If you pass your own connected `Client`,
-its elicitation handlers are yours to govern.
+### Your tools asking the user something
+
+Projection speaks MCP 2026-07-28 to the servers it wraps: an in-process
+`McpServer` always, a server given by URL when it supports that revision
+(otherwise the 2025 handshake, as before). A tool can then ask its user a
+question mid-call by returning `inputRequired(...)`: a form, or a link to
+open (URL mode).
+
+By default (`upstreamElicitation: 'refuse'`) Projection declares no
+`elicitation` capability to your server, so a tool that asks fails: the
+machine gets a `TOOL_ERROR`, and `call_tool` an `upstream` error whose hint
+tells the model the arguments were fine and the tool needs the user's input.
+Sampling and roots requests are refused the same way, always.
+
+Opt in per server with `upstreamElicitation: 'forward'` (on `wrapMcpServer`'s
+options, or per box in a `wrapMcpServers` source configuration). The question
+is then relayed to the human over MRTR, after the call itself passed the
+approval gate:
+
+- The prompt reads `Question from <alias> (not an approval)` (`Link from …`
+  for a URL; `the server` on a single-server facade), names the tool, and
+  quotes your message line by line (`│ …`), neutralized and capped at 1,000
+  characters and 12 lines. Write a short, plain question; formatting does
+  not survive.
+- Your `requestedSchema` is reduced to the elicitation primitives (string,
+  number, integer, boolean, single- and multi-select of string options), at
+  most 12 fields whose names are identifiers; titles are capped at 100
+  characters and descriptions at 300. The answer you get back carries only
+  those fields. Fields named `approve_<n>` or `reason` (Projection's own
+  approval fields) are dropped. Anything that reads like an approval (an
+  `approv…` word or `Tool:` at the start, a `⚠` anywhere) is shown as
+  `The server's text: …`, in titles, descriptions, option values and
+  untitled field names alike; such a string default is dropped. Avoid
+  approval wording in your questions.
+- A URL must be `https:` without credentials (`http:` only on loopback). The
+  prompt shows its origin; a client without URL-mode support gets the link as
+  text in a form with a "done" checkbox, and accepting sends no content.
+- `decline` and `cancel` reach you as such; an unanswered question arrives as
+  `cancel`. Your `requestState` comes back byte-exact on the retry: it rides
+  sealed inside Projection's own blob (keep it under 16 KB). That blob keeps
+  the expiry of the call's first blob, whatever the number of rounds; with
+  forwarding on, configure a `replayCache` so each round's blob is
+  single-use. Ask at most 4
+  questions per round; each round counts against the round-trip cap.
+- In a machine, the step waits on your question like an approval: the
+  workflow suspends, and the step's `TOOL_RESULT` is your final result.
+  With `approvalPrompts: 'batched'`, your question is never folded into the
+  batch: it stays its own prompt beside it, and answering it approves
+  nothing.
+
+Only push-free MRTR questions can be forwarded: a server that speaks only the
+2025 era would have to hold its call open across the human's answer, which a
+stateless facade cannot do (D7). If you pass your own connected `Client`, its
+era and handlers are yours to govern; forwarding then works only when that
+client negotiated 2026-07-28.
 
 ## Several servers behind one facade (preview)
 
@@ -316,7 +465,7 @@ the **shelf**, one line per box in sorted alias order. The servers' own
 instructions are not forwarded; each is its box's overview:
 
 ```text
-This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action, call search_tools to find a tool in any box, … author an XState v5 state machine and run it with execute_machine … each tool's listing says whether it runs immediately or asks for approval.
+This server fronts several toolboxes, each wrapping another server, and offers two ways to use their tools. For a single action or a short chain where you look something up and then act on it, call search_tools to find a tool in any box, … Author an XState v5 state machine and run it with execute_machine only when the work loops or branches over results, computes over a list (counting, filtering, summing, comparing or checking every item), takes many steps, or is a workflow worth saving … each tool's listing says whether it runs immediately or asks for approval.
 
 Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> tool, then pass the full name to describe_tool, call_tool and toolCall:
 - fs — "Read and write files under /srv." (server's words) (3 tools)
@@ -324,6 +473,16 @@ Toolboxes — tools are named <box>.<tool>; search a box with its search_<box> t
 - notes (1 tool)
 ```
 
+A box whose tools mostly require the same argument has shared arguments
+(DECISIONS D34): a required argument at least half of the box's tools (and
+at least three) take with the same type. Its search pages lead with those
+arguments and the gloss of any whose description
+says what the name does not, so give a shared argument such as a
+connection id one description, the same in every tool.
+
+The routing sentence is the multi-server one: a short chain that looks
+something up and then acts on it goes through `call_tool` one step at a
+time, and a single-server facade keeps the plain R29 rule.
 `codeModePreamble` replaces the preamble; the shelf, header included, is
 always kept, so the qualified-name rule cannot be dropped. Approval blobs
 bind the whole alias → server mapping and are keyed separately from

@@ -204,11 +204,22 @@ describe('facade options', () => {
     await Promise.all(facades.map((facade) => facade.close()));
   });
 
-  it('serves both projections by default, as a single-server facade does (R1, R45)', async () => {
+  it('serves both projections by default, listing a small box directly, as a single-server facade does (R1, R45)', async () => {
     const facade = await wrapMcpServers({ fs: fsServer([]) }, options);
-    expect(facade.projections).toEqual({ codeMode: true, catalog: true });
+    expect(facade.projections).toEqual({
+      codeMode: true,
+      catalog: true,
+      direct: true,
+      directBoxes: ['fs'],
+    });
     expect(structuredPhase(facade.discoverApis())).toBeUndefined();
     await facade.close();
+    const searched = await wrapMcpServers(
+      { fs: fsServer([]) },
+      { ...options, projections: { direct: false } },
+    );
+    expect(searched.projections).toEqual({ codeMode: true, catalog: true });
+    await searched.close();
   });
 
   it('serves either projection alone, and refuses both off with a terminal error (R1)', async () => {
@@ -221,7 +232,7 @@ describe('facade options', () => {
     await codeOnly.close();
     const catalogOnly = await wrapMcpServers(
       { fs: fsServer([]) },
-      { ...options, projections: { codeMode: false } },
+      { ...options, projections: { codeMode: false, direct: false } },
     );
     expect(catalogOnly.instructions).toContain(
       'then pass the full name to describe_tool and call_tool:',
