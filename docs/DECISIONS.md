@@ -2226,4 +2226,3 @@ Rejected: keeping the indent and telling the model to strip it (copy
 does not fix a copying habit); a fixed fence such as `<<<`/`>>>` (the
 server could print it); printing the text raw with no fence (a line
 of the file could pass as facade copy).
-

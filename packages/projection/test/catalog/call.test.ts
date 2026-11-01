@@ -439,7 +439,9 @@ describe('call_tool: auto and deny (R35.2, R35.5)', () => {
     const res = completed(await callTool({ name: 'read_file', args: { path: '/n' } }, d));
     const text = (res.content[0] as { text: string }).text;
     expect(text).toContain('"__proto__": {');
-    expect(text).toContain('"body" (string, 3 lines, verbatim between the ``` lines):\n```\na\nb\nc\n```');
+    expect(text).toContain(
+      '"body" (string, 3 lines, verbatim between the ``` lines):\n```\na\nb\nc\n```',
+    );
   });
 
   it('fences a text field longer than any backtick run in it, so the server cannot close it (S5)', async () => {
