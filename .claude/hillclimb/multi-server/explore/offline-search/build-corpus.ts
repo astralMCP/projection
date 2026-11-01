@@ -39,7 +39,14 @@ const SEED = 20_261_030;
 const TRAIN_FRACTION = 0.6;
 
 type Surface =
-  'github' | 'fs' | 'mongo' | 'multi' | 'multi:github' | 'multi:fs' | 'multi:mongo' | 'synthetic';
+  | 'github'
+  | 'fs'
+  | 'mongo'
+  | 'multi'
+  | 'multi:github'
+  | 'multi:fs'
+  | 'multi:mongo'
+  | 'synthetic';
 type Box = 'github' | 'fs' | 'mongo';
 
 interface Case {

@@ -116,8 +116,7 @@ export function App({ facade, author, apiDocs, serverLabel, maxAttempts }: AppPr
       let verdict: InputResponse | undefined;
       if (input === 'y') verdict = { action: 'accept' };
       else if (input === 'n') verdict = { action: 'decline' };
-      else if (input === 'i')
-        verdict = undefined; // omit = decline (R17)
+      else if (input === 'i') verdict = undefined; // omit = decline (R17)
       else return;
       if (verdict !== undefined) verdictsRef.current[prompt.key] = verdict;
       const next = promptIndex + 1;

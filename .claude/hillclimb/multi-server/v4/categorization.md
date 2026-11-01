@@ -133,7 +133,7 @@ the 0/12, but they muddy the evidence the model sees:
 - `search_issues` / `search_pull_requests` without `owner`/`repo` return the
   basic tier's static hits (issue #42 "Crash on startup", PRs #7/#9), which
   then 404 on `acme/widgets` (`404 Not Found: issue #42.`, `404 Not Found:
-pull request #7.`). This cost haiku boxes rep0/rep2 several turns before
+  pull request #7.`). This cost haiku boxes rep0/rep2 several turns before
   the cap.
 
 ## Why `global-last-log-entry` (sonnet) is variance

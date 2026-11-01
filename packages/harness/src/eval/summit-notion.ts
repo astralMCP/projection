@@ -1673,7 +1673,8 @@ function richFromRequest(value: unknown, path: string): RichText[] {
     if (r['type'] === 'mention' || r['mention'] !== undefined) {
       const user = (
         (r['mention'] as Record<string, unknown> | undefined)?.['user'] as
-          { id?: string } | undefined
+          | { id?: string }
+          | undefined
       )?.id;
       const p = NOTION_PEOPLE.find((x) => x.notionId === user);
       if (p !== undefined) return mention(p);
@@ -2600,7 +2601,8 @@ function handlers(state: NotionState): Record<string, (args: Args) => unknown> {
     'API-update-a-data-source': (args) => {
       const ds = dsById(normId(args['data_source_id'], 'data_source_id'));
       const props = args['properties'] as
-        Record<string, Record<string, unknown> | null> | undefined;
+        | Record<string, Record<string, unknown> | null>
+        | undefined;
       for (const [name, d] of Object.entries(props ?? {})) {
         if (d === null) delete ds.schema[name];
         else {
@@ -2713,7 +2715,8 @@ function handlers(state: NotionState): Record<string, (args: Args) => unknown> {
       let next: string;
       if (type === 'replace_content') {
         const body = args['replace_content'] as
-          { new_str?: string; allow_deleting_content?: boolean } | undefined;
+          | { new_str?: string; allow_deleting_content?: boolean }
+          | undefined;
         if (typeof body?.new_str !== 'string')
           throw new NotionError(
             400,
@@ -2762,7 +2765,8 @@ function handlers(state: NotionState): Record<string, (args: Args) => unknown> {
         }
       } else if (type === 'insert_content') {
         const body = args['insert_content'] as
-          { content?: string; after?: string; position?: { type?: string } } | undefined;
+          | { content?: string; after?: string; position?: { type?: string } }
+          | undefined;
         const content = String(body?.content ?? '');
         if (body?.after !== undefined) {
           const [start] = body.after.split('...');
@@ -2778,7 +2782,8 @@ function handlers(state: NotionState): Record<string, (args: Args) => unknown> {
             body?.position?.type === 'start' ? `${content}\n${current}` : `${current}\n${content}`;
       } else if (type === 'replace_content_range') {
         const body = args['replace_content_range'] as
-          { content?: string; content_range?: string } | undefined;
+          | { content?: string; content_range?: string }
+          | undefined;
         const [start, end] = String(body?.content_range ?? '').split('...');
         const a = current.indexOf(start ?? '\u0000');
         const b = end === undefined ? -1 : current.indexOf(end, a);

@@ -224,8 +224,8 @@ unmodeled reads with `[]` or a 404.
   - `search_tools` is served while at least one box is not listed.
 - **Copy for mixed facades.**
   - The preamble names the listed boxes (`The fs box's tools are listed directly, named
-<box>__<tool> …`) and the boxes to search (`The github and mongo boxes are not listed: call
-search_github or search_mongo (or search_tools, which searches every box) …`).
+    <box>__<tool> …`) and the boxes to search (`The github and mongo boxes are not listed: call
+    search_github or search_mongo (or search_tools, which searches every box) …`).
   - The shelf header explains the `listed directly` mark, and each listed box's line carries it.
   - `describe_tool` says it is needed for the unlisted boxes and only for the output schema of a
     listed box. `call_tool` says to call listed tools directly and to describe an unlisted box's

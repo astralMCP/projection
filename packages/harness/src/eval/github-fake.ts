@@ -112,7 +112,13 @@ export type FakeAnswerFn = (args: FakeArgs) => unknown;
  * (Spelled out rather than `unknown` so inline arrows get their `args` typed.)
  */
 export type FakeAnswer =
-  FakeAnswerFn | Record<string, unknown> | readonly unknown[] | string | number | boolean | null;
+  | FakeAnswerFn
+  | Record<string, unknown>
+  | readonly unknown[]
+  | string
+  | number
+  | boolean
+  | null;
 
 // ---------------------------------------------------------------------------
 // Real error and id formats

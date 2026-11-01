@@ -51,12 +51,12 @@ detection and the hint builders. Two call sites use it.
    says what was searched and where to look instead. The wording changed from
    "No tools matching" to "No tools match":
    - single: `No tools match "<q>" on server "<id>". This searches tool names
-and descriptions, not the server's data — to look for data, call one of
-its read tools: <up to 5>.`
+     and descriptions, not the server's data — to look for data, call one of
+     its read tools: <up to 5>.`
    - box: `… in the <alias> box. This searches tool names and descriptions,
-not the <alias> box's data — … its read tools: <up to 5, qualified>.`
+     not the <alias> box's data — … its read tools: <up to 5, qualified>.`
    - global: `… in any box. … not the boxes' data — … their read tools: <up
-to 2 per box>.`
+     to 2 per box>.`
 2. **Empty read-only `call_tool` results** (catalog projection only).
    `call_tool` checks the result only when policy decided `auto`, i.e. the
    tool ran without approval. The resume path (approved writes) never
@@ -64,10 +64,10 @@ to 2 per box>.`
    is empty, Projection appends one line to the text. `structuredContent` is
    never altered:
    - single: `Nothing found with <tool>. Other ways to look: <up to 3 other
-read tools>.`
+     read tools>.`
    - multi: `Nothing found with <box>.<tool>. Other ways to look in <box>:
-<up to 3>; or look in another box that could hold it: <other
-aliases>.`
+     <up to 3>; or look in another box that could hold it: <other
+     aliases>.`
    - An upstream `isError` whose message reads as not-found (`not found`,
      `no such`, `does(n't| not) exist`, `404`, `ENOENT`, `no X found`) gets
      the same line as a second text block. The structured error's JSON text
@@ -89,7 +89,7 @@ print raw.
 - a text-only content array whose texts are all empty
 - empty or whitespace text, `[]`, or `{}`
 - a text of at most 300 characters starting with `no matches`, `no
-results`, `nothing found`, `not found`, `0 results` or `no such`, or
+  results`, `nothing found`, `not found`, `0 results` or `no such`, or
   matching `/\bno \w+( \w+)? found\b/i`
 - JSON text whose decoded value is empty
 - an object carrying no data and signalling emptiness, checked up to 3
@@ -248,7 +248,7 @@ neutral, not empty.
     GitHub.
   - _GitHub hint lists:_ for the real GitHub catalog, the browsing-first
     order produced `actions_list, get_repository_tree, list_branches,
-list_code_scanning_alerts, list_commits`. Those are generic, low-value
+    list_code_scanning_alerts, list_commits`. Those are generic, low-value
     names (catalog order inside the "list" group), and haiku did not pick
     them up.
 - **last-log (10/10).** Recovery after `ENOENT` matches v5/v6:

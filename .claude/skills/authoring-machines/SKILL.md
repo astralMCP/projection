@@ -148,7 +148,7 @@ await facade.close();
   explicit id (the Shape's `w1`); without one the default `write_file#1`
   would not match and the scenario approves everything.
 - The Scenario's `input` field is the machine input (`context: ({ input })
-=> …`); `lang` is `'ts'` or `'js'`.
+  => …`); `lang` is `'ts'` or `'js'`.
 - `runScenario` drives only `execute_machine`. For the catalog tools call
   `facade.searchTools` / `describeTool` / `callTool` directly, or go over the
   wire with an SDK `Client` the way
