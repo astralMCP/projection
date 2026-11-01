@@ -59,6 +59,12 @@ exactly at 5.32.5, `@sebastianwessel/quickjs` at 3.1.0 and
 `@jitl/quickjs-ng-wasmfile-release-sync` at 0.32.0 per PRD §7 dependency
 notes.
 
+**Addendum (2026-10-31), after 0.9.0.** oxfmt replaces prettier, so lint
+and format are both on the oxc stack. `.oxfmtrc.json` keeps the prettier
+options (width 100, single quotes, trailing commas, semicolons) and carries
+the old `.prettierignore` lines as `ignorePatterns`; oxfmt also honours
+`.gitignore`. Format-suppression comments are `// oxfmt-ignore`.
+
 ## D3 — Parallel-agent conventions (2026-08-08)
 
 Component code lives under `src/<component>/` with a local `index.ts`.

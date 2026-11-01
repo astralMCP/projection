@@ -158,7 +158,7 @@ pnpm run check   # build + typecheck + lint + test, via turbo
 
 Individual tasks: `pnpm run build`, `pnpm run test`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run format`, `pnpm run format:check`.
 
-Toolchain: [Turborepo](https://turborepo.com) task runner · [tsdown](https://tsdown.dev) build · [oxlint](https://oxc.rs) lint · [vitest](https://vitest.dev) tests · strict TypeScript · prettier.
+Toolchain: [Turborepo](https://turborepo.com) task runner · [tsdown](https://tsdown.dev) build · [oxlint](https://oxc.rs) lint · [vitest](https://vitest.dev) tests · strict TypeScript · [oxfmt](https://oxc.rs) formatting.
 
 Contributing conventions (small PRs, adversarial review, commit style) live in
 [.claude/skills/contributing](.claude/skills/contributing/SKILL.md); the

@@ -21,15 +21,15 @@
  * (ALM, LRM/RLM, LRE/RLE/PDF/LRO/RLO), and the directional isolates
  * (LRI/RLI/FSI/PDI).
  */
-// prettier-ignore
+// oxfmt-ignore
 // eslint-disable-next-line no-control-regex
 const HOSTILE_INLINE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 // Same class minus `\n`, for blocks whose pretty-print newlines are legitimate.
-// prettier-ignore
+// oxfmt-ignore
 // eslint-disable-next-line no-control-regex
 const HOSTILE_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 // Same class minus `\n` and `\t`, for text printed verbatim inside a fence.
-// prettier-ignore
+// oxfmt-ignore
 // eslint-disable-next-line no-control-regex
 const HOSTILE_VERBATIM = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 

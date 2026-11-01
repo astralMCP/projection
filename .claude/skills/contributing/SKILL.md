@@ -11,7 +11,7 @@ One PR per feature or bug — never batch unrelated changes. For every PR:
 
 1. `git fetch origin`, then branch from `origin/main`. Parallel agents each
    work in their own git worktree under `.claude/worktrees/` (ignored by git
-   and prettier). Never switch branches in the shared checkout.
+   and oxfmt). Never switch branches in the shared checkout.
 2. Make the change; run `pnpm run format` then `pnpm run check` — both must
    be green before pushing.
 3. Push, open the PR with `gh pr create`.
@@ -31,7 +31,7 @@ Trivial one-liners still get at least a quick synchronous review agent.
 ```bash
 pnpm install
 pnpm run check                                   # build + typecheck + lint + test (turbo, all packages)
-pnpm run format                                  # prettier --write; CI runs format:check and FAILS on drift
+pnpm run format                                  # oxfmt (writes); CI runs format:check and FAILS on drift
 pnpm run format:check                            # what CI runs after check
 pnpm --filter @astral-mcp/projection test        # one package
 pnpm --filter @astral-mcp/tui start              # demo TUI (builds deps via turbo first)
@@ -79,7 +79,7 @@ commands need no PATH prefix. CI runs `check` on Node 22 and 24.
   `packages/projection`, then review `git diff`. Any value of
   `UPDATE_GOLDEN` triggers a rewrite. Goldens live under `test/`, the
   `tools.d.ts` golden is typechecked by `tsc --noEmit`, and all of them are
-  prettier-exempt (`.prettierignore`) — never hand-edit or format them.
+  oxfmt-exempt (`ignorePatterns` in `.oxfmtrc.json`) — never hand-edit or format them.
 - **Live-spend gates**: anything that calls the Anthropic API must be
   explicit opt-in (`PROJ_LIVE_BENCH=1` + non-empty `ANTHROPIC_API_KEY`), so a
   plain `pnpm test` never spends tokens. Preserve this on new live tests.
