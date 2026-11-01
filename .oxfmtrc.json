@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "semi": true,
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    ".turbo",
+    "pnpm-lock.yaml",
+    "coverage",
+    "packages/projection/test/typegen/__golden__/",
+    ".claude/worktrees/",
+    "packages/harness/vendor/"
+  ]
+}

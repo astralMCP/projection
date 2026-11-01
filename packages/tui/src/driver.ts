@@ -22,7 +22,12 @@ import {
 import type { AttemptErrorView, AuthoringContext, MachineAuthor } from '@astral-mcp/harness';
 
 export type DrivePhase =
-  'authoring' | 'running' | 'awaiting_approval' | 'healing' | 'completed' | 'failed';
+  | 'authoring'
+  | 'running'
+  | 'awaiting_approval'
+  | 'healing'
+  | 'completed'
+  | 'failed';
 
 export interface ApprovalPrompt {
   /** inputRequest key (also the pending call id). */

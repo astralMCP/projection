@@ -28,7 +28,7 @@ The false copy appears in two places, both read just before the machine is writt
   `Output schema: none declared — results arrive as text.`
 - the authoring contract in `discover_apis`, rule 8
   (src/machine-host/contract.ts:194): `Tools without an Output type are
-typed unknown — usually a string.`
+  typed unknown — usually a string.`
 
 The output schemas are missing in this world because the harness's recording proxy does not re-register output schemas
 (`packages/harness/src/eval/recording-proxy.ts` header). The fs server

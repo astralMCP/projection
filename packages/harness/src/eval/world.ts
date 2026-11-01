@@ -43,7 +43,14 @@ import { openSummitWorld, type SummitState } from './summit-world.js';
 import { openWorkplaceWorld, type WorkplaceState } from './workplace-world.js';
 
 export type WorldName =
-  'github' | 'filesystem' | 'mongodb' | 'multi' | 'workplace' | 'summit-local' | 'summit' | 'messy';
+  | 'github'
+  | 'filesystem'
+  | 'mongodb'
+  | 'multi'
+  | 'workplace'
+  | 'summit-local'
+  | 'summit'
+  | 'messy';
 /** The worlds made of several boxes. */
 export type BoxedWorldName = 'multi' | 'workplace' | 'summit-local' | 'summit' | 'messy';
 /** The workplace world's boxes (each a server world named by its alias). */
@@ -149,7 +156,11 @@ export interface ServerWorld extends WorldBase {
 export type MultiBoxAlias = 'github' | 'fs' | 'mongo';
 /** Any box alias: multi, workplace, summit-local, summit or messy. */
 export type BoxAlias =
-  MultiBoxAlias | WorkplaceBoxAlias | SummitBoxAlias | SaasBoxAlias | MessyBoxAlias;
+  | MultiBoxAlias
+  | WorkplaceBoxAlias
+  | SummitBoxAlias
+  | SaasBoxAlias
+  | MessyBoxAlias;
 export const BOX_ALIASES: readonly BoxAlias[] = [
   'billing',
   'github',

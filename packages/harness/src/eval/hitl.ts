@@ -40,7 +40,11 @@ import type { EvalWorld, WorldTool } from './world.js';
 // Personas
 
 export type ApproverPersona =
-  'approve-all' | 'deny-destructive' | 'deny-matching' | 'cancel' | 'edit';
+  | 'approve-all'
+  | 'deny-destructive'
+  | 'deny-matching'
+  | 'cancel'
+  | 'edit';
 export const APPROVER_PERSONAS: readonly ApproverPersona[] = [
   'approve-all',
   'deny-destructive',

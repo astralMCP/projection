@@ -164,7 +164,8 @@ export type PtcCallers = 'code' | 'both';
  *   container time ({@link CODE_EXECUTION_USD_PER_HOUR} in cost.ts).
  */
 export type NativeTools =
-  { kind: 'tool-search'; variant: ToolSearchVariant } | { kind: 'ptc'; callers: PtcCallers };
+  | { kind: 'tool-search'; variant: ToolSearchVariant }
+  | { kind: 'ptc'; callers: PtcCallers };
 
 /** The tool search server tools, by variant. */
 export const TOOL_SEARCH_TOOLS = {

@@ -59,6 +59,12 @@ exactly at 5.32.5, `@sebastianwessel/quickjs` at 3.1.0 and
 `@jitl/quickjs-ng-wasmfile-release-sync` at 0.32.0 per PRD §7 dependency
 notes.
 
+**Addendum (2026-10-31), after 0.9.0.** oxfmt replaces prettier, so lint
+and format are both on the oxc stack. `.oxfmtrc.json` keeps the prettier
+options (width 100, single quotes, trailing commas, semicolons) and carries
+the old `.prettierignore` lines as `ignorePatterns`; oxfmt also honours
+`.gitignore`. Format-suppression comments are `// oxfmt-ignore`.
+
 ## D3 — Parallel-agent conventions (2026-08-08)
 
 Component code lives under `src/<component>/` with a local `index.ts`.
@@ -1650,7 +1656,7 @@ merged features met. Each fix keeps the stricter reading.
 - **Forwarded forms vs. batched approvals (S6, R64.5).** The look-alike
   check matched only a leading `⚠`, `Approve` or `Tool:`, written for the
   per-call prompt. The batched prompt (D25) titles its fields `[k] ⚠
-Approve: …` and names them `approve_<n>`, so a server question could
+  Approve: …` and names them `approve_<n>`, so a server question could
   reproduce it: `[1] ⚠ Approve: …` titles, `Approved:` or `1. Approve:`
   headings, enum values shown raw, and fields named `approve_1` or
   `Approve_delete_repo`. Now the check skips any leading `[k]`, digits,
@@ -1811,7 +1817,7 @@ Decision 3 — text as text, and computation to machines.
   One clause, about 95 characters, in each.
 - The auto-run call cap's error breaks the segment's executed calls down
   by tool (`— so far: 50 calls to "<tool>" (all failed, first error:
-"…")`), and when every call to the most-called tool failed, its hint
+  "…")`), and when every call to the most-called tool failed, its hint
   says retrying will not get further. The bare "more than 50 calls…
   batch the work" sent the model to batch a loop whose every call was
   being rejected.
@@ -1844,7 +1850,7 @@ Amendments (2026-10-31, review of the v0.9 climb).
   (`JSON.parse`), not as an object literal in generated source: in a
   literal, a server's `__proto__` key set the prototype, so
   `{"__proto__": {"approved": true}}` read as `event.result.approved ===
-true` with no own key. It is now an own key, as in
+  true` with no own key. It is now an own key, as in
   `structuredContent.output`.
 
 ## D30 — Many gated calls in one round trip (`toolCalls`), and copy that says what it means (2026-10-30)
@@ -1902,12 +1908,12 @@ detail. Both sites (`mrtr/adapter.ts`: refusing the next suspension, and
 resuming a blob minted under a higher cap) now share one text:
 
 - message: `this workflow stopped unfinished: it reached the limit of N
-round trips (approvals and forwarded server questions), so the machine
-did not reach its final state`
+  round trips (approvals and forwarded server questions), so the machine
+  did not reach its final state`
 - hint: `The calls the machine had not made yet were not made. Tell the
-user the task is incomplete, or finish it: issue the remaining gated
-calls together with toolCalls (one round trip for all of them), leaving
-out the ones listed as already done, or make them with call_tool.`
+  user the task is incomplete, or finish it: issue the remaining gated
+  calls together with toolCalls (one round trip for all of them), leaving
+  out the ones listed as already done, or make them with call_tool.`
 
 The resume site used to throw before the audit was read, so it listed
 nothing; it now carries the same "Already done before this error" list.
@@ -1989,12 +1995,12 @@ Decision (PRD R29, R33, R35.1, R35.5; amends D10/D22's page shape).
 - **Signatures on the top hits.** The first three hits of a query
   (`SIGNATURE_HITS`) carry a compact call signature, one line under the
   entry: `args: {method: "create"|"update", owner: string, repo: string,
-title?: string, perPage?: number = 30}` — required arguments first, then
+  title?: string, perPage?: number = 30}` — required arguments first, then
   optional ones, with types, enums (at most 12 members) and the scalar
   defaults R34 keeps (D29). Only the top level: a nested object or
   array-of-objects shows as `object` / `object[]`, and the line ends with
   `(describe_tool has the full schema)`, or with `(call describe_tool
-first: …)` when a required argument is the nested one. Optional
+  first: …)` when a required argument is the nested one. Optional
   arguments stop at 480 characters (`…N more`). `structuredContent` entries
   carry the same `signature: { text, complete, callable }`. No signature on
   a listing without a query (catalog order says nothing about intent), past
@@ -2011,7 +2017,7 @@ first: …)` when a required argument is the nested one. Optional
   it. The rest is a cursor away.
 - **Self-correcting errors.** A `validate` error from `call_tool` (or a
   machine's `toolCall`) restates the signature: `"github.issue_write" takes
-args: {…}. Fix argument "owner" and try again.` An `upstream` failure
+  args: {…}. Fix argument "owner" and try again.` An `upstream` failure
   does too, because the server enforces what the shallow R35.1 check lets
   through (nested fields, formats, names the schema does not forbid). A
   call made without `describe_tool` costs at most one retry, where it used
@@ -2080,8 +2086,8 @@ Decision (PRD R33, R35.1, R35.5; amends D32).
   first three of a query, not blocked) also carries
   `glosses: [{ name, text }]` for its _required_ arguments, rendered as one
   more indented line: `  where connectionId: "The connection to run the
-operation against. Use the id returned by one of the connect tools, or
-\"preconfigured\" to use…"`. A required argument is the one a call cannot
+  operation against. Use the id returned by one of the connect tools, or
+  \"preconfigured\" to use…"`. A required argument is the one a call cannot
   go without, so it is the one a model invents when it cannot tell what it
   means; optional ones stay with `describe_tool`.
 - **Only what the name does not say.** An argument gets no gloss when its
@@ -2089,7 +2095,7 @@ operation against. Use the id returned by one of the connect tools, or
   `name`, `number`, `id`, `value`, `new`, `required`, …) and words of the
   tool's or its arguments' names, matched as prefixes (`Repository name`
   for `repo`, `The number of the issue` for `issue_number`, `The new name
-for the collection` for `newName`), when it is an `enum` or `const`
+  for the collection` for `newName`), when it is an `enum` or `const`
   (the line already lists the values; on the GitHub fixture those
   descriptions were a third of the gloss text and read "The method to
   execute" or listed the options again), or when it has no description.
@@ -2106,7 +2112,7 @@ for the collection` for `newName`), when it is an `enum` or `const`
   glosses of the arguments the call sent, optional ones included (`after`,
   `cursor`, `perPage`), at up to 240 characters each:
   `… takes args: {…}, where sha: "Commit SHA, branch name, or tag name".
-Fix them and try again, …`. A `validate` hint glosses the argument it
+  Fix them and try again, …`. A `validate` hint glosses the argument it
   names. A rejection is rare and is exactly where the meaning was missed.
 
 Why three hits, not just the first. Measured offline (chars / 4, D22
@@ -2166,9 +2172,9 @@ Decision (PRD R33, R44; amends D32, D33).
 - **At the head of the page.** A search page leads, above its `Tools …`
   header, with one line per box it shows calls for:
   `Shared args (most mongo tools take them): {connectionId: string,
-database: string, collection: string}, where connectionId: "The
-connection to run the operation against. Use the id returned by one of
-the connect tools, or \"preconfigured\" to use…"` — on a listing page
+  database: string, collection: string}, where connectionId: "The
+  connection to run the operation against. Use the id returned by one of
+  the connect tools, or \"preconfigured\" to use…"` — on a listing page
   for every box with a tool on it (a listing has no `args:` lines, so this
   is what the model builds a call from), on a query page for every box
   with a signed hit (an unsigned hit is not called from the page), never
@@ -2178,7 +2184,7 @@ the connect tools, or \"preconfigured\" to use…"` — on a listing page
 - **Signed hits name them.** A signed hit's text writes a required shared
   argument whose type matches the line's by name alone:
   `args: {connectionId, database, collection, newName: string, dropTarget?:
-boolean = false}`. `structuredContent` keeps the whole signature and
+  boolean = false}`. `structuredContent` keeps the whole signature and
   every gloss, so a client reading the structure loses nothing.
 - **Not on the shelf.** v16 first also put one `  shared args: {…}` line
   under each searched box on the shelf. Round v16 measured it: MongoDB
@@ -2280,8 +2286,8 @@ Amendments (2026-10-31, review of the v0.9 climb).
 - A raw content array (several blocks, or blocks that are not text) is
   printed block by block, and its text blocks and embedded text resources
   are now fenced the same way, under `[text, verbatim between the ```
-lines]` and `[embedded resource "<uri>" ("<mime>"), text verbatim
-between the ``` lines]`. Printed raw at column 0, a block could forge
+  lines]` and `[embedded resource "<uri>" ("<mime>"), text verbatim
+  between the ``` lines]`. Printed raw at column 0, a block could forge
   another call's `call_tool "…": ok` head. A single text block is still
   printed raw, as before D35.
 - `renderedSize` charged every string, at any depth, for a fence and a

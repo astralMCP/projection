@@ -10,13 +10,13 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
     "check": "turbo run build typecheck lint test"
   },
   "devDependencies": {
+    "oxfmt": "^0.75.0",
     "oxlint": "^1.90.0",
-    "prettier": "^3.9.10",
     "turbo": "^2.11.10",
     "typescript": "^5.9.2"
   }

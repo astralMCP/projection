@@ -39,7 +39,14 @@ import { loadCatalog, MULTI_CATALOGS, type CatalogFixture, type CatalogName } fr
 import { openOfflineFacade, type OfflineFacade } from './facade.js';
 
 export type SearchSurface =
-  'github' | 'fs' | 'mongo' | 'synthetic' | 'multi' | 'multi:github' | 'multi:fs' | 'multi:mongo';
+  | 'github'
+  | 'fs'
+  | 'mongo'
+  | 'synthetic'
+  | 'multi'
+  | 'multi:github'
+  | 'multi:fs'
+  | 'multi:mongo';
 
 export type CaseSource = 'recorded' | 'recorded-lifted' | 'handwritten' | 'generated';
 export type Split = 'train' | 'test';
