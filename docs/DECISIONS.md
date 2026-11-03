@@ -2486,3 +2486,76 @@ consumer's, and Projection imports it.
 
 Bumping is in the `contributing` skill. A patch moves only the pins. A minor
 moves the range too and needs a minor Projection release.
+
+## D41 — The §10 timing budgets run alone, and report the median batch p95 (2026-11-02)
+
+Context. `packages/projection/test/integration/budgets.test.ts` failed CI on
+a large share of runs with no code change: the crypto p95 hit 3.4–6.5 ms
+against a 3 ms ceiling, and the resume-leg p95 crossed 100 ms. It ran inside
+turbo's parallel `test` run, so its timings competed with every other
+package's tests on a 4-vCPU runner. Locally, running the file alongside a
+forced `check` failed 8 of 25 runs. Every failure was the resume leg, whose
+median rose from ~10 ms solo to 45–80 ms under that load. CI was about to
+become a required check on `main`.
+
+Decision. Two changes, and no threshold moves:
+
+- **Isolation.** The default `vitest.config.ts` excludes the file.
+  `vitest.budgets.config.ts` runs it with no file parallelism through a
+  `test:budgets` turbo task. The root `check` runs that task only after
+  `turbo run build typecheck lint test` has finished, so CI (which runs
+  `check`) and local gates both measure on an otherwise idle process tree.
+  `prepublishOnly` runs it too.
+- **Statistics.** Each timing runs 5 independent batches after warm-up
+  (crypto: 200 calls a batch; resume leg: 20 a batch, 5 warm-up runs) and
+  asserts the median of the 5 batch p95s. A code regression raises most
+  batches, so the median breaches. A burst of runner contention that
+  overlaps at most 2 of the 5 batches is ignored. A random tail regression
+  lands in some batches and not others, but with enough tail calls it lifts
+  most batch p95s, so the median still catches it. Every batch p95 (and the
+  resume medians) appears in the assertion message.
+
+Effect. Isolation is what makes the gate reliable; the median is there to
+keep tail regressions visible, not to absorb load. On an 8-core laptop,
+40 runs each: isolated with 8 or 12 CPU-hog processes, 0 failures; run
+concurrently with a looping forced `check`, 11 failures, about the same as
+before (8 of 25). Under sustained contention every batch slows, and no
+statistic that still catches a real regression can tell the two apart. So a
+local `check` can still fail here when other heavy work shares the machine;
+the batch medians in the message show it (all far above ~10 ms).
+
+The ceilings are unchanged: 3 ms for seal→open, `max(10 × one-key, 3 ms)`
+for the 5-key rotation walk, and 100 ms for the resume leg. Injected
+regressions (busy-waits in `openResume` and `openBlob`) give:
+
+- +100 ms on every resume fails (median batch p95 112.3 ms; batches
+  111.2–113.7 ms).
+- +150 ms on every 10th resume fails (median batch p95 160.3 ms; every
+  batch ~160 ms, resume medians ~10 ms).
+- +150 ms on a random 15 % of resumes failed 5 of 5 runs (median batch p95
+  159.9–160.6 ms). Each run had 1 or 2 batches near 12 ms that drew too few
+  stalls, so the lowest batch p95 would have passed all 5 runs.
+- +5 ms in `openBlob` fails the 3 ms seal→open ceiling (median batch p95
+  5.09 ms).
+
++10 ms and +50 ms on every resume pass, because both stay inside the
+budget. A 150 ms stall on 2 % of resumes passes, because it sits above the
+p95.
+
+Limit. The 100 ms resume ceiling is the PRD's absolute budget, not a
+regression detector. The resume leg's p95 is ~10–12 ms on a laptop, so a
+2× slowdown from today stays inside budget and passes. That matches what
+§10 promises. Catching small relative regressions would need a same-runner
+baseline, which no test here has.
+
+Rejected:
+
+- Asserting the lowest batch p95. It hides random tail regressions: on
+  the 20-call resume batches, a +150 ms stall on a random 10 % of calls is
+  caught 8 % of the time by the minimum of 5 batches, against 61 % by the
+  old single p95 and 70 % by the median of 5 (Monte Carlo).
+- A CI tolerance multiplier. It loosens what §10 promises.
+- vitest `retry`. It hides a real regression that fails only some of the
+  time, and it triples the cost of a true failure.
+- Keeping the file in the parallel run with more samples. More samples do
+  not help when the whole run sits inside a contended window.

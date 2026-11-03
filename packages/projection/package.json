@@ -22,8 +22,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "test": "vitest run",
+    "test:budgets": "vitest run --config vitest.budgets.config.ts",
     "test:watch": "vitest",
-    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm run test"
+    "prepublishOnly": "pnpm run build && pnpm run typecheck && pnpm run test && pnpm run test:budgets"
   },
   "dependencies": {
     "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
