@@ -138,10 +138,12 @@ shows an approval prompt. Two things decide whether that prompt can appear:
   structured error naming the revision it needs.
   See [Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28).
 
-Projection reads the server's tools once, at wrap time, and ignores
-`tools/list_changed`. A tool the server adds later is not seen until you
-wrap again (here: restart the script). See
-[Wrap and serve](docs/server-authors.md#wrap-and-serve).
+Projection reads the server's tools at wrap time, and follows its
+`tools/list_changed` from then on (default on, for servers Projection
+connects to itself): the new tools, types and policy are swapped in at once,
+and that server's annotations are not trusted until they land. For a
+`Client` you pass in, call `facade.refreshTools()` from its own handler. See
+[When your tool list changes](docs/server-authors.md#when-your-tool-list-changes).
 
 You can also wrap an in-process `McpServer` you built yourself (pass it
 unconnected), and serve over HTTP with `createMcpHandler(facade.serverFactory)`:
@@ -241,7 +243,8 @@ reaches other people need the same treatment; see
 
 Precedence, strongest first: an exact `policy` entry, then the first
 matching `policyRules` rule, then `approvals`, then the tool's annotations.
-Everything is resolved once, at wrap time; every surface the model sees shows
+Everything is resolved at wrap time, and again after each followed
+`tools/list_changed`; every surface the model sees shows
 the decision the gate will enforce. To confirm a pin took effect, ask the facade
 for the decision the gate will make:
 

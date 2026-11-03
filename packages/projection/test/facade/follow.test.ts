@@ -1,5 +1,5 @@
 /**
- * The tools/list_changed scheduler (R65, DECISIONS D42) with fake re-listing
+ * The tools/list_changed scheduler (R65, DECISIONS D43) with fake re-listing
  * hooks: each box has its own re-listing in flight and is applied as soon
  * as it lands, and a refreshTools() waiter is answered by the first
  * re-listing that started after it, never starved by later notifications.
