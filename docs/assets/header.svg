@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200" role="img" aria-labelledby="t">
+<title id="t">astralMCP / projection</title>
+<style>
+.s{fill:none;stroke:#8b949e;stroke-width:1}
+.m{transform-origin:186px 100px;animation:rot 28s ease-in-out infinite}
+.m:first-of-type{stroke:#7d6df0;stroke-width:1.25}
+@keyframes rot{0%{transform:scaleX(1)}50%{transform:scaleX(-1)}100%{transform:scaleX(1)}}
+.g{fill:none;stroke:#7d6df0;stroke-width:1;opacity:.45;animation:draw 1.6s cubic-bezier(.6,0,.2,1) backwards}
+.l{fill:none;stroke:#6e7681;stroke-width:3.4;stroke-linejoin:round;animation:draw 1.1s cubic-bezier(.5,0,.2,1) backwards}
+.d{fill:#7d6df0;animation:pop .5s ease-out backwards}
+@keyframes draw{from{stroke-dasharray:1;stroke-dashoffset:1}to{stroke-dasharray:1;stroke-dashoffset:0}}
+@keyframes pop{from{opacity:0}}
+.o{font:500 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.06em;fill:#8b949e}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+<g class="s"><circle cx="186" cy="100" r="70"/><path d="M151 39.4h70"/><path d="M125.4 65h121.2"/><path d="M116 100h140"/><path d="M125.4 135h121.2"/><path d="M151 160.6h70"/><ellipse class="m" cx="186" cy="100" rx="70" ry="70" style="animation-delay:-3.9s;transform:scaleX(0.6)"/><ellipse class="m" cx="186" cy="100" rx="70" ry="70" style="animation-delay:-6.2s;transform:scaleX(0.2)"/><ellipse class="m" cx="186" cy="100" rx="70" ry="70" style="animation-delay:-8.6s;transform:scaleX(-0.3)"/><ellipse class="m" cx="186" cy="100" rx="70" ry="70" style="animation-delay:-10.9s;transform:scaleX(-0.8)"/><ellipse class="m" cx="186" cy="100" rx="70" ry="70" style="animation-delay:-13.2s;transform:scaleX(-1)"/><ellipse class="m" cx="186" cy="100" rx="70" ry="70" style="animation-delay:-15.6s;transform:scaleX(-0.9)"/></g>
+<path class="g" style="animation-delay:0.3s" pathLength="1" d="M262 100H695.4"/><path class="g" style="animation-delay:0.6s" pathLength="1" d="M252 136H695.4"/><path class="g" style="animation-delay:0.8s" pathLength="1" d="M227 160.6H695.4"/><path class="l" style="animation-delay:1s" pathLength="1" d="M326 100V160.6M326 118a18 18 0 1 1 36 0a18 18 0 1 1 -36 0"/><path class="l" style="animation-delay:1.1s" pathLength="1" d="M373 136V100M373 118a18 18 0 0 1 18 -18h3"/><path class="l" style="animation-delay:1.2s" pathLength="1" d="M402 118a18 18 0 1 1 36 0a18 18 0 1 1 -36 0"/><path class="l" style="animation-delay:1.3s" pathLength="1" d="M451 100V149.6a11 11 0 0 1 -11 11"/><path class="l" style="animation-delay:1.4s" pathLength="1" d="M464 118H500A18 18 0 1 0 495.4 130"/><path class="l" style="animation-delay:1.4s" pathLength="1" d="M542.4 106A18 18 0 1 0 542.4 130"/><path class="l" style="animation-delay:1.5s" pathLength="1" d="M562.4 78V126a10 10 0 0 0 10 10h3M554.4 100h20"/><path class="l" style="animation-delay:1.6s" pathLength="1" d="M585.4 100V136"/><path class="l" style="animation-delay:1.7s" pathLength="1" d="M597.4 118a18 18 0 1 1 36 0a18 18 0 1 1 -36 0"/><path class="l" style="animation-delay:1.8s" pathLength="1" d="M645.4 136V100M645.4 118a18 18 0 0 1 36 0V136"/><circle class="d" style="animation-delay:2.1s" cx="451" cy="84" r="2.9"/><circle class="d" style="animation-delay:2.2s" cx="585.4" cy="84" r="2.9"/>
+<text class="o" x="326" y="64">astralMCP</text>
+</svg>
