@@ -11,6 +11,8 @@ survive an upgrade.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-03
+
 ### Breaking
 
 - `@modelcontextprotocol/client` and `@modelcontextprotocol/server` are now peer dependencies at
@@ -70,8 +72,7 @@ survive an upgrade.
 - The npm README links to repository docs with absolute GitHub URLs, so they resolve on npm
   (#70).
 - The docs say how to read the surface `direct: 'auto'` chose, from `facade.projections.direct`
-  and `directBoxes`. The catalog, types and policy are snapshotted at wrap time, and the wrapped
-  server's `tools/list_changed` is ignored, so a changed tool list needs a re-wrap (#72).
+  and `directBoxes` (#72).
 - CI now tests Node 22 and 26, the oldest supported version and the newest LTS, instead of 22
   and 24. `engines` is unchanged (`>=22`) (D46).
 
@@ -320,7 +321,8 @@ Hardening only. The public API is unchanged.
   overview, the typegen overview header and the `tools.d.ts` resource description. U+2028, U+2029
   and U+061C are neutralized too, and tool names in the overview are neutralized and capped (#28).
 
-[Unreleased]: https://github.com/astralMCP/projection/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/astralMCP/projection/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/astralMCP/projection/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/astralMCP/projection/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/astralMCP/projection/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/astralMCP/projection/compare/v0.6.0...v0.7.0
