@@ -79,7 +79,11 @@ Projection does not send `tools/list_changed` to its own clients either. So:
 - `policy` keys are exact tool names, matched against the wrap-time
   catalog. A key for a tool that is not there yet is accepted and does
   nothing; it takes effect on the next wrap, once the tool exists. Keep
-  such keys in your options rather than adding them later.
+  such keys in your options rather than adding them later. `policyRules`
+  (see "Policy rules" below) are resolved at wrap time too, over the same
+  catalog: a tool that appears later is unknown to the facade (above), so
+  no rule reaches it until the next wrap, when the rules apply to it like
+  any other tool.
 
 To pick up a changed tool list, wrap again (`wrapMcpServer` /
 `wrapMcpServers`) and serve the new facade's `serverFactory`. For a

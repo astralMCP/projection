@@ -55,7 +55,8 @@ facade; a removed tool stays listed, its calls failing upstream. Re-wrapping
 an in-process `McpServer` needs a fresh instance or the old facade closed
 first (a still-connected server cannot be wrapped). A per-tool `policy` key
 applies only to a tool present at wrap; keep keys for tools you expect, and
-they take effect on the next wrap.
+they take effect on the next wrap. `policyRules` are resolved at wrap time
+too, over the same tools: a later tool gets their decision on the next wrap.
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
 (read-only, `auto` by policy, or, under `destructive-only`, a non-destructive
