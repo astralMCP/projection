@@ -24,7 +24,7 @@
       ]
     },
     "lint": {
-      "inputs": ["src/**", "test/**", "$TURBO_ROOT$/.oxlintrc.json"]
+      "inputs": ["src/**", "test/**", "scripts/**", "*.config.ts", "$TURBO_ROOT$/.oxlintrc.json"]
     },
     "test": {
       "dependsOn": ["build", "^build"],
