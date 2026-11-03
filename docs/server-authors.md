@@ -65,14 +65,15 @@ until the next wrap, and duplicate names collapse to one tool.
 Projection does not handle `notifications/tools/list_changed` from the
 wrapped server, on single- and multi-server facades alike. The catalog, the
 generated types and resources, the instructions, the direct-listing choice
-(below) and the frozen policy snapshot are all built once from the wrap-time
-`tools/list`, and the notification refreshes none of them. Projection does
-not send `tools/list_changed` to its own clients either. So:
+(below) and the frozen policy snapshot are all built once, at wrap time,
+from what introspection read, and the notification refreshes none of them.
+Projection does not send `tools/list_changed` to its own clients either. So:
 
 - A tool the server adds or enables later (an app switched on
-  mid-conversation, say) is not listed or searchable, is absent from the
-  types, and `call_tool`, a listed alias and a machine's `toolCall` all
-  refuse it as an unknown tool without calling your server.
+  mid-conversation, say) is not listed or searchable and is absent from the
+  types. `call_tool` and a machine's `toolCall` refuse it as an unknown tool;
+  it has no listed alias (calling its name on the facade is a protocol
+  not-found error). None of these reach your server.
 - A tool the server removes stays listed; calling it reaches your server,
   which fails the call (an `upstream` error).
 - `policy` keys are exact tool names, matched against the wrap-time
@@ -81,14 +82,26 @@ not send `tools/list_changed` to its own clients either. So:
   such keys in your options rather than adding them later.
 
 To pick up a changed tool list, wrap again (`wrapMcpServer` /
-`wrapMcpServers`) and serve the new facade's `serverFactory`; close the old
-facade once its in-flight requests finish. Blobs bind the blob key and the
-server identity (name and version), not the tool list: a pending
-`call_tool` approval resumes on the new facade when both are unchanged,
-and is checked against the new facade's catalog and policy (a tool now
-gone or denied is refused). If you use a `replayCache`, pass the same
-instance (or shared store) to the new wrap, so a retry already spent on the
-old facade stays spent.
+`wrapMcpServers`) and serve the new facade's `serverFactory`. For a
+connected `Client` or a source given by URL, wrap first and close the old
+facade once its in-flight requests finish. An in-process `McpServer` can
+back only one facade at a time — the old facade holds its transport until
+`facade.close()`, and wrapping a still-connected instance throws — so
+either wrap a fresh instance, or close the old facade first (its in-flight
+requests then fail).
+
+Blobs bind the blob key (or one of its `previousKeys`) and the server
+identity, not the tool list. The identity is the server's reported
+`name@version`; for a source given by URL, its canonical `url:`; on a
+multi-server facade, every box's alias and identity (so adding, removing or
+skipping a box, or any box's version change, also stops a pending approval
+resuming). A pending `call_tool` approval resumes on the new facade when key
+and identity are unchanged, and is checked against the new facade's catalog
+and policy (a tool now gone or denied is refused). To void outstanding
+approvals across a re-wrap, rotate the blob key (without the old one in
+`previousKeys`). If you use a `replayCache`, pass the same instance (or
+shared store) to the new wrap, so a retry already spent on the old facade
+stays spent.
 
 You can also wrap a **connected SDK `Client`** instead of an in-process
 instance — Projection in front of a server you don't own. The smoke tests in
@@ -402,17 +415,27 @@ The choice is made once, at wrap time, and the facade reports it on its
 frozen `facade.projections`: `direct` is `true` when tools are listed
 directly and absent otherwise, and on a multi-server facade `directBoxes`
 names the boxes listed (in sorted alias order; any other box keeps its
-`search_<box>`). Projection writes nothing to stdout or stderr about it, so
-log it yourself if you want it on record:
+`search_<box>`, and `search_tools` stays under `catalog.globalSearch`
+while any box is unlisted). There `direct` is `true` when any box is
+listed. Projection writes nothing to stdout or stderr about it, so log it
+yourself if you want it on record — on a single-server facade:
 
 ```ts
 console.error('projection surface:', facade.projections.direct ? 'direct' : 'search_tools');
 ```
 
+and on a multi-server facade:
+
+```ts
+console.error('projection direct boxes:', facade.projections.directBoxes ?? []);
+```
+
 If your system prompt or skills name `search_tools` (or a listed tool's
 name), pin the surface rather than relying on the budget:
-`projections: { direct: false }` always serves `search_tools`,
-`projections: { direct: true }` always lists directly.
+`projections: { direct: false }` always serves the search tools
+(`search_tools` on a single-server facade; on a multi-server one, each
+`search_<box>`, plus `search_tools` unless `catalog.globalSearch` is
+`false`), `projections: { direct: true }` always lists directly.
 
 A listed tool advertises Projection's own annotations, never your server's:
 `readOnlyHint: true` only when Projection runs the call without asking and
