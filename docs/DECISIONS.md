@@ -2362,3 +2362,29 @@ they collide with R42's qualified-key check); evaluating predicates per
 call in `decidePolicy` (breaks its purity, and an impure rule could
 show one posture and gate on another); a new "reaches people" heuristic
 built in (guessing at names is the integrator's call, not the library's).
+
+## D37 — `KeyringTokenStore` is public, `load` included (2026-11-02)
+
+Context. A customer kept their own upstream OAuth tokens in a plaintext
+file and wrote their own `@napi-rs/keyring` wrapper, because only
+`MemoryTokenStore` was exported.
+
+Decision. The package root exports `KeyringTokenStore`, its options
+type, `TokenStoreError` (a consumer's `delete` can throw it) and the
+`KeyringModule` / `KeyringEntry` types that `load` returns. `load` stays
+in the public options although tests use it as a seam. The default
+import uses a variable specifier, so bundlers (esbuild, rolldown) leave
+it to runtime. A bundled app works when `@napi-rs/keyring` is installed
+beside it (marked external); a deploy without it falls back to memory.
+Bundling `() => import('@napi-rs/keyring')` itself fails on the `.node`
+binary. `load` lets a consumer supply the module its own way (a
+CommonJS `require`, a vendored copy) or inject a fake in its own tests.
+`fallenBack` is public, so a consumer can tell when values stop
+persisting. Not exported: `KEYRING_SERVICE` (documented as a string),
+`defaultTokenStore` and the key helpers, which are Projection's own
+wiring. The service name is fixed; consumers keep their keys apart with
+their own kind prefix.
+
+Rejected: dropping `load` from the public type (a consumer could not
+supply the module another way, nor test against a fake); a `service` option (more surface than
+the request needs; the hashed account already keeps keys apart).

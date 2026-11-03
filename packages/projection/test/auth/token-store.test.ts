@@ -197,8 +197,40 @@ describe('KeyringTokenStore (R59)', () => {
     expect(warnings).toHaveLength(1);
   });
 
+  it('a load that throws synchronously is a failed load: memory, one warning, delete throws', async () => {
+    const warnings: string[] = [];
+    let loads = 0;
+    const store = new KeyringTokenStore({
+      load: () => {
+        loads += 1;
+        throw new Error(`native binding failed ${LIBRARY_ERROR_TEXT}`);
+      },
+      warn: (message) => warnings.push(message),
+    });
+    await store.set(URL_KEY, VALUE);
+    expect(await store.get(URL_KEY)).toBe(VALUE);
+    expect(store.fallenBack).toBe(true);
+    expect(warnings).toEqual([FALLBACK_WARNING]);
+    expect(loads).toBe(1);
+    const err = await store.delete(URL_KEY).catch((caught: unknown) => caught);
+    expect(err).toBeInstanceOf(TokenStoreError);
+    expect(dump(err)).not.toContain(LIBRARY_ERROR_TEXT);
+    expect(warnings.join('')).not.toContain(LIBRARY_ERROR_TEXT);
+    expect(loads).toBe(1);
+  });
+
   it('the default timeout is 5 seconds', () => {
     expect(KEYRING_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it('rejects a timeout outside 1 to 2147483647 ms', () => {
+    for (const timeoutMs of [Infinity, NaN, 0, -1, 0.5, 2_147_483_648]) {
+      expect(() => new KeyringTokenStore({ timeoutMs })).toThrow(
+        new RangeError('timeoutMs must be between 1 and 2147483647'),
+      );
+    }
+    expect(() => new KeyringTokenStore({ timeoutMs: 1 })).not.toThrow();
+    expect(() => new KeyringTokenStore({ timeoutMs: 2_147_483_647 })).not.toThrow();
   });
 
   it('a failing delete throws fixed copy (a sign-out must not silently keep the token)', async () => {

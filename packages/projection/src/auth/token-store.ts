@@ -142,15 +142,27 @@ export interface KeyringModule {
 }
 
 export interface KeyringTokenStoreOptions {
-  /** Loads the keyring module. Default: a dynamic `import('@napi-rs/keyring')`. */
+  /**
+   * Loads the keyring module. Default: a dynamic import of
+   * `@napi-rs/keyring` that is left to runtime, so a bundled app works when
+   * the package is installed beside it (marked external); without it the
+   * store falls back to memory. Pass `load` to supply the module your own
+   * way (a CommonJS `require`, a vendored copy) or a fake in tests.
+   */
   load?: () => Promise<KeyringModule>;
-  /** Per-operation timeout. Default {@link KEYRING_TIMEOUT_MS}. */
+  /**
+   * Per-operation timeout in milliseconds: a finite number from 1 to
+   * 2147483647. Default 5000 ms.
+   */
   timeoutMs?: number;
   /** Where the one-time fallback warning goes. Default: `process.stderr`. */
   warn?: (message: string) => void;
 }
 
 const KEYRING_SPECIFIER = '@napi-rs/keyring';
+
+/** The largest delay a Node timer accepts. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /** True for the error of importing a module that is not installed. */
 function isModuleNotFound(err: unknown): boolean {
@@ -159,8 +171,8 @@ function isModuleNotFound(err: unknown): boolean {
 }
 
 async function importKeyring(): Promise<KeyringModule> {
-  // A variable specifier keeps bundlers from resolving the optional
-  // dependency at build time; it is loaded on first use only.
+  // A variable specifier leaves the optional dependency to runtime: a
+  // bundler does not resolve it, and Node loads it on first use only.
   const specifier: string = KEYRING_SPECIFIER;
   const loaded = (await import(specifier)) as Partial<KeyringModule> & {
     default?: Partial<KeyringModule>;
@@ -262,7 +274,17 @@ export class KeyringTokenStore implements TokenStore {
 
   constructor(options: KeyringTokenStoreOptions = {}) {
     this.#load = options.load ?? importKeyring;
-    this.#timeoutMs = options.timeoutMs ?? KEYRING_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? KEYRING_TIMEOUT_MS;
+    // Node turns an out-of-range timer delay into 1 ms.
+    if (
+      typeof timeoutMs !== 'number' ||
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > MAX_TIMEOUT_MS
+    ) {
+      throw new RangeError('timeoutMs must be between 1 and 2147483647');
+    }
+    this.#timeoutMs = timeoutMs;
     this.#warn = options.warn ?? ((message) => process.stderr.write(message));
   }
 
@@ -446,12 +468,16 @@ export class KeyringTokenStore implements TokenStore {
   }
 
   async #entry(key: string): Promise<KeyringEntry | undefined> {
-    this.#module ??= bounded(this.#timeoutMs, new AbortController(), this.#load()).catch(
-      (err: unknown) => {
-        this.#loadFailed = !isModuleNotFound(err);
-        return undefined;
-      },
-    );
+    // Started inside the chain, so a load that throws synchronously is a
+    // failed load like any other.
+    this.#module ??= bounded(
+      this.#timeoutMs,
+      new AbortController(),
+      Promise.resolve().then(() => this.#load()),
+    ).catch((err: unknown) => {
+      this.#loadFailed = !isModuleNotFound(err);
+      return undefined;
+    });
     const module = await this.#module;
     if (module === undefined) {
       this.#fallBack();

@@ -59,7 +59,12 @@ export {
 
 // Upstream auth — sources given by URL and the token store (PRD §6.10, R51, R59)
 export {
+  KeyringTokenStore,
   MemoryTokenStore,
+  TokenStoreError,
+  type KeyringEntry,
+  type KeyringModule,
+  type KeyringTokenStoreOptions,
   type TokenStore,
   type UpstreamOAuthOptions,
   type UpstreamSpec,

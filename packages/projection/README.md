@@ -112,7 +112,10 @@ Any source can be `{ url, oauth?: { clientId, scopes } }`: Projection builds
 the Streamable HTTP connection itself, uses and refreshes tokens from a
 token store (the OS credential store through the optional
 `@napi-rs/keyring` dependency by default, or `WrapOptions.tokenStore`, a
-plain string key-value store), and `facade.signOut()` clears them. Never put
+plain string key-value store), and `facade.signOut()` clears them. The
+default store is exported as `KeyringTokenStore`, so you can keep your own
+credentials in the OS store too; without `@napi-rs/keyring` it falls back
+to memory with one warning. Never put
 a token in an MCP configuration file. Just-in-time sign-in (asking the user
 on first use) is not supported in this version: a public server works, and
 so does one whose token is already in your `tokenStore`; otherwise the wrap
