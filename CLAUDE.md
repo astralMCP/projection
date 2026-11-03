@@ -4,8 +4,7 @@ TypeScript monorepo: `@astral-mcp/projection` (the library — wraps any MCP
 server in **code mode** (LLM-authored XState workflows) and a **tool catalog**
 (search, describe, call), with **human-approved side effects** over MCP
 MRTR), `@astral-mcp/harness` (scenario tests +
-reasoning-loop benchmark), `@astral-mcp/tui` (Ink demo client),
-`@astral-mcp/demo-host` (MCP Apps browser demo, `apps/demo-host`).
+reasoning-loop benchmark), `@astral-mcp/demo-host` (MCP Apps browser demo, `apps/demo-host`).
 
 ## Commands
 

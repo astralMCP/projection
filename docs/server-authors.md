@@ -1072,9 +1072,7 @@ only be restructured and resubmitted.
 
 ## Try it against your server
 
-In a clone of this repository (the harness and TUI are not published), point
+In a clone of this repository (the harness is not published), point
 the harness at your server for scripted approval scenarios
 (`runScenario` with approve/deny/tamper scripts — see
-`packages/harness/README.md`), or the TUI for interactive testing:
-`pnpm --filter @astral-mcp/tui start` wraps the demo server; swap in your own
-via `wrapMcpServer` + the exported `App`/`driveTask` pieces.
+`packages/harness/README.md`).
