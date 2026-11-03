@@ -21,6 +21,14 @@ survive an upgrade.
   range (#76, D40).
 - `ProjectionFacade` gains a required `policyOf(name)` method. Code that implements the interface
   itself must add it (#75, D38).
+- The wrapped servers' `notifications/tools/list_changed` is now followed by default, for servers
+  Projection connects to itself (an `McpServer` instance or a server given by URL): a running
+  facade's catalog, types, overview, resources and policy (`policyRules` re-run) can change after
+  wrap, and `facade.catalog`, `dts`, `resources` and `instructions` are getters over the current
+  snapshot. `followListChanged: false` keeps every catalog as wrapped. `ProjectionFacade` and
+  `MultiProjectionFacade` gain required `refreshTools()` and `onToolsChanged()` methods; code that
+  implements them itself must add both. `policyOf(name)` reports the decision the gate makes now,
+  which while a re-listing is pending is the distrusted one (#80, R65, D45).
 
 ### Added
 
@@ -45,6 +53,16 @@ survive an upgrade.
   servers, which still need a shared store. `MemoryReplayCacheOptions` is exported too (#73, R38,
   D42).
 - The package now ships this `CHANGELOG.md` (#74).
+- `WrapOptions.followListChanged` (default `true`; or `{ debounceMs, minIntervalMs }`): on a
+  wrapped server's `tools/list_changed`, Projection re-lists that server (debounced, rate-capped,
+  bounded by `introspectTimeoutMs`) and swaps in the rebuilt catalog, types, resources and policy
+  at once. Until it lands, the server's `readOnlyHint` and `destructiveHint` and any rule `auto`
+  are distrusted at the approval gate, and a request already running refuses a call to it. The
+  served surface (`projections.direct`, the search tools) stays as decided at wrap time. Held
+  (stdio) connections are sent `tools/list_changed` when the listed tools change.
+  `facade.onToolsChanged(listener)` passes the change on (behind `createMcpHandler`:
+  `handler.notify.toolsChanged()`), and `facade.refreshTools(alias?)` re-lists on demand, for
+  a `Client` you pass in, which Projection never subscribes (#80, R65, D45).
 
 ### Changed
 

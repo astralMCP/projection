@@ -1,6 +1,6 @@
 /**
  * Following a wrapped server's `notifications/tools/list_changed` (PRD R65,
- * DECISIONS D43): the scheduling, the trust bookkeeping and the pieces both
+ * DECISIONS D45): the scheduling, the trust bookkeeping and the pieces both
  * facade kinds share.
  *
  * A notification marks its box **dirty** at once. Until a re-listing that

@@ -495,7 +495,7 @@ R64. **Forwarding** (G1). `upstreamElicitation?: 'forward' | 'refuse'` on `WrapO
 
 ### 6.12 Tool list changes
 
-A wrapped server may change its tools mid-session: Pipedream enables an app, a server registers a tool once a user connects an account. MCP announces this with `notifications/tools/list_changed`. Rationale: DECISIONS D43.
+A wrapped server may change its tools mid-session: Pipedream enables an app, a server registers a tool once a user connects an account. MCP announces this with `notifications/tools/list_changed`. Rationale: DECISIONS D45.
 
 R65. **Following `tools/list_changed`.** `WrapOptions.followListChanged?: boolean | { debounceMs?: number; minIntervalMs?: number }`, default `true`; on `wrapMcpServers` it applies to every box. Anything else (a non-integer, `debounceMs` outside 0–60 000, `minIntervalMs` outside 100–3 600 000, an unknown key) is a `validate` error at wrap time.
 

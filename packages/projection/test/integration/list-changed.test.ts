@@ -1,5 +1,5 @@
 /**
- * Following `notifications/tools/list_changed` (R65, DECISIONS D43) end to
+ * Following `notifications/tools/list_changed` (R65, DECISIONS D45) end to
  * end, over REAL in-process McpServers that add, remove and re-annotate
  * tools after the wrap: the catalog, types, policy (rules included) and
  * direct listing follow; a dirty box is decided with its annotations

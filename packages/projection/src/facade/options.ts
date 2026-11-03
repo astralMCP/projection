@@ -160,7 +160,7 @@ export interface WrapOptions {
   introspectTimeoutMs?: number;
   /**
    * Follow the wrapped servers' `notifications/tools/list_changed` (R65,
-   * DECISIONS D43). Default `true`: when a server Projection connected to
+   * DECISIONS D45). Default `true`: when a server Projection connected to
    * itself (an `McpServer` instance, or a server given by URL) advertises
    * `tools.listChanged`, Projection subscribes, and on a notification
    * re-lists that server — debounced, at most once per `minIntervalMs`,
