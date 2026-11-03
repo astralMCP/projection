@@ -1,6 +1,6 @@
 {
   "name": "@astral-mcp/projection",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Wrap any MCP server in code mode (LLM-authored XState workflows) and a tool catalog (search, describe, call), with human-approved side effects over MCP MRTR (Multi Round-Trip Requests).",
   "license": "MIT",
   "type": "module",

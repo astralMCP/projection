@@ -209,10 +209,9 @@ By default every tool that is not `readOnlyHint: true` asks. Tighten or
 loosen that per tool with `policy` (`'auto'`, `'ask'` or `'deny'`), or for
 many tools at once with `policyRules`.
 
-> **`policyRules` and `policyOf` are new since 0.9.0.** They need the next
-> release, or a build from `main`. On 0.9.0 `policyRules` is ignored without an error, so the
-> example below would run with no pins. On 0.9.0, pin those tools with exact
-> `policy` entries instead, or don't use `'destructive-only'`.
+> **`policyRules` and `policyOf` need 0.10.0 or later.** On 0.9.0 `policyRules` is ignored
+> without an error, so the example below would run with no pins. On 0.9.0, pin those tools
+> with exact `policy` entries instead, or don't use `'destructive-only'`.
 
 ```ts
 const facade = await wrapMcpServer(upstream, {
@@ -296,8 +295,7 @@ followed by a write lets two replays through.
 A single-process server, like the stdio one in step 2, can pass the
 in-memory cache instead:
 
-> **`MemoryReplayCache` is new since 0.9.0.** It needs the next release, or
-> a build from `main`.
+> **`MemoryReplayCache` needs 0.10.0 or later.**
 
 ```ts
 import { MemoryReplayCache } from '@astral-mcp/projection';
