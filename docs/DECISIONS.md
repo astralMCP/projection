@@ -2302,3 +2302,63 @@ Amendments (2026-10-31, review of the v0.9 climb).
   closing line now counts its indent too. A test holds the estimate at or
   above the rendered body for a set of shapes. A content array's estimate
   adds each fenced block's fences and header.
+
+## D36 — Policy rules resolve at wrap time into per-tool overrides (2026-11-02)
+
+Context. A customer wrapping a ~240-tool Pipedream server (Gmail, Calendar,
+Drive, Slack) under `approvals: 'destructive-only'` found 101 write tools
+annotated `destructiveHint: false`, among them `gmail-send-email`, every
+Slack send/post/reply tool, `gdrive-share-file` and calendar create/RSVP.
+The hint is honest — those tools are additive — but additive is not
+harmless: each reaches other people. `openWorldHint` is true on 237 of 241
+tools, and MCP has no "notifies other people" hint, so annotations cannot
+tell a send from `gdocs-insert-text`. The only guard was a hand-kept
+exact-name `policy` list.
+
+Decision. A new `policyRules` option: an ordered list of name patterns
+(`{ match: '*send*', decision: 'ask' }`) and predicates
+(`(entry) => PolicyDecision | undefined`). They are resolved once, at
+wrap time, over the catalog (qualified names on a multi-server facade)
+into a concrete per-tool overrides map. The exact-name overrides are laid
+over it, and the result is the `policy` of the one frozen snapshot. So
+`decidePolicy`, the gate, blobs, typegen, the catalog postures and direct
+listing are unchanged and cannot drift: none of them ever calls a rule.
+Precedence is exact name > first rule with an opinion > approvals mode >
+annotations. A decision outside the three strings fails safe to `ask`
+(R14's rule for override values), including a missing one: a matching
+pattern always has an opinion, so a typo such as `decison` cannot let the
+tool fall through to `auto`. A rule that throws or returns a promise
+fails the wrap with a `validate` error: a broken rule is a deploy-time bug,
+and silently deciding `ask` for every tool would hide it. Predicates get a
+`structuredClone` of the entry, so they cannot mutate the catalog the gate
+reads; that entry comes from the wrapped server and may be hostile, so a
+predicate should base `auto` only on facts the integrator trusts (a tool
+name they vouch for), while `ask` or `deny` may rest on anything. The
+rules themselves are snapshotted at validation (array copied, pattern
+rules copied and frozen), so edits made while the wrap awaits
+introspection are not seen.
+
+Patterns are a separate option, not glob keys inside `policy`: `policy`
+keys stay literal, so a tool whose name contains `*` can still be pinned
+exactly, and R42's qualified-key validation of `policy` is untouched.
+Patterns match the whole name, case-insensitively (camelCase servers
+spell `sendEmail`), with only `*` special and no escape; the matcher is a
+linear segment search, no regex, so no pattern can be a ReDoS. On a
+multi-server facade a pattern sees `<alias>.<tool>`, so `gmail.*` targets
+a box and a bare name `gmail.x` in another box (qualified `slack.gmail.x`)
+does not match it.
+
+Determinism. Rules run once per wrap; a resumed call decides from the
+frozen map, not by re-running a rule. R27 still needs every instance to
+decide alike, so a predicate must be deterministic on the entry; Projection
+cannot check that, and the docs say so.
+
+No default copy changes. With no rules, `resolvePolicyRules` returns the
+`policy` object itself, so every LLM-visible surface is byte-identical
+(tested). No new text was added to tool descriptions or instructions.
+
+Rejected: glob keys in `policy` (ambiguous for names containing `*`, and
+they collide with R42's qualified-key check); evaluating predicates per
+call in `decidePolicy` (breaks its purity, and an impure rule could
+show one posture and gate on another); a new "reaches people" heuristic
+built in (guessing at names is the integrator's call, not the library's).

@@ -228,6 +228,20 @@ export interface PolicyOverrides {
 }
 
 /**
+ * A policy rule (R14 amendment, DECISIONS D36): decides many tools at once
+ * where a {@link PolicyOverrides} entry names one. Either a name pattern —
+ * `{ match: '*send*', decision: 'ask' }`, matched against the whole tool
+ * name (qualified `<alias>.<tool>` on a multi-server facade),
+ * case-insensitively, `*` standing for any run of characters — or a
+ * function of the catalog entry returning a decision, or `undefined` for no
+ * opinion. Rules are resolved once, at wrap time; the first rule with an
+ * opinion decides a tool, and an exact-name override beats every rule.
+ */
+export type PolicyRule =
+  | { readonly match: string; readonly decision: PolicyDecision }
+  | ((tool: ToolCatalogEntry) => PolicyDecision | undefined);
+
+/**
  * Approvals mode (R49). `'every-write'` (the default) asks before every tool
  * that is not read-only; `'destructive-only'` also lets a non-read-only tool
  * run without approval when its annotations declare `destructiveHint: false`

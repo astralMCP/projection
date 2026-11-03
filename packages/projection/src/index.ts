@@ -142,8 +142,11 @@ export { capLength, neutralizeControlChars } from './text-safety.js';
 // `assertApprovalsMode` on an untrusted `approvals` value when using
 // `executeMachine` / `generateToolTypes` directly (`wrapMcpServer` already
 // does): it turns a malformed mode into a `validate` ProjectionError.
+// `resolvePolicyRules` turns `policyRules` into per-tool overrides for a
+// catalog, the same way the wraps do (D36).
 export {
   assertApprovalsMode,
+  assertPolicyRules,
   buildElicitationCopy,
   decidePolicy,
   policyContext,
@@ -151,6 +154,7 @@ export {
   postureOf,
   purposeSentence,
   resolveCallPolicy,
+  resolvePolicyRules,
   POLICY_DENIED_REASON,
   type ElicitationCopy,
   type ElicitationCopyOptions,

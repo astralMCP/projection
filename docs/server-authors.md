@@ -141,8 +141,9 @@ mode. Precedence, strongest first:
 1. your per-tool `policy` override — a per-tool `ask` or `deny` holds under
    `'destructive-only'`, and a per-tool `auto` still runs (a malformed
    override value still fails safe to `ask`);
-2. the approvals mode;
-3. the annotation default above.
+2. your `policyRules` (see "Policy rules" below), first match wins;
+3. the approvals mode;
+4. the annotation default above.
 
 Every surface shows the resolved decision: `search_tools` and
 `describe_tool` postures, the `.d.ts` doc comments and the `discover_apis`
@@ -155,6 +156,73 @@ places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come
 from the wrapped server, and a hostile or careless server can label a
 damaging tool non-destructive — enable the mode only for servers you trust,
 and pin anything you doubt with a per-tool `ask` or `deny`.
+
+Trusting a server is not the same as it being safe to skip approvals.
+`destructiveHint: false` means _additive_ — the tool creates or appends
+rather than overwrites or deletes — not _harmless_. Sending an email,
+posting or replying in a chat, sharing a file and creating a calendar
+event that sends invites are all typically annotated non-destructive, yet
+each reaches other people and cannot be taken back. MCP has no annotation
+for "notifies or reaches other people" (`openWorldHint` is true on almost
+every tool of a SaaS server), so an honest server cannot tell you. Under
+`'destructive-only'`, pin those tools to `ask` yourself, by name pattern:
+
+```ts
+const facade = await wrapMcpServer(pipedream, {
+  blob: { key: blobKey },
+  approvals: 'destructive-only',
+  policyRules: [
+    { match: '*send*', decision: 'ask' },
+    { match: '*post*', decision: 'ask' },
+    { match: '*reply*', decision: 'ask' },
+    { match: '*share*', decision: 'ask' },
+    { match: '*invite*', decision: 'ask' },
+    { match: 'google_calendar-*', decision: 'ask' },
+  ],
+});
+```
+
+### Policy rules
+
+`policyRules` decides many tools at once where `policy` names one. Each rule
+is either a name pattern or a function of the tool's catalog entry:
+
+```ts
+policyRules: [
+  { match: '*send*', decision: 'ask' },
+  { match: '*delete*', decision: 'deny' },
+  (tool) => (tool.description?.includes('notif') ? 'ask' : undefined),
+],
+```
+
+- A **pattern** matches the whole tool name, case-insensitively; `*` stands
+  for any run of characters (none included) and every other character is
+  literal. There is no escape: a `*` in a pattern also matches a `*` in a
+  name, so to pin one tool whose name contains `*`, use its exact `policy`
+  entry.
+- A **function** gets a copy of the tool's catalog entry (name,
+  description, input schema, annotations) and returns `'auto'`, `'ask'`,
+  `'deny'`, or `undefined` for no opinion. It must be synchronous and
+  deterministic — every instance of a horizontally scaled deployment must
+  decide alike (R27). The entry comes from the wrapped server and may be
+  hostile: base `'auto'` only on facts you trust, such as a tool name you
+  vouch for; basing `'ask'` or `'deny'` on the description, annotations or
+  schema is fine.
+- Rules are tried in order and the **first with an opinion** decides the
+  tool. An exact `policy` entry beats every rule; a rule beats the approvals
+  mode and the annotations.
+- Rules are resolved **once, at wrap time**, over the server's tools, into
+  per-tool decisions frozen with the rest of the policy (the rules
+  themselves are copied when the wrap starts, so later edits are not seen): every surface shows
+  the decision the gate enforces, and no rule runs per request.
+- **Fail-safe.** A decision other than the three strings — from a function
+  or a pattern — means `ask`, never `auto`. A pattern that matches always
+  has an opinion, so one with a missing `decision` (a typo such as
+  `decison`) also means `ask` on the tools it matches. A function that throws, or
+  returns a promise, fails the wrap with a `validate` `ProjectionError`; so
+  does a `policyRules` value that is not an array of rules.
+- On `wrapMcpServers` a rule sees qualified names (`gmail.send_email`), so
+  `'*send*'` spans every box and `'gmail.*'` targets one.
 
 ### What the person and the model see around an approval
 

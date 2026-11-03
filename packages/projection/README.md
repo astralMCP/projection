@@ -46,6 +46,20 @@ over the mode. The mode extends the trust Projection places in
 `readOnlyHint` to `destructiveHint: false`, and a hostile server can
 mislabel a damaging tool — enable it only for servers you trust.
 
+Even an honest server's `destructiveHint: false` means _additive_, not
+_harmless_: sending email, posting messages, sharing files and sending
+invites are typically non-destructive yet reach other people. `policyRules`
+pins tools by name pattern or by a function of the tool, resolved once at
+wrap time; an exact `policy` entry still wins, and a rule beats the mode:
+
+```ts
+approvals: 'destructive-only',
+policyRules: [
+  { match: '*send*', decision: 'ask' }, // whole name, case-insensitive, * = anything
+  (tool) => (tool.name.includes('share') ? 'ask' : undefined),
+],
+```
+
 `upstreamElicitation: 'forward'` lets a trusted wrapped server ask the user
 questions mid-call (a form, or a link to open): each is relayed over MRTR as
 `Question from <box> (not an approval)` with the server's words quoted and
