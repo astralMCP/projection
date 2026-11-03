@@ -25,9 +25,12 @@ Install Projection with the MCP SDK it runs on. Both SDK packages are peer
 dependencies in the range `~2.4.0` (2.4.x patch releases; DECISIONS D40):
 Projection imports your copy, so the `McpServer` or `Client` you hand it is
 the same class it checks against. Install both even if you only import one;
-Projection needs both. An out-of-range SDK fails the install (npm `ERESOLVE`);
-forcing it with `--legacy-peer-deps` or `--force` runs Projection on an SDK
-it was not tested against.
+Projection needs both. A fresh `npm install` or `npm ci` with an out-of-range
+SDK fails (`ERESOLVE`), but installing one explicitly into a project that
+already has Projection only warns (`overriding peer dependency`) and goes
+ahead, as does `--legacy-peer-deps` or `--force`. Either way Projection runs
+on an SDK it was not tested against; check that `npm ls
+@modelcontextprotocol/server @modelcontextprotocol/client` shows no `invalid`.
 
 ```bash
 npm install @astral-mcp/projection @modelcontextprotocol/server@~2.4.0 @modelcontextprotocol/client@~2.4.0

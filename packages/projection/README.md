@@ -12,8 +12,10 @@ The MCP SDK is a peer dependency: install both packages yourself, in the
 supported range (`~2.4.0`: 2.4.x patch releases, not 2.5). Projection imports
 both whichever source you wrap, and uses your copy, so the `McpServer` or
 `Client` you pass in is the class it checks against. npm 7+ and pnpm install
-missing peers automatically and refuse an out-of-range one; `npm ls
-@modelcontextprotocol/server` should show a single copy.
+missing peers automatically. npm refuses an out-of-range SDK on a fresh
+install, but an explicit `npm install` of one into an existing project only
+warns, so check that `npm ls @modelcontextprotocol/server
+@modelcontextprotocol/client` shows a single copy of each and no `invalid`.
 
 Projection wraps an existing MCP server and exposes two projections of it —
 five tools in all, never a pass-through to the wrapped server's own:

@@ -2451,19 +2451,29 @@ consumer's, and Projection imports it.
   `serveStdio`, and the facade serves through `/server`. A consumer that
   passes only a `Client` still needs `/server`.
 - **`client` and `server` need not be the same version within the range.**
-  Each bundles its own copy of `core`, so their classes never share
-  prototypes even at one version. The SDK brand-matches its error classes
+  Each inlines `core`'s classes (`ProtocolError`, `Protocol` and the rest)
+  into its own chunk, and also depends on `@modelcontextprotocol/core` at the
+  same exact version for a few subpaths. So their classes never share
+  prototypes, even at one version. The SDK brand-matches its error classes
   across copies (`Symbol.for('mcp.sdk.errorBrands')`), which is what
   Projection's `ProtocolError`/`SdkError` checks rely on. `McpServer` and
   `Client` are not branded. Projection only `instanceof`-checks them against
   the consumer's own copy, which is a single copy now that they are peers.
 - **No runtime version check.** The SDK exports no version constant and
   does not export `./package.json`, so Projection cannot read the installed
-  version reliably. Enforcement is the package manager's: npm 7+ fails an
-  out-of-range install with `ERESOLVE`, and npm and pnpm install missing
-  peers automatically. A consumer who forces past that (`--legacy-peer-deps`,
-  `--force`, overrides) runs an SDK we did not test; `npm ls` reports it as
-  `invalid`. `MCP_SDK_VERSION` is now the tested pin and `MCP_SDK_RANGE` the
+  version reliably. Enforcement is the package manager's, and it is
+  partial: npm 7+ fails a fresh `npm install` or `npm ci` whose tree puts
+  the SDK out of range with `ERESOLVE`, and npm and pnpm install missing
+  peers automatically, but an explicit `npm install` of an out-of-range SDK
+  into a project that already has Projection only prints `npm warn ERESOLVE
+  overriding peer dependency` and installs it. That consumer, like one who
+  forces past the check (`--legacy-peer-deps`, `--force`, overrides), runs
+  an SDK we did not test; `npm ls` reports it as `invalid`, and the docs
+  tell consumers to check for that. A runtime guard would buy no security:
+  the security review found every SDK-dependent security behaviour degrades
+  fail-closed on a forced out-of-range SDK (reproduced with 2.3.1: S2
+  gating held, an unannotated write was still suspended, and the handler
+  never ran). `MCP_SDK_VERSION` is now the tested pin and `MCP_SDK_RANGE` the
   peer range; the wrap-time hints name the range.
 - **Proof.** The pack-install smoke installs the packed tarball with the
   consumer's own `client` and `server` at the pin. It asserts that
