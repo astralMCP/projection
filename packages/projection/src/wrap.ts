@@ -83,8 +83,13 @@ import {
   type ToolCallResult,
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
-import { assertApprovalsMode } from './policy/index.js';
-import { clampCaps, DEFAULT_SERVER_ALIAS, type ServerCatalog } from './types.js';
+import { assertApprovalsMode, assertPolicyRules, resolvePolicyRules } from './policy/index.js';
+import {
+  clampCaps,
+  DEFAULT_SERVER_ALIAS,
+  type PolicyOverrides,
+  type ServerCatalog,
+} from './types.js';
 
 export type { ProjectionsOptions, RegisterOptions, WrapOptions } from './facade/options.js';
 
@@ -212,6 +217,7 @@ export async function wrapMcpServer(
   const selected = resolveProjections(options.projections);
   const direct = resolveDirectSetting(options.projections, selected.catalog);
   const approvals = assertApprovalsMode(options.approvals);
+  const policyRules = assertPolicyRules(options.policyRules);
   assertApprovalPrompts(options.approvalPrompts);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const upstreamElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
@@ -248,8 +254,18 @@ export async function wrapMcpServer(
   // The policy settings (overrides + approvals mode) are snapshotted once,
   // here, and that one frozen copy feeds typegen AND the gate / catalog
   // tools: the posture baked into the `.d.ts` resource and the overview must
-  // be the posture `describe_tool` and the approval gate decide with.
-  const policySettings = freezePolicySettings({ policy: options.policy, approvals });
+  // be the posture `describe_tool` and the approval gate decide with. Policy
+  // rules are resolved into per-tool overrides first (D36), so the snapshot
+  // carries their outcome and no surface ever calls a rule.
+  let policy: PolicyOverrides | undefined;
+  try {
+    policy = resolvePolicyRules(catalog, policyRules, options.policy);
+  } catch (err) {
+    // A rule that throws fails the wrap: close what Projection opened.
+    await introspector.close();
+    throw err;
+  }
+  const policySettings = freezePolicySettings({ policy, approvals });
 
   // Direct listing: planned under the same frozen policy, so each mediated
   // tool's posture line is the posture call_tool decides with.

@@ -93,7 +93,7 @@ import {
   type ProtocolEra,
   type ToolCallResult,
 } from '../mrtr/index.js';
-import { assertApprovalsMode } from '../policy/index.js';
+import { assertApprovalsMode, assertPolicyRules, resolvePolicyRules } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { generateToolTypes, type ToolTypeText } from '../typegen/index.js';
@@ -158,6 +158,7 @@ export async function wrapMcpServers(
   const resolved = resolveSources(sources, tokenStoreOption(options.tokenStore));
   const aliases = new Set(resolved.map((source) => source.alias));
   assertPolicyKeys(options.policy, aliases);
+  const policyRules = assertPolicyRules(options.policyRules);
   const approvals = assertApprovalsMode(options.approvals);
   assertApprovalPrompts(options.approvalPrompts);
   const { globalSearch } = resolveCatalogOptions(options.catalog);
@@ -199,8 +200,10 @@ export async function wrapMcpServers(
     for (const source of resolved) {
       if (source.approvals !== undefined) sourceModes.set(source.alias, source.approvals);
     }
+    // Rules resolve over the qualified names (R42, D36), under the
+    // facade's exact-name overrides, into the one frozen snapshot.
     const policySettings = freezePolicySettings({
-      policy: options.policy,
+      policy: resolvePolicyRules(planned, policyRules, options.policy),
       approvals,
       toolApprovals: toolApprovalsFor(planned, sourceModes),
     });

@@ -19,6 +19,7 @@ import type {
   PolicyOptions,
   BlobSealerConfig,
   PolicyOverrides,
+  PolicyRule,
   RedactionHook,
   ReplayCache,
   ResourceCaps,
@@ -37,6 +38,20 @@ export interface WrapOptions {
    * keeps its own frozen copy, so later changes to this object are not seen.
    */
   policy?: PolicyOverrides;
+  /**
+   * Policy rules (R14 amendment, DECISIONS D36): decide many tools at once,
+   * by name pattern (`{ match: '*send*', decision: 'ask' }`, whole name,
+   * case-insensitive, `*` = any run of characters) or by a function of the
+   * tool's catalog entry returning `'auto'` | `'ask'` | `'deny'`, or
+   * `undefined` for no opinion. On `wrapMcpServers` a rule sees the
+   * qualified name (`gmail.send_email`). Resolved once, at wrap time, over
+   * the introspected catalog: the first rule with an opinion decides a
+   * tool; an exact `policy` entry beats every rule, and a rule beats the
+   * approvals mode and the annotations. A malformed decision fails safe to
+   * `'ask'`; a rule that throws fails the wrap (`validate`). A function
+   * rule must be deterministic — every instance must decide alike (R27).
+   */
+  policyRules?: readonly PolicyRule[];
   /**
    * Approvals mode (R49). `'every-write'` (default) asks before every tool
    * that is not read-only. `'destructive-only'` also runs, without approval,

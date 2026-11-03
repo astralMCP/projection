@@ -15,6 +15,11 @@
  *   `'every-write'`.
  * - `assertApprovalsMode(value)` — R49 wrap-time validation of the
  *   `approvals` option (`validate`-phase error on a malformed value).
+ * - `assertPolicyRules(value)` / `resolvePolicyRules(catalog, rules,
+ *   policy)` — the `policyRules` option (R14 amendment, D36): validated
+ *   before connecting, then resolved once over the catalog into per-tool
+ *   overrides under the exact-name ones. `globMatches(pattern, name)` is
+ *   the name-pattern matcher.
  * - `resolveCallPolicy(call, catalog, context?)` — resolves a machine's
  *   `PendingToolCall` against a `ServerCatalog`; returns the decision plus
  *   the catalog entry, or a `validate`-phase `ProjectionError` for a tool
@@ -47,6 +52,7 @@ export {
   type ResolvedCallPolicy,
   type ToolPosture,
 } from './decision.js';
+export { assertPolicyRules, globMatches, resolvePolicyRules } from './rules.js';
 export {
   buildElicitationCopy,
   type ElicitationCopy,

@@ -108,6 +108,19 @@ table of how each holds is in the
 the known replay-window limitation and the `replayCache` option that closes
 it.
 
+Annotations decide the defaults, and trusting a server is not the same as it
+being safe to skip approvals: under `approvals: 'destructive-only'` a tool
+annotated `destructiveHint: false` runs unprompted, but that hint means
+_additive_, not _harmless_ — sending email, posting messages, sharing files
+and sending invites are typically non-destructive yet reach other people.
+Pin them with `policyRules`, by name pattern or by a function of the tool
+([details](docs/server-authors.md#policy-rules)):
+
+```ts
+approvals: 'destructive-only',
+policyRules: [{ match: '*send*', decision: 'ask' }, { match: '*share*', decision: 'ask' }],
+```
+
 ## Repository layout
 
 | Path                     | What                                                                                                                                                                           |
