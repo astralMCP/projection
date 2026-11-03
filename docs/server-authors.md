@@ -748,23 +748,33 @@ treat it as a secret and never parse, log or display it.
   default store's is read, compare, delete). Never log a value.
 - **Reusing the keyring store.** `KeyringTokenStore` (exported) is the
   default store, so you can keep your own credentials in the OS store with
-  the same guarantees: verified writes, 5 s timeouts, per-key ordering, and
-  failures reported as a `TokenStoreError` that never carries a value or
-  the keyring library's text. Its options are `warn`, `timeoutMs` and
-  `load`: `warn` receives the one fallback warning (default stderr),
-  `load` supplies the module (default: a dynamic import of
-  `@napi-rs/keyring` that bundlers do not follow, so a bundled app passes
-  `() => import('@napi-rs/keyring')`). Entries go under the same service,
-  `@astral-mcp/projection`, with the SHA-256 of your key as the account;
-  give your keys their own kind prefix (not `tokens:` or `registration:`)
-  so they never meet Projection's. `@napi-rs/keyring` is an optional
-  dependency: when it is not installed or fails to load, or the OS store
-  fails, the instance falls back to memory for the rest of its life, prints
-  the warning once, and `fallenBack` turns true — values set after that do
-  not survive a restart, so check `fallenBack` if persistence matters. A
-  `delete` that cannot reach an OS store that may hold the entry throws
-  `TokenStoreError` rather than report success. Each instance warns on its
-  own; Projection's default store is a separate instance.
+  the same guarantees: verified writes, 5 s timeouts and per-key ordering.
+  Entries go under the service `@astral-mcp/projection`, with the SHA-256
+  of your key as the account. Give your keys their own kind prefix (not
+  `tokens:` or `registration:`) so they never meet Projection's. The
+  prefix keeps keys apart; it is not access control. Any code running as
+  the same user, this class included, can read any entry under the
+  service. Its options are `warn`, `timeoutMs` and `load`. `warn` receives
+  the one fallback warning (default stderr). The default text speaks of
+  Projection's upstream sign-in, so pass your own `warn` for your own
+  credentials. `timeoutMs` must be from 1 to 2147483647. `load` supplies
+  the module. The default import of `@napi-rs/keyring` is left to
+  runtime, so a bundled app works when the package is installed beside it
+  (mark it external); pass `load` to supply it another way, such as a
+  CommonJS `require`. `@napi-rs/keyring` is an optional dependency. When
+  it is missing or fails to load, or the OS store fails, `get` and `set`
+  do not throw: the instance falls back to memory for the rest of its
+  life, prints the warning once, and `fallenBack` turns true. Values set
+  after that may not survive a restart (keys already seen in the keyring
+  still get a best-effort write), so check `fallenBack` if persistence
+  matters. The only `TokenStoreError` you see comes from `delete`, when it
+  cannot reach an OS store that may hold the entry, or from `set` given a
+  non-string value. It never carries a value or the library's text.
+  Ordering, late-write reconciliation and the delete guarantee hold within
+  one instance, so use one instance per set of keys. If you also pass a
+  `KeyringTokenStore` as `WrapOptions.tokenStore`, pass that same instance
+  everywhere. Each instance warns on its own; Projection's default store
+  is a separate instance.
 
 ### Signing out
 

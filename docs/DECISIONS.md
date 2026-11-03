@@ -2372,16 +2372,19 @@ file and wrote their own `@napi-rs/keyring` wrapper, because only
 Decision. The package root exports `KeyringTokenStore`, its options
 type, `TokenStoreError` (a consumer's `delete` can throw it) and the
 `KeyringModule` / `KeyringEntry` types that `load` returns. `load` stays
-in the public options although tests use it as a seam: the default
-import uses a variable specifier on purpose so bundlers do not resolve
-the optional dependency, which means a bundled app cannot find it at
-runtime unless it passes `() => import('@napi-rs/keyring')` itself.
+in the public options although tests use it as a seam. The default
+import uses a variable specifier, so bundlers (esbuild, rolldown) leave
+it to runtime. A bundled app works when `@napi-rs/keyring` is installed
+beside it (marked external); a deploy without it falls back to memory.
+Bundling `() => import('@napi-rs/keyring')` itself fails on the `.node`
+binary. `load` lets a consumer supply the module its own way (a
+CommonJS `require`, a vendored copy) or inject a fake in its own tests.
 `fallenBack` is public, so a consumer can tell when values stop
 persisting. Not exported: `KEYRING_SERVICE` (documented as a string),
 `defaultTokenStore` and the key helpers, which are Projection's own
 wiring. The service name is fixed; consumers keep their keys apart with
 their own kind prefix.
 
-Rejected: dropping `load` from the public type (bundled apps would fall
-back to memory with no way out); a `service` option (more surface than
+Rejected: dropping `load` from the public type (a consumer could not
+supply the module another way, nor test against a fake); a `service` option (more surface than
 the request needs; the hashed account already keeps keys apart).
