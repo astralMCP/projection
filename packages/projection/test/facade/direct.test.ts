@@ -12,7 +12,7 @@ import {
   isInputRequiredResult,
   StreamableHTTPClientTransport,
 } from '@modelcontextprotocol/client';
-import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import { createMcpHandler, InMemoryTransport, McpServer } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -773,5 +773,90 @@ describe('direct listing on a single-server facade: no stale search_tools', () =
     const pointer = JSON.stringify(f.discoverApis().content);
     expect(pointer).toContain("This server's tools are listed directly");
     expect(pointer).not.toContain('search_tools');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What the wrap decided, as integrators read it (README, server-authors.md).
+
+describe('the wrap-time surface on facade.projections', () => {
+  it('records the chosen surface, frozen, on single- and multi-server facades', async () => {
+    const under = await wrapMcpServer(hostileServer([]), {
+      blob: { key: KEY },
+      projections: { direct: 'auto' },
+    });
+    const over = await wrapMcpServer(hostileServer([]), {
+      blob: { key: KEY },
+      projections: { direct: 'auto', directBudgetTokens: 10 },
+    });
+    expect(under.projections.direct).toBe(true);
+    expect(over.projections).toEqual({ codeMode: true, catalog: true });
+    expect('direct' in over.projections).toBe(false);
+    for (const f of [under, over]) expect(Object.isFrozen(f.projections)).toBe(true);
+    await Promise.all([under.close(), over.close()]);
+
+    const mixed = await wrapMixed();
+    expect(mixed.projections.directBoxes).toEqual(['db', 'fs']);
+    expect(Object.isFrozen(mixed.projections)).toBe(true);
+    expect(Object.isFrozen(mixed.projections.directBoxes)).toBe(true);
+    await mixed.close();
+    facade = undefined;
+
+    const searched = await wrapMixed({
+      projections: { direct: 'auto', directBudgetTokens: 10 },
+    });
+    expect(searched.projections).toEqual({ codeMode: true, catalog: true });
+    expect('direct' in searched.projections).toBe(false);
+    expect('directBoxes' in searched.projections).toBe(false);
+    expect(Object.isFrozen(searched.projections)).toBe(true);
+  });
+});
+
+describe('notifications/tools/list_changed from the wrapped server', () => {
+  it('is ignored: the catalog, types and surface stay as wrapped, and a new tool is unknown', async () => {
+    const upstream = new McpServer({ name: 'growing', version: '1.0.0' });
+    const ran: string[] = [];
+    const add = (name: string) =>
+      upstream.registerTool(
+        name,
+        { description: `The ${name} tool.`, inputSchema: z.object({}) },
+        () => {
+          ran.push(name);
+          return { content: [{ type: 'text' as const, text: `ran ${name}` }] };
+        },
+      );
+    add('first_tool');
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await upstream.connect(serverSide);
+    const caller = new Client({ name: 'caller', version: '1.0.0' }, { capabilities: {} });
+    await caller.connect(clientSide);
+    // Count the notification on the wire Projection reads, then pass it on.
+    let notified = 0;
+    const deliver = clientSide.onmessage;
+    clientSide.onmessage = (message, extra) => {
+      if ('method' in message && message.method === 'notifications/tools/list_changed') {
+        notified += 1;
+      }
+      deliver?.(message, extra);
+    };
+
+    const f = await wrapMcpServer(caller, { blob: { key: KEY } });
+    facade = f;
+    const before = { projections: f.projections, catalog: f.catalog, dts: f.dts };
+    add('second_tool');
+    await expect.poll(() => notified).toBe(1);
+
+    expect(f.projections).toBe(before.projections);
+    expect(f.catalog).toBe(before.catalog);
+    expect(f.dts).toBe(before.dts);
+    expect(f.catalog.tools.map((tool) => tool.name)).toEqual(['first_tool']);
+    const result = await f.callTool({ name: 'second_tool', args: {} }, 'modern');
+    expect(JSON.stringify(result)).toContain('Unknown tool');
+    expect(ran).toEqual([]);
+    const c = await connect(f);
+    const names = (await c.listTools()).tools.map((tool) => tool.name);
+    expect(names).toContain('first_tool');
+    expect(names).not.toContain('second_tool');
+    await caller.close();
   });
 });

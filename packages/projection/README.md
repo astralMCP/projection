@@ -33,6 +33,30 @@ five tools in all, never a pass-through to the wrapped server's own:
   each is also listed by name (`<box>__<tool>` on a multi-server facade) as
   a mediated alias of `call_tool` under the same gate, and `search_tools`
   is dropped. `projections: { direct: false }` keeps the five tools.
+  Under `'auto'` the surface depends on the catalog's size, so a server near
+  the budget can switch surfaces as tools are added upstream. The facade
+  reports what the wrap chose: `facade.projections.direct` is `true` when
+  tools were listed directly and absent otherwise (on a multi-server facade,
+  `true` when any box is listed, and `facade.projections.directBoxes` names
+  the boxes listed). Projection logs nothing; to record it yourself on a
+  single-server facade:
+  `console.error('projection:', facade.projections.direct ? 'direct' : 'search_tools')`
+  (multi-server:
+  `console.error('projection direct boxes:', facade.projections.directBoxes ?? [])`).
+  If your prompts or skills name the search tools, pin the surface with
+  `projections: { direct: false }` (or `true` to always list directly).
+
+The catalog, the generated types and the policy are fixed at wrap time.
+Projection does not follow the wrapped server's
+`notifications/tools/list_changed`: a tool the server adds later is not
+listed or searchable, `call_tool` and `toolCall` refuse it as an unknown
+tool, and it has no listed alias, until you wrap again and serve the new
+facade; a removed tool stays listed, its calls failing upstream. Re-wrapping
+an in-process `McpServer` needs a fresh instance or the old facade closed
+first (a still-connected server cannot be wrapped). A per-tool `policy` key
+applies only to a tool present at wrap; keep keys for tools you expect, and
+they take effect on the next wrap. `policyRules` are resolved at wrap time
+too, over the same tools: a later tool gets their decision on the next wrap.
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
 (read-only, `auto` by policy, or, under `destructive-only`, a non-destructive
