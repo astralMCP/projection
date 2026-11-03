@@ -333,54 +333,78 @@ entry or committed result that backs it; edit freely. -->
 
 ## Insights
 
-The tool-choice eval in [`packages/harness`](packages/harness) runs the
-same tasks on real and fake MCP servers, both with tools listed directly
-and through Projection. It grades the calls made and the resulting state.
-These results guided changes to Projection:
+We test Projection by giving models the same tasks with tools listed
+directly and through Projection, then checking what they actually did.
+Some of the useful lessons came from failures in how we presented those
+tools and their results.
 
-- With prompt caching, a long direct tool list is cheap, and each extra turn resends the whole prompt.
-  On held-out servers Projection first took about twice the turns of direct
-  mode (9.0 against 4.9), which used up its token savings. Putting a call
-  signature on the top three search hits, so the model can call from the
-  search page, cut `describe_tool` calls by about 80% and cost by 7–18%.
-  Glosses for required arguments whose names don't explain them followed,
-  after a model invented a value for one.
-  ([D32](docs/DECISIONS.md#d32--search-hits-show-how-to-call-them-argument-errors-carry-the-signature-2026-10-31),
-  [D33](docs/DECISIONS.md#d33--signed-hits-gloss-the-required-arguments-their-names-do-not-explain-2026-10-31))
-- Listing a small catalog's tools by name took Haiku from 33/34 at $0.022 an episode to 34/34 at $0.011 on the
-  multi-server tier, and from 23/28 to 27/28 at half the cost on held-out
-  servers. On the hardest tier Sonnet spent 17% more per
-  episode when the listed tools went unused. Direct listing is therefore the default only
-  under a token budget.
-  ([D28](docs/DECISIONS.md#d28--projectionsdirect-defaults-to-auto-2026-10-30))
-- The schema sanitizer removed a `limit` default of 10; the model omitted `limit`, got 10 of 40 documents
-  and treated them as the whole set. Projection now keeps scalar defaults
-  and attaches a note to results that look like one page of a larger set.
-  ([D29](docs/DECISIONS.md#d29--pass-on-the-signals-the-server-already-sent-defaults-partial-results-text-as-text-2026-10-30))
-- Showing a box's shared arguments (MongoDB's `connectionId`, `database`, `collection`) in the
-  system prompt cut MongoDB call errors from 47 to 16, but Haiku started
-  asking the user "which database and collection?" before calling anything,
-  and its pass count fell from 50 to 46. In the system prompt, the model treated required arguments as
-  facts it needed before acting. They now head the box's search
-  pages instead.
-  ([D34](docs/DECISIONS.md#d34--a-boxs-shared-arguments-are-shown-once-at-the-head-of-its-pages-2026-10-31))
-- Multi-line text shown indented four spaces came back indented when Haiku wrote a file
-  back, and these were most of its multi-tier failures. Rather than tell
-  the model to strip the indent, Projection now prints the text verbatim in
-  a fence.
-  ([D35](docs/DECISIONS.md#d35--a-text-field-is-printed-verbatim-in-a-fence-not-indented-2026-10-31))
-- A workflow that hit the round-trip cap after 8 of 14 writes returned an error followed by the
-  calls already done, and the model told the user the task was complete.
-  The message now says the workflow stopped unfinished, and `toolCalls`
-  lets a machine ask for many approvals in one round trip.
-  ([D30](docs/DECISIONS.md#d30--many-gated-calls-in-one-round-trip-toolcalls-and-copy-that-says-what-it-means-2026-10-30))
-- The offline search eval uses a deterministic corpus of 1,173 cases,
-  split into training and test sets. It includes the 467 distinct queries
-  models actually sent, each labelled with the tools the model went on to
-  use, versions of those queries for global search, and hand-written and
-  generated queries. It evaluates ranking changes without model calls or
-  spend. A change is kept only if the held-out split improves too.
-  ([D22](docs/DECISIONS.md#d22--search-weights-rare-words-and-breaks-ties-by-name-coverage-measured-offline-2026-10-30))
+### Display formatting can change the user's data
+
+We indented file contents in tool results to separate them from our own
+text. Haiku copied that indentation when writing the files back. This
+accounted for most of its failures on our multi-server eval tier.
+
+We changed the rendering rather than adding an instruction to strip the
+indent. When we extract long string fields from structured results, we
+now fence them without adding indentation. We also fixed a cleanup step
+that was replacing meaningful tabs. If an
+agent needs to copy or edit text, check what survives a read-and-write
+round trip through your tool's output format. Preserve the boundary around
+untrusted content too: our fence grows longer than any backtick run in the
+content, so the content cannot close it itself.
+([D35](docs/DECISIONS.md#d35--a-text-field-is-printed-verbatim-in-a-fence-not-indented-2026-10-31))
+
+### A successful call can hide an unfinished task
+
+Our schema cleanup removed a search tool's default page size. The model
+omitted the limit, received 10 of 40 documents, and treated them as the
+whole set. In another run, a workflow stopped after 8 of 14 writes. Its
+error was followed by a list of completed calls, and the model told the
+user the task was finished.
+
+The first call succeeded; the second returned an error. In both cases,
+the model missed the unfinished work. We now preserve scalar defaults,
+flag results that look partial, and say when a workflow stopped unfinished.
+When testing
+your own tools, check what the agent tells the user after a partial result
+or interrupted batch. Returning an error or a page of valid data doesn't
+establish that it understood what remains to be done.
+([D29](docs/DECISIONS.md#d29--pass-on-the-signals-the-server-already-sent-defaults-partial-results-text-as-text-2026-10-30),
+[D30](docs/DECISIONS.md#d30--many-gated-calls-in-one-round-trip-toolcalls-and-copy-that-says-what-it-means-2026-10-30))
+
+### A shorter tool list can make a task more expensive
+
+Hiding tools behind search saves prompt space, but adds discovery turns.
+With prompt caching, those extra turns can cost more than listing the
+tools up front. Direct listing roughly halved Haiku's cost on two eval
+tiers while improving completion. Sonnet saw no benefit on one tier and
+spent more on a harder one when the listed tools went unused.
+
+Measure the cost of finishing a task with the models you use, including
+discovery and retries. Projection's default is a budget of 8,000 estimated
+tokens for directly listed definitions; multi-server setups fill it with
+the smallest tool boxes first. That budget is our practical cutoff, not a
+universal optimum. Tune yours against completed tasks rather than prompt
+size alone.
+([D28](docs/DECISIONS.md#d28--projectionsdirect-defaults-to-auto-2026-10-30),
+[D32](docs/DECISIONS.md#d32--search-hits-show-how-to-call-them-argument-errors-carry-the-signature-2026-10-31))
+
+### Removing a lookup can remove the information needed to act
+
+Adding call signatures to search results helped cut tool-description
+lookups by about 80%. But a signature like `connectionId: string` didn't
+explain where the value came from. Sonnet guessed `"default"`, received an
+error, and gave up. The description it had skipped explained how to obtain
+a connection ID. The error repeated the signature, so a retry had nothing
+new to go on.
+
+Search hits now explain required arguments whose names and types don't
+say enough, and error hints include relevant argument descriptions. Before
+removing a step from your agent's workflow, check what it learned there.
+For a failed call, check whether the error provides enough new information
+to correct it.
+([D32](docs/DECISIONS.md#d32--search-hits-show-how-to-call-them-argument-errors-carry-the-signature-2026-10-31),
+[D33](docs/DECISIONS.md#d33--signed-hits-gloss-the-required-arguments-their-names-do-not-explain-2026-10-31))
 
 ## Contributing
 
