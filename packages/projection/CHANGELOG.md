@@ -11,6 +11,17 @@ survive an upgrade.
 
 ## [Unreleased]
 
+### Breaking
+
+- `@modelcontextprotocol/client` and `@modelcontextprotocol/server` are now peer dependencies at
+  `~2.4.0` instead of exact 2.4.0 dependencies. Add both to your own project's dependencies, within
+  that range, so that Projection uses your copy and your `McpServer` passes its `instanceof`
+  check. npm 7+ and pnpm install missing peers automatically. An out-of-range SDK installed into an
+  existing project only gets a warning, so check `npm ls` for `invalid`. Wrap-time hints name the
+  range (#76, D40).
+- `ProjectionFacade` gains a required `policyOf(name)` method. Code that implements the interface
+  itself must add it (#75, D38).
+
 ### Added
 
 - `WrapOptions.policyRules` sets a policy for many tools at once, by name pattern
@@ -22,6 +33,17 @@ survive an upgrade.
 - `KeyringTokenStore` (the default OS credential store) and `TokenStoreError` are exported from the
   package root, with the `KeyringTokenStoreOptions`, `KeyringModule` and `KeyringEntry` types.
   A `load` that throws synchronously is caught, and `timeoutMs` is bounded (#71, D37).
+- `facade.policyOf(name)` returns a tool's resolved `ToolPolicy` (`{ decision, posture }`). The
+  value comes from the frozen wrap-time policy settings, through the same lookup the approval gate
+  uses, or is `undefined` for a name the catalog doesn't declare. `name` is the catalog name
+  (qualified `<box>.<tool>` on a multi-server facade), never a direct-listing alias. Available on
+  both facades, with `ToolPolicy` exported (#75, D38).
+- `MemoryReplayCache` is an opt-in, in-memory `ReplayCache` for single-process deployments
+  (stdio): `replayCache: new MemoryReplayCache()`. It holds at most `maxEntries` live nonces
+  (default `DEFAULT_REPLAY_CACHE_MAX_ENTRIES`, 100 000), and a full cache refuses new approvals
+  with `cap_exceeded` instead of forgetting a live nonce. It is wrong for horizontally scaled
+  servers, which still need a shared store. `MemoryReplayCacheOptions` is exported too (#73, R38,
+  D42).
 - The package now ships this `CHANGELOG.md` (#74).
 
 ### Changed
@@ -29,6 +51,14 @@ survive an upgrade.
 - The docs say `destructiveHint: false` means a tool is additive, not harmless (#69).
 - The npm README links to repository docs with absolute GitHub URLs, so they resolve on npm
   (#70).
+- The docs say how to read the surface `direct: 'auto'` chose, from `facade.projections.direct`
+  and `directBoxes`. The catalog, types and policy are snapshotted at wrap time, and the wrapped
+  server's `tools/list_changed` is ignored, so a changed tool list needs a re-wrap (#72).
+
+### Fixed
+
+- `facade.projections.directBoxes` on a multi-server facade is a frozen copy, so
+  `facade.projections` is frozen all the way down (#72).
 
 ## [0.9.0] - 2026-10-31
 
