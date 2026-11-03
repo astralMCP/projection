@@ -4,7 +4,7 @@
  *
  * Hardcoded rather than imported from package.json at runtime: JSON import
  * attributes complicate the tsdown/dist story for zero benefit, and both
- * versions are pinned exactly (DECISIONS.md D2). A test in
+ * stamped versions are pinned exactly (DECISIONS.md D2). A test in
  * `test/blob/versions.test.ts` asserts these constants match the installed
  * package.json versions, so a version bump that forgets to update them fails
  * CI instead of silently minting blobs with a stale version stamp.
@@ -17,8 +17,15 @@ export const LIB_VERSION = '0.9.0';
 export const XSTATE_VERSION = '5.32.5';
 
 /**
- * Exact pin of `@modelcontextprotocol/server` and `@modelcontextprotocol/client`
- * (must match package.json). Not a blob stamp: the introspector names it when
- * a wrapped `McpServer` comes from a second, different copy of the SDK.
+ * The `@modelcontextprotocol/server` and `@modelcontextprotocol/client` version
+ * Projection is built and tested against: the exact devDependency pin (must
+ * match package.json). Not a blob stamp.
  */
 export const MCP_SDK_VERSION = '2.4.0';
+
+/**
+ * The peerDependencies range for both SDK packages (must match package.json;
+ * DECISIONS D40). The consumer installs the SDK; the introspector names this
+ * range when a wrapped `McpServer` comes from a second, different copy.
+ */
+export const MCP_SDK_RANGE = '~2.4.0';

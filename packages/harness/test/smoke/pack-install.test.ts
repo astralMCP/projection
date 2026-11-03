@@ -29,19 +29,29 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECTION_DIR = resolve(HERE, '../../../projection');
 
 /**
- * The SDK version the consumer installs alongside the tarball: Projection's
- * own exact pin, read from its manifest. A different version would give the
- * consumer a second copy of `@modelcontextprotocol/server`, whose `McpServer`
- * fails Projection's `instanceof` check — a dual-package hazard, not what
- * this test is for.
+ * The SDK the consumer installs alongside the tarball, as its own
+ * dependency: `@modelcontextprotocol/{client,server}` are peer dependencies
+ * of Projection (DECISIONS D40), so this is the copy Projection imports too.
+ * The version is Projection's own exact devDependency pin, read from its
+ * manifest, and must satisfy the published peer range.
  */
-const SERVER_SDK_VERSION = (
-  JSON.parse(readFileSync(join(PROJECTION_DIR, 'package.json'), 'utf8')) as {
-    dependencies: Record<string, string>;
+const PROJECTION_MANIFEST = JSON.parse(
+  readFileSync(join(PROJECTION_DIR, 'package.json'), 'utf8'),
+) as {
+  devDependencies: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+};
+const SDK_PACKAGES = ['@modelcontextprotocol/server', '@modelcontextprotocol/client'] as const;
+const SDK_VERSION = PROJECTION_MANIFEST.devDependencies['@modelcontextprotocol/server'];
+if (SDK_VERSION === undefined) {
+  throw new Error(
+    '@astral-mcp/projection no longer pins @modelcontextprotocol/server for its own build',
+  );
+}
+for (const name of SDK_PACKAGES) {
+  if (PROJECTION_MANIFEST.peerDependencies?.[name] === undefined) {
+    throw new Error(`@astral-mcp/projection no longer takes ${name} as a peer dependency`);
   }
-).dependencies['@modelcontextprotocol/server'];
-if (SERVER_SDK_VERSION === undefined) {
-  throw new Error('@astral-mcp/projection no longer depends on @modelcontextprotocol/server');
 }
 
 const CONSUMER_SCRIPT = `
@@ -78,6 +88,44 @@ import { createRequire } from 'node:module';
 const fromConsumer = import.meta.resolve('@napi-rs/keyring');
 const fromPackage = createRequire(import.meta.resolve('@astral-mcp/projection/package.json')).resolve('@napi-rs/keyring');
 console.log(JSON.stringify({ fromConsumer, fromPackage }));
+`;
+
+/**
+ * Resolves each SDK package from the consumer and from the installed
+ * package, and lists every SDK package manifest on disk: a single copy means
+ * one path per package, the same from both sides.
+ */
+const RESOLVE_SDK_SCRIPT = `
+import { readdirSync, existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+const fromPackage = createRequire(import.meta.resolve('@astral-mcp/projection/package.json'));
+const resolved = {};
+for (const name of ${JSON.stringify(SDK_PACKAGES)}) {
+  resolved[name] = { fromConsumer: import.meta.resolve(name), fromPackage: 'file://' + fromPackage.resolve(name) };
+}
+const copies = [];
+const walk = (dir) => {
+  if (!existsSync(dir)) return;
+  for (const entry of readdirSync(dir)) {
+    const scope = join(dir, entry);
+    if (entry === '@modelcontextprotocol') {
+      for (const name of readdirSync(scope)) {
+        const manifest = join(scope, name, 'package.json');
+        if (existsSync(manifest)) {
+          copies.push(name + '@' + JSON.parse(readFileSync(manifest, 'utf8')).version + ' ' + join(scope, name));
+        }
+        walk(join(scope, name, 'node_modules'));
+      }
+    } else if (entry.startsWith('@')) {
+      for (const name of readdirSync(scope)) walk(join(scope, name, 'node_modules'));
+    } else {
+      walk(join(scope, 'node_modules'));
+    }
+  }
+};
+walk('node_modules');
+console.log(JSON.stringify({ resolved, copies }));
 `;
 
 /** A resolve hook that makes `@napi-rs/keyring` unloadable, as on a platform without a prebuilt binary. */
@@ -176,9 +224,10 @@ describe.skipIf(process.env['PROJ_SKIP_PACK_SMOKE'] === '1')(
             join(dir, 'package.json'),
             JSON.stringify({ name: 'pack-smoke', private: true, type: 'module' }),
           );
-          // Consumer-style install: the tarball plus its peer usage deps,
-          // everything else resolved from the registry per the tarball's own
-          // dependency ranges — exactly what a real `npm install @astral-mcp/projection` does.
+          // Consumer-style install: the tarball plus the consumer's own SDK
+          // (Projection's peers), everything else resolved from the registry
+          // per the tarball's own dependency ranges — exactly what a real
+          // `npm install @astral-mcp/projection @modelcontextprotocol/server @modelcontextprotocol/client` does.
           execFileSync(
             'npm',
             [
@@ -186,9 +235,42 @@ describe.skipIf(process.env['PROJ_SKIP_PACK_SMOKE'] === '1')(
               '--no-audit',
               '--no-fund',
               join(dir, tarball),
-              `@modelcontextprotocol/server@${SERVER_SDK_VERSION}`,
+              ...SDK_PACKAGES.map((name) => `${name}@${SDK_VERSION}`),
             ],
             { cwd: dir, encoding: 'utf8', stdio: 'pipe' },
+          );
+
+          // D40: the peers are satisfied (`npm ls` exits non-zero on an
+          // invalid or missing peer) and the consumer's SDK is the only copy
+          // installed — Projection imports the very modules the consumer does,
+          // so `instanceof McpServer` holds across the boundary.
+          execFileSync('npm', ['ls', '--all', ...SDK_PACKAGES], { cwd: dir, stdio: 'pipe' });
+          writeFileSync(join(dir, 'resolve-sdk.mjs'), RESOLVE_SDK_SCRIPT);
+          const sdk = JSON.parse(
+            execFileSync(process.execPath, ['resolve-sdk.mjs'], {
+              cwd: dir,
+              encoding: 'utf8',
+              stdio: 'pipe',
+            }).trim(),
+          ) as {
+            resolved: Record<string, { fromConsumer: string; fromPackage: string }>;
+            copies: string[];
+          };
+          for (const name of SDK_PACKAGES) {
+            const { fromConsumer, fromPackage } = sdk.resolved[name] ?? {};
+            expect(fromConsumer, name).toContain(`node_modules/${name}/`);
+            expect(fromPackage, name).not.toContain('@astral-mcp/projection/node_modules');
+            // Same package directory from both sides (the ESM and CJS
+            // entry files differ; the directory must not).
+            const root = (url: string | undefined): string =>
+              (url ?? '').slice(0, (url ?? '').indexOf(`node_modules/${name}/`));
+            expect(root(fromPackage), name).toBe(root(fromConsumer));
+          }
+          const sdkCopies = sdk.copies.filter((copy) =>
+            SDK_PACKAGES.some((name) => copy.startsWith(`${name.split('/')[1]}@`)),
+          );
+          expect(sdkCopies.map((copy) => copy.split(' ')[0]).sort()).toEqual(
+            SDK_PACKAGES.map((name) => `${name.split('/')[1]}@${SDK_VERSION}`).sort(),
           );
 
           writeFileSync(join(dir, 'main.mjs'), CONSUMER_SCRIPT);

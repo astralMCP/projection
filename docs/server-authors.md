@@ -21,6 +21,18 @@ S1–S6 invariants); the reasoning behind the design is in
 
 ## Wrap and serve
 
+Install Projection with the MCP SDK it runs on. Both SDK packages are peer
+dependencies in the range `~2.4.0` (2.4.x patch releases; DECISIONS D40):
+Projection imports your copy, so the `McpServer` or `Client` you hand it is
+the same class it checks against. Install both even if you only import one;
+Projection needs both. An out-of-range SDK fails the install (npm `ERESOLVE`);
+forcing it with `--legacy-peer-deps` or `--force` runs Projection on an SDK
+it was not tested against.
+
+```bash
+npm install @astral-mcp/projection @modelcontextprotocol/server@~2.4.0 @modelcontextprotocol/client@~2.4.0
+```
+
 ```ts
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import { wrapMcpServer } from '@astral-mcp/projection';

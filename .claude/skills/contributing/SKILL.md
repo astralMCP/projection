@@ -86,8 +86,23 @@ commands need no PATH prefix. CI runs `check` on Node 22 and 24.
   Live GitHub smoke needs `PROJ_LIVE_GITHUB=1` and `GITHUB_TOKEN` (or
   `GITHUB_PERSONAL_ACCESS_TOKEN`).
   `packages/harness/test/smoke/pack-install.test.ts` packs and installs from
-  the npm registry on every `check`; set `PROJ_SKIP_PACK_SMOKE=1` when
-  offline.
+  the npm registry on every `check` (with the consumer's own SDK, asserting a
+  single copy, D40); set `PROJ_SKIP_PACK_SMOKE=1` when offline.
+- **The MCP SDK is a peer dependency** (DECISIONS D40). In
+  `packages/projection/package.json`, `@modelcontextprotocol/{client,server}`
+  are `peerDependencies` at `~X.Y.Z` plus exact `devDependencies` at `X.Y.Z`
+  for our own builds; harness and demo-host pin the same exact version. To
+  bump: diff the new release's `dist` against what Projection uses (as D12
+  did for 2.4.0), move every pin (projection devDependencies, harness,
+  demo-host) together, and set `MCP_SDK_VERSION` in `src/blob/versions.ts`.
+  On a patch release (2.4.0 → 2.4.1), move only the pins and keep the peer
+  range. On a minor (2.4 → 2.5), also move the range to `~2.5.0` and
+  `MCP_SDK_RANGE` with it. That narrows the range, so it is a public-surface
+  change and needs a minor release. `test/blob/versions.test.ts` checks the
+  pins, the range and the installed copy. Regenerate the goldens and re-run
+  the pack smoke, because SDK minors have changed what the model sees (D12).
+  Never put the SDK back in `dependencies`: that installs a second, private
+  copy, and the consumer's `McpServer` fails Projection's `instanceof` check.
 - **XState is pinned exactly** (5.32.5) and `@sebastianwessel/quickjs` at
   3.1.0 (PRD §7). Don't bump casually — blobs bind to the XState version.
 - **Perf-budget tests** (`test/integration/budgets.test.ts`) can flake under
