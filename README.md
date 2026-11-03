@@ -7,7 +7,7 @@ Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a **too
 > **Agents:** this README is written to be followed top to bottom. Read
 > [Why](#why) for what Projection does, then work through
 > [Adopt and use](#adopt-and-use) in order. Every snippet typechecks against
-> the current API.
+> the API on `main`.
 
 ## Why
 
@@ -32,15 +32,15 @@ a smaller, safer surface instead of the raw tool list:
   own name as a mediated alias of `call_tool`, and `search_tools` is dropped.
 - **Human-approved writes over MRTR.** Read-only calls run immediately. By
   default any other call pauses; the workflow's state is sealed into an encrypted blob
-  that travels with the request; the person sees the exact call and approves
-  or declines it. A decline is an ordinary result the model can act on.
+  that travels with the request; the person sees the call (with any fields
+  your `redact` hook masks) and approves or declines it. A decline is an ordinary result the model can act on.
 
 The guarantees behind that, in brief (the invariants are S1–S6 in
 [docs/PRD.md §9](docs/PRD.md#9-security-invariants)):
 
 - **The wrapped server's tools are never passed through.** Every call,
   including a directly listed tool, goes through the same gate.
-- **An approval binds the exact call the person saw.** The approved name and
+- **An approval binds the exact call that was approved.** The approved name and
   arguments are sealed in the blob and executed from there, never from
   whatever the resumed workflow asks for next.
 - **Sealed blobs.** Clients carry the state but cannot read or alter it:
@@ -101,16 +101,30 @@ await upstream.connect(
 const facade = await wrapMcpServer(upstream, {
   // One process, so a fresh key per start is enough; see "Production" below.
   blob: { key: randomBytes(32) },
-  // Approvals for hosts on MCP revisions before 2026-07-28 (stdio only).
+  // Approvals for hosts on MCP revisions before 2026-07-28 (held connections such as stdio).
   compat: { legacyElicitation: true },
 });
 
 serveStdio(facade.serverFactory);
 ```
 
-Then replace the server's entry in your host's MCP configuration with
-`node projection-server.ts` (Node ≥ 22.18 runs TypeScript directly; on
-22.12–22.17 compile it first, or run it with `npx tsx`).
+Then replace the server's entry in your host's MCP configuration so it runs
+this script with Node. Use absolute paths for both the script and a `node`
+binary ≥ 22.18 (it runs TypeScript directly; on 22.12–22.17 compile the
+script first, or run it with `tsx`). Hosts often start servers from another
+working directory, with a different `PATH`. Many hosts use this shape; the
+exact file and fields depend on the host:
+
+```json
+{
+  "mcpServers": {
+    "files": {
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/projection-server.ts"]
+    }
+  }
+}
+```
 
 What the host's model now sees: the catalog tools, code mode, and, for a
 server this size, its tools by name. A write it calls pauses and the host
@@ -119,7 +133,7 @@ shows an approval prompt. Two things decide whether that prompt can appear:
 - A client on the **2026-07-28** revision gets approvals over MRTR. On any
   transport.
 - An older client gets them only through `compat: { legacyElicitation: true }`
-  on stdio, and only if it declares the `elicitation` capability. Without
+  over a held connection such as stdio, and only if it declares the `elicitation` capability. Without
   either, read-only calls and machines still run and a write fails with a
   structured error naming the revision it needs.
   See [Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28).
@@ -160,8 +174,10 @@ The snippets from here on reuse `upstream` from step 2, and a `blobKey`
 ### 4. Several servers behind one facade (preview)
 
 `wrapMcpServers` fronts several servers as tool boxes under aliases you
-choose. Tools are addressed as `<alias>.<name>`, policy keys are qualified
-names, and each box gets its own `search_<alias>` tool:
+choose. Tools are addressed as `<alias>.<name>` and policy keys are
+qualified names. By default (`direct: 'auto'`), boxes that fit the token
+budget are listed directly as `<alias>__<tool>`, smallest box first; every
+other box keeps its own `search_<alias>` tool:
 
 ```ts
 import { wrapMcpServers } from '@astral-mcp/projection';
@@ -185,7 +201,12 @@ See [Several servers behind one facade](docs/server-authors.md#several-servers-b
 
 By default every tool that is not `readOnlyHint: true` asks. Tighten or
 loosen that per tool with `policy` (`'auto'`, `'ask'` or `'deny'`), or for
-many tools at once with `policyRules`:
+many tools at once with `policyRules`.
+
+> **`policyRules` is new since 0.9.0.** It needs the next release, or a build
+> from `main`. On 0.9.0 the option is ignored without an error, so the
+> example below would run with no pins. On 0.9.0, pin those tools with exact
+> `policy` entries instead, or don't use `'destructive-only'`.
 
 ```ts
 const facade = await wrapMcpServer(upstream, {
@@ -201,11 +222,17 @@ const facade = await wrapMcpServer(upstream, {
   policyRules: [
     { match: '*send*', decision: 'ask' }, // whole name, case-insensitive, * = anything
     { match: '*share*', decision: 'ask' },
+    { match: '*post*', decision: 'ask' },
+    { match: '*invite*', decision: 'ask' },
   ],
   // Mask argument fields before they reach an approval prompt.
-  redact: (tool, args) => ({ ...args, token: '[redacted]' }),
+  redact: (tool, args) => ('token' in args ? { ...args, token: '[redacted]' } : args),
 });
 ```
+
+These patterns are examples. Comments, publishing and anything else that
+reaches other people need the same treatment; see
+[Policy rules](docs/server-authors.md#policy-rules).
 
 Precedence, strongest first: an exact `policy` entry, then the first
 matching `policyRules` rule, then `approvals`, then the tool's annotations.
@@ -317,9 +344,10 @@ state they left.
   The message now says the workflow stopped unfinished, and `toolCalls`
   lets a machine ask for many approvals in one round trip.
   ([D30](docs/DECISIONS.md#d30--many-gated-calls-in-one-round-trip-toolcalls-and-copy-that-says-what-it-means-2026-10-30))
-- **Measure search offline first.** A deterministic corpus of 1,173 real
-  queries (the ones models sent, labelled with the tools they went on to
-  use), split train/test, judges ranking changes with no model and no
+- **Measure search offline first.** A deterministic corpus of 1,173 cases,
+  built around the 467 distinct queries models actually sent (each labelled
+  with the tools the model went on to use), plus their lift onto global
+  search and hand-written and generated queries, split train/test, judges ranking changes with no model and no
   spend. A change is kept only if the held-out split improves too.
   ([D22](docs/DECISIONS.md#d22--search-weights-rare-words-and-breaks-ties-by-name-coverage-measured-offline-2026-10-30))
 
