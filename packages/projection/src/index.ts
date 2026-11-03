@@ -57,6 +57,13 @@ export {
   type WrapServersOptions,
 } from './multi/index.js';
 
+// Process-local replay cache — opt-in, single-process deployments only (R38, DECISIONS D42)
+export {
+  DEFAULT_REPLAY_CACHE_MAX_ENTRIES,
+  MemoryReplayCache,
+  type MemoryReplayCacheOptions,
+} from './mrtr/index.js';
+
 // Upstream auth — sources given by URL and the token store (PRD §6.10, R51, R59)
 export {
   KeyringTokenStore,

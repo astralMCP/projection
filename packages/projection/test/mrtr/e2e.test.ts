@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { APPROVAL_SCHEMA, executeMachine, MRTR_PROTOCOL_REVISION } from '../../src/mrtr/index.js';
+import {
+  APPROVAL_SCHEMA,
+  executeMachine,
+  MemoryReplayCache,
+  MRTR_PROTOCOL_REVISION,
+} from '../../src/mrtr/index.js';
 import type { ExecuteMachineDeps, ToolCallResult } from '../../src/mrtr/index.js';
 import type { BlobSealerConfig, ReplayCache, StructuredError } from '../../src/types.js';
 import { generateToolTypes } from '../../src/typegen/index.js';
@@ -172,6 +177,22 @@ describe('execute_machine over MRTR', () => {
     const second = structuredError(await executeMachine(retry, d));
     expect(second.phase).toBe('blob_verification');
     expect(second.message).toContain('replayed');
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('with a MemoryReplayCache, two concurrent resumes of one approved blob run the write once (R38, D42)', async () => {
+    const executor = new FakeExecutor();
+    const d = deps({ executor, replayCache: new MemoryReplayCache() });
+    const first = await executeMachine({ code: WRITE_MACHINE }, d);
+    const retry = {
+      code: WRITE_MACHINE,
+      requestState: sealedState(first),
+      inputResponses: { w1: ACCEPT },
+    };
+    const results = await Promise.all([executeMachine(retry, d), executeMachine(retry, d)]);
+    const refused = results.filter((r) => completed(r).isError === true);
+    expect(refused).toHaveLength(1);
+    expect(structuredError(refused[0]!).message).toContain('replayed');
     expect(executor.calls).toHaveLength(1);
   });
 

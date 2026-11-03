@@ -598,8 +598,11 @@ export interface BlobSealerConfig {
 /**
  * Optional shared replay cache (R38). When configured, the adapter consults
  * it after blob verification and before executing any gated call, for both
- * blob kinds. No default ships: an in-memory one would silently break
- * horizontal scaling (G4), so the integrator supplies a shared store.
+ * blob kinds. None is configured by default: an in-memory one would silently
+ * break horizontal scaling (G4). A horizontally scaled deployment supplies a
+ * shared store; a single-process one (stdio) can pass the exported
+ * `MemoryReplayCache`, which is correct only when one process serves every
+ * retry (D42).
  */
 export interface ReplayCache {
   /**
