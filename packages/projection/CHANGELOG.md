@@ -72,6 +72,8 @@ survive an upgrade.
 - The docs say how to read the surface `direct: 'auto'` chose, from `facade.projections.direct`
   and `directBoxes`. The catalog, types and policy are snapshotted at wrap time, and the wrapped
   server's `tools/list_changed` is ignored, so a changed tool list needs a re-wrap (#72).
+- CI now tests Node 22 and 26, the oldest supported version and the newest LTS, instead of 22
+  and 24. `engines` is unchanged (`>=22`) (D46).
 
 ### Fixed
 
