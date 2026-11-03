@@ -4,23 +4,43 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "tsconfig.json", "tsdown.config.ts", "package.json"],
+      "inputs": [
+        "src/**",
+        "tsconfig.json",
+        "tsdown.config.ts",
+        "package.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ],
       "outputs": ["dist/**"]
     },
     "typecheck": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "tsconfig.json"]
+      "inputs": ["src/**", "test/**", "tsconfig.json", "$TURBO_ROOT$/tsconfig.base.json"]
     },
     "lint": {
-      "inputs": ["src/**", "test/**", ".oxlintrc.json"]
+      "inputs": ["src/**", "test/**", "$TURBO_ROOT$/.oxlintrc.json"]
     },
     "test": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "vitest.config.ts", "tsconfig.json"]
+      "inputs": [
+        "src/**",
+        "test/**",
+        "vitest.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ]
     },
     "test:budgets": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "vitest.budgets.config.ts", "tsconfig.json"]
+      "inputs": [
+        "src/**",
+        "test/**",
+        "vitest.budgets.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ]
     }
   }
 }
