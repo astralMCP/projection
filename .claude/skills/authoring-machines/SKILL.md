@@ -162,11 +162,10 @@ await facade.close();
 - For model-in-the-loop shapes use `createScriptedAuthor` (deterministic
   attempt sequence) with `runReasoningTask` — see
   `packages/harness/test/reasoning.test.ts`.
-- Interactive/manual: `pnpm --filter @astral-mcp/tui start`.
 
 Reference machines: `EXAMPLE_HAPPY_PATH` / `EXAMPLE_DENIAL_FALLBACK` in
 `packages/projection/src/mrtr/discover.ts`, and the fixtures in
-`packages/harness/test/` and `packages/tui/test/`. `EXAMPLE_HAPPY_PATH` runs
+`packages/harness/test/`. `EXAMPLE_HAPPY_PATH` runs
 against `createFileServer` with `input: { path }`; `EXAMPLE_DENIAL_FALLBACK`
 calls `list_dir` (the fixture has `list_files`) and needs
 `input: { path, dir }`.

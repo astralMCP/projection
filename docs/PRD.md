@@ -692,7 +692,7 @@ The smoke also records two behaviours to verify, not assume: whether GitHub acce
 
 **Automated harness.** A test harness drives the wrapped server end-to-end using the Anthropic TypeScript SDK as the reasoning loop and the MCP TypeScript SDK as the client: scripted task prompts → model authors machines → harness auto-answers elicitations per scenario script (approve all / deny one / ignore one / tamper with blob / truncate blob). Assertions cover the S1–S6 invariants, self-heal attempt counts (§10 metrics), and blob-size budgets. Runs in CI against the pinned filesystem and sqlite servers; the GitHub server is live and opt-in.
 
-**Manual TUI.** A thin Ink terminal client for exploratory testing: wraps the in-memory demo file server (embeddable against any facade via `App`/`driveTask`), type a task, watch the model's code + validation results + captured console logs stream by, and approve/deny pending elicitations interactively with single keys. Displays blob size and trip count per suspension. This doubles as the demo surface for the team.
+**Manual TUI (retired).** A thin Ink terminal client for exploratory testing shipped with M1–M5 and was removed after v0.9.0 (DECISIONS D43): agents, not humans at a terminal, now drive adoption, so the automated harness above and the MCP Apps demo host (`apps/demo-host`) are the interactive surfaces.
 
 ## 14. Milestones
 

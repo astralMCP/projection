@@ -2607,3 +2607,24 @@ Rejected: making it the default for stdio transports (Projection does not
 know its transport, and a silent default is the G4 failure mode); LRU
 eviction at the cap (forgets live approvals); answering `true` at the cap
 (reports a fresh approval as a replay, which misleads the model).
+
+## D43 — The demo TUI is retired (2026-11-02)
+
+Context. `@astral-mcp/tui` was a private Ink terminal client (PRD §13,
+"Manual TUI"): type a task, watch the authored machine run, approve or
+deny elicitations with single keys. It was built when a human at a
+terminal was the expected first user. Adoption now runs through agents
+and MCP hosts, so nobody used it, yet it carried its own build, tests,
+React/Ink dependencies and docs that had to track every API change.
+
+Decision. Delete `packages/tui` and every reference to it. Nothing
+imported from it; it depended on the harness, not the reverse, so the
+harness evals and everything a model sees are unchanged.
+`loadNearestDotEnv` stays in the harness for the live tests. The
+interactive surfaces are now the harness (scripted and live) and the
+MCP Apps demo host (`apps/demo-host`).
+
+Rejected: keeping it unmaintained (it would rot against the API and
+mislead readers about how to try Projection); folding its driver into
+the harness (the harness already has `runScenario` and
+`runReasoningTask`, which cover what it drove).

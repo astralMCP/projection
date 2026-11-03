@@ -195,7 +195,7 @@ See
 - [Product requirements](https://github.com/astralMCP/projection/blob/main/docs/PRD.md)
   and [engineering decisions](https://github.com/astralMCP/projection/blob/main/docs/DECISIONS.md)
 - [Repository](https://github.com/astralMCP/projection) — scenario test
-  harness, self-heal benchmark, an interactive demo TUI, and an MCP Apps
+  harness, self-heal benchmark, and an MCP Apps
   demo host live alongside the library
 
 Requires Node ≥ 22. MIT licensed.

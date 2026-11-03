@@ -1,6 +1,6 @@
 /**
  * Zero-dependency `.env` loading, via Node's built-in `process.loadEnvFile`
- * (22+). Used by the TUI CLI and the live (opt-in) smoke/benchmark tests so
+ * (22+). Used by the live (opt-in) smoke/benchmark tests so
  * secrets like ANTHROPIC_API_KEY / GITHUB_TOKEN can live in a repo-root
  * `.env` instead of the shell environment.
  *

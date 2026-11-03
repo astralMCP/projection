@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadNearestDotEnv } from '../src/env.js';
 
-const VAR = 'PROJ_TUI_ENV_TEST_VAR';
+const VAR = 'PROJ_ENV_TEST_VAR';
 const cleanups: (() => void)[] = [];
 
 afterEach(() => {
@@ -18,9 +18,9 @@ afterEach(() => {
 });
 
 function makeTree(): { root: string; nested: string } {
-  const root = mkdtempSync(join(tmpdir(), 'proj-tui-env-'));
+  const root = mkdtempSync(join(tmpdir(), 'proj-env-'));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const nested = join(root, 'packages', 'tui');
+  const nested = join(root, 'packages', 'member');
   mkdirSync(nested, { recursive: true });
   return { root, nested };
 }
@@ -39,7 +39,7 @@ describe('loadNearestDotEnv', () => {
   it('does not load a .env above a repo-root marker (pnpm-workspace.yaml)', () => {
     const { root } = makeTree();
     const repo = join(root, 'repo');
-    const start = join(repo, 'packages', 'tui');
+    const start = join(repo, 'packages', 'member');
     mkdirSync(start, { recursive: true });
     writeFileSync(join(root, '.env'), `${VAR}=from-ancestor\n`);
     writeFileSync(join(repo, 'pnpm-workspace.yaml'), 'packages:\n');

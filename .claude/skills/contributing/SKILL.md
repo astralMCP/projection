@@ -34,7 +34,6 @@ pnpm run check                                   # build + typecheck + lint + te
 pnpm run format                                  # oxfmt (writes); CI runs format:check and FAILS on drift
 pnpm run format:check                            # what CI runs after check
 pnpm --filter @astral-mcp/projection test        # one package
-pnpm --filter @astral-mcp/tui start              # demo TUI (builds deps via turbo first)
 pnpm run test:budgets                            # §10 perf budgets alone (check runs them after the parallel tests)
 ```
 
@@ -129,7 +128,7 @@ commands need no PATH prefix. CI runs `check` on Node 22 and 24.
 ## Where truth lives
 
 - `docs/PRD.md` — requirements (R1–R64, plus R15a/R15b), security invariants (S1–S6), §10
-  budgets/metrics, §13 harness+TUI.
+  budgets/metrics, §13 verification and harness.
 - `docs/DECISIONS.md` — why things are the way they are (SDK v2 MRTR
   adoption, AEAD sealer rationale, D4 replay obligation, D9 two
   projections). Append a decision entry when you make one worth remembering.
