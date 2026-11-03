@@ -15,24 +15,37 @@
     },
     "typecheck": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "tsconfig.json", "$TURBO_ROOT$/tsconfig.base.json"]
+      "inputs": [
+        "src/**",
+        "test/**",
+        "scripts/**",
+        "tsconfig.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ]
     },
     "lint": {
       "inputs": ["src/**", "test/**", "$TURBO_ROOT$/.oxlintrc.json"]
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["build", "^build"],
       "inputs": [
         "src/**",
         "test/**",
         "vitest.config.ts",
         "tsconfig.json",
         "package.json",
-        "$TURBO_ROOT$/tsconfig.base.json"
+        "README.md",
+        "vendor/**/package.json",
+        "vendor/**/package-lock.json",
+        "vendor/**/requirements*.txt",
+        "$TURBO_ROOT$/tsconfig.base.json",
+        "$TURBO_ROOT$/*.md",
+        "$TURBO_ROOT$/docs/**",
+        "$TURBO_ROOT$/.claude/hillclimb/multi-server/**"
       ]
     },
     "test:budgets": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["build", "^build"],
       "inputs": [
         "src/**",
         "test/**",
