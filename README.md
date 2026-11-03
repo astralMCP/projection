@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/header.svg" alt="astralMCP / projection" width="640">
+  <img src="docs/assets/header.svg" alt="astralMCP / projection" width="800">
 </p>
 
 Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a **tool catalog** (search, describe, call), with **human-approved side effects** over MCP MRTR (Multi Round-Trip Requests).
