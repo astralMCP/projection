@@ -4,23 +4,56 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "tsconfig.json", "tsdown.config.ts", "package.json"],
+      "inputs": [
+        "src/**",
+        "tsconfig.json",
+        "tsdown.config.ts",
+        "package.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ],
       "outputs": ["dist/**"]
     },
     "typecheck": {
       "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "tsconfig.json"]
+      "inputs": [
+        "src/**",
+        "test/**",
+        "scripts/**",
+        "tsconfig.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ]
     },
     "lint": {
-      "inputs": ["src/**", "test/**", ".oxlintrc.json"]
+      "inputs": ["src/**", "test/**", "scripts/**", "*.config.ts", "$TURBO_ROOT$/.oxlintrc.json"]
     },
     "test": {
-      "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "vitest.config.ts", "tsconfig.json"]
+      "dependsOn": ["build", "^build"],
+      "inputs": [
+        "src/**",
+        "test/**",
+        "vitest.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "README.md",
+        "vendor/**/package.json",
+        "vendor/**/package-lock.json",
+        "vendor/**/requirements*.txt",
+        "$TURBO_ROOT$/tsconfig.base.json",
+        "$TURBO_ROOT$/*.md",
+        "$TURBO_ROOT$/docs/**",
+        "$TURBO_ROOT$/.claude/hillclimb/multi-server/**"
+      ]
     },
     "test:budgets": {
-      "dependsOn": ["^build"],
-      "inputs": ["src/**", "test/**", "vitest.budgets.config.ts", "tsconfig.json"]
+      "dependsOn": ["build", "^build"],
+      "inputs": [
+        "src/**",
+        "test/**",
+        "vitest.budgets.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "$TURBO_ROOT$/tsconfig.base.json"
+      ]
     }
   }
 }
