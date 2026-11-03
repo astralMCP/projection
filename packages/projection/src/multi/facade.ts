@@ -248,7 +248,12 @@ export async function wrapMcpServers(
 
     const projections: Readonly<ProjectionSelection> =
       directBoxes.size > 0
-        ? Object.freeze({ ...selected, direct: true, directBoxes: view.directBoxes })
+        ? Object.freeze({
+            ...selected,
+            direct: true,
+            // A frozen copy: the facade's own copy keeps reading the view.
+            directBoxes: Object.freeze([...view.directBoxes]),
+          })
         : selected;
 
     return new MultiFacade({

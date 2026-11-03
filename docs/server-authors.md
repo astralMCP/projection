@@ -62,6 +62,34 @@ surface whose pagination terminates),
 `instructions` and the server identity. Tools you add afterwards are not seen
 until the next wrap, and duplicate names collapse to one tool.
 
+Projection does not handle `notifications/tools/list_changed` from the
+wrapped server, on single- and multi-server facades alike. The catalog, the
+generated types and resources, the instructions, the direct-listing choice
+(below) and the frozen policy snapshot are all built once from the wrap-time
+`tools/list`, and the notification refreshes none of them. Projection does
+not send `tools/list_changed` to its own clients either. So:
+
+- A tool the server adds or enables later (an app switched on
+  mid-conversation, say) is not listed or searchable, is absent from the
+  types, and `call_tool`, a listed alias and a machine's `toolCall` all
+  refuse it as an unknown tool without calling your server.
+- A tool the server removes stays listed; calling it reaches your server,
+  which fails the call (an `upstream` error).
+- `policy` keys are exact tool names, matched against the wrap-time
+  catalog. A key for a tool that is not there yet is accepted and does
+  nothing; it takes effect on the next wrap, once the tool exists. Keep
+  such keys in your options rather than adding them later.
+
+To pick up a changed tool list, wrap again (`wrapMcpServer` /
+`wrapMcpServers`) and serve the new facade's `serverFactory`; close the old
+facade once its in-flight requests finish. Blobs bind the blob key and the
+server identity (name and version), not the tool list: a pending
+`call_tool` approval resumes on the new facade when both are unchanged,
+and is checked against the new facade's catalog and policy (a tool now
+gone or denied is refused). If you use a `replayCache`, pass the same
+instance (or shared store) to the new wrap, so a retry already spent on the
+old facade stays spent.
+
 You can also wrap a **connected SDK `Client`** instead of an in-process
 instance — Projection in front of a server you don't own. The smoke tests in
 `packages/harness/test/smoke/` wrap the official filesystem, GitHub, and a
@@ -366,6 +394,25 @@ is part of the catalog projection: with `catalog: false` it stays off.
 `direct: true` lists them whatever the size; `direct: false` never does,
 leaving the five tools (`search_tools`, `describe_tool`, `call_tool`,
 `discover_apis`, `execute_machine`).
+
+Under `'auto'` the tool surface depends on the catalog's size: a server near
+`directBudgetTokens` switches between listing its tools and serving
+`search_tools` as tools are added upstream (on the next wrap; see above).
+The choice is made once, at wrap time, and the facade reports it on its
+frozen `facade.projections`: `direct` is `true` when tools are listed
+directly and absent otherwise, and on a multi-server facade `directBoxes`
+names the boxes listed (in sorted alias order; any other box keeps its
+`search_<box>`). Projection writes nothing to stdout or stderr about it, so
+log it yourself if you want it on record:
+
+```ts
+console.error('projection surface:', facade.projections.direct ? 'direct' : 'search_tools');
+```
+
+If your system prompt or skills name `search_tools` (or a listed tool's
+name), pin the surface rather than relying on the budget:
+`projections: { direct: false }` always serves `search_tools`,
+`projections: { direct: true }` always lists directly.
 
 A listed tool advertises Projection's own annotations, never your server's:
 `readOnlyHint: true` only when Projection runs the call without asking and
