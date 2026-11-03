@@ -363,3 +363,62 @@ describe('policyOf on a multi-server facade (R45, R49)', () => {
     expect(facade.policyOf('github.tag')?.decision).toBe('ask');
   });
 });
+
+describe('policyOf reflects policyRules through the frozen settings (R14, D36)', () => {
+  it('agrees with the gate and search_tools for pattern and predicate rules', async () => {
+    const facade = await single({
+      approvals: 'destructive-only',
+      policy: { touch: 'auto' },
+      policyRules: [
+        { match: 'T*', decision: 'ask' }, // case-insensitive: tag, touch
+        (tool) => (tool.name === 'remove' ? 'deny' : undefined),
+        { match: 'read', decision: 'deny' },
+      ],
+    });
+    // The exact-name override beats the rule for touch; the first rule with an opinion wins.
+    await expectAgreement(facade, NAMES, {
+      ...DESTRUCTIVE_ONLY,
+      tag: 'ask',
+      touch: 'auto',
+      remove: 'deny',
+      read: 'deny',
+    });
+  });
+
+  it('agrees with the gate on a multi-server facade, rules seeing qualified names', async () => {
+    const facade = await multi({
+      approvals: 'destructive-only',
+      policyRules: [
+        { match: 'fs.*', decision: 'ask' },
+        (tool) => (tool.name === 'github.remove' ? 'auto' : undefined),
+      ],
+    });
+    const github: Record<string, PolicyDecision> = { ...DESTRUCTIVE_ONLY, remove: 'auto' };
+    const expected: Record<string, PolicyDecision> = {};
+    for (const name of NAMES) {
+      expected[`fs.${name}`] = 'ask';
+      expected[`github.${name}`] = github[name] as PolicyDecision;
+    }
+    await expectAgreement(facade, Object.keys(expected), expected);
+  });
+
+  it('never re-runs a rule: it reads the map frozen at wrap time', async () => {
+    let calls = 0;
+    let verdict: PolicyDecision | undefined = 'deny';
+    const rules: NonNullable<WrapOptions['policyRules']>[number][] = [
+      (tool) => {
+        calls += 1;
+        return tool.name === 'write' ? verdict : undefined;
+      },
+    ];
+    const facade = await single({ policyRules: rules });
+    const atWrap = calls;
+    expect(atWrap).toBeGreaterThan(0);
+    verdict = 'auto';
+    rules.push({ match: '*', decision: 'auto' });
+    expect(facade.policyOf('write')).toEqual({ decision: 'deny', posture: 'blocked by policy' });
+    expect(facade.policyOf('remove')?.decision).toBe('ask');
+    expect(await callToolDecision(facade, 'write')).toBe('deny');
+    expect(calls).toBe(atWrap);
+  });
+});

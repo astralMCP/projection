@@ -2403,7 +2403,9 @@ on the catalog the gate uses (the boxed view on a multi-server facade, so
 names are qualified and per-source modes apply), then `decidePolicy` on
 `policyContext` of the facade's frozen `policySettings` — the lookup and
 decision `call_tool` and `resolveCallPolicy` gate with. Any setting
-folded into the frozen settings at wrap time is picked up for free. An
+folded into the frozen settings at wrap time is picked up for free —
+`policyRules` (D36) included: rules resolve into the frozen `policy` map,
+so `policyOf` reports their outcome without ever running a rule again. An
 undeclared name returns `undefined` rather than a `validate` error: the
 method is a lookup an integrator loops over, not a call a model makes, and
 `undefined` says "not a tool here" without a try/catch. The result is

@@ -212,8 +212,9 @@ for (const [alias, box] of multi.catalog.servers) {
 }
 ```
 
-`policyOf(name)` decides from the same frozen wrap-time settings, through the
-same catalog lookup, as the approval gate behind `call_tool` and
+`policyOf(name)` reflects your `policyRules` too: they are resolved into the
+same snapshot at wrap time and never re-run. It decides from the same frozen
+wrap-time settings, through the same catalog lookup, as the approval gate behind `call_tool` and
 `execute_machine`, so its answer is what the gate does and the posture
 `search_tools` and `describe_tool` show. A name the facade does not declare
 returns `undefined` rather than throwing, so it is safe in a loop over your
