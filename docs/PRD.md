@@ -595,14 +595,18 @@ Token residence for multi-tenant deployments keeps the earlier preference: a ser
 - each `call_tool` request;
 - approvals: the elicitation sent and the verdict that comes back;
 - suspensions and resumes, including blob seal and verify;
-- catalog refresh (introspection at wrap time, at unlock, and on `tools/list_changed`).
+- catalog introspection: at wrap time, and when a locked box unlocks (R54). Projection does not re-introspect on `tools/list_changed` today (§12.2); if it ever does, that refresh is a further event.
 
 **Open design questions.**
 
 1. **Shape.** One hooks object on `WrapOptions` (for example `hooks: { onUpstreamCall, … }`) or separate per-event options.
 2. **OpenTelemetry.** Emit OpenTelemetry spans built in (an optional peer dependency) or expose plain hooks and leave the tracer to the integrator, perhaps with a small adapter.
 3. **Sync or async, and the hot path.** Whether hooks may be async, whether Projection awaits them, and whether a slow hook can block a call. Hooks must not push the §10 budgets (suspend→resume overhead p95 < 100 ms, validation latency) off target; fire-and-forget with no awaiting is the likely answer.
-4. **What a hook may see (S1–S6).** Arguments and results may carry secrets: does the redaction hook (R16) run before a hook sees arguments, or does a hook see raw values? Hook payloads must never include blob keys, blob plaintext or sealed state (S3), upstream access or refresh tokens, client secrets, device codes or PKCE verifiers (S1), or a credential the MCP client presented to Projection (R61). For a source given by URL, the echo redaction of §6.10 must apply to anything a hook receives, as it does to every other surface.
+4. **What a hook may see (S1–S6).** Arguments and results may carry secrets: does the redaction hook (R16) run before a hook sees arguments, or does a hook see raw values? Hook payloads must never include blob keys, blob plaintext or sealed state (S3), upstream access or refresh tokens, client secrets, device codes or PKCE verifiers (S1), or a credential the MCP client presented to Projection (R61). For a source given by URL, the echo redaction of §6.10 must apply to anything a hook receives, as it does to every other surface. Further cases the design must settle:
+   - **Answers to upstream questions.** The answers a user gives to a forwarded server question (R64, §6.11) may carry secrets, and the R16 redaction hook covers only tool arguments. Whether a hook sees those answers, and through what redaction, is open.
+   - **Plain data only.** A hook payload is plain data, already redacted. It is never a live handle: not the upstream `Client`, its transport or its auth provider, any of which can yield tokens. Nor is it a raw SDK error or request object, which can carry an `Authorization` header; the echo redaction of §6.10 scrubs what a source returns, not what Projection sent.
+   - **Sign-in suspensions (§6.10).** The verification URI (`verification_uri_complete` embeds the user code), the user code itself, and a dynamic client registration result, which is a credential (R52), are kept out of hook payloads or redacted.
+   - **Host-side only.** Hooks run in the host and are never reachable from authored code or the sandbox bridge. A hook the sandbox could reach would be a second I/O channel out of it (S1).
 5. **Error isolation.** A hook that throws or rejects must never change an approval decision, fail a call, corrupt a suspension or surface in a model-visible result. Its error is swallowed or reported out of band.
 6. **Influence over policy.** Whether a hook could ever veto, rewrite or approve a call. The likely answer is never: hooks observe only, and policy stays in the approval engine (R14) and its verified verdicts (S2).
 7. **Relation to existing surfaces.** How hooks interact with the redaction hook and with the audit trail in `execute_machine` results (`approvals`): whether a hook sees the same redacted view the approver sees, and whether the audit trail should be built from the same events.
