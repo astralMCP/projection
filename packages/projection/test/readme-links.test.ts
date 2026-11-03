@@ -21,7 +21,8 @@ const unescape = (s: string) =>
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
 const urls = [...html.matchAll(/\b(?:href|src)="([^"]*)"/g)].map((m) => unescape(m[1]!));
-const codeSpans = [...html.matchAll(/<code>([^<]*)<\/code>/g)].map((m) => unescape(m[1]!));
+// What a reader sees: prose and code spans, but not the URLs inside tags.
+const text = unescape(html.replace(/<[^>]*>/g, ' '));
 
 /** GitHub's heading anchor: lowercase, drop punctuation, spaces to hyphens. */
 function slug(heading: string): string {
@@ -44,7 +45,11 @@ describe('packages/projection/README.md links (npm readers)', () => {
   });
 
   it('names no repo file as a bare path', () => {
-    const paths = codeSpans.filter(
+    const tokens = text
+      .split(/[\s"'`()<>[\]{},;]+/)
+      .filter((t) => !t.startsWith('http'))
+      .map((t) => t.split('#')[0]!.replace(/[.:!?*]+$/, ''));
+    const paths = tokens.filter(
       (c) =>
         /^[\w.@-]+(\/[\w.@-]+)*$/.test(c) &&
         (c.includes('/') || /\.\w+$/.test(c)) &&
