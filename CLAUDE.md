@@ -14,7 +14,7 @@ reasoning-loop benchmark), `@astral-mcp/demo-host` (MCP Apps browser demo, `apps
   drift in any committed file.
 - Node ≥22.12 is required (`engine-strict`). The maintainer's machine provides
   Node via mise (24 LTS, on PATH in every shell — no PATH prefix needed); CI
-  tests Node 22 and 24.
+  tests Node 22 and 26.
 
 ## Before you change anything
 

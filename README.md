@@ -391,7 +391,7 @@ state they left.
 
 ## Contributing
 
-Requires Node ≥ 22.12 (CI tests 22 and 24) and pnpm.
+Requires Node ≥ 22.12 (CI tests 22 and 26) and pnpm.
 
 ```bash
 pnpm install

@@ -2787,3 +2787,30 @@ would cost every box a walk); trusting the new catalog only after N
 quiet seconds (delays honest changes without closing the pre-notification
 window); sending `resources/list_changed` (resource URIs never change, and
 reads already serve current text).
+
+## D46 — CI tests the oldest supported Node and the newest LTS (2026-11-02)
+
+Context. CI ran `check` on Node 22 and 24. As of November 2026, Node 26
+is Active LTS, and 22 and 24 are both in maintenance; 22 reaches end of
+life around April 2027. The published package declares `engines.node`
+`>=22`, so 22 is the oldest version we promise to run on. The workspace
+root requires `>=22.12` for development (vitest), and CI's `22` installs
+the latest 22.x.
+
+Decision. The CI matrix is `[22, 26]`. The rule: CI tests the oldest
+supported Node and the newest LTS; drop the oldest when it reaches end
+of life (and raise `engines` with it, as a breaking change).
+
+- Matrix jobs run in parallel, so each version costs runner minutes and
+  flake exposure, not wall time. A third version would buy little.
+- The maintainer's machine runs 24 via mise, so 24 still gets the
+  pre-push `pnpm run check` by convention. No hook enforces it.
+- The one version-sensitive area is the QuickJS sandbox's WebAssembly
+  memory cap (D15), which relies on V8 enforcing a memory's `maximum`.
+  The newest V8 is the one most likely to change that, so it is the one
+  to test.
+- `engines` is unchanged, so this is not a breaking change.
+
+Rejected: `[22, 24, 26]` (more minutes and flakes for a version the
+maintainer's pre-push check already runs on by convention); keeping
+`[22, 24]` (the newest V8 would go untested until users hit it).
