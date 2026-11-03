@@ -289,8 +289,31 @@ const facade = await wrapMcpServer(upstream, {
 
 `store.setIfAbsent` stands for your shared store's atomic primitive (Redis
 `SET NX PX`, a unique insert). It must be atomic across instances; a read
-followed by a write lets two replays through. Call `facade.close()` on
-shutdown. See [Lifecycle and operations](docs/server-authors.md#lifecycle-and-operations)
+followed by a write lets two replays through.
+
+A single-process server, like the stdio one in step 2, can pass the
+in-memory cache instead:
+
+> **`MemoryReplayCache` is new since 0.9.0.** It needs the next release, or
+> a build from `main`.
+
+```ts
+import { MemoryReplayCache } from '@astral-mcp/projection';
+
+const facade = await wrapMcpServer(upstream, {
+  blob: { key: blobKey },
+  replayCache: new MemoryReplayCache(), // stdio / single process only
+});
+```
+
+It is correct only when one process serves every retry: behind a load
+balancer each instance keeps its own set and a replay sent to another
+instance executes, so supply a shared store there. A restart forgets every
+nonce; with a persistent blob key, a blob sealed before the restart can be
+replayed until it expires (a key generated at startup, as in step 2, makes
+those blobs fail verification).
+
+Call `facade.close()` on shutdown. See [Lifecycle and operations](docs/server-authors.md#lifecycle-and-operations)
 and [Resource caps](docs/server-authors.md#resource-caps).
 
 ### Further reading
