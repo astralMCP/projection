@@ -11,47 +11,47 @@ Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a **too
 
 ## Why
 
-**Large MCP servers flood the context.** GitHub's MCP server has 95 tools,
-and a host puts every definition in every prompt whether or not the task
-needs it. **And an agent's writes need a human.**
-Annotations say which tools change things, but nothing in the protocol makes
-an agent stop and ask before it sends the email or drops the table.
+GitHub's MCP server has 95 tools. A host puts every definition in every
+prompt, even when the task needs only a few. Tool annotations identify
+writes, but the protocol does not require an agent to ask for approval
+before sending an email or dropping a table.
 
 Projection sits in front of your MCP server (or several) and gives the model
-a smaller, safer surface instead of the raw tool list:
+a smaller set of tools with approval controls:
 
-- **A tool catalog.** `search_tools`, `describe_tool` and `call_tool` find
+- The tool catalog uses `search_tools`, `describe_tool` and `call_tool` to find
   and run one tool at a time. Search hits come with their call signature, so
   the model can usually call straight from the search page.
-- **Code mode.** `discover_apis` returns generated TypeScript types for the
+- In code mode, `discover_apis` returns generated TypeScript types for the
   server's tools; `execute_machine` runs a workflow the model writes as an
   XState v5 machine in a QuickJS WebAssembly sandbox. Use it for several
   steps, branching, or computing over a list.
-- **Direct listing for small catalogs.** When the wrapped tools' definitions
+- For small catalogs, when the wrapped tools' definitions
   fit about 8k estimated tokens (the default), each is also listed under its
   own name as a mediated alias of `call_tool`, and `search_tools` is dropped.
-- **Human-approved writes over MRTR.** Read-only calls run immediately. By
-  default any other call pauses; the workflow's state is sealed into an encrypted blob
-  that travels with the request; the person sees the call (with any fields
-  your `redact` hook masks) and approves or declines it. A decline is an ordinary result the model can act on.
+- Read-only calls run immediately. By default, any other call pauses for
+  human approval over MRTR. Projection seals the workflow's state into an
+  encrypted blob that travels with the request. The person sees the call,
+  with any fields your `redact` hook masks, and approves or declines it.
+  A decline is an ordinary result the model can act on.
 
-The guarantees behind that, in brief (the invariants are S1–S6 in
+Projection enforces these guarantees (invariants S1–S6 in
 [docs/PRD.md §9](docs/PRD.md#9-security-invariants)):
 
-- **The wrapped server's tools are never passed through.** Every call,
-  including a directly listed tool, goes through the same gate.
-- **An approval binds the exact call that was approved.** The approved name and
-  arguments are sealed in the blob and executed from there, never from
-  whatever the resumed workflow asks for next.
-- **Sealed blobs.** Clients carry the state but cannot read or alter it:
-  AES-256-GCM, bound to the code, the tool kind and the wrapped server that
-  issued it, with a TTL. Projection itself keeps no state, so any instance
-  can resume any workflow.
-- **A sandbox with no network.** Machine code has no `fetch`, no filesystem
+- Every call, including a directly listed tool, goes through the same gate. Projection
+  never passes through the wrapped server's tools.
+- An approval binds the exact tool name and arguments. Projection seals
+  them in the blob and executes that call regardless of what the resumed
+  workflow asks for next.
+- Clients carry the state in AES-256-GCM encrypted blobs they cannot read
+  or alter. Each blob has a TTL and is bound to the code, the tool kind and
+  the wrapped server that issued it. Projection itself keeps no state,
+  so any instance can resume any workflow.
+- Machine code has no `fetch`, no filesystem
   and no host globals; the tools bridge is its only way out, and every
   sandbox has hard caps on memory, time and calls.
-- **Annotations are hints, not authority.** An unannotated tool asks; your
-  `policy` overrides always win.
+- An unannotated tool asks for approval. Your `policy` overrides take
+  precedence over annotations.
 
 The full integration guide is [docs/server-authors.md](docs/server-authors.md).
 
@@ -126,11 +126,11 @@ exact file and fields depend on the host:
 }
 ```
 
-What the host's model now sees: the catalog tools, code mode, and, for a
+The host's model now sees the catalog tools, code mode, and, for a
 server this size, its tools by name. A write it calls pauses and the host
-shows an approval prompt. Two things decide whether that prompt can appear:
+shows an approval prompt. Approval support depends on the client:
 
-- A client on the **2026-07-28** revision gets approvals over MRTR. On any
+- A client on the **2026-07-28** revision gets approvals over MRTR on any
   transport.
 - An older client gets them only through `compat: { legacyElicitation: true }`
   over a held connection such as stdio, and only if it declares the `elicitation` capability. Without
@@ -138,11 +138,10 @@ shows an approval prompt. Two things decide whether that prompt can appear:
   structured error naming the revision it needs.
   See [Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28).
 
-Projection reads the server's tools at wrap time, and follows its
-`tools/list_changed` from then on (default on, for servers Projection
-connects to itself): the new tools, types and policy are swapped in at once,
-and that server's annotations are not trusted until they land. For a
-`Client` you pass in, call `facade.refreshTools()` from its own handler. See
+Projection reads the server's tools at wrap time. For servers it connects
+to itself, it follows `tools/list_changed` by default and swaps in the new
+tools, types and policy together. It does not trust that server's
+annotations until the update is complete. For a `Client` you pass in, call `facade.refreshTools()` from its own handler. See
 [When your tool list changes](docs/server-authors.md#when-your-tool-list-changes).
 
 You can also wrap an in-process `McpServer` you built yourself (pass it
@@ -257,7 +256,7 @@ On a multi-server facade, pass the qualified name (`'gmail.send_email'`). See
 
 ### 6. Production: keys and the replay cache
 
-**The blob key** is Projection's one piece of state. Every instance that
+The blob key is Projection's one piece of state. Every instance that
 can resume a workflow must hold the same 32 bytes, from a secret manager
 (generate one with `openssl rand -base64 32`):
 
@@ -275,7 +274,7 @@ Use one key per facade: two facades that share a key over the same servers
 can resume each other's blobs. In-flight blobs fail after a deploy that
 changes the Projection or XState version; the model re-runs.
 
-**The replay cache.** Without one, an approved retry captured in transit can
+Without a replay cache, an approved retry captured in transit can
 be replayed until its blob expires (5 minutes for `call_tool`, 15 for
 machines). To make every approval single-use, supply an atomic
 test-and-set shared by all instances:
@@ -321,71 +320,65 @@ and [Resource caps](docs/server-authors.md#resource-caps).
 
 ### Further reading
 
-- [docs/server-authors.md](docs/server-authors.md) — the integration guide:
+- [docs/server-authors.md](docs/server-authors.md): the integration guide, covering
   every option, the approval prompts, caps, errors, legacy clients.
-- [`authoring-machines` skill](.claude/skills/authoring-machines/SKILL.md) —
+- [`authoring-machines` skill](.claude/skills/authoring-machines/SKILL.md):
   how machines are written, for testing Projection against your server.
-- [docs/PRD.md](docs/PRD.md) — requirements (R-numbers) and the security
+- [docs/PRD.md](docs/PRD.md): requirements (R-numbers) and the security
   invariants (S1–S6).
-- [docs/DECISIONS.md](docs/DECISIONS.md) — why things are the way they are.
+- [docs/DECISIONS.md](docs/DECISIONS.md): why things are the way they are.
 
 <!-- Insights: maintained by hand. Every claim must link to the DECISIONS
 entry or committed result that backs it; edit freely. -->
 
 ## Insights
 
-What we learned building Projection and hill-climbing it against live models
-on the tool-choice eval in [`packages/harness`](packages/harness): the same
-tasks, on real and fake MCP servers, run with the server's tools listed
-directly and through Projection, and graded on the calls made and the
-state they left.
+The tool-choice eval in [`packages/harness`](packages/harness) runs the
+same tasks on real and fake MCP servers, both with tools listed directly
+and through Projection. It grades the calls made and the resulting state.
+These results guided changes to Projection:
 
-- **Every extra turn costs more than it looks.** With prompt caching a long
-  direct tool list is cheap, and each extra turn resends the whole prompt.
+- With prompt caching, a long direct tool list is cheap, and each extra turn resends the whole prompt.
   On held-out servers Projection first took about twice the turns of direct
-  mode (9.0 against 4.9), which ate its token savings. Putting a call
+  mode (9.0 against 4.9), which used up its token savings. Putting a call
   signature on the top three search hits, so the model can call from the
   search page, cut `describe_tool` calls by about 80% and cost by 7–18%.
   Glosses for required arguments whose names don't explain them followed,
   after a model invented a value for one.
   ([D32](docs/DECISIONS.md#d32--search-hits-show-how-to-call-them-argument-errors-carry-the-signature-2026-10-31),
   [D33](docs/DECISIONS.md#d33--signed-hits-gloss-the-required-arguments-their-names-do-not-explain-2026-10-31))
-- **Search is not always the answer.** Listing a small catalog's tools by
-  name took Haiku from 33/34 at $0.022 an episode to 34/34 at $0.011 on the
+- Listing a small catalog's tools by name took Haiku from 33/34 at $0.022 an episode to 34/34 at $0.011 on the
   multi-server tier, and from 23/28 to 27/28 at half the cost on held-out
-  servers. It is not free: on the hardest tier Sonnet spent 17% more per
-  episode when the listed tools went unused. So it is the default only
+  servers. On the hardest tier Sonnet spent 17% more per
+  episode when the listed tools went unused. Direct listing is therefore the default only
   under a token budget.
   ([D28](docs/DECISIONS.md#d28--projectionsdirect-defaults-to-auto-2026-10-30))
-- **Don't drop what the server already said.** The schema sanitizer removed
-  a `limit` default of 10; the model omitted `limit`, got 10 of 40 documents
+- The schema sanitizer removed a `limit` default of 10; the model omitted `limit`, got 10 of 40 documents
   and treated them as the whole set. Projection now keeps scalar defaults
   and attaches a note to results that look like one page of a larger set.
   ([D29](docs/DECISIONS.md#d29--pass-on-the-signals-the-server-already-sent-defaults-partial-results-text-as-text-2026-10-30))
-- **Where text sits changes what it means.** Showing a box's shared
-  arguments (MongoDB's `connectionId`, `database`, `collection`) in the
+- Showing a box's shared arguments (MongoDB's `connectionId`, `database`, `collection`) in the
   system prompt cut MongoDB call errors from 47 to 16, but Haiku started
   asking the user "which database and collection?" before calling anything,
-  and its pass count fell 50 → 46. On the shelf, required arguments read as
-  facts the model must have before acting. They now head the box's search
+  and its pass count fell from 50 to 46. In the system prompt, the model treated required arguments as
+  facts it needed before acting. They now head the box's search
   pages instead.
   ([D34](docs/DECISIONS.md#d34--a-boxs-shared-arguments-are-shown-once-at-the-head-of-its-pages-2026-10-31))
-- **Models copy formatting; instructions don't stop it.** Multi-line text
-  shown indented four spaces came back indented when Haiku wrote a file
+- Multi-line text shown indented four spaces came back indented when Haiku wrote a file
   back, and these were most of its multi-tier failures. Rather than tell
   the model to strip the indent, Projection now prints the text verbatim in
   a fence.
   ([D35](docs/DECISIONS.md#d35--a-text-field-is-printed-verbatim-in-a-fence-not-indented-2026-10-31))
-- **Error copy decides what the model tells the user.** A workflow that hit
-  the round-trip cap after 8 of 14 writes returned an error followed by the
+- A workflow that hit the round-trip cap after 8 of 14 writes returned an error followed by the
   calls already done, and the model told the user the task was complete.
   The message now says the workflow stopped unfinished, and `toolCalls`
   lets a machine ask for many approvals in one round trip.
   ([D30](docs/DECISIONS.md#d30--many-gated-calls-in-one-round-trip-toolcalls-and-copy-that-says-what-it-means-2026-10-30))
-- **Measure search offline first.** A deterministic corpus of 1,173 cases,
-  built around the 467 distinct queries models actually sent (each labelled
-  with the tools the model went on to use), plus their lift onto global
-  search and hand-written and generated queries, split train/test, judges ranking changes with no model and no
+- The offline search eval uses a deterministic corpus of 1,173 cases,
+  split into training and test sets. It includes the 467 distinct queries
+  models actually sent, each labelled with the tools the model went on to
+  use, versions of those queries for global search, and hand-written and
+  generated queries. It evaluates ranking changes without model calls or
   spend. A change is kept only if the held-out split improves too.
   ([D22](docs/DECISIONS.md#d22--search-weights-rare-words-and-breaks-ties-by-name-coverage-measured-offline-2026-10-30))
 
