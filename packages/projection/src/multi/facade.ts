@@ -38,6 +38,7 @@ import { boxAbout, boxOverview, boxOverviewResources, toolCount } from '../catal
 import {
   boxSearchTool,
   buildBoxedCatalog,
+  splitQualified,
   toolApprovalsFor,
   type BoxedCatalog,
   type ToolBox,
@@ -51,6 +52,17 @@ import {
 } from '../catalog/search.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import {
+  batchToolListChanged,
+  distrustCatalog,
+  distrustOverrides,
+  guardedExecutor,
+  HeldServers,
+  ListChangeTracker,
+  notifyListeners,
+  resolveFollowSettings,
+  type FollowSettings,
+} from '../facade/follow.js';
+import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
   assertApprovalPrompts,
@@ -58,6 +70,7 @@ import {
   resolveDirectSetting,
   resolveIntrospectTimeout,
   resolveProjections,
+  type DirectSetting,
   type PolicySettings,
   type RegisterOptions,
 } from '../facade/options.js';
@@ -67,7 +80,10 @@ import {
   registerCodeModeTools,
   registerDirectTools,
   registerResources,
+  reconcileHeldServer,
+  sameDirectTools,
   type CatalogToolCopy,
+  type HeldRegistration,
   type SearchToolCopy,
 } from '../facade/server.js';
 import {
@@ -77,7 +93,11 @@ import {
   reservedToolNames,
   type DirectTool,
 } from '../facade/direct.js';
-import { createIntrospector, type Introspector } from '../introspector/index.js';
+import {
+  createIntrospector,
+  type IntrospectedServer,
+  type Introspector,
+} from '../introspector/index.js';
 import {
   APPROVAL_SENTENCE_TAIL,
   DIRECT_LISTING_SENTENCE,
@@ -107,6 +127,7 @@ import {
   clampCaps,
   isRecord,
   type ApprovalsMode,
+  type PolicyRule,
   type StructuredError,
   type ToolCatalog,
 } from '../types.js';
@@ -171,6 +192,7 @@ export async function wrapMcpServers(
   const selected = resolveProjections(options.projections);
   const direct = resolveDirectSetting(options.projections, selected.catalog);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
+  const follow = resolveFollowSettings(options.followListChanged);
   const facadeElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
   // G1: a box forwards its server's questions when its own setting, else
   // the facade's, says `forward`.
@@ -180,111 +202,240 @@ export async function wrapMcpServers(
       .map((source) => source.alias),
   );
 
-  const introspector = await introspect(resolved, introspectTimeoutMs, forwarding);
+  const introspector = await introspect(resolved, introspectTimeoutMs, forwarding, follow.follow);
   // R47 fail-closed: anything that throws once the sources are connected
   // closes every connection Projection opened (caller-owned Clients stay open).
   try {
-    const boxes = resolved.map((source): ToolBox => {
-      const catalog = introspector.catalog.servers.get(source.alias);
-      if (catalog === undefined) {
-        throw new ProjectionError(
-          'protocol',
-          `introspection produced no catalog for source "${source.alias}"`,
-          { hint: 'Check that the wrapped server initialized successfully.' },
-        );
-      }
-      return {
-        alias: source.alias,
-        catalog,
-        ...(source.description !== undefined ? { description: source.description } : {}),
-      };
-    });
-    assertToolTotal(boxes);
-
-    const planned = buildBoxedCatalog(boxes, { globalSearch });
     const sourceModes = new Map<string, ApprovalsMode>();
     for (const source of resolved) {
       if (source.approvals !== undefined) sourceModes.set(source.alias, source.approvals);
     }
-    // Rules resolve over the qualified names (R42, D36), under the
-    // facade's exact-name overrides, into the one frozen snapshot.
-    const policySettings = freezePolicySettings({
-      policy: resolvePolicyRules(planned, policyRules, options.policy),
-      approvals,
-      toolApprovals: toolApprovalsFor(planned, sourceModes),
-    });
-
-    // Direct listing, per box: `<alias>__<tool>` aliases of call_tool,
-    // planned under the frozen policy, never shadowing a Projection tool or
-    // a search_<alias>. 'auto' fills the budget smallest box first; a box
-    // that does not fit keeps its search tool and the catalog path.
-    const plan =
-      direct.mode === 'off'
-        ? []
-        : planDirectTools(planned, {
-            ...policySettings,
-            reserved: reservedToolNames([...planned.boxes.keys()].map(boxSearchTool)),
-          });
-    const directBoxes = selectDirectBoxes(direct, plan);
-    // The served surface lives on the view, so every piece of copy that
-    // names a search tool or a listed box reads one source of truth: a
-    // listed box keeps its search tool only to read its guidance, and the
-    // global search is served while some box is still searched for.
-    const view =
-      directBoxes.size === 0
-        ? planned
-        : buildBoxedCatalog(boxes, {
-            globalSearch: globalSearch && directBoxes.size < planned.boxes.size,
-            directBoxes,
-            searchBoxes: [...planned.boxes]
-              .filter(
-                ([alias, box]) =>
-                  !directBoxes.has(alias) || boxOverview(box.catalog.instructions) !== undefined,
-              )
-              .map(([alias]) => alias),
-          });
-
     const upstreams = new Map<string, UpstreamConnector>();
     for (const source of resolved) {
       if (source.source instanceof UpstreamConnector) upstreams.set(source.alias, source.source);
     }
-    // R45: one frozen policy snapshot feeds typegen and the gate, so the
-    // postures in the .d.ts and the overview are the ones the gate decides.
-    const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(view, policySettings);
-
-    const projections: Readonly<ProjectionSelection> =
-      directBoxes.size > 0
-        ? Object.freeze({
-            ...selected,
-            direct: true,
-            // A frozen copy: the facade's own copy keeps reading the view.
-            directBoxes: Object.freeze([...view.directBoxes]),
-          })
-        : selected;
-
+    const surface: MultiSurface = {
+      resolved,
+      options,
+      policyRules,
+      approvals,
+      globalSearch,
+      selected,
+      direct,
+      sourceModes,
+    };
+    const snapshot = buildMultiSnapshot(introspector.catalog, surface);
     return new MultiFacade({
       introspector,
       upstreams,
-      view,
-      dts,
-      bridgeSource,
-      overview,
-      toolTypes,
-      // The code-mode resources (R3, R45), then the box overviews (R43, R45).
-      resources: [
-        ...buildResources(view, dts, policySettings, clampCaps(options.caps ?? {}).maxRoundTrips),
-        ...boxOverviewResources(view),
-      ],
-      instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
       options,
-      policySettings,
-      projections,
-      directTools: plan.filter((tool) => tool.alias !== undefined && directBoxes.has(tool.alias)),
+      snapshot,
+      surface: { ...surface, directBoxes: snapshot.directBoxes },
+      follow,
     });
   } catch (err) {
     await introspector.close();
     throw err;
   }
+}
+
+/**
+ * What a multi-server snapshot is built from besides the boxes' catalogs:
+ * the validated options, and — after the first build — the boxes listed
+ * directly, which a refresh never re-decides (R65).
+ */
+interface MultiSurface {
+  resolved: readonly ResolvedSource[];
+  options: WrapServersOptions;
+  policyRules: readonly PolicyRule[] | undefined;
+  approvals: ApprovalsMode | undefined;
+  globalSearch: boolean;
+  selected: Readonly<ProjectionSelection>;
+  direct: DirectSetting;
+  sourceModes: ReadonlyMap<string, ApprovalsMode>;
+  /** The boxes listed directly; decided by the first build when absent. */
+  directBoxes?: ReadonlySet<string>;
+}
+
+/** Everything a multi-server facade serves, derived from one set of box catalogs (R65 swaps it whole). */
+interface MultiSnapshot {
+  /** The wrapped boxes' catalogs, keyed by alias, with the servers' own names. */
+  catalog: ToolCatalog;
+  boxes: readonly ToolBox[];
+  view: BoxedCatalog;
+  /** Generated artifacts over the view (R45): `tools.<alias>` per box, qualified names. */
+  dts: string;
+  bridgeSource: string;
+  overview: string;
+  /** Per-tool type slices keyed by qualified name, for `describe_tool` (R34, R45). */
+  toolTypes: Map<string, ToolTypeText>;
+  /** The code-mode resources and the box overviews (R3, R45). */
+  resources: ProjectionResource[];
+  instructions: string;
+  policySettings: PolicySettings;
+  projections: Readonly<ProjectionSelection>;
+  copy: CatalogToolCopy;
+  directBoxes: ReadonlySet<string>;
+  /** The direct-listing plan over every box (only `directBoxes`' tools are listed). */
+  plan: readonly DirectTool[];
+  /** The mediated tools listed directly (`projections.direct`); empty when not listed. */
+  directTools: readonly DirectTool[];
+  /** What the approval gate decides with; distrusts the dirty boxes (R65). */
+  gate: { catalog: BoxedCatalog; policySettings: PolicySettings };
+  /** The boxes trusted at build time, and every box's generation (R65). */
+  trust: { trusted: ReadonlySet<string>; generations: ReadonlyMap<string, number> };
+}
+
+function buildMultiSnapshot(
+  catalogs: ToolCatalog,
+  surface: MultiSurface,
+  previous?: MultiSnapshot,
+): MultiSnapshot {
+  const { resolved, options, globalSearch, direct } = surface;
+  const boxes = resolved.map((source): ToolBox => {
+    const catalog = catalogs.servers.get(source.alias);
+    if (catalog === undefined) {
+      throw new ProjectionError(
+        'protocol',
+        `introspection produced no catalog for source "${source.alias}"`,
+        { hint: 'Check that the wrapped server initialized successfully.' },
+      );
+    }
+    return {
+      alias: source.alias,
+      catalog,
+      ...(source.description !== undefined ? { description: source.description } : {}),
+    };
+  });
+  assertToolTotal(boxes);
+
+  const planned = buildBoxedCatalog(boxes, { globalSearch });
+  // Rules resolve over the qualified names (R42, D36), under the
+  // facade's exact-name overrides, into the one frozen snapshot.
+  const policySettings = freezePolicySettings({
+    policy: resolvePolicyRules(planned, surface.policyRules, options.policy),
+    approvals: surface.approvals,
+    toolApprovals: toolApprovalsFor(planned, surface.sourceModes),
+  });
+
+  // Direct listing, per box: `<alias>__<tool>` aliases of call_tool,
+  // planned under the frozen policy, never shadowing a Projection tool or
+  // a search_<alias>. 'auto' fills the budget smallest box first; a box
+  // that does not fit keeps its search tool and the catalog path.
+  const plan =
+    direct.mode === 'off'
+      ? []
+      : planDirectTools(planned, {
+          ...policySettings,
+          reserved: reservedToolNames([...planned.boxes.keys()].map(boxSearchTool)),
+          ...(previous !== undefined ? { previous: previous.plan } : {}),
+        });
+  const directBoxes = surface.directBoxes ?? selectDirectBoxes(direct, plan);
+  const view = viewOf(boxes, planned, directBoxes, globalSearch);
+
+  // R45: one frozen policy snapshot feeds typegen and the gate, so the
+  // postures in the .d.ts and the overview are the ones the gate decides.
+  const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(view, policySettings);
+
+  const projections: Readonly<ProjectionSelection> =
+    previous?.projections ??
+    (directBoxes.size > 0
+      ? Object.freeze({
+          ...surface.selected,
+          direct: true,
+          // A frozen copy: the facade's own copy keeps reading the view.
+          directBoxes: Object.freeze([...view.directBoxes]),
+        })
+      : surface.selected);
+
+  return {
+    catalog: { servers: new Map(boxes.map((box) => [box.alias, box.catalog])) },
+    boxes,
+    view,
+    dts,
+    bridgeSource,
+    overview,
+    toolTypes,
+    // The code-mode resources (R3, R45), then the box overviews (R43, R45).
+    resources: [
+      ...buildResources(view, dts, policySettings, clampCaps(options.caps ?? {}).maxRoundTrips),
+      ...boxOverviewResources(view),
+    ],
+    instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
+    policySettings,
+    projections,
+    copy: catalogToolCopy(view, projections),
+    directBoxes,
+    plan,
+    directTools: plan.filter((tool) => tool.alias !== undefined && directBoxes.has(tool.alias)),
+    gate: { catalog: view, policySettings },
+    trust: {
+      trusted: new Set(boxes.map((box) => box.alias)),
+      generations: new Map(boxes.map((box) => [box.alias, 0])),
+    },
+  };
+}
+
+/**
+ * The served view (R43): under direct listing, the surface lives on the
+ * view, so every piece of copy that names a search tool or a listed box
+ * reads one source of truth: a listed box keeps its search tool only to
+ * read its guidance, and the global search is served while some box is
+ * still searched for.
+ */
+function viewOf(
+  boxes: readonly ToolBox[],
+  planned: BoxedCatalog,
+  directBoxes: ReadonlySet<string>,
+  globalSearch: boolean,
+): BoxedCatalog {
+  if (directBoxes.size === 0) return planned;
+  return buildBoxedCatalog(boxes, {
+    globalSearch: globalSearch && directBoxes.size < planned.boxes.size,
+    directBoxes: new Set(directBoxes),
+    searchBoxes: [...planned.boxes]
+      .filter(
+        ([alias, box]) =>
+          !directBoxes.has(alias) || boxOverview(box.catalog.instructions) !== undefined,
+      )
+      .map(([alias]) => alias),
+  });
+}
+
+/**
+ * `snapshot` with its gate distrusting the annotations and rule `auto`
+ * outcomes of the boxes not in `trusted`, for while their tools/list_changed is
+ * outstanding (R65). Every other box is decided exactly as before.
+ */
+function distrustMulti(
+  snapshot: MultiSnapshot,
+  surface: MultiSurface,
+  trusted: ReadonlySet<string>,
+): MultiSnapshot {
+  const dirty = snapshot.boxes.filter((box) => !trusted.has(box.alias));
+  if (dirty.length === 0) return snapshot;
+  const boxes = snapshot.boxes.map((box) =>
+    trusted.has(box.alias) ? box : { ...box, catalog: distrustCatalog(box.catalog) },
+  );
+  const planned = buildBoxedCatalog(boxes, { globalSearch: surface.globalSearch });
+  const catalog = viewOf(boxes, planned, snapshot.directBoxes, surface.globalSearch);
+  const { policy, approvals, toolApprovals } = snapshot.policySettings;
+  const exact = surface.options.policy !== undefined ? { ...surface.options.policy } : undefined;
+  const dirtyAliases = new Set(dirty.map((box) => box.alias));
+  return {
+    ...snapshot,
+    gate: {
+      catalog,
+      policySettings: freezePolicySettings({
+        policy: distrustOverrides(policy, exact, (name) => {
+          const split = splitQualified(name);
+          return split !== undefined && dirtyAliases.has(split.alias);
+        }),
+        approvals,
+        ...(toolApprovals !== undefined ? { toolApprovals } : {}),
+      }),
+    },
+  };
 }
 
 /**
@@ -311,6 +462,7 @@ async function introspect(
   resolved: readonly ResolvedSource[],
   timeoutMs: number,
   forwardElicitation: ReadonlySet<string>,
+  followListChanged: boolean,
 ): Promise<Introspector> {
   const where = new Map(
     resolved.map((source) => [
@@ -325,6 +477,7 @@ async function introspect(
         timeoutMs,
         describe: (alias) => where.get(alias) ?? `source "${alias}"`,
         forwardElicitation,
+        followListChanged,
       },
     );
   } catch (err) {
@@ -642,45 +795,107 @@ interface MultiFacadeDeps {
   introspector: Introspector;
   /** The boxes given by URL (R51), by alias. */
   upstreams: ReadonlyMap<string, UpstreamConnector>;
-  view: BoxedCatalog;
-  /** Generated artifacts over the view (R45): `tools.<alias>` per box, qualified names. */
-  dts: string;
-  bridgeSource: string;
-  overview: string;
-  /** Per-tool type slices keyed by qualified name, for `describe_tool` (R34, R45). */
-  toolTypes: Map<string, ToolTypeText>;
-  /** The code-mode resources and the box overviews (R3, R45). */
-  resources: ProjectionResource[];
-  instructions: string;
   options: WrapServersOptions;
-  policySettings: PolicySettings;
-  projections: Readonly<ProjectionSelection>;
-  /** The mediated tools listed directly (`projections.direct`); empty when not listed. */
-  directTools: readonly DirectTool[];
+  snapshot: MultiSnapshot;
+  surface: MultiSurface;
+  follow: FollowSettings;
 }
 
 class MultiFacade implements MultiProjectionFacade {
-  readonly catalog: ToolCatalog;
   readonly skipped: readonly { alias: string; error: StructuredError }[] = Object.freeze([]);
-  readonly instructions: string;
-  readonly dts: string;
-  /** The code-mode resources, then one box overview per box whose server sends instructions (R3, R45). */
-  readonly resources: ProjectionResource[];
   readonly serverFactory: McpServerFactory;
   readonly projections: Readonly<ProjectionSelection>;
   private readonly deps: MultiFacadeDeps;
-  private readonly copy: CatalogToolCopy;
+  private snapshot: MultiSnapshot;
+  readonly #tracker: ListChangeTracker<IntrospectedServer>;
+  readonly #held = new HeldServers<HeldRegistration>();
+  readonly #listeners = new Set<() => void>();
 
   constructor(deps: MultiFacadeDeps) {
     this.deps = deps;
-    this.catalog = deps.introspector.catalog;
-    this.dts = deps.dts;
-    this.resources = deps.resources;
-    this.copy = catalogToolCopy(deps.view, deps.projections);
-    this.instructions = deps.instructions;
-    this.projections = deps.projections;
+    this.snapshot = deps.snapshot;
+    this.projections = deps.snapshot.projections;
     // Bound so it can be handed to `createMcpHandler` detached.
     this.serverFactory = (ctx) => this.createServer(ctx);
+    const aliases = deps.snapshot.boxes.map((box) => box.alias);
+    this.#tracker = new ListChangeTracker(aliases, deps.follow, {
+      relist: (alias) => deps.introspector.relist(alias),
+      apply: (results, trusted) => {
+        // Only the re-listed boxes change: every other box keeps the
+        // catalog it has (R65 box isolation).
+        const servers = new Map(this.snapshot.catalog.servers);
+        for (const [alias, server] of results) servers.set(alias, server.catalog);
+        const built = buildMultiSnapshot({ servers }, deps.surface, this.snapshot);
+        const next = this.#withTrust(distrustMulti(built, deps.surface, trusted), trusted);
+        for (const [alias, server] of results) deps.introspector.commit(alias, server);
+        this.#swap(next);
+      },
+      distrust: (trusted) => {
+        this.snapshot = this.#withTrust(
+          distrustMulti(this.snapshot, deps.surface, trusted),
+          trusted,
+        );
+      },
+    });
+    deps.introspector.onToolsChanged((alias) => this.#tracker.notify(alias));
+  }
+
+  /** The wrapped boxes' catalogs, keyed by alias, with the servers' own tool names (R30). */
+  get catalog(): ToolCatalog {
+    return this.snapshot.catalog;
+  }
+
+  get instructions(): string {
+    return this.snapshot.instructions;
+  }
+
+  get dts(): string {
+    return this.snapshot.dts;
+  }
+
+  /** The code-mode resources, then one box overview per box whose server sends instructions (R3, R45). */
+  get resources(): ProjectionResource[] {
+    return this.snapshot.resources;
+  }
+
+  #withTrust(snapshot: MultiSnapshot, trusted: ReadonlySet<string>): MultiSnapshot {
+    return {
+      ...snapshot,
+      trust: {
+        trusted: new Set(trusted),
+        generations: new Map(
+          snapshot.boxes.map((box) => [box.alias, this.#tracker.generation(box.alias)]),
+        ),
+      },
+    };
+  }
+
+  /**
+   * Swap in a rebuilt snapshot (R65): servers held open are brought up to
+   * date — one tools/list_changed each when their listed tools changed —
+   * and the facade's listeners hear of it when a server built now would
+   * list different tool definitions.
+   */
+  #swap(next: MultiSnapshot): void {
+    const before = this.snapshot;
+    this.snapshot = next;
+    const copy = this.projections.catalog ? next.copy : undefined;
+    // The snapshot is committed: nothing below may throw (best effort).
+    for (const [server, held] of this.#held.entries()) {
+      try {
+        batchToolListChanged(server, () =>
+          reconcileHeldServer(server, held, this, copy, next.directTools),
+        );
+      } catch {
+        // One server that cannot be brought up to date never stops the rest.
+      }
+    }
+    if (
+      !sameDirectTools(before.directTools, next.directTools) ||
+      (copy !== undefined && JSON.stringify(before.copy) !== JSON.stringify(next.copy))
+    ) {
+      notifyListeners(this.#listeners);
+    }
   }
 
   executeMachine(
@@ -689,34 +904,37 @@ class MultiFacade implements MultiProjectionFacade {
     clientCanElicit?: boolean,
     clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
+    const snapshot = this.snapshot;
     return executeMachine(args, {
-      ...this.gateDeps(era, clientCanElicit, clientUrlElicitation),
-      bridgeSource: this.deps.bridgeSource,
+      ...this.gateDeps(snapshot, era, clientCanElicit, clientUrlElicitation),
+      bridgeSource: snapshot.bridgeSource,
     });
   }
 
   discoverApis(): CallToolResult {
+    const snapshot = this.snapshot;
     const { catalogInlineThreshold } = this.deps.options;
-    return discoverApis(this.deps.view, this.deps.overview, {
+    return discoverApis(snapshot.view, snapshot.overview, {
       catalog: this.projections.catalog,
       // R37 pointer: the search tools actually served (R43), and under
       // direct listing the boxes listed directly instead.
-      ...(this.deps.view.directBoxes.length > 0
+      ...(snapshot.view.directBoxes.length > 0
         ? {
-            findTools: findToolsSentence(this.deps.view, 'to find tools by name or purpose'),
+            findTools: findToolsSentence(snapshot.view, 'to find tools by name or purpose'),
           }
-        : { searchPhrase: searchToolsPhrase(this.deps.view) ?? 'search_tools' }),
+        : { searchPhrase: searchToolsPhrase(snapshot.view) ?? 'search_tools' }),
       // Links every resource but the dashboard, box overviews included (R45).
-      resources: this.resources,
+      resources: snapshot.resources,
       // The samples are picked under the facade's policy (R45).
-      policy: this.deps.policySettings,
+      policy: snapshot.policySettings,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
       maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
     });
   }
 
   searchTools(args: { query?: string; cursor?: string }, alias?: string): CallToolResult {
-    const view = this.deps.view;
+    const snapshot = this.snapshot;
+    const view = snapshot.view;
     try {
       if (alias !== undefined ? !view.searchBoxes.includes(alias) : !view.globalSearch) {
         // Quoted either way: an unknown alias is caller input, rendered inert.
@@ -730,7 +948,7 @@ class MultiFacade implements MultiProjectionFacade {
         });
       }
       return searchBoxes(view, args, {
-        ...this.deps.policySettings,
+        ...snapshot.policySettings,
         ...(alias !== undefined ? { box: alias } : {}),
       });
     } catch (err) {
@@ -739,10 +957,11 @@ class MultiFacade implements MultiProjectionFacade {
   }
 
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
+    const snapshot = this.snapshot;
     try {
-      return describeTool(this.deps.view, args, {
-        ...this.deps.policySettings,
-        toolTypes: this.deps.toolTypes,
+      return describeTool(snapshot.view, args, {
+        ...snapshot.policySettings,
+        toolTypes: snapshot.toolTypes,
       });
     } catch (err) {
       return errorResult(toStructuredError(err));
@@ -751,7 +970,10 @@ class MultiFacade implements MultiProjectionFacade {
 
   /** By qualified name, over the merged view the gate decides on (R45, R49). */
   policyOf(name: string): ToolPolicy | undefined {
-    return toolPolicyOf(this.deps.view, name, this.deps.policySettings);
+    // What the gate decides now: while a box's tools/list_changed is
+    // outstanding, its distrusted decision (R65).
+    const { gate } = this.snapshot;
+    return toolPolicyOf(gate.catalog, name, gate.policySettings);
   }
 
   callTool(
@@ -760,26 +982,28 @@ class MultiFacade implements MultiProjectionFacade {
     clientCanElicit?: boolean,
     clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
-    return callTool(args, this.gateDeps(era, clientCanElicit, clientUrlElicitation));
+    return callTool(args, this.gateDeps(this.snapshot, era, clientCanElicit, clientUrlElicitation));
   }
 
   /**
    * The approval-gate dependencies both gated tools share (R35, R38, R45):
    * the merged view, the `multi` key domain (R41) — for machine blobs and
-   * call blobs alike — and the frozen policy settings.
+   * call blobs alike — and the frozen policy settings, all from the
+   * snapshot the request started with (R65).
    */
   private gateDeps(
+    snapshot: MultiSnapshot,
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
     clientUrlElicitation?: boolean,
   ): ApprovalGateDeps {
     return approvalGateDeps({
-      catalog: this.deps.view,
+      catalog: snapshot.gate.catalog,
       blobDomain: 'multi',
       // Routed per call by qualified name (catalog/boxes.ts `routeCall`).
-      executor: this.deps.introspector,
+      executor: guardedExecutor(this.deps.introspector, this.#tracker, snapshot.trust),
       options: this.deps.options,
-      policySettings: this.deps.policySettings,
+      policySettings: snapshot.gate.policySettings,
       era,
       clientCanElicit,
       clientUrlElicitation,
@@ -794,15 +1018,46 @@ class MultiFacade implements MultiProjectionFacade {
 
   registerOn(server: McpServer, options?: RegisterOptions): void {
     const era = options?.era;
+    const snapshot = this.snapshot;
     if (this.projections.codeMode) {
       // The workflow prompts name the boxes by alias (R39): they read the view.
-      registerCodeModeTools(server, era, this, codeModeCopy(this.projections), this.deps.view);
+      registerCodeModeTools(
+        server,
+        era,
+        this,
+        codeModeCopy(this.projections),
+        () => this.snapshot.view,
+      );
     }
     if (this.projections.catalog) {
-      registerCatalogTools(server, era, this, this.copy);
-      registerDirectTools(server, era, this, this.deps.directTools);
+      const catalogTools = registerCatalogTools(server, era, this, snapshot.copy);
+      const direct = registerDirectTools(server, era, this, snapshot.directTools);
+      // Kept (weakly) so a refresh can update what it lists (R65).
+      this.#held.add(server, { era, catalogTools, direct });
     }
-    registerResources(server, this.resources);
+    registerResources(server, snapshot.resources, () => this.snapshot.resources);
+  }
+
+  onToolsChanged(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  async refreshTools(alias?: string): Promise<void> {
+    const boxes = this.snapshot.view.boxes;
+    if (alias === undefined) {
+      await Promise.all([...boxes.keys()].map((box) => this.#tracker.refresh(box)));
+      return;
+    }
+    if (typeof alias !== 'string' || !boxes.has(alias)) {
+      const name = JSON.stringify(capLength(neutralizeControlChars(String(alias)), 64));
+      throw new ProjectionError('validate', `refreshTools: no box ${name} on this facade`, {
+        hint: `Boxes: ${[...boxes.keys()].join(', ')}.`,
+      });
+    }
+    await this.#tracker.refresh(alias);
   }
 
   async signOut(alias?: string): Promise<void> {
@@ -826,7 +1081,7 @@ class MultiFacade implements MultiProjectionFacade {
       const name = JSON.stringify(capLength(neutralizeControlChars(String(alias)), 64));
       throw new ProjectionError(
         'validate',
-        this.deps.view.boxes.has(String(alias))
+        this.snapshot.view.boxes.has(String(alias))
           ? `signOut: box ${name} is not given by URL`
           : `signOut: no box ${name} on this facade`,
         {
@@ -841,6 +1096,7 @@ class MultiFacade implements MultiProjectionFacade {
   }
 
   close(): Promise<void> {
+    this.#tracker.close();
     return this.deps.introspector.close();
   }
 }

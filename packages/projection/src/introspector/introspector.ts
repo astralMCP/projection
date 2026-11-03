@@ -102,6 +102,26 @@ export interface IntrospectOptions {
    * elicitation capability; every other box declares none.
    */
   forwardElicitation?: ReadonlySet<ServerAlias>;
+  /**
+   * Follow each owned connection's `notifications/tools/list_changed` (R65):
+   * when the server advertises `tools.listChanged`, the introspector handles
+   * the notification (on a 2026-07-28 connection, through a
+   * `subscriptions/listen` stream opened before the first `tools/list`) and
+   * reports it to the {@link Introspector.onToolsChanged} listener. A
+   * caller's own `Client` is never subscribed: its notification handlers
+   * are its owner's. Default off.
+   */
+  followListChanged?: boolean;
+}
+
+/** Bound on the `subscriptions/listen` acknowledgement; a server that never acks is not followed. */
+const LISTEN_ACK_TIMEOUT_MS = 5_000;
+
+/** Where notifications go before and after the facade subscribes (R65). */
+interface ChangeHub {
+  listener: ((alias: ServerAlias) => void) | undefined;
+  /** Notified before anyone listened: delivered on subscription. */
+  early: Set<ServerAlias>;
 }
 
 function isTextBlock(block: unknown): block is { type: 'text'; text: string } {
@@ -277,7 +297,7 @@ function looksLikeForeignMcpServer(source: unknown): boolean {
  * SDK's internal `tools/list` cache (manual paging never fills it, and a
  * `notifications/tools/list_changed` clears it).
  */
-interface IntrospectedServer {
+export interface IntrospectedServer {
   catalog: ServerCatalog;
   definitions: Map<string, Tool>;
 }
@@ -478,12 +498,21 @@ export class Introspector implements ToolExecutor {
   readonly #connections: Map<ServerAlias, Connection>;
   #catalog: ToolCatalog;
   #definitions: Map<ServerAlias, Map<string, Tool>>;
+  readonly #hub: ChangeHub;
+  readonly #timeoutMs: number;
+  readonly #describe: (alias: ServerAlias) => string;
 
   private constructor(
     connections: Map<ServerAlias, Connection>,
     introspected: Map<ServerAlias, IntrospectedServer>,
+    hub: ChangeHub,
+    timeoutMs: number,
+    describe: (alias: ServerAlias) => string,
   ) {
     this.#connections = connections;
+    this.#hub = hub;
+    this.#timeoutMs = timeoutMs;
+    this.#describe = describe;
     this.#catalog = Introspector.#catalogOf(introspected);
     this.#definitions = Introspector.#definitionsOf(introspected);
   }
@@ -514,6 +543,7 @@ export class Introspector implements ToolExecutor {
     const describe = options.describe ?? ((alias: ServerAlias) => `wrapped server "${alias}"`);
     const connections = new Map<ServerAlias, Connection>();
     const servers = new Map<ServerAlias, IntrospectedServer>();
+    const hub: ChangeHub = { listener: undefined, early: new Set() };
     // Each server is an independent host-side connection, so introspect
     // them concurrently (v1 has one; the fan-out matters for R30 multi-server).
     //
@@ -542,6 +572,14 @@ export class Introspector implements ToolExecutor {
             }
             connections.set(alias, connection);
             try {
+              // Subscribed before the first tools/list: on an ordered
+              // transport (stdio, in-memory) a change made while it is read
+              // is not missed. Over Streamable HTTP the two are separate
+              // requests, so one in that window waits for the next
+              // notification (or refreshTools()).
+              if (options.followListChanged === true && connection.owned) {
+                Introspector.#subscribe(alias, connection.client, hub, signal);
+              }
               servers.set(
                 alias,
                 await introspectServer(alias, connection.client, connection.connector, signal),
@@ -570,7 +608,91 @@ export class Introspector implements ToolExecutor {
       await Introspector.#closeConnections(connections);
       throw failed.reason;
     }
-    return new Introspector(connections, servers);
+    return new Introspector(connections, servers, hub, timeoutMs, describe);
+  }
+
+  /**
+   * Handle `notifications/tools/list_changed` from an owned connection
+   * whose server advertises `tools.listChanged` (R65). On a 2026-07-28
+   * connection the notification only arrives on a `subscriptions/listen`
+   * stream: one is opened (sent before the first `tools/list`, which on an
+   * ordered transport means no change made while the tools are read is
+   * missed; over Streamable HTTP the two are separate requests), its
+   * acknowledgement awaited in the background and bounded,
+   * and a server that refuses or never acknowledges is simply not followed
+   * — it never fails, nor delays, the wrap.
+   */
+  static #subscribe(alias: ServerAlias, client: Client, hub: ChangeHub, signal: AbortSignal): void {
+    if (client.getServerCapabilities()?.tools?.listChanged !== true) return;
+    client.setNotificationHandler('notifications/tools/list_changed', () => {
+      if (hub.listener !== undefined) hub.listener(alias);
+      else hub.early.add(alias);
+    });
+    if (client.getProtocolEra() !== 'modern') return;
+    void client
+      .listen({ toolsListChanged: true }, { timeout: LISTEN_ACK_TIMEOUT_MS, signal })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Report each wrapped server's `tools/list_changed` to `listener` (R65),
+   * including any that arrived before this call. One listener: a later
+   * call replaces it.
+   */
+  onToolsChanged(listener: (alias: ServerAlias) => void): void {
+    this.#hub.listener = listener;
+    const early = [...this.#hub.early];
+    this.#hub.early.clear();
+    for (const alias of early) listener(alias);
+  }
+
+  /**
+   * Re-read one wrapped server's `tools/list` (R65), under the same bounds
+   * as at wrap time — the page and tool caps, the redaction of a source
+   * given by URL (S1), and the introspect timeout (R47) — without
+   * committing anything: {@link commit} swaps the result in.
+   */
+  async relist(alias: ServerAlias): Promise<IntrospectedServer> {
+    const connection = this.#connections.get(alias);
+    if (connection === undefined) {
+      throw new ProjectionError('protocol', `Unknown wrapped-server alias "${alias}".`);
+    }
+    return await withDeadline(
+      this.#timeoutMs,
+      async (signal) => {
+        try {
+          return await introspectServer(alias, connection.client, connection.connector, signal);
+        } catch (err) {
+          throw connection.connector !== undefined ? connection.connector.toError(err) : err;
+        }
+      },
+      () =>
+        new ProjectionError(
+          'protocol',
+          `${this.#describe(alias)} did not finish listing its tools within ${this.#timeoutMs} ms`,
+          {
+            hint: 'Check that the server is reachable and answering MCP, or raise introspectTimeoutMs.',
+          },
+        ),
+    );
+  }
+
+  /**
+   * Swap in a re-listed server (R65): its catalog, and the definitions and
+   * output validators every later call is checked against. The facade calls
+   * it in the same synchronous step as its own rebuild.
+   */
+  commit(alias: ServerAlias, server: IntrospectedServer): void {
+    const servers = new Map(this.#catalog.servers);
+    servers.set(alias, server.catalog);
+    this.#catalog = { servers };
+    const definitions = new Map(this.#definitions);
+    definitions.set(alias, server.definitions);
+    this.#definitions = definitions;
+    const prefix = JSON.stringify([alias]).slice(0, -1);
+    for (const key of this.#outputValidators.keys()) {
+      if (key.startsWith(`${prefix},`)) this.#outputValidators.delete(key);
+    }
   }
 
   static async #connect(
@@ -679,6 +801,7 @@ export class Introspector implements ToolExecutor {
     );
     this.#catalog = Introspector.#catalogOf(rebuilt);
     this.#definitions = Introspector.#definitionsOf(rebuilt);
+    this.#outputValidators.clear();
     return this.#catalog;
   }
 

@@ -42,6 +42,17 @@ import { callTool, describeTool, searchTools, type CallToolArgs } from './catalo
 import { markDirectListed } from './catalog/search.js';
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
+  batchToolListChanged,
+  distrustCatalog,
+  distrustOverrides,
+  guardedExecutor,
+  HeldServers,
+  ListChangeTracker,
+  notifyListeners,
+  resolveFollowSettings,
+  type FollowSettings,
+} from './facade/follow.js';
+import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
   assertApprovalPrompts,
@@ -49,6 +60,7 @@ import {
   resolveDirectSetting,
   resolveIntrospectTimeout,
   resolveProjections,
+  type DirectSetting,
   type PolicySettings,
   type RegisterOptions,
   type WrapOptions,
@@ -59,7 +71,10 @@ import {
   registerCodeModeTools,
   registerDirectTools,
   registerResources,
+  reconcileHeldServer,
+  sameDirectTools,
   type CatalogToolCopy,
+  type HeldRegistration,
 } from './facade/server.js';
 import {
   decideDirect,
@@ -67,7 +82,11 @@ import {
   reservedToolNames,
   type DirectTool,
 } from './facade/direct.js';
-import { createIntrospector, type Introspector } from './introspector/index.js';
+import {
+  createIntrospector,
+  type IntrospectedServer,
+  type Introspector,
+} from './introspector/index.js';
 import {
   buildInstructions,
   buildResources,
@@ -93,7 +112,9 @@ import {
 import {
   clampCaps,
   DEFAULT_SERVER_ALIAS,
+  type ApprovalsMode,
   type PolicyOverrides,
+  type PolicyRule,
   type ServerCatalog,
 } from './types.js';
 
@@ -147,9 +168,11 @@ export interface ProjectionFacade {
   /**
    * The resolved policy of the tool `name` (R14, R49): the decision the
    * approval gate makes for it and the posture `search_tools` and
-   * `describe_tool` show, computed from the same frozen wrap-time policy
-   * settings and the same lookup the gate uses, so it cannot disagree with
-   * them. `name` is the server's catalog tool name — on a multi-server
+   * `describe_tool` show, computed from the same frozen policy settings and
+   * the same lookup the gate uses, so it cannot disagree with them. After a
+   * followed `tools/list_changed` (R65) it reads the current snapshot; while
+   * the re-listing is outstanding it returns the gate's distrusted decision,
+   * which may ask where `search_tools` still shows the last listed posture. `name` is the server's catalog tool name — on a multi-server
    * facade the qualified `<box>.<tool>` — never a name read from
    * `tools/list`: direct listing lists a tool whose name is not a legal tool
    * name under a cleaned-up or hash-suffixed name, which can equal another
@@ -165,6 +188,28 @@ export interface ProjectionFacade {
   createServer(ctx?: RegisterOptions): McpServer;
   /** Register the enabled projections' tools and the resources on an `McpServer` the caller built. */
   registerOn(server: McpServer, options?: RegisterOptions): void;
+  /**
+   * Hear when the tool definitions a server built now would list differ
+   * from before, after a wrapped server's `tools/list_changed` was followed
+   * (R65): the directly listed tools changed. Servers this facade built that
+   * are still connected (stdio) are sent `notifications/tools/list_changed`
+   * themselves; behind `createMcpHandler`, publish it to open
+   * `subscriptions/listen` streams from here:
+   * `facade.onToolsChanged(() => handler.notify.toolsChanged())`.
+   * Returns the unsubscribe function.
+   */
+  onToolsChanged(listener: () => void): () => void;
+  /**
+   * Re-list a wrapped server's tools now, as if it had sent
+   * `tools/list_changed` (R65) — debounced and rate-capped the same way —
+   * for a `Client` you passed in (which Projection never subscribes) or a
+   * server that changes without notifying. On a multi-server facade,
+   * `alias` names the box, or every box without one. Resolves once a
+   * re-listing that started after the call is in place (even if a later
+   * notification already left the box dirty again); rejects with the
+   * error that kept it out (the box stays distrusted and is retried).
+   */
+  refreshTools(alias?: string): Promise<void>;
   /**
    * Delete the stored upstream tokens (R59) of the sources given by URL:
    * on a single-server facade, its source (call it without an alias); on a
@@ -242,6 +287,7 @@ export async function wrapMcpServer(
   assertApprovalPrompts(options.approvalPrompts);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const upstreamElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
+  const follow = resolveFollowSettings(options.followListChanged);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)
     ? new UpstreamConnector(
@@ -259,6 +305,7 @@ export async function wrapMcpServer(
       ...(upstreamElicitation === 'forward'
         ? { forwardElicitation: new Set([DEFAULT_SERVER_ALIAS]) }
         : {}),
+      followListChanged: follow.follow,
     },
   );
   const catalog = introspector.catalog.servers.get(DEFAULT_SERVER_ALIAS);
@@ -272,35 +319,105 @@ export async function wrapMcpServer(
     );
   }
 
-  // The policy settings (overrides + approvals mode) are snapshotted once,
-  // here, and that one frozen copy feeds typegen AND the gate / catalog
-  // tools: the posture baked into the `.d.ts` resource and the overview must
-  // be the posture `describe_tool` and the approval gate decide with. Policy
-  // rules are resolved into per-tool overrides first (D36), so the snapshot
-  // carries their outcome and no surface ever calls a rule.
-  let policy: PolicyOverrides | undefined;
+  let snapshot: SingleSnapshot;
   try {
-    policy = resolvePolicyRules(catalog, policyRules, options.policy);
+    snapshot = buildSingleSnapshot(catalog, { options, policyRules, approvals, direct, selected });
   } catch (err) {
     // A rule that throws fails the wrap: close what Projection opened.
     await introspector.close();
     throw err;
   }
-  const policySettings = freezePolicySettings({ policy, approvals });
+
+  return new Facade({
+    introspector,
+    options,
+    snapshot,
+    surface: { options, policyRules, approvals, direct, selected, listed: snapshot.listed },
+    follow,
+    ...(connector !== undefined ? { connector } : {}),
+  });
+}
+
+/**
+ * What a single-server snapshot is built from besides the catalog: the
+ * validated options, and — after the first build — the surface decided at
+ * wrap time, which a refresh never re-decides (R65).
+ */
+interface SingleSurface {
+  options: WrapOptions;
+  policyRules: readonly PolicyRule[] | undefined;
+  approvals: ApprovalsMode | undefined;
+  direct: DirectSetting;
+  selected: Readonly<ProjectionSelection>;
+  /** Whether the tools are listed directly; decided by the first build when absent. */
+  listed?: boolean;
+}
+
+/**
+ * Everything a single-server facade serves, derived from one catalog: what
+ * a request reads, all of it from the same snapshot (R65 swaps it whole).
+ */
+interface SingleSnapshot {
+  catalog: ServerCatalog;
+  dts: string;
+  bridgeSource: string;
+  overview: string;
+  toolTypes: Map<string, ToolTypeText>;
+  resources: ProjectionResource[];
+  instructions: string;
+  /**
+   * The snapshot of `options.policy` and `options.approvals` (see
+   * `WrapOptions`), rules resolved: the one context every surface decides
+   * policy with.
+   */
+  policySettings: PolicySettings;
+  /** Whether the tools are listed directly (`projections.direct`). */
+  listed: boolean;
+  projections: Readonly<ProjectionSelection>;
+  /** The direct-listing plan; listed only when `listed`. */
+  plan: readonly DirectTool[];
+  /**
+   * What the approval gate decides with: the catalog and policy above,
+   * or — while the server's tools/list_changed is outstanding — the same
+   * with its annotations and rule `auto` outcomes distrusted (R65).
+   */
+  gate: { catalog: ServerCatalog; policySettings: PolicySettings };
+  /** Whether the box was trusted at build time, and its generation (R65). */
+  trust: { trusted: ReadonlySet<string>; generations: ReadonlyMap<string, number> };
+}
+
+function buildSingleSnapshot(
+  catalog: ServerCatalog,
+  surface: SingleSurface,
+  previous?: SingleSnapshot,
+): SingleSnapshot {
+  const { options, direct, selected } = surface;
+  // The policy settings (overrides + approvals mode) are snapshotted once
+  // per catalog, and that one frozen copy feeds typegen AND the gate /
+  // catalog tools: the posture baked into the `.d.ts` resource and the
+  // overview must be the posture `describe_tool` and the approval gate
+  // decide with. Policy rules are resolved into per-tool overrides first
+  // (D36), so the snapshot carries their outcome and no surface ever calls
+  // a rule.
+  const policy = resolvePolicyRules(catalog, surface.policyRules, options.policy);
+  const policySettings = freezePolicySettings({ policy, approvals: surface.approvals });
 
   // Direct listing: planned under the same frozen policy, so each mediated
   // tool's posture line is the posture call_tool decides with.
   const plan =
     direct.mode === 'off'
       ? []
-      : planDirectTools(catalog, { ...policySettings, reserved: reservedToolNames([]) });
-  const listed = decideDirect(direct, plan);
+      : planDirectTools(catalog, {
+          ...policySettings,
+          reserved: reservedToolNames([]),
+          ...(previous !== undefined ? { previous: previous.plan } : {}),
+        });
+  const listed = surface.listed ?? decideDirect(direct, plan);
   // The unknown-name hint must not point at search_tools, which direct
   // listing does not serve.
   if (listed) markDirectListed(catalog);
-  const projections: Readonly<ProjectionSelection> = listed
-    ? Object.freeze({ ...selected, direct: true })
-    : selected;
+  const projections: Readonly<ProjectionSelection> =
+    previous?.projections ?? (listed ? Object.freeze({ ...selected, direct: true }) : selected);
 
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
   const resources = buildResources(
@@ -310,9 +427,7 @@ export async function wrapMcpServer(
     clampCaps(options.caps ?? {}).maxRoundTrips,
   );
   const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
-
-  return new Facade({
-    introspector,
+  return {
     catalog,
     dts,
     bridgeSource,
@@ -320,54 +435,143 @@ export async function wrapMcpServer(
     toolTypes,
     resources,
     instructions,
-    options,
     policySettings,
+    listed,
     projections,
-    directTools: listed ? plan : [],
-    ...(connector !== undefined ? { connector } : {}),
-  });
+    plan,
+    gate: { catalog, policySettings },
+    trust: {
+      trusted: new Set([DEFAULT_SERVER_ALIAS]),
+      generations: new Map([[DEFAULT_SERVER_ALIAS, 0]]),
+    },
+  };
+}
+
+/**
+ * `snapshot` with its gate distrusting the server's annotations and rule
+ * `auto` outcomes, for while its tools/list_changed is outstanding (R65).
+ */
+function distrustSingle(
+  snapshot: SingleSnapshot,
+  exact: PolicyOverrides | undefined,
+): SingleSnapshot {
+  const catalog = distrustCatalog(snapshot.catalog);
+  if (snapshot.listed) markDirectListed(catalog);
+  const { approvals, policy } = snapshot.policySettings;
+  return {
+    ...snapshot,
+    gate: {
+      catalog,
+      policySettings: freezePolicySettings({
+        policy: distrustOverrides(policy, exact, () => true),
+        approvals,
+      }),
+    },
+  };
 }
 
 interface FacadeDeps {
   introspector: Introspector;
-  catalog: ServerCatalog;
-  dts: string;
-  bridgeSource: string;
-  overview: string;
-  toolTypes: Map<string, ToolTypeText>;
-  resources: ProjectionResource[];
-  instructions: string;
   options: WrapOptions;
-  /**
-   * The wrap-time snapshot of `options.policy` and `options.approvals` (see
-   * `WrapOptions`): the one context every surface decides policy with.
-   */
-  policySettings: PolicySettings;
-  projections: Readonly<ProjectionSelection>;
-  /** The mediated tools listed directly (`projections.direct`); empty when not listed. */
-  directTools: readonly DirectTool[];
+  snapshot: SingleSnapshot;
+  surface: SingleSurface;
+  follow: FollowSettings;
   /** The source given by URL, when the facade wraps one (R51). */
   connector?: UpstreamConnector;
 }
 
 class Facade implements ProjectionFacade {
-  readonly catalog: ServerCatalog;
-  readonly instructions: string;
-  readonly dts: string;
-  readonly resources: ProjectionResource[];
   readonly serverFactory: McpServerFactory;
   readonly projections: Readonly<ProjectionSelection>;
   private readonly deps: FacadeDeps;
+  private snapshot: SingleSnapshot;
+  readonly #tracker: ListChangeTracker<IntrospectedServer>;
+  readonly #held = new HeldServers<HeldRegistration>();
+  readonly #listeners = new Set<() => void>();
 
   constructor(deps: FacadeDeps) {
     this.deps = deps;
-    this.catalog = deps.catalog;
-    this.instructions = deps.instructions;
-    this.dts = deps.dts;
-    this.resources = deps.resources;
-    this.projections = deps.projections;
+    this.snapshot = deps.snapshot;
+    this.projections = deps.snapshot.projections;
     // Bound so it can be handed to `createMcpHandler` detached.
     this.serverFactory = (ctx) => this.createServer(ctx);
+    const exact = deps.options.policy !== undefined ? { ...deps.options.policy } : undefined;
+    this.#tracker = new ListChangeTracker([DEFAULT_SERVER_ALIAS], deps.follow, {
+      relist: (alias) => deps.introspector.relist(alias),
+      apply: (results, trusted) => {
+        const server = results.get(DEFAULT_SERVER_ALIAS);
+        if (server === undefined) return;
+        const built = buildSingleSnapshot(server.catalog, deps.surface, this.snapshot);
+        const next = this.#withTrust(
+          trusted.has(DEFAULT_SERVER_ALIAS) ? built : distrustSingle(built, exact),
+          trusted,
+        );
+        deps.introspector.commit(DEFAULT_SERVER_ALIAS, server);
+        this.#swap(next);
+      },
+      distrust: (trusted) => {
+        this.snapshot = this.#withTrust(distrustSingle(this.snapshot, exact), trusted);
+      },
+    });
+    deps.introspector.onToolsChanged((alias) => this.#tracker.notify(alias));
+  }
+
+  get catalog(): ServerCatalog {
+    return this.snapshot.catalog;
+  }
+
+  get instructions(): string {
+    return this.snapshot.instructions;
+  }
+
+  get dts(): string {
+    return this.snapshot.dts;
+  }
+
+  get resources(): ProjectionResource[] {
+    return this.snapshot.resources;
+  }
+
+  #withTrust(snapshot: SingleSnapshot, trusted: ReadonlySet<string>): SingleSnapshot {
+    return {
+      ...snapshot,
+      trust: {
+        trusted: new Set(trusted),
+        generations: new Map([
+          [DEFAULT_SERVER_ALIAS, this.#tracker.generation(DEFAULT_SERVER_ALIAS)],
+        ]),
+      },
+    };
+  }
+
+  /**
+   * Swap in a rebuilt snapshot (R65): servers held open are brought up to
+   * date — one tools/list_changed each when their listed tools changed —
+   * and the facade's listeners hear of it when a server built now would
+   * list different tool definitions.
+   */
+  #swap(next: SingleSnapshot): void {
+    const before = this.snapshot;
+    this.snapshot = next;
+    const copy = this.#catalogCopy();
+    const directTools = next.listed ? next.plan : [];
+    // The snapshot is committed: nothing below may throw (best effort).
+    for (const [server, held] of this.#held.entries()) {
+      try {
+        batchToolListChanged(server, () =>
+          reconcileHeldServer(server, held, this, copy, directTools),
+        );
+      } catch {
+        // One server that cannot be brought up to date never stops the rest.
+      }
+    }
+    const listedBefore = before.listed ? before.plan : [];
+    if (!sameDirectTools(listedBefore, directTools)) notifyListeners(this.#listeners);
+  }
+
+  #catalogCopy(): CatalogToolCopy | undefined {
+    if (!this.projections.catalog) return undefined;
+    return this.projections.direct === true ? DIRECT_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY;
   }
 
   executeMachine(
@@ -376,9 +580,10 @@ class Facade implements ProjectionFacade {
     clientCanElicit?: boolean,
     clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
+    const snapshot = this.snapshot;
     return executeMachine(args, {
-      ...this.gateDeps(era, clientCanElicit, clientUrlElicitation),
-      bridgeSource: this.deps.bridgeSource,
+      ...this.gateDeps(snapshot, era, clientCanElicit, clientUrlElicitation),
+      bridgeSource: snapshot.bridgeSource,
     });
   }
 
@@ -388,25 +593,27 @@ class Facade implements ProjectionFacade {
     clientCanElicit?: boolean,
     clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult> {
-    return callTool(args, this.gateDeps(era, clientCanElicit, clientUrlElicitation));
+    return callTool(args, this.gateDeps(this.snapshot, era, clientCanElicit, clientUrlElicitation));
   }
 
   /**
    * The approval-gate dependencies both gated tools share (R35, R38): one
    * place to wire the facade's options, so `execute_machine` and `call_tool`
-   * can never drift on policy, redaction, caps or replay protection.
+   * can never drift on policy, redaction, caps or replay protection. A
+   * request decides with the snapshot it started with (R65).
    */
   private gateDeps(
+    snapshot: SingleSnapshot,
     era: ProtocolEra | undefined,
     clientCanElicit: boolean | undefined,
     clientUrlElicitation?: boolean,
   ): ApprovalGateDeps {
     return approvalGateDeps({
-      catalog: this.deps.catalog,
+      catalog: snapshot.gate.catalog,
       blobDomain: 'single',
-      executor: this.deps.introspector,
+      executor: guardedExecutor(this.deps.introspector, this.#tracker, snapshot.trust),
       options: this.deps.options,
-      policySettings: this.deps.policySettings,
+      policySettings: snapshot.gate.policySettings,
       era,
       clientCanElicit,
       clientUrlElicitation,
@@ -414,8 +621,9 @@ class Facade implements ProjectionFacade {
   }
 
   discoverApis(): CallToolResult {
+    const snapshot = this.snapshot;
     const { catalogInlineThreshold } = this.deps.options;
-    return discoverApis(this.deps.catalog, this.deps.overview, {
+    return discoverApis(snapshot.catalog, snapshot.overview, {
       catalog: this.projections.catalog,
       // R37 pointer: direct listing serves no search_tools.
       ...(this.projections.direct === true
@@ -427,18 +635,20 @@ class Facade implements ProjectionFacade {
   }
 
   searchTools(args: { query?: string; cursor?: string }): CallToolResult {
+    const snapshot = this.snapshot;
     try {
-      return searchTools(this.deps.catalog, args, this.deps.policySettings);
+      return searchTools(snapshot.catalog, args, snapshot.policySettings);
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
   }
 
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
+    const snapshot = this.snapshot;
     try {
-      return describeTool(this.deps.catalog, args, {
-        ...this.deps.policySettings,
-        toolTypes: this.deps.toolTypes,
+      return describeTool(snapshot.catalog, args, {
+        ...snapshot.policySettings,
+        toolTypes: snapshot.toolTypes,
       });
     } catch (err) {
       return errorResult(toStructuredError(err));
@@ -446,7 +656,10 @@ class Facade implements ProjectionFacade {
   }
 
   policyOf(name: string): ToolPolicy | undefined {
-    return toolPolicyOf(this.deps.catalog, name, this.deps.policySettings);
+    // What the gate decides now: while the server's tools/list_changed is
+    // outstanding, its distrusted decision (R65).
+    const { gate } = this.snapshot;
+    return toolPolicyOf(gate.catalog, name, gate.policySettings);
   }
 
   /**
@@ -458,7 +671,7 @@ class Facade implements ProjectionFacade {
   createServer(ctx?: RegisterOptions): McpServer {
     const server = createProjectionServer(
       this.deps.options,
-      `projection-${this.deps.catalog.alias}`,
+      `projection-${this.snapshot.catalog.alias}`,
       this.instructions,
     );
     this.registerOn(server, ctx);
@@ -467,19 +680,36 @@ class Facade implements ProjectionFacade {
 
   registerOn(server: McpServer, options?: RegisterOptions): void {
     const era = options?.era;
+    const snapshot = this.snapshot;
     if (this.projections.codeMode) {
-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, this.catalog);
+      registerCodeModeTools(server, era, this, CODE_MODE_COPY, () => this.snapshot.catalog);
     }
-    if (this.projections.catalog) {
-      registerCatalogTools(
-        server,
-        era,
-        this,
-        this.projections.direct === true ? DIRECT_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY,
+    const copy = this.#catalogCopy();
+    if (copy !== undefined) {
+      const catalogTools = registerCatalogTools(server, era, this, copy);
+      const direct = registerDirectTools(server, era, this, snapshot.listed ? snapshot.plan : []);
+      // Kept (weakly) so a refresh can update what it lists (R65).
+      this.#held.add(server, { era, catalogTools, direct });
+    }
+    registerResources(server, snapshot.resources, () => this.snapshot.resources);
+  }
+
+  onToolsChanged(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  refreshTools(alias?: string): Promise<void> {
+    if (alias !== undefined) {
+      return Promise.reject(
+        new ProjectionError('validate', 'refreshTools on a single-server facade takes no alias', {
+          hint: 'Call refreshTools() without arguments.',
+        }),
       );
-      registerDirectTools(server, era, this, this.deps.directTools);
     }
-    registerResources(server, this.resources);
+    return this.#tracker.refresh(DEFAULT_SERVER_ALIAS);
   }
 
   async signOut(alias?: string): Promise<void> {
@@ -502,6 +732,7 @@ class Facade implements ProjectionFacade {
   }
 
   close(): Promise<void> {
+    this.#tracker.close();
     return this.deps.introspector.close();
   }
 }

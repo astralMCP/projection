@@ -138,7 +138,7 @@ commands need no PATH prefix. CI runs `check` on Node 22 and 24.
 
 ## Where truth lives
 
-- `docs/PRD.md` — requirements (R1–R64, plus R15a/R15b), security invariants (S1–S6), §10
+- `docs/PRD.md` — requirements (R1–R65, plus R15a/R15b), security invariants (S1–S6), §10
   budgets/metrics, §13 verification and harness.
 - `docs/DECISIONS.md` — why things are the way they are (SDK v2 MRTR
   adoption, AEAD sealer rationale, D4 replay obligation, D9 two

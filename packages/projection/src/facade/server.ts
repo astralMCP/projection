@@ -10,6 +10,7 @@
 
 import {
   McpServer,
+  type RegisteredTool,
   type ServerContext,
   type StandardSchemaWithJSON,
 } from '@modelcontextprotocol/server';
@@ -104,10 +105,18 @@ export function createProjectionServer(
 
 /**
  * Resources back both projections: describe_tool points at the .d.ts, and
- * the MCP Apps dashboard rides execute_machine results.
+ * the MCP Apps dashboard rides execute_machine results. A read serves the
+ * resource of that URI in `current()` — the facade's current snapshot, so
+ * a server held open across a tools/list_changed refresh (R65) serves the
+ * refreshed text — falling back to the one registered.
  */
-export function registerResources(server: McpServer, resources: ProjectionResource[]): void {
-  for (const resource of resources) {
+export function registerResources(
+  server: McpServer,
+  resources: readonly ProjectionResource[],
+  current: () => readonly ProjectionResource[] = () => resources,
+): void {
+  for (const registered of resources) {
+    const resource = registered;
     server.registerResource(
       resource.name,
       resource.uri,
@@ -116,9 +125,12 @@ export function registerResources(server: McpServer, resources: ProjectionResour
         mimeType: resource.mimeType,
         ...(resource._meta !== undefined ? { _meta: resource._meta } : {}),
       },
-      () => ({
-        contents: [{ uri: resource.uri, mimeType: resource.mimeType, text: resource.text }],
-      }),
+      () => {
+        const served = current().find((candidate) => candidate.uri === resource.uri) ?? resource;
+        return {
+          contents: [{ uri: served.uri, mimeType: served.mimeType, text: served.text }],
+        };
+      },
     );
   }
 }
@@ -129,22 +141,21 @@ export function registerCatalogTools(
   era: ProtocolEra | undefined,
   handlers: CatalogHandlers,
   copy: CatalogToolCopy,
-): void {
+): Map<string, RegisteredTool> {
+  const handles = new Map<string, RegisteredTool>();
   // The search tools and `describe_tool` are pure reads over the catalog;
   // the annotation lets hosts that gate on annotations run them without a
   // prompt (R35, R43).
   for (const search of copy.searches) {
     const alias = search.alias;
-    if (alias !== undefined) {
-      registerSearchTool(server, boxSearchTool(alias), search, (args) =>
-        handlers.searchTools(args, alias),
-      );
-    } else {
-      registerSearchTool(server, 'search_tools', search, (args) => handlers.searchTools(args));
-    }
+    const name = searchToolName(search);
+    handles.set(
+      name,
+      registerSearchTool(server, name, search, (args) => handlers.searchTools(args, alias)),
+    );
   }
 
-  server.registerTool(
+  const describe = server.registerTool(
     'describe_tool',
     {
       title: 'Describe one tool',
@@ -162,10 +173,12 @@ export function registerCatalogTools(
       }),
   );
 
+  handles.set('describe_tool', describe);
+
   // No annotations on purpose (R35): hosts that gate on annotations must
   // never auto-run it. `args` is validated by Projection, not zod, so a
   // non-object arrives as an R25 structured error rather than an SDK one.
-  server.registerTool(
+  const call = server.registerTool(
     'call_tool',
     {
       title: 'Call one tool',
@@ -196,6 +209,94 @@ export function registerCatalogTools(
         clientUrlElicitation(server),
       ),
   );
+  handles.set('call_tool', call);
+  return handles;
+}
+
+/** The tool a search copy registers: `search_<alias>` for a box, else `search_tools`. */
+function searchToolName(search: SearchToolCopy): string {
+  return search.alias !== undefined ? boxSearchTool(search.alias) : 'search_tools';
+}
+
+/** What a facade registered on a server it may have to update later (R65). */
+export interface HeldRegistration {
+  era: ProtocolEra | undefined;
+  /** Projection's catalog tools by name (absent when the projection is off). */
+  catalogTools: Map<string, RegisteredTool> | undefined;
+  /** The mediated tools listed directly, by listed name. */
+  direct: Map<string, { tool: DirectTool; handle: RegisteredTool }>;
+}
+
+/**
+ * Bring a server registered from an older snapshot up to `copy` and
+ * `directTools` (R65): the mediated tools are added, removed or replaced,
+ * and the catalog tools' descriptions updated (their set never changes —
+ * the surface is pinned at wrap time). A new tool whose name the server
+ * already has registered (an integrator's own, via `registerOn`) is skipped
+ * on that server. Returns whether any tool definition the server lists
+ * changed.
+ */
+export function reconcileHeldServer(
+  server: McpServer,
+  held: HeldRegistration,
+  handlers: Pick<CatalogHandlers, 'callTool'>,
+  copy: CatalogToolCopy | undefined,
+  directTools: readonly DirectTool[],
+): boolean {
+  let changed = false;
+  if (copy !== undefined && held.catalogTools !== undefined) {
+    const descriptions = new Map<string, string>([
+      ...copy.searches.map((search) => [searchToolName(search), search.description] as const),
+      ['describe_tool', copy.describeDescription],
+      ['call_tool', copy.callDescription],
+    ]);
+    for (const [name, description] of descriptions) {
+      const handle = held.catalogTools.get(name);
+      if (handle !== undefined && handle.description !== description) {
+        handle.update({ description });
+        changed = true;
+      }
+    }
+  }
+  const wanted = new Map(directTools.map((tool) => [tool.name, tool]));
+  for (const [name, { tool, handle }] of held.direct) {
+    const next = wanted.get(name);
+    if (next !== undefined && sameDirectTool(tool, next)) continue;
+    handle.remove();
+    held.direct.delete(name);
+    changed = true;
+  }
+  // A name the integrator already registered on this server is skipped
+  // there alone (registerDirectTools), never failing the rest.
+  const added = directTools.filter((tool) => !held.direct.has(tool.name));
+  for (const [name, entry] of registerDirectTools(server, held.era, handlers, added)) {
+    held.direct.set(name, entry);
+    changed = true;
+  }
+  return changed;
+}
+
+/** Whether two lists of mediated tools would be listed and routed identically. */
+export function sameDirectTools(a: readonly DirectTool[], b: readonly DirectTool[]): boolean {
+  return (
+    a.length === b.length && a.every((tool, index) => sameDirectTool(tool, b[index] as DirectTool))
+  );
+}
+
+/** Whether two mediated tools would be listed and routed identically. */
+export function sameDirectTool(a: DirectTool, b: DirectTool): boolean {
+  return JSON.stringify(directToolSpec(a)) === JSON.stringify(directToolSpec(b));
+}
+
+function directToolSpec(tool: DirectTool): unknown {
+  return [
+    tool.name,
+    tool.target,
+    tool.title ?? null,
+    tool.description,
+    tool.inputSchema,
+    tool.annotations,
+  ];
 }
 
 /**
@@ -208,41 +309,63 @@ export function registerCatalogTools(
  * decline copy and audit redaction are `call_tool`'s own). The annotations
  * are Projection's own, from its decided posture (`advertisedAnnotations`),
  * never the server's: a host that auto-runs read-only tools may only skip
- * its prompt where Projection would not ask either.
+ * its prompt where Projection would not ask either. A tool whose name the
+ * server already has registered is skipped on that server.
  */
 export function registerDirectTools(
   server: McpServer,
   era: ProtocolEra | undefined,
   handlers: Pick<CatalogHandlers, 'callTool'>,
   tools: readonly DirectTool[],
-): void {
+): Map<string, { tool: DirectTool; handle: RegisteredTool }> {
+  const handles = new Map<string, { tool: DirectTool; handle: RegisteredTool }>();
   for (const tool of tools) {
-    server.registerTool(
-      tool.name,
-      {
-        ...(tool.title !== undefined ? { title: tool.title } : {}),
-        description: tool.description,
-        inputSchema: advertisedSchema(tool.inputSchema),
-        annotations: { ...tool.annotations },
-      },
-      async (args: unknown, ctx) =>
-        await handlers.callTool(
-          {
-            name: tool.target,
-            ...(args !== undefined ? { args } : {}),
-            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
-            ...(ctx.mcpReq.inputResponses !== undefined
-              ? { inputResponses: ctx.mcpReq.inputResponses }
-              : {}),
-            // Progress and cancellation as for `call_tool`, attributed to the
-            // catalog name so a relayed message reads the same either way.
-            upstream: upstreamCallOptions(tool.target, ctx),
-          },
-          era,
-          clientCanElicit(server),
-          clientUrlElicitation(server),
-        ),
+    const handle = registerSkippingTaken(() =>
+      server.registerTool(
+        tool.name,
+        {
+          ...(tool.title !== undefined ? { title: tool.title } : {}),
+          description: tool.description,
+          inputSchema: advertisedSchema(tool.inputSchema),
+          annotations: { ...tool.annotations },
+        },
+        async (args: unknown, ctx) =>
+          await handlers.callTool(
+            {
+              name: tool.target,
+              ...(args !== undefined ? { args } : {}),
+              ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
+              ...(ctx.mcpReq.inputResponses !== undefined
+                ? { inputResponses: ctx.mcpReq.inputResponses }
+                : {}),
+              // Progress and cancellation as for `call_tool`, attributed to the
+              // catalog name so a relayed message reads the same either way.
+              upstream: upstreamCallOptions(tool.target, ctx),
+            },
+            era,
+            clientCanElicit(server),
+            clientUrlElicitation(server),
+          ),
+      ),
     );
+    if (handle !== undefined) handles.set(tool.name, { tool, handle });
+  }
+  return handles;
+}
+
+/**
+ * Register one mediated tool, or skip it when `server` already has a tool
+ * by that name: an integrator's own tool (registered before `registerOn`)
+ * keeps it, and a wrapped server that later lists a tool under the same
+ * name can never make registration fail for every later server (R65).
+ * Projection's own catalog and code-mode tools have reserved names and
+ * are registered elsewhere, so a collision there still throws.
+ */
+function registerSkippingTaken(register: () => RegisteredTool): RegisteredTool | undefined {
+  try {
+    return register();
+  } catch {
+    return undefined;
   }
 }
 
@@ -306,8 +429,8 @@ function registerSearchTool(
   name: string,
   copy: { title: string; description: string; query: string },
   search: (args: { query?: string; cursor?: string }) => CallToolResult,
-): void {
-  server.registerTool(
+): RegisteredTool {
+  return server.registerTool(
     name,
     {
       title: copy.title,
@@ -332,7 +455,7 @@ export function registerCodeModeTools(
   era: ProtocolEra | undefined,
   handlers: CodeModeHandlers,
   copy: { executeMachine: string; discoverApis: string },
-  promptCatalog: ServerCatalog,
+  promptCatalog: () => ServerCatalog,
 ): void {
   server.registerTool(
     'execute_machine',
@@ -400,7 +523,7 @@ export function registerCodeModeTools(
             content: {
               type: 'text' as const,
               // Safe: the zod argsSchema above admits only (optional) strings.
-              text: prompt.build(args as Record<string, string | undefined>, promptCatalog),
+              text: prompt.build(args as Record<string, string | undefined>, promptCatalog()),
             },
           },
         ],

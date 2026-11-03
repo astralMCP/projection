@@ -155,8 +155,28 @@ export interface WrapOptions {
    * introspection at wrap time (R47). A source that has not finished in time
    * fails the wrap with a `protocol` error, and every connection Projection
    * opened is closed (a `Client` you passed in stays open). Default 30 000.
+   * It also bounds each re-listing after a `tools/list_changed` (R65).
    */
   introspectTimeoutMs?: number;
+  /**
+   * Follow the wrapped servers' `notifications/tools/list_changed` (R65,
+   * DECISIONS D45). Default `true`: when a server Projection connected to
+   * itself (an `McpServer` instance, or a server given by URL) advertises
+   * `tools.listChanged`, Projection subscribes, and on a notification
+   * re-lists that server — debounced, at most once per `minIntervalMs`,
+   * bounded by `introspectTimeoutMs` — then swaps in the rebuilt catalog,
+   * types, overview, resources and policy (`policyRules` included) at
+   * once. Until the re-listing lands, the box's annotations are distrusted,
+   * so nothing it declares runs without approval on a stale read-only hint.
+   * Which surface the facade serves (`projections.direct`, the search
+   * tools) stays as decided at wrap time. A `Client` you passed in is never
+   * subscribed: call `facade.refreshTools()` from its own handler instead.
+   * `false` keeps every catalog exactly as wrapped. An object tunes the
+   * timing: `debounceMs` (default 250, 0–60 000) and `minIntervalMs`
+   * (default 2 000, 100–3 600 000). Any other value fails the wrap
+   * (`validate`).
+   */
+  followListChanged?: boolean | { debounceMs?: number; minIntervalMs?: number };
 }
 
 /** Per-projection on/off switches (R1, R32). */
