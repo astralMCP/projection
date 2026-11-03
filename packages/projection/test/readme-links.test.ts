@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { micromark } from 'micromark';
 import { describe, expect, it } from 'vitest';
 
-// npm shows packages/projection/README.md, but `files: ['dist']` ships
-// nothing else from the repo, so every reference to a repo file must be an
+// npm shows packages/projection/README.md, but `files` ships only dist and
+// CHANGELOG.md from the repo, so every reference to a repo file must be an
 // absolute GitHub link.
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = join(pkgRoot, '..', '..');

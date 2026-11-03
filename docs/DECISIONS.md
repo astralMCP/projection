@@ -2628,3 +2628,24 @@ Rejected: keeping it unmaintained (it would rot against the API and
 mislead readers about how to try Projection); folding its driver into
 the harness (the harness already has `runScenario` and
 `runReasoningTask`, which cover what it drove).
+
+## D44 — The package ships a changelog; public-surface PRs write its Unreleased line (2026-11-02)
+
+The npm tarball held only `package.json`, `LICENSE`, `README.md` and
+`dist`, so a consumer evaluating 0.9 had to diff `index.d.mts` to find
+that `decidePolicy`, `resolveCallPolicy` and `summarizeTool` changed
+signature.
+`packages/projection/CHANGELOG.md` (Keep a Changelog) is now in `files`,
+backfilled from 0.5.1 to 0.9.0 from the git history and a diff of each
+tag's built `dist/index.d.mts`.
+
+- Each release lists public-API breaks first, under **Breaking**. In 0.x
+  a minor bump may break, so the version number alone does not tell a
+  consumer what to check.
+- The PR that changes the public surface adds its `[Unreleased]` line,
+  while its author still knows what changed. The release PR only moves
+  those lines into a dated section and checks **Breaking** against a
+  `dist/index.d.mts` diff. Writing everything at release time would mean
+  reconstructing it from squash commits again.
+- The changelog is for integrators. No tool, resource or prompt serves it,
+  so it never reaches a model.
