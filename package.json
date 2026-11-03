@@ -12,7 +12,8 @@
     "typecheck": "turbo run typecheck",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "check": "turbo run build typecheck lint test"
+    "test:budgets": "turbo run test:budgets",
+    "check": "turbo run build typecheck lint test && turbo run test:budgets"
   },
   "devDependencies": {
     "oxfmt": "^0.75.0",

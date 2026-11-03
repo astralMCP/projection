@@ -11,9 +11,14 @@
  * measured separately to show it is a negligible fraction of that cost, so a
  * regression there is attributed correctly.
  *
- * Timing ceilings are set to catch a real regression (a few-fold blowup)
- * while tolerating a loaded CI runner, and every measurement is surfaced in
- * its assertion message so a failure reports the actual number.
+ * Timing ceilings are set to catch a real regression (a few-fold blowup).
+ * This file is excluded from the parallel `test` run and runs alone, after
+ * every package's tests (`pnpm run test:budgets`, vitest.budgets.config.ts).
+ * Each timing is the median of the p95s of 5 independent batches: a code
+ * regression raises most batches, while a burst of runner contention that
+ * overlaps at most 2 of the 5 is ignored. A random tail regression still
+ * shows up in most batches (DECISIONS D41). Every batch p95 is surfaced in
+ * the assertion message so a failure reports the actual numbers.
  */
 
 import { McpServer } from '@modelcontextprotocol/server';
@@ -37,6 +42,41 @@ const IDENTITY = 'srv://budget/default';
 function percentile(sorted: number[], p: number): number {
   const idx = Math.max(0, Math.ceil((p / 100) * sorted.length) - 1);
   return sorted[idx] ?? 0;
+}
+
+/** Independent batches per timing; the reported figure is the median batch p95. */
+const BATCHES = 5;
+
+/** p95 of one batch of `n` timed calls of `fn`, in milliseconds. */
+async function batchP95(n: number, fn: () => unknown): Promise<number> {
+  const samples: number[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const start = performance.now();
+    await fn();
+    samples.push(performance.now() - start);
+  }
+  samples.sort((x, y) => x - y);
+  return percentile(samples, 95);
+}
+
+/** Median of a non-empty array (the middle value; BATCHES is odd). */
+function median(xs: number[]): number {
+  return percentile(
+    [...xs].sort((x, y) => x - y),
+    50,
+  );
+}
+
+/**
+ * Median p95 across BATCHES batches of `n` timed calls, with every batch p95
+ * for the assertion message. A code regression raises most batches, so the
+ * median breaches; a contention burst covering at most 2 of 5 batches is
+ * ignored; a random tail regression still lifts most batch p95s.
+ */
+async function medianP95(n: number, fn: () => unknown): Promise<{ median: number; all: string }> {
+  const p95s: number[] = [];
+  for (let b = 0; b < BATCHES; b += 1) p95s.push(await batchP95(n, fn));
+  return { median: median(p95s), all: p95s.map((x) => x.toFixed(3)).join(', ') };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +143,7 @@ describe('Section 10 budgets — blob size', () => {
 // ---------------------------------------------------------------------------
 
 describe('Section 10 budgets — seal/verify crypto overhead', () => {
-  it('seal→open round-trip p95 is a small fraction of the resume budget', () => {
+  it('seal→open round-trip p95 is a small fraction of the resume budget', async () => {
     const openOpts = { code: CODE, serverIdentity: IDENTITY, config: CONFIG, now: 1_000_500 };
     const sealOne = () =>
       sealBlob(
@@ -120,20 +160,15 @@ describe('Section 10 budgets — seal/verify crypto overhead', () => {
       );
     for (let i = 0; i < 50; i += 1) openBlob(sealOne(), openOpts);
 
-    const samples: number[] = [];
-    for (let i = 0; i < 500; i += 1) {
-      const start = performance.now();
-      openBlob(sealOne(), openOpts);
-      samples.push(performance.now() - start);
-    }
-    samples.sort((x, y) => x - y);
-    const p95 = percentile(samples, 95);
+    const { median: p95, all } = await medianP95(200, () => openBlob(sealOne(), openOpts));
     // Steady-state crypto is ~0.1 ms. A 3 ms ceiling is ~30x that — ample for
     // CI jitter, but a 200x key-derivation regression (~15 ms) fails it.
-    expect(p95, `seal+open p95 was ${p95.toFixed(3)} ms`).toBeLessThan(3);
+    expect(p95, `seal+open median batch p95 ${p95.toFixed(3)} ms (batches: ${all})`).toBeLessThan(
+      3,
+    );
   });
 
-  it('a blob sealed under a rotated-out key does not walk every trial in vain', () => {
+  it('a blob sealed under a rotated-out key does not walk every trial in vain', async () => {
     // Worst case for R22 rotation: the blob was sealed under the OLDEST key,
     // so opening trials the current key and each newer previous key first.
     const keys = Array.from({ length: 5 }, (_, i) => new Uint8Array(32).fill(50 + i));
@@ -155,26 +190,20 @@ describe('Section 10 budgets — seal/verify crypto overhead', () => {
     const blob = sealBlob(payload, singleKey);
     const openOpts = { code: CODE, serverIdentity: IDENTITY, now: 1_000_500 };
 
-    const time = (config: BlobSealerConfig): number => {
+    const time = (config: BlobSealerConfig) => {
       for (let i = 0; i < 50; i += 1) openBlob(blob, { ...openOpts, config });
-      const s: number[] = [];
-      for (let i = 0; i < 200; i += 1) {
-        const start = performance.now();
-        openBlob(blob, { ...openOpts, config });
-        s.push(performance.now() - start);
-      }
-      s.sort((x, y) => x - y);
-      return percentile(s, 95);
+      return medianP95(200, () => openBlob(blob, { ...openOpts, config }));
     };
 
-    const worstCase = time(rotated); // 5 key trials
-    const singleTrial = time({ key: oldest }); // 1 key trial
+    const worstCase = await time(rotated); // 5 key trials
+    const singleTrial = await time({ key: oldest }); // 1 key trial
     // The full 5-key walk costs on the order of a single open, not a
     // pathological multiple — and stays well under the resume budget.
     expect(
-      worstCase,
-      `5-key open p95 ${worstCase.toFixed(3)} ms vs 1-key ${singleTrial.toFixed(3)} ms`,
-    ).toBeLessThan(Math.max(singleTrial * 10, 3));
+      worstCase.median,
+      `5-key open median batch p95 ${worstCase.median.toFixed(3)} ms (batches: ${worstCase.all}) ` +
+        `vs 1-key ${singleTrial.median.toFixed(3)} ms (batches: ${singleTrial.all})`,
+    ).toBeLessThan(Math.max(singleTrial.median * 10, 3));
   });
 });
 
@@ -228,6 +257,7 @@ describe('Section 10 budgets — end-to-end suspend/resume overhead', () => {
   it('the resume leg (verify + rehydrate + run) p95 is under the 100 ms budget', async () => {
     const facade = await makeFacade();
     try {
+      // Times only the resume call; the suspend that mints its blob is untimed.
       const measure = async (): Promise<number> => {
         const suspended = await facade.executeMachine({ code: RESUME_MACHINE }, 'modern');
         const requestState = (suspended as InputRequiredResult).requestState as string;
@@ -241,15 +271,22 @@ describe('Section 10 budgets — end-to-end suspend/resume overhead', () => {
         return elapsed;
       };
 
-      for (let i = 0; i < 3; i += 1) await measure(); // warm the QuickJS runtime
-      const samples: number[] = [];
-      for (let i = 0; i < 20; i += 1) samples.push(await measure());
-      samples.sort((x, y) => x - y);
-      const p95 = percentile(samples, 95);
-      const median = percentile(samples, 50);
+      for (let i = 0; i < 5; i += 1) await measure(); // warm the QuickJS runtime
+      const p95s: number[] = [];
+      const medians: number[] = [];
+      for (let b = 0; b < BATCHES; b += 1) {
+        const samples: number[] = [];
+        for (let i = 0; i < 20; i += 1) samples.push(await measure());
+        samples.sort((x, y) => x - y);
+        p95s.push(percentile(samples, 95));
+        medians.push(percentile(samples, 50));
+      }
+      const p95 = median(p95s);
+      const fmt = (xs: number[]) => xs.map((x) => x.toFixed(1)).join(', ');
       expect(
         p95,
-        `resume-leg p95 ${p95.toFixed(1)} ms, median ${median.toFixed(1)} ms (budget 100)`,
+        `resume-leg median batch p95 ${p95.toFixed(1)} ms (batch p95s: ${fmt(p95s)}; ` +
+          `medians: ${fmt(medians)}) (budget 100)`,
       ).toBeLessThan(100);
     } finally {
       await facade.close();

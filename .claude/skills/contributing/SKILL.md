@@ -35,7 +35,7 @@ pnpm run format                                  # oxfmt (writes); CI runs forma
 pnpm run format:check                            # what CI runs after check
 pnpm --filter @astral-mcp/projection test        # one package
 pnpm --filter @astral-mcp/tui start              # demo TUI (builds deps via turbo first)
-pnpm --filter @astral-mcp/projection exec vitest run test/integration/budgets.test.ts   # solo re-run of the perf budgets (known p95 flake under parallel load)
+pnpm run test:budgets                            # §10 perf budgets alone (check runs them after the parallel tests)
 ```
 
 CI = `pnpm run check` + `pnpm run format:check`. Formatting drift in ANY
@@ -105,9 +105,13 @@ commands need no PATH prefix. CI runs `check` on Node 22 and 24.
   copy, and the consumer's `McpServer` fails Projection's `instanceof` check.
 - **XState is pinned exactly** (5.32.5) and `@sebastianwessel/quickjs` at
   3.1.0 (PRD §7). Don't bump casually — blobs bind to the XState version.
-- **Perf-budget tests** (`test/integration/budgets.test.ts`) can flake under
-  parallel turbo load; a p95 failure that passes on a solo re-run (command
-  above) is load noise, not a regression.
+- **Perf-budget tests** (`test/integration/budgets.test.ts`) are excluded
+  from the parallel `test` run. `check` runs them afterwards through
+  `pnpm run test:budgets` (`vitest.budgets.config.ts`). Each timing asserts
+  the median p95 of 5 batches, so a failure there is a real regression: at
+  least 3 of 5 batches were slow. The message lists every batch p95. Don't add the file back
+  to the parallel run or loosen a ceiling (DECISIONS D41). Running other
+  heavy work while you run `check` can still slow every batch.
 - **Sandbox memory-cap tests** (`test/sandbox/caps.test.ts`) once flaked on
   CI by racing the wall-clock budget: QuickJS's own `memoryLimit` bounds a
   single allocation request, not total memory, so a hoard of sub-cap

@@ -17,6 +17,10 @@
     "test": {
       "dependsOn": ["^build"],
       "inputs": ["src/**", "test/**", "vitest.config.ts", "tsconfig.json"]
+    },
+    "test:budgets": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "test/**", "vitest.budgets.config.ts", "tsconfig.json"]
     }
   }
 }
