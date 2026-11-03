@@ -89,7 +89,8 @@ guidance), and `search_tools` searches every box (`catalog.globalSearch:
 false` turns it off). Code mode works across boxes: the generated types have
 one `tools.<alias>` property per box, and machines call
 `toolCall('fs.read_file', args)`. Optional sources are not available yet.
-See `docs/server-authors.md`.
+See
+[Several servers behind one facade](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#several-servers-behind-one-facade-preview).
 
 ### Remote servers by URL (preview)
 
@@ -101,8 +102,8 @@ plain string key-value store), and `facade.signOut()` clears them. Never put
 a token in an MCP configuration file. Just-in-time sign-in (asking the user
 on first use) is not supported in this version: a public server works, and
 so does one whose token is already in your `tokenStore`; otherwise the wrap
-fails with an `auth` error. See "Upstream authentication" in
-`docs/server-authors.md`.
+fails with an `auth` error. See
+[Upstream authentication](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#upstream-authentication).
 
 ## Security model
 
