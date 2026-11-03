@@ -39,7 +39,8 @@ five tools in all, never a pass-through to the wrapped server's own:
   a mediated alias of `call_tool` under the same gate, and `search_tools`
   is dropped. `projections: { direct: false }` keeps the five tools.
   Under `'auto'` the surface depends on the catalog's size, so a server near
-  the budget can switch surfaces as tools are added upstream. The facade
+  the budget can switch surfaces from one wrap to the next as tools are added
+  upstream (a running facade keeps the surface it chose). The facade
   reports what the wrap chose: `facade.projections.direct` is `true` when
   tools were listed directly and absent otherwise (on a multi-server facade,
   `true` when any box is listed, and `facade.projections.directBoxes` names
