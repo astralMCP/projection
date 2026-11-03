@@ -59,6 +59,7 @@ async function single(options: Partial<WrapOptions>): Promise<ProjectionFacade> 
 async function multi(
   options: Partial<WrapServersOptions>,
   fsApprovals?: 'every-write' | 'destructive-only',
+  { direct = false }: { direct?: boolean } = {},
 ): Promise<MultiProjectionFacade> {
   const log: RecordedCall[] = [];
   const fs = recordingServer({ name: 'files', version: '1.0.0' }, TOOLS, log);
@@ -67,7 +68,7 @@ async function multi(
       fs: fsApprovals === undefined ? fs : { source: fs, approvals: fsApprovals },
       github: recordingServer({ name: 'gh', version: '1.0.0' }, TOOLS, log),
     },
-    { blob: { key: KEY }, ...options, projections: { direct: false } },
+    { blob: { key: KEY }, ...options, ...(direct ? {} : { projections: { direct: false } }) },
   );
   facades.push(facade);
   return facade;
@@ -124,19 +125,35 @@ function searchPostures(facade: AnyFacade): Record<string, string> {
   return Object.fromEntries(tools.map((tool) => [tool.name, tool.posture]));
 }
 
-/** Assert policyOf agrees with the gate (both paths) and the search posture for every name. */
+/** The posture describe_tool shows for one name. */
+function describePosture(facade: AnyFacade, name: string): unknown {
+  return structured(facade.describeTool({ name }))['posture'];
+}
+
+/**
+ * Assert policyOf agrees with the gate (both paths) and the describe_tool
+ * posture for every name, and with the search_tools posture unless `search`
+ * is false (search_tools is not served under multi-server direct listing).
+ */
 async function expectAgreement(
   facade: AnyFacade,
   names: string[],
   expected: Record<string, PolicyDecision>,
+  { search = true }: { search?: boolean } = {},
 ): Promise<void> {
-  const postures = searchPostures(facade);
-  expect(Object.keys(postures).sort()).toEqual([...names].sort());
+  const postures = search ? searchPostures(facade) : undefined;
+  if (postures !== undefined) expect(Object.keys(postures).sort()).toEqual([...names].sort());
   for (const name of names) {
     const policy = facade.policyOf(name);
     expect(policy, name).toBeDefined();
     expect({ name, decision: policy?.decision }).toEqual({ name, decision: expected[name] });
-    expect({ name, posture: policy?.posture }).toEqual({ name, posture: postures[name] });
+    if (postures !== undefined) {
+      expect({ name, posture: policy?.posture }).toEqual({ name, posture: postures[name] });
+    }
+    expect({ name, described: describePosture(facade, name) }).toEqual({
+      name,
+      described: policy?.posture,
+    });
     expect({ name, gate: await callToolDecision(facade, name) }).toEqual({
       name,
       gate: policy?.decision,
@@ -239,6 +256,28 @@ describe('policyOf on a single-server facade (R14, R49)', () => {
     expect(facade.policyOf('write')?.decision).toBe('ask');
     expect(await callToolDecision(facade, 'write')).toBe('ask');
   });
+
+  it('takes the catalog name, not the direct-listing name it may be listed under', async () => {
+    // Direct listing maps "drop db" to drop_db, so the destructive drop_db is
+    // listed under a hash-suffixed name: tools/list's "drop_db" is the
+    // read-only tool, while policyOf('drop_db') is the destructive one.
+    const facade = await wrapMcpServer(
+      recordingServer(
+        { name: 'db', version: '1.0.0' },
+        [
+          { name: 'drop db', description: 'Looks harmless.', readOnly: true },
+          { name: 'drop_db', description: 'Drops the database.', destructive: true },
+        ],
+        [],
+      ),
+      { blob: { key: KEY }, projections: { direct: true } },
+    );
+    facades.push(facade);
+    expect(facade.projections.direct).toBe(true);
+    expect(facade.policyOf('drop db')?.decision).toBe('auto');
+    expect(facade.policyOf('drop_db')?.decision).toBe('ask');
+    await expectAgreement(facade, ['drop db', 'drop_db'], { 'drop db': 'auto', drop_db: 'ask' });
+  });
 });
 
 describe('policyOf on a multi-server facade (R45, R49)', () => {
@@ -300,6 +339,12 @@ describe('policyOf on a multi-server facade (R45, R49)', () => {
       await expectAgreement(await multi(options, fsApprovals), ALL, expected);
     },
   );
+
+  it('agrees with the gate and describe_tool under direct listing', async () => {
+    const facade = await multi({ approvals: 'destructive-only' }, 'every-write', { direct: true });
+    expect(facade.projections.direct).toBe(true);
+    await expectAgreement(facade, ALL, boxed(EVERY_WRITE, DESTRUCTIVE_ONLY), { search: false });
+  });
 
   it('takes only qualified names: bare names, unknown boxes and direct aliases are undefined', async () => {
     const facade = await multi({}, 'destructive-only');

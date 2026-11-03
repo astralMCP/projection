@@ -205,6 +205,11 @@ for (const tool of facade.catalog.tools) {
   // decision: 'auto' | 'ask' | 'deny'; posture: 'runs immediately' | …
 }
 facade.policyOf('no_such_tool'); // undefined
+
+// wrapMcpServers: catalog.servers maps each alias to its box's catalog.
+for (const [alias, box] of multi.catalog.servers) {
+  for (const tool of box.tools) multi.policyOf(`${alias}.${tool.name}`);
+}
 ```
 
 `policyOf(name)` decides from the same frozen wrap-time settings, through the
@@ -214,8 +219,13 @@ same catalog lookup, as the approval gate behind `call_tool` and
 returns `undefined` rather than throwing, so it is safe in a loop over your
 own list of names. On `wrapMcpServers` it takes the qualified name
 (`facade.policyOf('fs.write_file')`), and per-source modes apply; bare names
-and direct-listing aliases (`fs__write_file`) are `undefined`. It is for you,
-the integrator: no tool result, description or generated type carries it.
+and direct-listing aliases (`fs__write_file`) are `undefined`. `name` is
+always the server's catalog name, never a name read from `tools/list`: under
+direct listing a tool whose name is not a legal tool name is listed under a
+cleaned-up or hash-suffixed name, which can equal another tool's catalog name
+(`drop db` listed as `drop_db`), so take names from `facade.catalog`. It is
+for you, the integrator: no tool result, description or generated type
+carries it.
 
 **Trust note.** `'destructive-only'` extends the trust Projection already
 places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come

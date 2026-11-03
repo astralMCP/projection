@@ -87,7 +87,10 @@ policyRules: [
 To check what the policy resolved to, call `facade.policyOf(name)`: it
 returns `{ decision, posture }` (`'auto' | 'ask' | 'deny'` and the posture
 string above) for a tool — a qualified `<alias>.<tool>` on a multi-server
-facade — or `undefined` for a name the facade does not declare. It decides
+facade — or `undefined` for a name the facade does not declare. The name is
+the catalog name (from `facade.catalog`), not one read from `tools/list`:
+direct listing may list a tool under a cleaned-up name that equals another
+tool's catalog name. It decides
 from the same frozen wrap-time settings and catalog lookup as the approval
 gate, so it cannot disagree with it, and it is integrator-only: nothing a
 model sees changes.

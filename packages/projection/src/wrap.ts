@@ -149,9 +149,13 @@ export interface ProjectionFacade {
    * approval gate makes for it and the posture `search_tools` and
    * `describe_tool` show, computed from the same frozen wrap-time policy
    * settings and the same lookup the gate uses, so it cannot disagree with
-   * them. `name` is the server's tool name — on a multi-server facade the
-   * qualified `<box>.<tool>`. A name the facade does not declare (a direct
-   * listing's `<box>__<tool>` alias included) returns `undefined`. For the
+   * them. `name` is the server's catalog tool name — on a multi-server
+   * facade the qualified `<box>.<tool>` — never a name read from
+   * `tools/list`: direct listing lists a tool whose name is not a legal tool
+   * name under a cleaned-up or hash-suffixed name, which can equal another
+   * tool's catalog name, so take names from `catalog`. A name the facade
+   * does not declare (a direct listing's `<box>__<tool>` alias included)
+   * returns `undefined`. For the
    * integrator only: no model-facing surface carries it.
    */
   policyOf(name: string): ToolPolicy | undefined;
