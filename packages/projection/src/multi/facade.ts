@@ -101,7 +101,7 @@ import {
   type ToolPolicy,
 } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
-import { MCP_SDK_VERSION } from '../blob/versions.js';
+import { MCP_SDK_RANGE } from '../blob/versions.js';
 import { generateToolTypes, type ToolTypeText } from '../typegen/index.js';
 import {
   clampCaps,
@@ -337,7 +337,7 @@ async function introspect(
         ? `source ${named} failed to connect or introspect: it is not an McpServer or a Client from the MCP SDK Projection uses`
         : `a source failed to connect or introspect; ${named} are not McpServer or Client instances from the MCP SDK Projection uses`,
       {
-        hint: `Pass an McpServer instance or a connected Client from @modelcontextprotocol/server / @modelcontextprotocol/client ${MCP_SDK_VERSION} (a single installed copy).`,
+        hint: `Pass an McpServer instance or a connected Client from @modelcontextprotocol/server / @modelcontextprotocol/client ${MCP_SDK_RANGE} (a single installed copy, which Projection takes as a peer dependency).`,
         cause: err,
       },
     );

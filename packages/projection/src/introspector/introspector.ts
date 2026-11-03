@@ -33,7 +33,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { UpstreamConnector } from '../auth/connect.js';
-import { MCP_SDK_VERSION } from '../blob/versions.js';
+import { MCP_SDK_RANGE } from '../blob/versions.js';
 import { serverNoteText } from '../catalog/result-notes.js';
 import { ProjectionError } from '../errors.js';
 import { MRTR_PROTOCOL_REVISION } from '../mrtr/protocol.js';
@@ -627,7 +627,7 @@ export class Introspector implements ToolExecutor {
         'protocol',
         `Wrapped server "${alias}" looks like an McpServer from a second copy of @modelcontextprotocol/server, not the one Projection uses.`,
         {
-          hint: `Projection pins @modelcontextprotocol/server ${MCP_SDK_VERSION} exactly. Depend on that exact version so your package manager installs a single copy (check with \`npm ls @modelcontextprotocol/server\` or \`pnpm why @modelcontextprotocol/server\`).`,
+          hint: `@modelcontextprotocol/server is a peer dependency of Projection (${MCP_SDK_RANGE}). Install one version in that range so your package manager installs a single copy that both your code and Projection import (check with \`npm ls @modelcontextprotocol/server\` or \`pnpm why @modelcontextprotocol/server\`).`,
         },
       );
     }

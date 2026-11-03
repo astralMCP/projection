@@ -370,8 +370,8 @@ The pre-0.8.0 dependency pass settled these rules:
   path and fail with an unrelated error; the introspector now recognises
   the shape (a `server` property and `connect`/`registerTool`, no
   `listTools`) and fails with a `protocol` error naming the pinned version.
-  It still refuses the instance rather than accepting it by shape. Whether
-  the SDK should become a peer dependency is open for a later release.
+  It still refuses the instance rather than accepting it by shape. The SDK
+  became a peer dependency in D40.
 - **Projection pages `tools/list` itself; the bounds are its own.** Since
   SDK 2.0.0, `Client.listTools()` called without a cursor follows
   `nextCursor` to the end before returning (capped by the client option
@@ -2417,3 +2417,72 @@ verification loop, and the error copy is written for models); adding the
 decision to `search_tools`/`describe_tool` structuredContent (moves evals,
 and the posture is already there); returning the catalog entry too (the
 caller has `catalog`).
+
+## D40 — The MCP SDK is a peer dependency at `~2.4.0` (2026-11-02)
+
+Projection listed `@modelcontextprotocol/client` and `/server` as regular
+dependencies, pinned exactly at 2.4.0. Consumers construct the `McpServer`
+or `Client` they pass in from their own copy of the SDK, so they had to
+match the pin exactly. Anything else installed a second copy under
+`@astral-mcp/projection/node_modules`, and the consumer's `McpServer` then
+failed the introspector's `instanceof McpServer` check (D12; the
+`looksLikeForeignMcpServer` diagnosis). Both packages are now
+`peerDependencies` at `~2.4.0`, with exact `devDependencies` at 2.4.0 for
+our own builds and tests. The package manager installs one copy, the
+consumer's, and Projection imports it.
+
+- **Why `~2.4.0` (>=2.4.0 <2.5.0) and not `^2.4.0`.** SDK minors change
+  behaviour that Projection passes on to the model. 2.4.0 dropped tools with
+  a `number`-typed `x-mcp-header` from `listTools`, and stopped wrapping a
+  root-`$ref` `outputSchema` in `{ result }` on the 2025 era (D12 addendum).
+  Both change what the model sees, and Projection's security behaviour
+  rests on SDK behaviour as well: era pinning (`serveStdio` with
+  `legacy: 'reject'`, R63), auto-fulfilment off, capability declarations,
+  and the `input_required` and elicitation-refusal error codes. A caret
+  range would let a consumer run an SDK minor we never diffed, so each minor
+  is adopted deliberately. The lower bound is 2.4.0 because the D12 diff
+  and every test cover 2.4.0 only; 2.3.x differs in the ways listed above.
+  We admit patch releases: that is the SDK's semver promise, and refusing
+  them would bring back the exact-match problem on every SDK patch.
+- **Both peers are required, not optional.** `peerDependenciesMeta.optional`
+  would suit a package that imports only the one a consumer chose.
+  Projection imports both unconditionally, whatever the source: the
+  introspector builds a `Client` and serves an in-process `McpServer` with
+  `serveStdio`, and the facade serves through `/server`. A consumer that
+  passes only a `Client` still needs `/server`.
+- **`client` and `server` need not be the same version within the range.**
+  Each inlines `core`'s classes (`ProtocolError`, `Protocol` and the rest)
+  into its own chunk, and also depends on `@modelcontextprotocol/core` at the
+  same exact version for a few subpaths. So their classes never share
+  prototypes, even at one version. The SDK brand-matches its error classes
+  across copies (`Symbol.for('mcp.sdk.errorBrands')`), which is what
+  Projection's `ProtocolError`/`SdkError` checks rely on. `McpServer` and
+  `Client` are not branded. Projection only `instanceof`-checks them against
+  the consumer's own copy, which is a single copy now that they are peers.
+- **No runtime version check.** The SDK exports no version constant and
+  does not export `./package.json`, so Projection cannot read the installed
+  version reliably. Enforcement is the package manager's, and it is
+  partial: npm 7+ fails a fresh `npm install` or `npm ci` whose tree puts
+  the SDK out of range with `ERESOLVE`, and npm and pnpm install missing
+  peers automatically, but an explicit `npm install` of an out-of-range SDK
+  into a project that already has Projection only prints `npm warn ERESOLVE
+  overriding peer dependency` and installs it. That consumer, like one who
+  forces past the check (`--legacy-peer-deps`, `--force`, overrides), runs
+  an SDK we did not test; `npm ls` reports it as `invalid`, and the docs
+  tell consumers to check for that. A runtime guard would buy no security:
+  the security review found every SDK-dependent security behaviour degrades
+  fail-closed on a forced out-of-range SDK (reproduced with 2.3.1: S2
+  gating held, an unannotated write was still suspended, and the handler
+  never ran). `MCP_SDK_VERSION` is now the tested pin and `MCP_SDK_RANGE` the
+  peer range; the wrap-time hints name the range.
+- **Proof.** The pack-install smoke installs the packed tarball with the
+  consumer's own `client` and `server` at the pin. It asserts that
+  `npm ls --all` is clean (no invalid or missing peer), that both packages
+  resolve to the same directory from the consumer and from Projection, and
+  that exactly one copy of each is on disk. `test/blob/versions.test.ts`
+  ties the pins, the range and the installed version together. The workspace
+  still resolves a single 2.4.0 copy (harness and demo-host depend on it
+  directly; tui does not import the SDK).
+
+Bumping is in the `contributing` skill. A patch moves only the pins. A minor
+moves the range too and needs a minor Projection release.

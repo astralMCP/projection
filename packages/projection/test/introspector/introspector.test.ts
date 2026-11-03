@@ -2,7 +2,7 @@ import { Client, SdkError } from '@modelcontextprotocol/client';
 import { InMemoryTransport, McpServer, Server } from '@modelcontextprotocol/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { MCP_SDK_VERSION } from '../../src/blob/versions.js';
+import { MCP_SDK_RANGE } from '../../src/blob/versions.js';
 import { ProjectionError } from '../../src/errors.js';
 import { createIntrospector, type Introspector } from '../../src/introspector/index.js';
 import { DEFAULT_SERVER_ALIAS, type ServerCatalog } from '../../src/types.js';
@@ -246,7 +246,7 @@ describe('Introspector edge cases', () => {
     expect(error).toMatchObject({
       phase: 'protocol',
       message: expect.stringContaining('second copy of @modelcontextprotocol/server'),
-      hint: expect.stringContaining(`@modelcontextprotocol/server ${MCP_SDK_VERSION} exactly`),
+      hint: expect.stringContaining(`peer dependency of Projection (${MCP_SDK_RANGE})`),
     });
   });
 

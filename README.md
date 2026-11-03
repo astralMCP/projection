@@ -28,7 +28,13 @@ See [docs/server-authors.md](docs/server-authors.md) for the integration guide, 
 ## Usage
 
 Projection is built on the MCP TypeScript SDK v2 (`@modelcontextprotocol/server`)
-and serves the 2026-07-28 protocol revision, where MRTR lives.
+and serves the 2026-07-28 protocol revision, where MRTR lives. The SDK is a
+peer dependency, so you install it yourself, in the supported range (`~2.4.0`),
+and Projection uses your copy:
+
+```bash
+npm install @astral-mcp/projection @modelcontextprotocol/server@~2.4.0 @modelcontextprotocol/client@~2.4.0
+```
 
 ```ts
 import { createMcpHandler } from '@modelcontextprotocol/server';
