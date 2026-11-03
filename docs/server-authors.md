@@ -542,7 +542,7 @@ approval gate:
   sealed inside Projection's own blob (keep it under 16 KB). That blob keeps
   the expiry of the call's first blob, whatever the number of rounds; with
   forwarding on, configure a `replayCache` so each round's blob is
-  single-use. Ask at most 4
+  single-use (over stdio, `new MemoryReplayCache()`). Ask at most 4
   questions per round; each round counts against the round-trip cap.
 - In a machine, the step waits on your question like an approval: the
   workflow suspends, and the step's `TOOL_RESULT` is your final result.
@@ -1029,8 +1029,40 @@ only be restructured and resubmitted.
   ```
 
   The nonce is recorded on first sight, whatever the verdict, so with a cache
-  every approval blob is single-use. No default implementation ships: an
+  every approval blob is single-use. None is configured by default: an
   in-memory one would silently break horizontal scaling.
+
+  When one process serves every retry — a stdio server — pass the exported
+  in-memory cache instead of writing one:
+
+  ```ts
+  import { MemoryReplayCache, wrapMcpServer } from '@astral-mcp/projection';
+
+  const facade = await wrapMcpServer(myServer, {
+    blob: { key: blobKey },
+    replayCache: new MemoryReplayCache(), // stdio / single process only
+  });
+  ```
+
+  Its test-and-set is synchronous, so it is atomic within the process. It
+  sweeps nonces whose blobs have expired, so memory is bounded by the
+  approvals live within the blob TTL. If the server clock steps back, a
+  nonce it no longer holds whose `exp` is at or before one it swept cannot
+  be checked: it is refused with a `blob_verification` error saying the
+  server clock changed, and nothing runs. It never evicts a live nonce: at
+  `maxEntries` (default 100,000) it refuses new approvals with a
+  `cap_exceeded` error, and nothing runs, until entries expire. A nonce is
+  recorded on any verified resume, declines and unanswered ones included, so
+  a client can fill the cache with no human involved; do not share one
+  instance across mutually untrusted clients. Behind a load balancer, or
+  with several processes sharing a blob key, each process keeps its own set
+  and a replay sent to another process executes — use a shared store there.
+
+  A restart forgets every nonce. With a persistent blob key, a blob sealed
+  before the restart can be replayed until it expires (`callTtlMs` or
+  `ttlMs`). Where that matters, generate the blob key at startup
+  (`crypto.getRandomValues(new Uint8Array(32))`): blobs from before the
+  restart then fail verification.
 
 - Blobs are bound to the wrapped server's identity (`name@version`, or
   `url:<canonical url>` for a server given by URL), or on a

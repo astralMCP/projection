@@ -12,7 +12,7 @@ import {
   type CallToolDeps,
   type CallToolOutcome,
 } from '../../src/catalog/index.js';
-import { executeMachine } from '../../src/mrtr/index.js';
+import { executeMachine, MemoryReplayCache } from '../../src/mrtr/index.js';
 import type { ReplayCache, ServerCatalog } from '../../src/types.js';
 import { baseOptions, CATALOG, entry, FakeExecutor } from '../machine-host/fixtures.js';
 import {
@@ -961,6 +961,25 @@ describe('call_tool: replay (D4, R38)', () => {
     expect(second.isError).toBe(true);
     expect(structured(second)['phase']).toBe('blob_verification');
     expect(String(structured(second)['message'])).toContain('replayed');
+    expect(d.executor.calls).toHaveLength(1);
+  });
+
+  it('with a MemoryReplayCache, two concurrent resumes of one approved blob execute once (D42)', async () => {
+    const d = deps({ replayCache: new MemoryReplayCache() });
+    const state = sealedState(await callTool({ name: 'write_file', args: WRITE }, d));
+    const retry = {
+      name: 'write_file',
+      args: WRITE,
+      requestState: state,
+      inputResponses: { [CALL_KEY]: ACCEPT },
+    };
+    const results = (await Promise.all([callTool(retry, d), callTool(retry, d)])).map(completed);
+    const refused = results.filter((r) => r.isError === true);
+    expect(refused).toHaveLength(1);
+    expect(structured(refused[0]!)['phase']).toBe('blob_verification');
+    expect(String(structured(refused[0]!)['message'])).toContain('replayed');
+    // A later resume is refused too.
+    expect(completed(await callTool(retry, d)).isError).toBe(true);
     expect(d.executor.calls).toHaveLength(1);
   });
 });

@@ -14,6 +14,11 @@ export {
   type ExecuteMachineArgs,
   type ExecuteMachineDeps,
 } from './adapter.js';
+export {
+  DEFAULT_REPLAY_CACHE_MAX_ENTRIES,
+  MemoryReplayCache,
+  type MemoryReplayCacheOptions,
+} from './replay-cache.js';
 export { legacySuspendError, type LegacyGateCopy, type LegacyGateInput } from './legacy-gate.js';
 export {
   APPROVAL_SENTENCE_TAIL,

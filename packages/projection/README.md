@@ -179,7 +179,12 @@ retry can be replayed until its blob expires (by default 5 min for
 `call_tool`, 15 for machines; `blob.callTtlMs` and `blob.ttlMs` override).
 A forwarded server question's blob keeps the expiry of the approval it
 follows. With `upstreamElicitation: 'forward'` on, a `replayCache` is
-recommended.
+recommended. A single-process server (stdio) can pass
+`replayCache: new MemoryReplayCache()`; it is not the default and is correct
+only when one process serves every retry, so a horizontally scaled deployment
+supplies a shared store. A restart forgets every nonce, so with a persistent
+blob key a blob sealed before the restart can be replayed until it expires; a
+blob key generated at startup makes those blobs fail verification.
 See
 [Lifecycle](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#lifecycle-and-operations).
 

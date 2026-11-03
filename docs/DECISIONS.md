@@ -2559,3 +2559,51 @@ Rejected:
   time, and it triples the cost of a true failure.
 - Keeping the file in the parallel run with more samples. More samples do
   not help when the whole run sits inside a contended window.
+
+## D42 — An opt-in in-memory replay cache ships for single-process servers (2026-11-02)
+
+R38 said no replay cache ships, because an in-memory one would silently
+break horizontal scaling (G4): behind a round-robin balancer each instance
+keeps its own set, and a replay routed to another instance executes. That
+argument is against a _default_, not against an export. `MemoryTokenStore`
+already ships on the same terms, and the common deployment is a stdio
+server, where one process serves every retry. There, every integrator who
+followed the README's advice (a `replayCache` with `upstreamElicitation:
+'forward'`) had to hand-write the atomic test-and-set, and a read-then-write
+over an async store is the easy mistake.
+
+`MemoryReplayCache` is exported and never configured by default; the docs
+say it is correct only when one process serves every retry. Its rules:
+
+- The test and the set run in one synchronous step inside `seen` (no
+  `await` between them), so two concurrent retries in the process cannot
+  both pass.
+- A nonce is swept once its blob has expired (`exp <= now`, matching the
+  sealer's `now >= exp` refusal), at most once a second, so memory is
+  bounded by the approvals live within the TTL. The throttle holds when the
+  cache is full too: a full cache is not swept on every call.
+- The cache remembers the latest `exp` it swept. A nonce it does not hold
+  whose `exp` is at or before that cannot be checked: it might have been
+  swept. On a steady clock such a blob has expired and the sealer refuses
+  it first, so this only happens after the wall clock steps back. `seen`
+  then rejects with `blob_verification`, saying the server clock changed,
+  and nothing runs. It does not answer `true`: a fresh approval would be
+  reported as a replay, and the model would retry in vain. A nonce it holds
+  is still a replay.
+- It never evicts a live nonce to make room: that would re-open replay. At
+  `maxEntries` (default 100,000) it rejects with `cap_exceeded` and records
+  nothing, so nothing runs and a fresh approval can be requested once
+  entries expire.
+- A nonce is recorded on any verified resume, declines and unanswered ones
+  included. A client can fill the cache with no human involved, and real
+  approvals then get `cap_exceeded` until entries expire. Do not share one
+  instance across mutually untrusted clients.
+- A restart forgets every nonce. With a persistent blob key, a blob sealed
+  before the restart can be replayed until it expires (`callTtlMs` or
+  `ttlMs`). Where that matters, a stdio server can generate its blob key at
+  startup, so blobs from before the restart fail verification.
+
+Rejected: making it the default for stdio transports (Projection does not
+know its transport, and a silent default is the G4 failure mode); LRU
+eviction at the cap (forgets live approvals); answering `true` at the cap
+(reports a fresh approval as a replay, which misleads the model).
