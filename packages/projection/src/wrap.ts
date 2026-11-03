@@ -83,7 +83,13 @@ import {
   type ToolCallResult,
 } from './mrtr/index.js';
 import { generateToolTypes, type ToolTypeText } from './typegen/index.js';
-import { assertApprovalsMode, assertPolicyRules, resolvePolicyRules } from './policy/index.js';
+import {
+  assertApprovalsMode,
+  assertPolicyRules,
+  resolvePolicyRules,
+  toolPolicyOf,
+  type ToolPolicy,
+} from './policy/index.js';
 import {
   clampCaps,
   DEFAULT_SERVER_ALIAS,
@@ -138,6 +144,21 @@ export interface ProjectionFacade {
     clientCanElicit?: boolean,
     clientUrlElicitation?: boolean,
   ): Promise<ToolCallResult>;
+  /**
+   * The resolved policy of the tool `name` (R14, R49): the decision the
+   * approval gate makes for it and the posture `search_tools` and
+   * `describe_tool` show, computed from the same frozen wrap-time policy
+   * settings and the same lookup the gate uses, so it cannot disagree with
+   * them. `name` is the server's catalog tool name — on a multi-server
+   * facade the qualified `<box>.<tool>` — never a name read from
+   * `tools/list`: direct listing lists a tool whose name is not a legal tool
+   * name under a cleaned-up or hash-suffixed name, which can equal another
+   * tool's catalog name, so take names from `catalog`. A name the facade
+   * does not declare (a direct listing's `<box>__<tool>` alias included)
+   * returns `undefined`. For the
+   * integrator only: no model-facing surface carries it.
+   */
+  policyOf(name: string): ToolPolicy | undefined;
   /** The projections this facade serves (R32). Frozen: fixed at wrap time. */
   readonly projections: Readonly<ProjectionSelection>;
   /** Build an `McpServer` carrying the instructions, the enabled projections' tools and the resources. */
@@ -422,6 +443,10 @@ class Facade implements ProjectionFacade {
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
+  }
+
+  policyOf(name: string): ToolPolicy | undefined {
+    return toolPolicyOf(this.deps.catalog, name, this.deps.policySettings);
   }
 
   /**

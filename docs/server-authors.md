@@ -196,6 +196,38 @@ overview flags. The mode is read once, at `wrapMcpServer`, like `policy`;
 any value other than the two strings fails the wrap with a `validate`
 `ProjectionError` before the wrapped server is connected.
 
+To verify what the mode and your overrides resolved to without parsing
+`search_tools` text, ask the facade:
+
+```ts
+for (const tool of facade.catalog.tools) {
+  const { decision, posture } = facade.policyOf(tool.name)!;
+  // decision: 'auto' | 'ask' | 'deny'; posture: 'runs immediately' | …
+}
+facade.policyOf('no_such_tool'); // undefined
+
+// wrapMcpServers: catalog.servers maps each alias to its box's catalog.
+for (const [alias, box] of multi.catalog.servers) {
+  for (const tool of box.tools) multi.policyOf(`${alias}.${tool.name}`);
+}
+```
+
+`policyOf(name)` reflects your `policyRules` too: they are resolved into the
+same snapshot at wrap time and never re-run. It decides from the same frozen
+wrap-time settings, through the same catalog lookup, as the approval gate behind `call_tool` and
+`execute_machine`, so its answer is what the gate does and the posture
+`search_tools` and `describe_tool` show. A name the facade does not declare
+returns `undefined` rather than throwing, so it is safe in a loop over your
+own list of names. On `wrapMcpServers` it takes the qualified name
+(`facade.policyOf('fs.write_file')`), and per-source modes apply; bare names
+and direct-listing aliases (`fs__write_file`) are `undefined`. `name` is
+always the server's catalog name, never a name read from `tools/list`: under
+direct listing a tool whose name is not a legal tool name is listed under a
+cleaned-up or hash-suffixed name, which can equal another tool's catalog name
+(`drop db` listed as `drop_db`), so take names from `facade.catalog`. It is
+for you, the integrator: no tool result, description or generated type
+carries it.
+
 **Trust note.** `'destructive-only'` extends the trust Projection already
 places in `readOnlyHint: true` to `destructiveHint: false`. Annotations come
 from the wrapped server, and a hostile or careless server can label a

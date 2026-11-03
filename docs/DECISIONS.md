@@ -2388,3 +2388,32 @@ their own kind prefix.
 Rejected: dropping `load` from the public type (a consumer could not
 supply the module another way, nor test against a fake); a `service` option (more surface than
 the request needs; the hashed account already keeps keys apart).
+
+## D38 — `facade.policyOf(name)`: the resolved policy, for the integrator (2026-11-02)
+
+Context. A customer wrapping a 241-tool server with `approvals:
+'destructive-only'` and overrides verified the outcome by parsing
+`search_tools` text (`[asks for approval, destructive]`). The policy
+helpers are exported, but recomputing with them can drift from what the
+facade actually froze at wrap time.
+
+Decision. Both facades get `policyOf(name): { decision, posture } |
+undefined`. It runs `toolPolicyOf` (`policy/decision.ts`): `findTool`
+on the catalog the gate uses (the boxed view on a multi-server facade, so
+names are qualified and per-source modes apply), then `decidePolicy` on
+`policyContext` of the facade's frozen `policySettings` — the lookup and
+decision `call_tool` and `resolveCallPolicy` gate with. Any setting
+folded into the frozen settings at wrap time is picked up for free —
+`policyRules` (D36) included: rules resolve into the frozen `policy` map,
+so `policyOf` reports their outcome without ever running a rule again. An
+undeclared name returns `undefined` rather than a `validate` error: the
+method is a lookup an integrator loops over, not a call a model makes, and
+`undefined` says "not a tool here" without a try/catch. The result is
+frozen. Nothing model-facing changes: no structuredContent, copy, type or
+golden carries it.
+
+Rejected: a `validate` error for unknown names (forces try/catch in a
+verification loop, and the error copy is written for models); adding the
+decision to `search_tools`/`describe_tool` structuredContent (moves evals,
+and the posture is already there); returning the catalog entry too (the
+caller has `catalog`).
