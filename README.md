@@ -138,6 +138,11 @@ shows an approval prompt. Two things decide whether that prompt can appear:
   structured error naming the revision it needs.
   See [Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28).
 
+Projection reads the server's tools once, at wrap time, and ignores
+`tools/list_changed`. A tool the server adds later is not seen until you
+wrap again (here: restart the script). See
+[Wrap and serve](docs/server-authors.md#wrap-and-serve).
+
 You can also wrap an in-process `McpServer` you built yourself (pass it
 unconnected), and serve over HTTP with `createMcpHandler(facade.serverFactory)`:
 see [Wrap and serve](docs/server-authors.md#wrap-and-serve).
