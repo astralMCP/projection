@@ -584,6 +584,31 @@ Expose the sandbox's virtual FS to authored code as ephemeral per-segment scratc
 
 Token residence for multi-tenant deployments keeps the earlier preference: a server-side store keyed by principal (R59's `TokenStore`, shared), chosen over serializing refresh tokens into the AEAD blob. The blob option is architecturally purer, but it makes the client a courier of its own upstream credentials and stretches revocation windows. It stays rejected unless an adversarial review overturns this.
 
+### 12.5 Lifecycle and observability hooks
+
+**Unscheduled; to be designed.** Nothing here is a requirement yet, and it has no R-numbers. The maintainer wants to design hooks broadly rather than add one-off callbacks, so this section records the need and the open questions.
+
+**The need.** An integrator profiling Projection today records spans by monkey-patching `upstream.callTool` and `facade.executeMachine` at runtime, and asked for supported hooks (for example `onUpstreamCall` and `onExecuteMachine`) or OpenTelemetry spans. The events they want to time and trace are:
+
+- each upstream tool call, per box on a multi-server facade;
+- each `execute_machine` segment, from validation through run to completion, suspension or error;
+- each `call_tool` request;
+- approvals: the elicitation sent and the verdict that comes back;
+- suspensions and resumes, including blob seal and verify;
+- catalog refresh (introspection at wrap time, at unlock, and on `tools/list_changed`).
+
+**Open design questions.**
+
+1. **Shape.** One hooks object on `WrapOptions` (for example `hooks: { onUpstreamCall, … }`) or separate per-event options.
+2. **OpenTelemetry.** Emit OpenTelemetry spans built in (an optional peer dependency) or expose plain hooks and leave the tracer to the integrator, perhaps with a small adapter.
+3. **Sync or async, and the hot path.** Whether hooks may be async, whether Projection awaits them, and whether a slow hook can block a call. Hooks must not push the §10 budgets (suspend→resume overhead p95 < 100 ms, validation latency) off target; fire-and-forget with no awaiting is the likely answer.
+4. **What a hook may see (S1–S6).** Arguments and results may carry secrets: does the redaction hook (R16) run before a hook sees arguments, or does a hook see raw values? Hook payloads must never include blob keys, blob plaintext or sealed state (S3), upstream access or refresh tokens, client secrets, device codes or PKCE verifiers (S1), or a credential the MCP client presented to Projection (R61). For a source given by URL, the echo redaction of §6.10 must apply to anything a hook receives, as it does to every other surface.
+5. **Error isolation.** A hook that throws or rejects must never change an approval decision, fail a call, corrupt a suspension or surface in a model-visible result. Its error is swallowed or reported out of band.
+6. **Influence over policy.** Whether a hook could ever veto, rewrite or approve a call. The likely answer is never: hooks observe only, and policy stays in the approval engine (R14) and its verified verdicts (S2).
+7. **Relation to existing surfaces.** How hooks interact with the redaction hook and with the audit trail in `execute_machine` results (`approvals`): whether a hook sees the same redacted view the approver sees, and whether the audit trail should be built from the same events.
+
+**Constraint for any design.** Hooks must not change anything an LLM sees: tool lists, descriptions, results, errors, logs, approval copy and the audit trail stay byte-identical with or without hooks, so the evals and benchmarks are unaffected.
+
 ## 13. Verification and test plan
 
 **Smoke-test matrix.** Source candidate servers from the Glama directory (https://glama.ai/mcp/servers) and pin a narrow initial set of three, chosen for shape diversity rather than coverage — the long-term goal is "any server"; the goal for these three is "flawlessly":
@@ -667,4 +692,4 @@ The smoke also records two behaviours to verify, not assume: whether GitHub acce
 
 ## 14. Milestones
 
-M1–M5 and MT are delivered. Remaining: multi-server facades (§6.9), then just-in-time upstream sign-in (§6.10) in two phases — phase 1, the GitHub milestone (device flow, keyring store, locked boxes for the catalog tools), then phase 1b (authorization code + PKCE, DCR and CIMD, step-up, revocation, `discover_apis` and machine-held sign-in) — then Stretch (§12).
+M1–M5 and MT are delivered. Remaining: multi-server facades (§6.9), then just-in-time upstream sign-in (§6.10) in two phases — phase 1, the GitHub milestone (device flow, keyring store, locked boxes for the catalog tools), then phase 1b (authorization code + PKCE, DCR and CIMD, step-up, revocation, `discover_apis` and machine-held sign-in) — then Stretch (§12). Lifecycle and observability hooks (§12.5) are on the plan but unscheduled: they need a broader hooks design first.
