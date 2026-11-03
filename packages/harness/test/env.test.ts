@@ -1,5 +1,5 @@
 /**
- * `.env` discovery for the CLI: walks up from cwd, loads via Node's
+ * `.env` discovery for the harness's live tests: walks up from cwd, loads via Node's
  * built-in parser, and never overrides variables already exported.
  */
 
