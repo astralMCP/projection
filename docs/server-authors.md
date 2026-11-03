@@ -300,7 +300,9 @@ policyRules: [
   themselves are copied when the wrap starts, so later edits are not seen): every surface shows
   the decision the gate enforces, and no rule runs per request. When your
   server's tool list changes (see "When your tool list changes"), the rules
-  run again over the new list, new tools included.
+  run again over the new list, new tools included. So a permissive rule (a
+  pattern decided `'auto'`) also covers tools the server adds later, ones
+  you have never seen: keep `'auto'` rules to names you vouch for.
 - **Fail-safe.** A decision other than the three strings — from a function
   or a pattern — means `ask`, never `auto`. A pattern that matches always
   has an opinion, so one with a missing `decision` (a typo such as
@@ -1018,9 +1020,10 @@ advertises `tools.listChanged`.
   floods the notification costs one re-listing per interval.
 - **Safe while it runs.** From the moment the notification arrives until the
   new list is in place, your tools are decided as if they had no
-  `readOnlyHint` or `destructiveHint`. Only your exact `policy` entries
-  still apply; rule outcomes do not. So a tool you changed from read-only to
-  write never runs unapproved off the old list. A request that was already
+  `readOnlyHint` or `destructiveHint`. Only your exact `policy` entries and
+  the rule decisions that tighten (`'ask'`, `'deny'`) still apply; a rule's
+  `'auto'` does not. So a tool you changed from read-only to write never
+  runs unapproved off the old list, and a tool a rule denies stays denied. A request that was already
   running and would call such a tool gets a tool failure instead
   ("the server's tool list changed while this request ran"), and the model
   can call again. Approvals already in flight survive a refresh, but a
@@ -1032,7 +1035,9 @@ advertises `tools.listChanged`.
   searched, because the instructions a client already read name those
   tools. If your server can grow a lot, set `projections.direct: false`.
   Within that surface, the directly listed tools follow your list, and each
-  keeps its listed name while it exists.
+  keeps its listed name while it exists. Once a tool is removed its name
+  may be reused by a later tool; approval prompts and the policy always
+  use the real tool behind the name.
 - **Telling your clients.** Code mode and the search tools never change.
   When directly listed tools do, servers the facade built that are still
   connected (stdio) are updated and sent `notifications/tools/list_changed`.

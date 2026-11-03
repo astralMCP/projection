@@ -2672,7 +2672,8 @@ Decision (R65).
   advertises `tools.listChanged`, which no model sees. The 2026-07-28 era
   delivers change notifications only on a listen stream. The stream is
   opened before the first `tools/list`, so a change made during
-  introspection is not lost, and its acknowledgement is bounded at 5 s and
+  introspection is not lost, and its acknowledgement is awaited in the
+  background (never on the wrap's critical path), bounded at 5 s and
   failure-tolerant: a server that mishandles `subscriptions/listen` is just
   not followed. Opt-in would have meant almost no facade follows, for no
   eval benefit. A caller's own `Client` is not subscribed, because setting
@@ -2695,9 +2696,13 @@ Decision (R65).
   re-listing started after it, the box's catalog is known to be possibly
   stale. A tool that went from read-only to write would still auto-run off
   the old annotations. So the gate (not the display surfaces) decides that
-  box with `readOnlyHint` and `destructiveHint` dropped and with only the
-  exact-name overrides. A function rule may have granted `auto` on the old
-  annotations, and the integrator's exact names are their own word. The
+  box with `readOnlyHint` and `destructiveHint` dropped, with the
+  exact-name overrides, and with only the rule outcomes that tighten
+  (`ask`, `deny`). A function rule may have granted `auto` on the old
+  annotations, so a rule `auto` is dropped; but a rule `deny` or `ask`
+  stays, since dropping it would loosen the box (a pattern `deny` would
+  become an approvable `ask`). The integrator's exact names are their own
+  word. The
   box goes dirty in the notification handler itself, synchronously. A
   request already running may have decided a call from the trusted
   snapshot. Each box carries a generation, and the per-request executor
@@ -2711,11 +2716,20 @@ Decision (R65).
 - **Bounded work.** Notifications only mark the box dirty and schedule a
   cycle. Cycles are debounced (250 ms), rate-capped (one start per 2 s;
   the floor of the knob is 100 ms so it cannot be configured away) and
-  coalesced (one cycle re-lists every dirty box, and notifications during a
-  cycle fold into the next). Each re-listing has the wrap-time bounds:
-  pages, tools, the facade total and the introspect timeout. Failures back
-  off per box up to 60 s, so a hostile box that fails forever never delays
-  an honest box beyond the shared interval. A notification storm therefore
+  coalesced (one cycle starts a re-listing of every dirty box not already
+  in flight; a box has one re-listing at a time, and notifications during
+  it fold into a later cycle). Each box's result is applied as soon as its
+  own re-listing lands, not when the cycle's slowest box does, so a slow
+  but successful box that notifies constantly never keeps an honest box
+  distrusted. Each re-listing has the wrap-time bounds: pages, tools, the
+  facade total and the introspect timeout. Failures back off per box up to
+  60 s, so a hostile box that fails forever never delays an honest box
+  beyond the shared interval. Once a box's snapshot is committed nothing
+  after it may fail the apply: reconciling held servers (a name an
+  integrator registered there is skipped on that server) and calling
+  `onToolsChanged` listeners are best effort. `refreshTools()` resolves
+  once a re-listing that started after the call lands, even if the box is
+  already dirty again, so a constantly notifying server cannot starve it. A notification storm therefore
   costs at most one bounded walk and one rebuild per interval.
 - **Pin the surface.** The direct/catalog decision (and which boxes are
   listed), the served search tools and the global search are made once,
@@ -2741,8 +2755,16 @@ Decision (R65).
 - **Stable listed names.** A refreshed plan keeps each surviving tool's
   listed name and reserves it from newcomers. A collision hash suffix
   depends on catalog order, so without this a model holding `a_b` could
-  find it routing to a different tool after a refresh. Approval would
-  still name the real tool (S2, S6), but a read-only call would not ask.
+  find it routing to a different tool after a refresh. A listed name
+  keeps routing to its tool for as long as that tool is declared; once
+  the tool is removed the name is freed (the reservation stays bounded)
+  and a later tool may be listed under it. Approval copy and the gate
+  always name and decide the real target tool (S2, S6), so a reused name
+  never borrows the old tool's posture.
+- **Rules apply to later tools.** Rules are re-run over every refreshed
+  catalog, so a permissive rule (a pattern decided `auto`) also covers
+  tools the server adds later, which the integrator never saw. The docs
+  advise `auto` rules only on names the integrator vouches for.
 - **Blobs.** Identity is unchanged by a refresh (it is server
   name@version, or the URL identity), so outstanding approvals survive.
   Every resume decides with the current snapshot, as R14 and D9 already

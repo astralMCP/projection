@@ -232,6 +232,29 @@ describe('catalog projection follows the server (R65)', () => {
     expect(up.calls).toEqual(['list_labels']);
   });
 
+  it('while dirty, a rule deny stays denied and only a rule auto is dropped', async () => {
+    const up = mutableServer();
+    up.add('peek', { readOnlyHint: false });
+    const f = await wrap(up, {
+      projections: { direct: false },
+      policyRules: [
+        { match: 'send_*', decision: 'deny' },
+        (tool) => (tool.name === 'peek' ? 'auto' : undefined),
+      ],
+      followListChanged: { debounceMs: 60_000 },
+    });
+    expect(structured(await f.callTool({ name: 'peek', args: {} }, 'modern'))['status']).toBe('ok');
+    const notified = heard();
+    up.spam();
+    await notified;
+    // A pattern deny is never loosened to an approvable ask.
+    const sent = await f.callTool({ name: 'send_email', args: {} }, 'modern');
+    expect(structured(sent)['status']).toBe('denied_by_policy');
+    // A function rule's auto may rest on stale annotations: it asks.
+    expect(isSuspended(await f.callTool({ name: 'peek', args: {} }, 'modern'))).toBe(true);
+    expect(up.calls).toEqual(['peek']);
+  });
+
   it('an in-flight request does not auto-run a call off the snapshot it started with', async () => {
     const up = mutableServer();
     up.add('flip', { readOnlyHint: true });
@@ -336,6 +359,18 @@ describe('catalog projection follows the server (R65)', () => {
     await expect(f.refreshTools()).rejects.toThrow(/rule/);
   });
 
+  it('a listen request that is never acknowledged does not delay or fail the wrap', async () => {
+    const listen = vi
+      .spyOn(Client.prototype, 'listen')
+      .mockImplementation(() => new Promise<never>(() => undefined));
+    const up = mutableServer();
+    const started = Date.now();
+    const f = await wrap(up, { projections: { direct: false }, introspectTimeoutMs: 1_000 });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(listen).toHaveBeenCalled();
+    expect(searchNames(f, 'send')).toEqual(['send_email']);
+  });
+
   it('refreshTools re-lists on demand, e.g. for a Client the facade does not subscribe', async () => {
     const up = mutableServer();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -418,6 +453,58 @@ describe('direct listing follows the server (R65)', () => {
     expect(f.projections.direct).toBe(true);
   });
 
+  it('a throwing onToolsChanged listener never fails the refresh or the other listeners', async () => {
+    const up = mutableServer();
+    const f = await wrap(up, { projections: { direct: true } });
+    let heard = 0;
+    f.onToolsChanged(() => {
+      throw new Error('listener broke');
+    });
+    f.onToolsChanged(() => {
+      heard += 1;
+    });
+    up.add('fresh_tool', { readOnlyHint: true });
+    await f.refreshTools();
+    expect(f.catalog.tools.map((tool) => tool.name)).toContain('fresh_tool');
+    expect(searchNames(f, 'fresh')).toEqual(['fresh_tool']);
+    expect(heard).toBeGreaterThan(0);
+    await f.refreshTools();
+  });
+
+  it('a name the integrator already registered on a registerOn server is skipped there alone', async () => {
+    const up = mutableServer();
+    const f = await wrap(up, { projections: { direct: true } });
+    const mine = new McpServer({ name: 'mine', version: '1.0.0' });
+    mine.registerTool(
+      'fresh_tool',
+      { description: 'The integrator’s own.', inputSchema: z.object({}) },
+      () => ({ content: [{ type: 'text' as const, text: 'mine' }] }),
+    );
+    f.registerOn(mine);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mine.connect(serverTransport);
+    const client = new Client({ name: 'held', version: '1.0.0' });
+    await client.connect(clientTransport);
+    open.push({ close: () => client.close().then(() => mine.close()) });
+
+    up.add('fresh_tool', { readOnlyHint: true });
+    up.add('other_tool', { readOnlyHint: true });
+    await f.refreshTools();
+    await vi.waitFor(() =>
+      expect(f.catalog.tools.map((tool) => tool.name)).toContain('other_tool'),
+    );
+    await f.refreshTools();
+    const tools = (await client.listTools()).tools;
+    expect(tools.find((tool) => tool.name === 'other_tool')).toBeDefined();
+    expect(tools.find((tool) => tool.name === 'fresh_tool')?.description).toBe(
+      'The integrator’s own.',
+    );
+    // A facade-built server lists the new tools as usual.
+    const held = await heldClient(f);
+    const names = (await held.client.listTools()).tools.map((tool) => tool.name);
+    expect(names).toEqual(expect.arrayContaining(['fresh_tool', 'other_tool']));
+  });
+
   it('no notification and no listener call when nothing listed changed', async () => {
     const up = mutableServer();
     const f = await wrap(up, { projections: { direct: true } });
@@ -491,6 +578,32 @@ describe('a multi-server facade follows each box on its own (R65)', () => {
     const mailRun = await f.callTool({ name: 'mail.list_labels', args: {} }, 'modern');
     expect(structured(mailRun)['status']).toBe('ok');
     expect(mail.calls).toEqual(['list_labels']);
+    expect(docs.calls).toEqual([]);
+  });
+
+  it('while a box is dirty, a rule deny stays denied and a rule auto asks', async () => {
+    const mail = mutableServer('mail');
+    const docs = mutableServer('docs');
+    docs.add('peek', { readOnlyHint: false });
+    const f = await wrapMcpServers(
+      { mail: mail.server, docs: docs.server },
+      {
+        blob: { key: KEY },
+        projections: { direct: false },
+        policyRules: [
+          { match: '*.send_*', decision: 'deny' },
+          (tool) => (tool.name === 'docs.peek' ? 'auto' : undefined),
+        ],
+        followListChanged: { debounceMs: 60_000 },
+      },
+    );
+    open.push(f);
+    const notified = heard();
+    docs.spam();
+    await notified;
+    const sent = await f.callTool({ name: 'docs.send_email', args: {} }, 'modern');
+    expect(structured(sent)['status']).toBe('denied_by_policy');
+    expect(isSuspended(await f.callTool({ name: 'docs.peek', args: {} }, 'modern'))).toBe(true);
     expect(docs.calls).toEqual([]);
   });
 

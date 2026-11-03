@@ -231,8 +231,10 @@ export interface HeldRegistration {
  * Bring a server registered from an older snapshot up to `copy` and
  * `directTools` (R65): the mediated tools are added, removed or replaced,
  * and the catalog tools' descriptions updated (their set never changes —
- * the surface is pinned at wrap time). Returns whether any tool definition
- * the server lists changed.
+ * the surface is pinned at wrap time). A new tool whose name the server
+ * already has registered (an integrator's own, via `registerOn`) is skipped
+ * on that server. Returns whether any tool definition the server lists
+ * changed.
  */
 export function reconcileHeldServer(
   server: McpServer,
@@ -264,12 +266,18 @@ export function reconcileHeldServer(
     held.direct.delete(name);
     changed = true;
   }
-  const added = directTools.filter((tool) => !held.direct.has(tool.name));
-  if (added.length > 0) {
-    for (const [name, entry] of registerDirectTools(server, held.era, handlers, added)) {
-      held.direct.set(name, entry);
+  // One at a time: a name the integrator already registered on this server
+  // is skipped there alone, never failing the rest of the refresh.
+  for (const tool of directTools) {
+    if (held.direct.has(tool.name)) continue;
+    try {
+      for (const [name, entry] of registerDirectTools(server, held.era, handlers, [tool])) {
+        held.direct.set(name, entry);
+        changed = true;
+      }
+    } catch {
+      // Best effort: this server keeps its own tool by that name.
     }
-    changed = true;
   }
   return changed;
 }

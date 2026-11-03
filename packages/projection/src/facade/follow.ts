@@ -8,10 +8,12 @@
  * annotations distrusted (see {@link distrustEntries}): a tool the server
  * re-annotated from read-only to write can never run unapproved off the
  * stale snapshot. The re-listing is debounced, coalesced (one cycle covers
- * every dirty box, and notifications during a cycle fold into the next) and
- * rate-capped (cycles start at least `minIntervalMs` apart, backing off on
- * failure), so a server that spams the notification costs at most one
- * bounded `tools/list` walk per interval.
+ * every dirty box, each box has at most one re-listing in flight, and
+ * notifications during it fold into the next) and rate-capped (cycles start
+ * at least `minIntervalMs` apart, each box backing off on failure), so a
+ * server that spams the notification costs at most one bounded `tools/list`
+ * walk per interval. Each box's result is applied as soon as its own
+ * re-listing lands, so a slow box never keeps another distrusted.
  *
  * Each box carries a **generation**, bumped by every notification. A
  * request decides with the snapshot it started with; the executor it runs
@@ -102,9 +104,10 @@ export interface ListChangeHooks<T> {
   /** Re-list one box, bounded (the introspect timeout). Must not commit anything. */
   relist(alias: ServerAlias): Promise<T>;
   /**
-   * Commit re-listed boxes and rebuild the facade, synchronously and all or
-   * nothing. `trusted` is every box with no notification outstanding once
-   * these land. A throw keeps the previous snapshot; the boxes stay dirty.
+   * Commit one re-listed box and rebuild the facade, synchronously and all
+   * or nothing: a throw must leave the previous snapshot in place (the box
+   * stays dirty), and nothing after the commit may throw. `trusted` is
+   * every box with no notification outstanding once this lands.
    */
   apply(results: ReadonlyMap<ServerAlias, T>, trusted: ReadonlySet<ServerAlias>): void;
   /** A box just went dirty: rebuild what the gate decides with, synchronously. */
@@ -112,14 +115,18 @@ export interface ListChangeHooks<T> {
 }
 
 interface Waiter {
+  /** The box's generation when the refresh was asked for. */
+  target: number;
   resolve: () => void;
   reject: (err: unknown) => void;
 }
 
 /**
  * Per-facade scheduler for re-listing boxes whose server said their tool
- * list changed. One cycle at a time; a cycle re-lists every dirty box
- * concurrently and applies the results in one rebuild.
+ * list changed. A cycle starts a re-listing of every dirty box that is not
+ * already being re-listed, and each box's result is applied as soon as its
+ * own re-listing settles: a slow box never holds a fast one back. A box
+ * notified again while it is re-listed is picked up by a later cycle.
  */
 export class ListChangeTracker<T> {
   readonly #hooks: ListChangeHooks<T>;
@@ -129,10 +136,11 @@ export class ListChangeTracker<T> {
   /** The generation the current snapshot of each box reflects. */
   readonly #applied = new Map<ServerAlias, number>();
   readonly #waiters = new Map<ServerAlias, Waiter[]>();
+  /** The boxes whose re-listing is in flight. */
+  readonly #inFlight = new Set<ServerAlias>();
   #timer: ReturnType<typeof setTimeout> | undefined;
-  #running = false;
   #lastStart = Number.NEGATIVE_INFINITY;
-  /** Per box: consecutive failed cycles, and when it may be tried again. */
+  /** Per box: consecutive failed re-listings, and when it may be tried again. */
   readonly #failures = new Map<ServerAlias, number>();
   readonly #eligibleAt = new Map<ServerAlias, number>();
   #closed = false;
@@ -177,21 +185,23 @@ export class ListChangeTracker<T> {
 
   /**
    * Re-list `alias` now (through the same debounce and rate cap) and settle
-   * once a cycle has applied it: resolves when it lands, rejects with the
-   * failure of the cycle that tried.
+   * once a re-listing that started after this call has landed: resolves
+   * when it is applied (even if a later notification already left the box
+   * dirty again), rejects with the failure of such a re-listing.
    */
   refresh(alias: ServerAlias): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      if (this.#closed) {
+      if (this.#closed || !this.#generation.has(alias)) {
         resolve();
         return;
       }
-      this.#waiters.set(alias, [...(this.#waiters.get(alias) ?? []), { resolve, reject }]);
       this.notify(alias);
+      const target = this.generation(alias);
+      this.#waiters.set(alias, [...(this.#waiters.get(alias) ?? []), { target, resolve, reject }]);
     });
   }
 
-  /** Stop: no further cycle starts, and a cycle in flight applies nothing. */
+  /** Stop: no further cycle starts, and a re-listing in flight applies nothing. */
   close(): void {
     this.#closed = true;
     if (this.#timer !== undefined) clearTimeout(this.#timer);
@@ -200,20 +210,22 @@ export class ListChangeTracker<T> {
     this.#waiters.clear();
   }
 
-  #dirty(): ServerAlias[] {
+  /** The dirty boxes not being re-listed already. */
+  #pending(): ServerAlias[] {
     return [...this.#generation]
       .filter(([alias, generation]) => this.#applied.get(alias) !== generation)
-      .map(([alias]) => alias);
+      .map(([alias]) => alias)
+      .filter((alias) => !this.#inFlight.has(alias));
   }
 
   #schedule(): void {
-    if (this.#closed || this.#running || this.#timer !== undefined) return;
-    const dirty = this.#dirty();
-    if (dirty.length === 0) return;
+    if (this.#closed || this.#timer !== undefined) return;
+    const pending = this.#pending();
+    if (pending.length === 0) return;
     // Debounced from the notification, rate-capped from the last cycle's
-    // start, and no sooner than the first dirty box's own backoff allows.
+    // start, and no sooner than the first pending box's own backoff allows.
     const now = Date.now();
-    const eligible = Math.min(...dirty.map((alias) => this.#eligibleAt.get(alias) ?? 0));
+    const eligible = Math.min(...pending.map((alias) => this.#eligibleAt.get(alias) ?? 0));
     const delay = Math.max(
       this.#settings.debounceMs,
       this.#lastStart + this.#settings.minIntervalMs - now,
@@ -221,91 +233,84 @@ export class ListChangeTracker<T> {
     );
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
-      void this.#cycle();
+      this.#cycle();
     }, delay);
     // A pending re-listing never keeps the process alive on its own.
     this.#timer.unref?.();
   }
 
-  async #cycle(): Promise<void> {
+  #cycle(): void {
     if (this.#closed) return;
     const now = Date.now();
-    const aliases = this.#dirty().filter((alias) => (this.#eligibleAt.get(alias) ?? 0) <= now);
-    if (aliases.length === 0) {
-      this.#schedule();
+    const aliases = this.#pending().filter((alias) => (this.#eligibleAt.get(alias) ?? 0) <= now);
+    if (aliases.length > 0) {
+      this.#lastStart = now;
+      for (const alias of aliases) {
+        const started = this.generation(alias);
+        this.#inFlight.add(alias);
+        let relisting: Promise<T>;
+        try {
+          relisting = this.#hooks.relist(alias);
+        } catch (error) {
+          relisting = Promise.reject(error);
+        }
+        relisting
+          .then(
+            (value) => this.#landed(alias, started, value),
+            (error: unknown) => this.#failed(alias, started, error),
+          )
+          .finally(() => {
+            this.#inFlight.delete(alias);
+            this.#schedule();
+          });
+      }
+    }
+    // Boxes still backing off, or notified meanwhile, get their own timer.
+    this.#schedule();
+  }
+
+  /** One box's re-listing (started at generation `started`) succeeded: apply it. */
+  #landed(alias: ServerAlias, started: number, value: T): void {
+    if (this.#closed) return;
+    const trusted = this.trusted();
+    if (started === this.generation(alias)) trusted.add(alias);
+    else trusted.delete(alias);
+    try {
+      this.#hooks.apply(new Map([[alias, value]]), trusted);
+    } catch (error) {
+      this.#failed(alias, started, error);
       return;
     }
-    this.#running = true;
-    this.#lastStart = now;
-    const started = new Map(aliases.map((alias) => [alias, this.generation(alias)]));
-    const settled = await Promise.allSettled(aliases.map((alias) => this.#hooks.relist(alias)));
-    try {
-      if (this.#closed) return;
-      const results = new Map<ServerAlias, T>();
-      const failed = new Map<ServerAlias, unknown>();
-      settled.forEach((outcome, index) => {
-        const alias = aliases[index] as ServerAlias;
-        if (outcome.status === 'fulfilled') results.set(alias, outcome.value);
-        else failed.set(alias, outcome.reason);
-      });
-      // One rebuild for the cycle; when it throws, each box alone, so one
-      // box whose new catalog cannot be applied never holds another's back.
-      const err = this.#apply(results, started);
-      if (err !== undefined) {
-        for (const [alias, value] of results) {
-          const alone = results.size > 1 ? this.#apply(new Map([[alias, value]]), started) : err;
-          if (alone !== undefined) failed.set(alias, alone.error);
-        }
-      }
-      for (const alias of aliases) {
-        const error = failed.get(alias);
-        if (!failed.has(alias)) {
-          this.#failures.delete(alias);
-          this.#eligibleAt.delete(alias);
-          continue;
-        }
-        // Backs off per box: a box whose server keeps failing never delays
-        // another box's re-listing beyond the shared rate cap.
-        const failures = (this.#failures.get(alias) ?? 0) + 1;
-        this.#failures.set(alias, failures);
-        const wait = Math.min(this.#settings.minIntervalMs * 2 ** failures, MAX_FOLLOW_BACKOFF_MS);
-        this.#eligibleAt.set(alias, Date.now() + wait);
-        this.#settleWaiters(alias, error ?? new Error('re-listing failed'));
-      }
-    } finally {
-      this.#running = false;
-      this.#schedule();
-    }
+    this.#applied.set(alias, started);
+    this.#failures.delete(alias);
+    this.#eligibleAt.delete(alias);
+    this.#settleWaiters(alias, started);
   }
 
-  /** Apply `results`: the error a throwing rebuild threw, or `undefined` once applied. */
-  #apply(
-    results: ReadonlyMap<ServerAlias, T>,
-    started: ReadonlyMap<ServerAlias, number>,
-  ): { error: unknown } | undefined {
-    if (results.size === 0) return undefined;
-    const trusted = this.trusted();
-    for (const alias of results.keys()) {
-      if (started.get(alias) === this.generation(alias)) trusted.add(alias);
-      else trusted.delete(alias);
-    }
-    try {
-      this.#hooks.apply(results, trusted);
-    } catch (error) {
-      return { error };
-    }
-    for (const alias of results.keys()) {
-      this.#applied.set(alias, started.get(alias) ?? 0);
-      if (trusted.has(alias)) this.#settleWaiters(alias);
-    }
-    return undefined;
+  /** One box's re-listing failed, or could not be applied: back off. */
+  #failed(alias: ServerAlias, started: number, error: unknown): void {
+    if (this.#closed) return;
+    // Per box: a box whose server keeps failing never delays another box's
+    // re-listing beyond the shared rate cap.
+    const failures = (this.#failures.get(alias) ?? 0) + 1;
+    this.#failures.set(alias, failures);
+    const wait = Math.min(this.#settings.minIntervalMs * 2 ** failures, MAX_FOLLOW_BACKOFF_MS);
+    this.#eligibleAt.set(alias, Date.now() + wait);
+    this.#settleWaiters(alias, started, error ?? new Error('re-listing failed'));
   }
 
-  #settleWaiters(alias: ServerAlias, err?: unknown): void {
+  /**
+   * Settle the waiters a re-listing started at generation `started`
+   * answers: those asked for at or before it. Later waiters wait on.
+   */
+  #settleWaiters(alias: ServerAlias, started: number, err?: unknown): void {
     const waiters = this.#waiters.get(alias);
     if (waiters === undefined) return;
-    this.#waiters.delete(alias);
-    for (const waiter of waiters) {
+    const answered = waiters.filter((waiter) => waiter.target <= started);
+    const rest = waiters.filter((waiter) => waiter.target > started);
+    if (rest.length > 0) this.#waiters.set(alias, rest);
+    else this.#waiters.delete(alias);
+    for (const waiter of answered) {
       if (err === undefined) waiter.resolve();
       else waiter.reject(err);
     }
@@ -334,10 +339,12 @@ export function distrustCatalog(catalog: ServerCatalog): ServerCatalog {
 }
 
 /**
- * The overrides a dirty box is decided with: the exact-name `policy`
- * entries only, never a rule's outcome, since a function rule may have
- * decided on annotations that are now stale. `inBox` says which names
- * belong to the dirty boxes; every other entry is kept as resolved.
+ * The overrides a dirty box is decided with: every exact-name `policy`
+ * entry, and the rule outcomes that tighten (`ask`, `deny`); a rule's
+ * `auto` is dropped, since a function rule may have decided it on
+ * annotations that are now stale. A rule can only make a dirty box
+ * stricter, never looser. `inBox` says which names belong to the dirty
+ * boxes; every other entry is kept as resolved.
  */
 export function distrustOverrides(
   resolved: PolicyOverrides | undefined,
@@ -347,7 +354,11 @@ export function distrustOverrides(
   if (resolved === undefined) return undefined;
   const kept: [string, PolicyOverrides[string]][] = [];
   for (const [name, decision] of Object.entries(resolved)) {
-    if (!inBox(name) || (exact !== undefined && Object.hasOwn(exact, name))) {
+    if (
+      decision !== 'auto' ||
+      !inBox(name) ||
+      (exact !== undefined && Object.hasOwn(exact, name))
+    ) {
       kept.push([name, decision]);
     }
   }
@@ -416,6 +427,20 @@ export class HeldServers<S> {
 
   #prune(): void {
     for (const ref of this.#refs) if (ref.deref() === undefined) this.#refs.delete(ref);
+  }
+}
+
+/**
+ * Call each of a facade's `onToolsChanged` listeners; one that throws never
+ * stops the others, nor the refresh that has already been committed.
+ */
+export function notifyListeners(listeners: Iterable<() => void>): void {
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch {
+      // The listener's own failure; the refresh stands.
+    }
   }
 }
 

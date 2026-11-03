@@ -575,7 +575,7 @@ export class Introspector implements ToolExecutor {
               // Subscribed before the first tools/list, so a change made
               // while it is read is not missed.
               if (options.followListChanged === true && connection.owned) {
-                await Introspector.#subscribe(alias, connection.client, hub, signal);
+                Introspector.#subscribe(alias, connection.client, hub, signal);
               }
               servers.set(
                 alias,
@@ -612,23 +612,19 @@ export class Introspector implements ToolExecutor {
    * Handle `notifications/tools/list_changed` from an owned connection
    * whose server advertises `tools.listChanged` (R65). On a 2026-07-28
    * connection the notification only arrives on a `subscriptions/listen`
-   * stream: one is opened, its acknowledgement bounded, and a server that
-   * refuses or never acknowledges is simply not followed — it never fails
-   * the wrap.
+   * stream: one is opened (sent before the first `tools/list` on the same
+   * transport), its acknowledgement awaited in the background and bounded,
+   * and a server that refuses or never acknowledges is simply not followed
+   * — it never fails, nor delays, the wrap.
    */
-  static async #subscribe(
-    alias: ServerAlias,
-    client: Client,
-    hub: ChangeHub,
-    signal: AbortSignal,
-  ): Promise<void> {
+  static #subscribe(alias: ServerAlias, client: Client, hub: ChangeHub, signal: AbortSignal): void {
     if (client.getServerCapabilities()?.tools?.listChanged !== true) return;
     client.setNotificationHandler('notifications/tools/list_changed', () => {
       if (hub.listener !== undefined) hub.listener(alias);
       else hub.early.add(alias);
     });
     if (client.getProtocolEra() !== 'modern') return;
-    await client
+    void client
       .listen({ toolsListChanged: true }, { timeout: LISTEN_ACK_TIMEOUT_MS, signal })
       .catch(() => undefined);
   }

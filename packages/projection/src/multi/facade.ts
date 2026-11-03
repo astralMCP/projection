@@ -58,6 +58,7 @@ import {
   guardedExecutor,
   HeldServers,
   ListChangeTracker,
+  notifyListeners,
   resolveFollowSettings,
   type FollowSettings,
 } from '../facade/follow.js';
@@ -402,8 +403,8 @@ function viewOf(
 }
 
 /**
- * `snapshot` with its gate distrusting the annotations and rule outcomes
- * of the boxes not in `trusted`, for while their tools/list_changed is
+ * `snapshot` with its gate distrusting the annotations and rule `auto`
+ * outcomes of the boxes not in `trusted`, for while their tools/list_changed is
  * outstanding (R65). Every other box is decided exactly as before.
  */
 function distrustMulti(
@@ -879,16 +880,21 @@ class MultiFacade implements MultiProjectionFacade {
     const before = this.snapshot;
     this.snapshot = next;
     const copy = this.projections.catalog ? next.copy : undefined;
+    // The snapshot is committed: nothing below may throw (best effort).
     for (const [server, held] of this.#held.entries()) {
-      batchToolListChanged(server, () =>
-        reconcileHeldServer(server, held, this, copy, next.directTools),
-      );
+      try {
+        batchToolListChanged(server, () =>
+          reconcileHeldServer(server, held, this, copy, next.directTools),
+        );
+      } catch {
+        // One server that cannot be brought up to date never stops the rest.
+      }
     }
     if (
       !sameDirectTools(before.directTools, next.directTools) ||
       (copy !== undefined && JSON.stringify(before.copy) !== JSON.stringify(next.copy))
     ) {
-      for (const listener of this.#listeners) listener();
+      notifyListeners(this.#listeners);
     }
   }
 

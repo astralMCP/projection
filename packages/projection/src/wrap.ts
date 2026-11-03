@@ -48,6 +48,7 @@ import {
   guardedExecutor,
   HeldServers,
   ListChangeTracker,
+  notifyListeners,
   resolveFollowSettings,
   type FollowSettings,
 } from './facade/follow.js';
@@ -203,9 +204,10 @@ export interface ProjectionFacade {
    * `tools/list_changed` (R65) — debounced and rate-capped the same way —
    * for a `Client` you passed in (which Projection never subscribes) or a
    * server that changes without notifying. On a multi-server facade,
-   * `alias` names the box, or every box without one. Resolves once the
-   * refreshed catalog is in place; rejects with the error that kept it
-   * out (the box stays distrusted and is retried).
+   * `alias` names the box, or every box without one. Resolves once a
+   * re-listing that started after the call is in place (even if a later
+   * notification already left the box dirty again); rejects with the
+   * error that kept it out (the box stays distrusted and is retried).
    */
   refreshTools(alias?: string): Promise<void>;
   /**
@@ -377,7 +379,7 @@ interface SingleSnapshot {
   /**
    * What the approval gate decides with: the catalog and policy above,
    * or — while the server's tools/list_changed is outstanding — the same
-   * with its annotations and rule outcomes distrusted (R65).
+   * with its annotations and rule `auto` outcomes distrusted (R65).
    */
   gate: { catalog: ServerCatalog; policySettings: PolicySettings };
   /** Whether the box was trusted at build time, and its generation (R65). */
@@ -447,7 +449,7 @@ function buildSingleSnapshot(
 
 /**
  * `snapshot` with its gate distrusting the server's annotations and rule
- * outcomes, for while its tools/list_changed is outstanding (R65).
+ * `auto` outcomes, for while its tools/list_changed is outstanding (R65).
  */
 function distrustSingle(
   snapshot: SingleSnapshot,
@@ -553,15 +555,18 @@ class Facade implements ProjectionFacade {
     this.snapshot = next;
     const copy = this.#catalogCopy();
     const directTools = next.listed ? next.plan : [];
+    // The snapshot is committed: nothing below may throw (best effort).
     for (const [server, held] of this.#held.entries()) {
-      batchToolListChanged(server, () =>
-        reconcileHeldServer(server, held, this, copy, directTools),
-      );
+      try {
+        batchToolListChanged(server, () =>
+          reconcileHeldServer(server, held, this, copy, directTools),
+        );
+      } catch {
+        // One server that cannot be brought up to date never stops the rest.
+      }
     }
     const listedBefore = before.listed ? before.plan : [];
-    if (!sameDirectTools(listedBefore, directTools)) {
-      for (const listener of this.#listeners) listener();
-    }
+    if (!sameDirectTools(listedBefore, directTools)) notifyListeners(this.#listeners);
   }
 
   #catalogCopy(): CatalogToolCopy | undefined {
