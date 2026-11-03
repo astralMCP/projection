@@ -1,185 +1,340 @@
-# Projection
+<p align="center">
+  <img src="docs/assets/header.svg" alt="astralMCP / projection" width="640">
+</p>
 
 Wrap any MCP server in **code mode** (LLM-authored XState workflows) and a **tool catalog** (search, describe, call), with **human-approved side effects** over MCP MRTR (Multi Round-Trip Requests).
 
-Projection wraps an existing MCP server and exposes two projections of it — five tools in all, never a pass-through to the wrapped server's own (a small catalog's tools are also listed by name, each a mediated alias of `call_tool`; see below):
+> **Agents:** this README is written to be followed top to bottom. Read
+> [Why](#why) for what Projection does, then work through
+> [Adopt and use](#adopt-and-use) in order. Every snippet typechecks against
+> the current API.
 
-**Code mode** — for workflows:
+## Why
 
-- **`execute_machine`** — runs an LLM-authored XState v5 state machine inside a QuickJS WebAssembly sandbox. Read-only tool calls (or, under `destructive-only`, a non-destructive write) execute immediately; any other write suspends the machine into a sealed, encrypted blob and asks the human for approval via MRTR elicitation.
-- **`discover_apis`** — returns generated TypeScript type definitions and the authoring contract for the wrapped server's tools.
+**Large MCP servers flood the context.** GitHub's MCP server has 95 tools,
+and a host puts every definition in every prompt whether or not the task
+needs it. **And an agent's writes need a human.**
+Annotations say which tools change things, but nothing in the protocol makes
+an agent stop and ask before it sends the email or drops the table.
 
-**Catalog** — for single actions and large tool surfaces:
+Projection sits in front of your MCP server (or several) and gives the model
+a smaller, safer surface instead of the raw tool list:
 
-- **`search_tools`** — a paged list of the wrapped tools with their approval posture (`runs immediately`, `asks for approval`, `blocked by policy`), optionally matched against a query: any word matches; name hits weigh more. A query's top three hits also show their arguments on one line, with a short gloss of each required argument whose name does not say what it takes, so `call_tool` can follow the search directly. Arguments most of a server's tools require (MongoDB's `connectionId`, GitHub's `owner` and `repo`) are shown once, glossed, at the head of the page.
-- **`describe_tool`** — one tool's description, JSON Schemas and annotations, plus its generated types on request (`types: true`).
-- **`call_tool`** — runs one tool by name, under exactly the same gate: read-only (or, under `destructive-only`, a non-destructive write) runs immediately, anything else asks the human first, or is refused outright under a `deny` policy.
+- **A tool catalog.** `search_tools`, `describe_tool` and `call_tool` find
+  and run one tool at a time. Search hits come with their call signature, so
+  the model can usually call straight from the search page.
+- **Code mode.** `discover_apis` returns generated TypeScript types for the
+  server's tools; `execute_machine` runs a workflow the model writes as an
+  XState v5 machine in a QuickJS WebAssembly sandbox. Use it for several
+  steps, branching, or computing over a list.
+- **Direct listing for small catalogs.** When the wrapped tools' definitions
+  fit about 8k estimated tokens (the default), each is also listed under its
+  own name as a mediated alias of `call_tool`, and `search_tools` is dropped.
+- **Human-approved writes over MRTR.** Read-only calls run immediately. By
+  default any other call pauses; the workflow's state is sealed into an encrypted blob
+  that travels with the request; the person sees the exact call and approves
+  or declines it. A decline is an ordinary result the model can act on.
 
-Alongside the tools it serves `projection://` resources (generated types, the authoring contract, example machines), a `ui://projection/dashboard.html` MCP App that app-capable hosts render for `execute_machine` results, and, with code mode on, the `/save-workflow` and `/visualize-workflow` prompts.
+The guarantees behind that, in brief (the invariants are S1–S6 in
+[docs/PRD.md §9](docs/PRD.md#9-security-invariants)):
 
-The server's instructions tell the model which to use: one step → `call_tool`; several steps, branching, computing over a list (counting, filtering, summing, checking every item), or a workflow worth saving → `execute_machine`. Either projection can be turned off (`projections: { catalog: false }`).
+- **The wrapped server's tools are never passed through.** Every call,
+  including a directly listed tool, goes through the same gate.
+- **An approval binds the exact call the person saw.** The approved name and
+  arguments are sealed in the blob and executed from there, never from
+  whatever the resumed workflow asks for next.
+- **Sealed blobs.** Clients carry the state but cannot read or alter it:
+  AES-256-GCM, bound to the code, the tool kind and the wrapped server that
+  issued it, with a TTL. Projection itself keeps no state, so any instance
+  can resume any workflow.
+- **A sandbox with no network.** Machine code has no `fetch`, no filesystem
+  and no host globals; the tools bridge is its only way out, and every
+  sandbox has hard caps on memory, time and calls.
+- **Annotations are hints, not authority.** An unannotated tool asks; your
+  `policy` overrides always win.
 
-When the wrapped tools' definitions are small (about 8k estimated tokens, `projections.directBudgetTokens`), each is also listed under its own name (`<box>__<tool>` on a multi-server facade) as a thin alias of `call_tool` under the same approval gate, and `search_tools` is dropped: the model calls them without searching first. This is the default (`projections.direct: 'auto'`); `projections: { direct: false }` keeps the five-tool surface whatever the size.
+The full integration guide is [docs/server-authors.md](docs/server-authors.md).
 
-Because all suspension state travels in the MRTR `requestState` payload, Projection is fully stateless: any server instance can resume any workflow.
+## Adopt and use
 
-See [docs/server-authors.md](docs/server-authors.md) for the integration guide, [docs/PRD.md](docs/PRD.md) for the full product requirements, and [docs/DECISIONS.md](docs/DECISIONS.md) for engineering decisions.
+Projection is a library: you write a small server that wraps the MCP server
+you already have, and point your MCP host at that instead.
 
-## Usage
+### 1. Install
 
-Projection is built on the MCP TypeScript SDK v2 (`@modelcontextprotocol/server`)
-and serves the 2026-07-28 protocol revision, where MRTR lives. The SDK is a
-peer dependency, so you install it yourself, in the supported range (`~2.4.0`),
-and Projection uses your copy:
+Requires Node ≥ 22.12 and an ES module project (`"type": "module"`).
 
 ```bash
 npm install @astral-mcp/projection @modelcontextprotocol/server@~2.4.0 @modelcontextprotocol/client@~2.4.0
 ```
 
+Projection is built on the MCP TypeScript SDK v2, which is a peer
+dependency: install both packages yourself, in the supported range
+(`~2.4.0`: 2.4.x, not 2.5), and Projection uses your copy. Then check that
+`npm ls @modelcontextprotocol/server @modelcontextprotocol/client` shows one
+copy of each and no `invalid`.
+
+### 2. Wrap a stdio server
+
+The most common setup: your host (an IDE, a desktop app, an agent CLI) runs
+MCP servers over stdio. Write a script that starts the real server as a
+child process, wraps it, and serves the result over stdio:
+
 ```ts
-import { createMcpHandler } from '@modelcontextprotocol/server';
+// projection-server.ts
+import { randomBytes } from 'node:crypto';
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { wrapMcpServer } from '@astral-mcp/projection';
 
-const facade = await wrapMcpServer(myMcpServer, {
-  blob: { key: myThirtyTwoByteKey }, // shared across instances
-  policy: { query: 'ask' }, // override annotations per tool
+// The server you already use, started as a child process.
+const upstream = new Client({ name: 'projection', version: '1.0.0' }, { capabilities: {} });
+await upstream.connect(
+  new StdioClientTransport({
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/allowed/dir'],
+    stderr: 'inherit', // stdout carries the protocol; logs go to stderr
+  }),
+);
+
+const facade = await wrapMcpServer(upstream, {
+  // One process, so a fresh key per start is enough; see "Production" below.
+  blob: { key: randomBytes(32) },
+  // Approvals for hosts on MCP revisions before 2026-07-28 (stdio only).
+  compat: { legacyElicitation: true },
+});
+
+serveStdio(facade.serverFactory);
+```
+
+Then replace the server's entry in your host's MCP configuration with
+`node projection-server.ts` (Node ≥ 22.18 runs TypeScript directly; on
+22.12–22.17 compile it first, or run it with `npx tsx`).
+
+What the host's model now sees: the catalog tools, code mode, and, for a
+server this size, its tools by name. A write it calls pauses and the host
+shows an approval prompt. Two things decide whether that prompt can appear:
+
+- A client on the **2026-07-28** revision gets approvals over MRTR. On any
+  transport.
+- An older client gets them only through `compat: { legacyElicitation: true }`
+  on stdio, and only if it declares the `elicitation` capability. Without
+  either, read-only calls and machines still run and a write fails with a
+  structured error naming the revision it needs.
+  See [Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28).
+
+You can also wrap an in-process `McpServer` you built yourself (pass it
+unconnected), and serve over HTTP with `createMcpHandler(facade.serverFactory)`:
+see [Wrap and serve](docs/server-authors.md#wrap-and-serve).
+
+### 3. Wrap a remote server by URL (preview)
+
+Any source can be `{ url, oauth? }`. Projection opens the Streamable HTTP
+connection itself and keeps tokens in a token store (the OS credential
+store when the optional `@napi-rs/keyring` package is installed), never in
+configuration:
+
+```ts
+import { randomBytes } from 'node:crypto';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { wrapMcpServer } from '@astral-mcp/projection';
+
+const facade = await wrapMcpServer(
+  { url: 'https://mcp.example.com/mcp' }, // add oauth: { clientId, scopes } if it needs sign-in
+  { blob: { key: randomBytes(32) } },
+);
+
+serveStdio(facade.serverFactory);
+```
+
+Sign-in on first use is not supported yet: a public server works, and so
+does one whose token is already in your `tokenStore`; otherwise the wrap
+fails with an `auth` error. **Never put a token in an MCP configuration
+file, an environment variable or the URL.** See
+[Upstream authentication](docs/server-authors.md#upstream-authentication).
+
+The snippets from here on reuse `upstream` from step 2, and a `blobKey`
+(step 6 shows where it comes from in production).
+
+### 4. Several servers behind one facade (preview)
+
+`wrapMcpServers` fronts several servers as tool boxes under aliases you
+choose. Tools are addressed as `<alias>.<name>`, policy keys are qualified
+names, and each box gets its own `search_<alias>` tool:
+
+```ts
+import { wrapMcpServers } from '@astral-mcp/projection';
+
+const facade = await wrapMcpServers(
+  {
+    fs: filesClient, // a connected Client, or an unconnected McpServer
+    github: { source: githubClient, description: 'Issues and pull requests.' },
+  },
+  {
+    blob: { key: blobKey },
+    policy: { 'github.delete_repository': 'deny' },
+  },
+);
+```
+
+Code mode works across boxes: machines call `toolCall('fs.read_file', args)`.
+See [Several servers behind one facade](docs/server-authors.md#several-servers-behind-one-facade-preview).
+
+### 5. Decide what asks for approval
+
+By default every tool that is not `readOnlyHint: true` asks. Tighten or
+loosen that per tool with `policy` (`'auto'`, `'ask'` or `'deny'`), or for
+many tools at once with `policyRules`:
+
+```ts
+const facade = await wrapMcpServer(upstream, {
+  blob: { key: blobKey },
+  policy: {
+    query: 'ask', // don't trust readOnlyHint on opaque SQL
+    drop_table: 'deny', // refused outright; no approval possible
+  },
+  // Run writes the server marks destructiveHint: false without asking.
+  // Trusted servers only: a server can mislabel a damaging tool.
+  approvals: 'destructive-only',
+  // ...but "non-destructive" is not "harmless": pin what reaches other people.
+  policyRules: [
+    { match: '*send*', decision: 'ask' }, // whole name, case-insensitive, * = anything
+    { match: '*share*', decision: 'ask' },
+  ],
+  // Mask argument fields before they reach an approval prompt.
   redact: (tool, args) => ({ ...args, token: '[redacted]' }),
 });
-
-// Serves the Projection tools (plus a small catalog's tools, mediated), with
-// the routing instructions attached.
-export default createMcpHandler(facade.serverFactory);
 ```
 
-`serverFactory` is the shape the SDK asks for: `createMcpHandler` and
-`serveStdio` call it once per request or connection with the negotiated
-protocol era, which decides whether a gated call can suspend over MRTR and
-carries the routing `instructions`. To build the `McpServer` yourself
-(`facade.createServer({ era: 'modern' })`, `facade.registerOn(server, { era })`)
-see [docs/server-authors.md](docs/server-authors.md#wrap-and-serve).
+Precedence, strongest first: an exact `policy` entry, then the first
+matching `policyRules` rule, then `approvals`, then the tool's annotations.
+Everything is resolved once, at wrap time; every surface the model sees shows
+the decision the gate will enforce. See
+[Annotations drive the policy](docs/server-authors.md#annotations-drive-the-policy).
 
-A client reaches the MRTR path by opting into the modern era:
+### 6. Production: keys and the replay cache
 
-```ts
-const client = new Client(info, {
-  capabilities: { elicitation: {} },
-  versionNegotiation: { mode: 'auto' }, // or { pin: '2026-07-28' }
-});
-```
-
-A legacy (pre-2026-07-28) client still runs read-only machines and calls; the
-moment a call needs approval it gets a structured error naming the revision it
-needs. Over stdio you can opt in to approvals for those clients with
-`compat: { legacyElicitation: true }`
-([Legacy clients](docs/server-authors.md#legacy-clients-pre-2026-07-28)).
-
-The wrapped server's tools are never exposed directly. For a single action a model calls `search_tools`, `describe_tool`, then `call_tool({ name, args })` — a write that asks for approval pauses exactly like a machine step, and a declined call comes back as a normal `{ status: "declined" }` result, not an error. For a workflow it calls `discover_apis`, authors a machine, and runs it:
+**The blob key** is Projection's one piece of state. Every instance that
+can resume a workflow must hold the same 32 bytes, from a secret manager
+(generate one with `openssl rand -base64 32`):
 
 ```ts
-import { setup, assign } from 'xstate';
-import { toolCall } from '@astral-mcp/tools';
-
-// run with input: { path }
-export default setup({}).createMachine({
-  id: 'writeOne',
-  context: ({ input }) => ({ path: input.path, status: 'pending' }),
-  initial: 'writing',
-  states: {
-    writing: {
-      entry: toolCall('write_file', ({ context }) => ({ path: context.path, content: 'hello' })),
-      on: {
-        TOOL_RESULT: { target: 'done', actions: assign({ status: 'written' }) },
-        // Denial is an ordinary transition, not an abort.
-        TOOL_DENIED: { target: 'done', actions: assign({ status: 'skipped' }) },
-        TOOL_ERROR: { target: 'done', actions: assign({ status: 'failed' }) },
-      },
-    },
-    done: { type: 'final' },
+const facade = await wrapMcpServer(upstream, {
+  blob: {
+    key: Buffer.from(process.env.PROJECTION_BLOB_KEY!, 'base64'),
+    // Rotation: blobs sealed under an old key open until they expire.
+    previousKeys: [Buffer.from(process.env.PROJECTION_BLOB_KEY_OLD!, 'base64')],
   },
-  output: ({ context }) => ({ status: context.status }),
 });
 ```
 
-The `write_file` call suspends the machine, seals its state into an encrypted blob, and asks the user to approve that exact call. The approval authorizes the arguments the user saw — not whatever the resumed machine asks for next.
+Use one key per facade: two facades that share a key over the same servers
+can resume each other's blobs. In-flight blobs fail after a deploy that
+changes the Projection or XState version; the model re-runs.
 
-## Security model
-
-The sandbox has one way out (the tools bridge); no gated call runs without an
-approval sealed to its exact name and arguments; blobs are encrypted,
-authenticated and bound to the code, kind and tool that issued them, so
-clients carry state but can neither read nor alter it. The invariants are
-S1–S6 in [docs/PRD.md §9](docs/PRD.md#9-security-invariants); the full
-table of how each holds is in the
-[package README](packages/projection/README.md#security-model), along with
-the known replay-window limitation and the `replayCache` option that closes
-it.
-
-Annotations decide the defaults, and trusting a server is not the same as it
-being safe to skip approvals: under `approvals: 'destructive-only'` a tool
-annotated `destructiveHint: false` runs unprompted, but that hint means
-_additive_, not _harmless_ — sending email, posting messages, sharing files
-and sending invites are typically non-destructive yet reach other people.
-Pin them with `policyRules`, by name pattern or by a function of the tool
-([details](docs/server-authors.md#policy-rules)):
+**The replay cache.** Without one, an approved retry captured in transit can
+be replayed until its blob expires (5 minutes for `call_tool`, 15 for
+machines). To make every approval single-use, supply an atomic
+test-and-set shared by all instances:
 
 ```ts
-approvals: 'destructive-only',
-policyRules: [{ match: '*send*', decision: 'ask' }, { match: '*share*', decision: 'ask' }],
+const facade = await wrapMcpServer(upstream, {
+  blob: { key: blobKey },
+  replayCache: {
+    // Record the nonce until exp (Unix ms); resolve true if it was already recorded.
+    seen: (nonce, exp) => store.setIfAbsent(nonce, exp).then((added) => !added),
+  },
+});
 ```
 
-## Repository layout
+`store.setIfAbsent` stands for your shared store's atomic primitive (Redis
+`SET NX PX`, a unique insert). It must be atomic across instances; a read
+followed by a write lets two replays through. Call `facade.close()` on
+shutdown. See [Lifecycle and operations](docs/server-authors.md#lifecycle-and-operations)
+and [Resource caps](docs/server-authors.md#resource-caps).
 
-| Path                     | What                                                                                                                                                                           |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `packages/projection`    | The library (npm: `@astral-mcp/projection`)                                                                                                                                    |
-| `packages/harness`       | Scenario test harness + Anthropic-SDK reasoning loop / self-heal benchmark (private)                                                                                           |
-| `packages/tui`           | `projection-tui` — interactive Ink demo client (approve/deny with y/n/i) (private)                                                                                             |
-| `apps/demo-host`         | MCP Apps demo: a browser host rendering the workflow dashboard over a wrapped filesystem server — `pnpm --filter @astral-mcp/demo-host start`, http://localhost:8787 (private) |
-| `docs/server-authors.md` | Integration guide for wrapping your server                                                                                                                                     |
-| `docs/PRD.md`            | Product requirements document                                                                                                                                                  |
-| `docs/DECISIONS.md`      | Engineering decisions and their rationale                                                                                                                                      |
-| `.claude/skills`         | Agent skills: the contribution workflow and the machine-authoring cheat sheet                                                                                                  |
+### Further reading
 
-## Try it
+- [docs/server-authors.md](docs/server-authors.md) — the integration guide:
+  every option, the approval prompts, caps, errors, legacy clients.
+- [`authoring-machines` skill](.claude/skills/authoring-machines/SKILL.md) —
+  how machines are written, for testing Projection against your server.
+- [docs/PRD.md](docs/PRD.md) — requirements (R-numbers) and the security
+  invariants (S1–S6).
+- [docs/DECISIONS.md](docs/DECISIONS.md) — why things are the way they are.
 
-The demo TUI wraps an in-memory file server and lets a live model author
-machines while you approve each write with a single key. It needs
-`ANTHROPIC_API_KEY` (exported, or in a repo-root env file — see
-[packages/tui/README.md](packages/tui/README.md)):
+<!-- Insights: maintained by hand. Every claim must link to the DECISIONS
+entry or committed result that backs it; edit freely. -->
 
-```bash
-pnpm --filter @astral-mcp/tui start
-```
+## Insights
 
-The MCP Apps demo wraps the filesystem reference server and renders the
-workflow dashboard in a browser host with approve/deny buttons:
+What we learned building Projection and hill-climbing it against live models
+on the tool-choice eval in [`packages/harness`](packages/harness): the same
+tasks, on real and fake MCP servers, run with the server's tools listed
+directly and through Projection, and graded on the calls made and the
+state they left.
 
-```bash
-pnpm --filter @astral-mcp/demo-host start   # then open http://localhost:8787
-```
+- **Every extra turn costs more than it looks.** With prompt caching a long
+  direct tool list is cheap, and each extra turn resends the whole prompt.
+  On held-out servers Projection first took about twice the turns of direct
+  mode (9.0 against 4.9), which ate its token savings. Putting a call
+  signature on the top three search hits, so the model can call from the
+  search page, cut `describe_tool` calls by about 80% and cost by 7–18%.
+  Glosses for required arguments whose names don't explain them followed,
+  after a model invented a value for one.
+  ([D32](docs/DECISIONS.md#d32--search-hits-show-how-to-call-them-argument-errors-carry-the-signature-2026-10-31),
+  [D33](docs/DECISIONS.md#d33--signed-hits-gloss-the-required-arguments-their-names-do-not-explain-2026-10-31))
+- **Search is not always the answer.** Listing a small catalog's tools by
+  name took Haiku from 33/34 at $0.022 an episode to 34/34 at $0.011 on the
+  multi-server tier, and from 23/28 to 27/28 at half the cost on held-out
+  servers. It is not free: on the hardest tier Sonnet spent 17% more per
+  episode when the listed tools went unused. So it is the default only
+  under a token budget.
+  ([D28](docs/DECISIONS.md#d28--projectionsdirect-defaults-to-auto-2026-10-30))
+- **Don't drop what the server already said.** The schema sanitizer removed
+  a `limit` default of 10; the model omitted `limit`, got 10 of 40 documents
+  and treated them as the whole set. Projection now keeps scalar defaults
+  and attaches a note to results that look like one page of a larger set.
+  ([D29](docs/DECISIONS.md#d29--pass-on-the-signals-the-server-already-sent-defaults-partial-results-text-as-text-2026-10-30))
+- **Where text sits changes what it means.** Showing a box's shared
+  arguments (MongoDB's `connectionId`, `database`, `collection`) in the
+  system prompt cut MongoDB call errors from 47 to 16, but Haiku started
+  asking the user "which database and collection?" before calling anything,
+  and its pass count fell 50 → 46. On the shelf, required arguments read as
+  facts the model must have before acting. They now head the box's search
+  pages instead.
+  ([D34](docs/DECISIONS.md#d34--a-boxs-shared-arguments-are-shown-once-at-the-head-of-its-pages-2026-10-31))
+- **Models copy formatting; instructions don't stop it.** Multi-line text
+  shown indented four spaces came back indented when Haiku wrote a file
+  back, and these were most of its multi-tier failures. Rather than tell
+  the model to strip the indent, Projection now prints the text verbatim in
+  a fence.
+  ([D35](docs/DECISIONS.md#d35--a-text-field-is-printed-verbatim-in-a-fence-not-indented-2026-10-31))
+- **Error copy decides what the model tells the user.** A workflow that hit
+  the round-trip cap after 8 of 14 writes returned an error followed by the
+  calls already done, and the model told the user the task was complete.
+  The message now says the workflow stopped unfinished, and `toolCalls`
+  lets a machine ask for many approvals in one round trip.
+  ([D30](docs/DECISIONS.md#d30--many-gated-calls-in-one-round-trip-toolcalls-and-copy-that-says-what-it-means-2026-10-30))
+- **Measure search offline first.** A deterministic corpus of 1,173 real
+  queries (the ones models sent, labelled with the tools they went on to
+  use), split train/test, judges ranking changes with no model and no
+  spend. A change is kept only if the held-out split improves too.
+  ([D22](docs/DECISIONS.md#d22--search-weights-rare-words-and-breaks-ties-by-name-coverage-measured-offline-2026-10-30))
 
-The §10 self-heal benchmark (a model authors machines for scripted tasks and
-heals from structured errors) is explicit opt-in so plain test runs never
-spend tokens:
+## Contributing
 
-```bash
-pnpm run build && PROJ_LIVE_BENCH=1 pnpm --filter @astral-mcp/harness exec vitest run test/reasoning.live.test.ts
-```
-
-## Development
-
-Requires Node ≥ 22.12 (CI tests 22 and 24) and pnpm (via corepack).
+Requires Node ≥ 22.12 (CI tests 22 and 24) and pnpm.
 
 ```bash
 pnpm install
-pnpm run check   # build + typecheck + lint + test, via turbo
+pnpm run check    # build + typecheck + lint + test, all packages: the gate for every change
+pnpm run format   # oxfmt; run before every commit (CI fails on drift)
 ```
 
-Individual tasks: `pnpm run build`, `pnpm run test`, `pnpm run lint`, `pnpm run typecheck`, `pnpm run format`, `pnpm run format:check`.
-
-Toolchain: [Turborepo](https://turborepo.com) task runner · [tsdown](https://tsdown.dev) build · [oxlint](https://oxc.rs) lint · [vitest](https://vitest.dev) tests · strict TypeScript · [oxfmt](https://oxc.rs) formatting.
-
-Contributing conventions (small PRs, adversarial review, commit style) live in
-[.claude/skills/contributing](.claude/skills/contributing/SKILL.md); the
-machine-authoring cheat sheet for writing tests is in
-[.claude/skills/authoring-machines](.claude/skills/authoring-machines/SKILL.md).
+One PR per change, reviewed before it merges: the cycle, conventions and
+repo gotchas are in
+[.claude/skills/contributing](.claude/skills/contributing/SKILL.md).
+Requirements live in [docs/PRD.md](docs/PRD.md); append durable decisions to
+[docs/DECISIONS.md](docs/DECISIONS.md).
