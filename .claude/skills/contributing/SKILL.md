@@ -54,9 +54,20 @@ commands need no PATH prefix. CI runs `check` on Node 22 and 24.
 
 ## Releasing
 
+- `packages/projection/CHANGELOG.md` (Keep a Changelog; shipped in the npm
+  tarball) has an `## [Unreleased]` section at the top. Any PR that changes
+  the public surface (an export or its signature, tools, options, result
+  shapes, defaults, model-facing copy) adds a line there in the same PR,
+  and a signature change or behaviour break goes under `### Breaking`.
 - Bump `packages/projection/package.json` and `LIB_VERSION` in
   `src/blob/versions.ts` together (`test/blob/versions.test.ts` enforces it;
   bump `XSTATE_VERSION` only if xstate changes) in a PR titled `vX.Y.Z: …`.
+- That release PR moves the `[Unreleased]` entries into a new
+  `## [X.Y.Z] - YYYY-MM-DD` section and leaves an empty `[Unreleased]`
+  above it. At the bottom it repoints the `[Unreleased]` compare link to
+  `vX.Y.Z...HEAD` and adds the `[X.Y.Z]` link. Check **Breaking** by
+  diffing the previous tag's built `dist/index.d.mts` (build it in a temp
+  worktree) against the release branch's.
 - Minor bump for any public-surface change (new tools, options, result
   shapes, prompt copy models match on); patch for pure hardening.
 - After merge: `git tag vX.Y.Z && git push origin vX.Y.Z`.
