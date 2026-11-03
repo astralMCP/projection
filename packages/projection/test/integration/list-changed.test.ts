@@ -505,6 +505,38 @@ describe('direct listing follows the server (R65)', () => {
     expect(names).toEqual(expect.arrayContaining(['fresh_tool', 'other_tool']));
   });
 
+  it("an upstream tool named like the integrator's own never breaks a later registerOn", async () => {
+    const up = mutableServer();
+    const f = await wrap(up, { projections: { direct: true } });
+    const own = (server: McpServer) =>
+      server.registerTool(
+        'save_note',
+        { description: 'The integrator’s own.', inputSchema: z.object({}) },
+        () => ({ content: [{ type: 'text' as const, text: 'saved by the integrator' }] }),
+      );
+    const first = new McpServer({ name: 'mine', version: '1.0.0' });
+    own(first);
+    f.registerOn(first);
+
+    up.add('save_note', { readOnlyHint: false });
+    await f.refreshTools();
+    expect(f.catalog.tools.map((tool) => tool.name)).toContain('save_note');
+
+    const later = new McpServer({ name: 'mine', version: '1.0.0' });
+    own(later);
+    expect(() => f.registerOn(later)).not.toThrow();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await later.connect(serverTransport);
+    const client = new Client({ name: 'held', version: '1.0.0' });
+    await client.connect(clientTransport);
+    open.push({ close: () => client.close().then(() => later.close()) });
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    expect(names).toEqual(expect.arrayContaining(['save_note', 'send_email', 'list_labels']));
+    const ran = await client.callTool({ name: 'save_note', arguments: {} });
+    expect(ran.content).toEqual([{ type: 'text', text: 'saved by the integrator' }]);
+    expect(up.calls).toEqual([]);
+  });
+
   it('no notification and no listener call when nothing listed changed', async () => {
     const up = mutableServer();
     const f = await wrap(up, { projections: { direct: true } });

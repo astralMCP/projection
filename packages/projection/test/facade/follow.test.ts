@@ -85,6 +85,48 @@ describe('ListChangeTracker scheduling (R65)', () => {
     await expect(t.refresh('box')).rejects.toThrow('down');
   });
 
+  it("a box notified during another box's backoff never waits that backoff out", async () => {
+    const { t } = tracker(['a', 'b'], (alias) =>
+      alias === 'b'
+        ? sleep(1).then(() => Promise.reject(new Error('down')))
+        : sleep(1).then(() => alias),
+    );
+    // Four failures in a row: b's next try is 1.6 s away, and the shared
+    // timer is armed for it.
+    for (let i = 0; i < 4; i += 1) await t.refresh('b').catch(() => undefined);
+    const started = Date.now();
+    await t.refresh('a');
+    expect(Date.now() - started).toBeLessThan(300);
+  });
+
+  it('a notification during the apply itself leaves the box distrusted', async () => {
+    const distrusted: Set<string>[] = [];
+    let renotified = false;
+    const t: ListChangeTracker<string> = new ListChangeTracker<string>(
+      ['box'],
+      { follow: true, debounceMs: 0, minIntervalMs: 100 },
+      {
+        relist: (alias) => sleep(1).then(() => alias),
+        apply: () => {
+          // Like an onToolsChanged listener that calls refreshTools.
+          if (!renotified) {
+            renotified = true;
+            t.notify('box');
+          }
+        },
+        distrust: (trusted) => {
+          distrusted.push(new Set(trusted));
+        },
+      },
+    );
+    cleanup.push(() => t.close());
+    await t.refresh('box');
+    expect(renotified).toBe(true);
+    expect(t.trusted().has('box')).toBe(false);
+    expect(distrusted.at(-1)?.has('box')).toBe(false);
+    expect(distrusted.length).toBe(2);
+  });
+
   it('nothing applies after close', async () => {
     const { t, applied } = tracker(['box'], () => sleep(30).then(() => 'box'));
     t.notify('box');

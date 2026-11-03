@@ -139,6 +139,8 @@ export class ListChangeTracker<T> {
   /** The boxes whose re-listing is in flight. */
   readonly #inFlight = new Set<ServerAlias>();
   #timer: ReturnType<typeof setTimeout> | undefined;
+  /** When the armed timer fires. */
+  #timerAt = Number.POSITIVE_INFINITY;
   #lastStart = Number.NEGATIVE_INFINITY;
   /** Per box: consecutive failed re-listings, and when it may be tried again. */
   readonly #failures = new Map<ServerAlias, number>();
@@ -206,6 +208,7 @@ export class ListChangeTracker<T> {
     this.#closed = true;
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;
+    this.#timerAt = Number.POSITIVE_INFINITY;
     for (const waiters of this.#waiters.values()) for (const waiter of waiters) waiter.resolve();
     this.#waiters.clear();
   }
@@ -219,7 +222,7 @@ export class ListChangeTracker<T> {
   }
 
   #schedule(): void {
-    if (this.#closed || this.#timer !== undefined) return;
+    if (this.#closed) return;
     const pending = this.#pending();
     if (pending.length === 0) return;
     // Debounced from the notification, rate-capped from the last cycle's
@@ -231,8 +234,16 @@ export class ListChangeTracker<T> {
       this.#lastStart + this.#settings.minIntervalMs - now,
       eligible - now,
     );
+    // One shared timer; a box notified while another box's backoff holds
+    // it re-arms it sooner, so it never waits out that backoff.
+    if (this.#timer !== undefined) {
+      if (now + delay >= this.#timerAt) return;
+      clearTimeout(this.#timer);
+    }
+    this.#timerAt = now + delay;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
+      this.#timerAt = Number.POSITIVE_INFINITY;
       this.#cycle();
     }, delay);
     // A pending re-listing never keeps the process alive on its own.
@@ -284,6 +295,13 @@ export class ListChangeTracker<T> {
     this.#applied.set(alias, started);
     this.#failures.delete(alias);
     this.#eligibleAt.delete(alias);
+    // A notification that arrived during the apply itself (a listener that
+    // refreshes, say) found the box dirty already and distrusted nothing,
+    // yet the snapshot just committed trusts it: distrust it now, so a
+    // dirty box is always decided distrusted.
+    if (this.generation(alias) !== started && trusted.has(alias)) {
+      this.#hooks.distrust(this.trusted());
+    }
     this.#settleWaiters(alias, started);
   }
 

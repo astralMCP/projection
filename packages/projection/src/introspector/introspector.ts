@@ -572,8 +572,11 @@ export class Introspector implements ToolExecutor {
             }
             connections.set(alias, connection);
             try {
-              // Subscribed before the first tools/list, so a change made
-              // while it is read is not missed.
+              // Subscribed before the first tools/list: on an ordered
+              // transport (stdio, in-memory) a change made while it is read
+              // is not missed. Over Streamable HTTP the two are separate
+              // requests, so one in that window waits for the next
+              // notification (or refreshTools()).
               if (options.followListChanged === true && connection.owned) {
                 Introspector.#subscribe(alias, connection.client, hub, signal);
               }
@@ -612,8 +615,10 @@ export class Introspector implements ToolExecutor {
    * Handle `notifications/tools/list_changed` from an owned connection
    * whose server advertises `tools.listChanged` (R65). On a 2026-07-28
    * connection the notification only arrives on a `subscriptions/listen`
-   * stream: one is opened (sent before the first `tools/list` on the same
-   * transport), its acknowledgement awaited in the background and bounded,
+   * stream: one is opened (sent before the first `tools/list`, which on an
+   * ordered transport means no change made while the tools are read is
+   * missed; over Streamable HTTP the two are separate requests), its
+   * acknowledgement awaited in the background and bounded,
    * and a server that refuses or never acknowledges is simply not followed
    * — it never fails, nor delays, the wrap.
    */

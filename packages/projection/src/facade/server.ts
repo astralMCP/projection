@@ -266,18 +266,12 @@ export function reconcileHeldServer(
     held.direct.delete(name);
     changed = true;
   }
-  // One at a time: a name the integrator already registered on this server
-  // is skipped there alone, never failing the rest of the refresh.
-  for (const tool of directTools) {
-    if (held.direct.has(tool.name)) continue;
-    try {
-      for (const [name, entry] of registerDirectTools(server, held.era, handlers, [tool])) {
-        held.direct.set(name, entry);
-        changed = true;
-      }
-    } catch {
-      // Best effort: this server keeps its own tool by that name.
-    }
+  // A name the integrator already registered on this server is skipped
+  // there alone (registerDirectTools), never failing the rest.
+  const added = directTools.filter((tool) => !held.direct.has(tool.name));
+  for (const [name, entry] of registerDirectTools(server, held.era, handlers, added)) {
+    held.direct.set(name, entry);
+    changed = true;
   }
   return changed;
 }
@@ -315,7 +309,8 @@ function directToolSpec(tool: DirectTool): unknown {
  * decline copy and audit redaction are `call_tool`'s own). The annotations
  * are Projection's own, from its decided posture (`advertisedAnnotations`),
  * never the server's: a host that auto-runs read-only tools may only skip
- * its prompt where Projection would not ask either.
+ * its prompt where Projection would not ask either. A tool whose name the
+ * server already has registered is skipped on that server.
  */
 export function registerDirectTools(
   server: McpServer,
@@ -325,35 +320,53 @@ export function registerDirectTools(
 ): Map<string, { tool: DirectTool; handle: RegisteredTool }> {
   const handles = new Map<string, { tool: DirectTool; handle: RegisteredTool }>();
   for (const tool of tools) {
-    const handle = server.registerTool(
-      tool.name,
-      {
-        ...(tool.title !== undefined ? { title: tool.title } : {}),
-        description: tool.description,
-        inputSchema: advertisedSchema(tool.inputSchema),
-        annotations: { ...tool.annotations },
-      },
-      async (args: unknown, ctx) =>
-        await handlers.callTool(
-          {
-            name: tool.target,
-            ...(args !== undefined ? { args } : {}),
-            ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
-            ...(ctx.mcpReq.inputResponses !== undefined
-              ? { inputResponses: ctx.mcpReq.inputResponses }
-              : {}),
-            // Progress and cancellation as for `call_tool`, attributed to the
-            // catalog name so a relayed message reads the same either way.
-            upstream: upstreamCallOptions(tool.target, ctx),
-          },
-          era,
-          clientCanElicit(server),
-          clientUrlElicitation(server),
-        ),
+    const handle = registerSkippingTaken(() =>
+      server.registerTool(
+        tool.name,
+        {
+          ...(tool.title !== undefined ? { title: tool.title } : {}),
+          description: tool.description,
+          inputSchema: advertisedSchema(tool.inputSchema),
+          annotations: { ...tool.annotations },
+        },
+        async (args: unknown, ctx) =>
+          await handlers.callTool(
+            {
+              name: tool.target,
+              ...(args !== undefined ? { args } : {}),
+              ...maybeRequestState(ctx.mcpReq.requestState<unknown>()),
+              ...(ctx.mcpReq.inputResponses !== undefined
+                ? { inputResponses: ctx.mcpReq.inputResponses }
+                : {}),
+              // Progress and cancellation as for `call_tool`, attributed to the
+              // catalog name so a relayed message reads the same either way.
+              upstream: upstreamCallOptions(tool.target, ctx),
+            },
+            era,
+            clientCanElicit(server),
+            clientUrlElicitation(server),
+          ),
+      ),
     );
-    handles.set(tool.name, { tool, handle });
+    if (handle !== undefined) handles.set(tool.name, { tool, handle });
   }
   return handles;
+}
+
+/**
+ * Register one mediated tool, or skip it when `server` already has a tool
+ * by that name: an integrator's own tool (registered before `registerOn`)
+ * keeps it, and a wrapped server that later lists a tool under the same
+ * name can never make registration fail for every later server (R65).
+ * Projection's own catalog and code-mode tools have reserved names and
+ * are registered elsewhere, so a collision there still throws.
+ */
+function registerSkippingTaken(register: () => RegisteredTool): RegisteredTool | undefined {
+  try {
+    return register();
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -2670,9 +2670,13 @@ Decision (R65).
   wrap time is the same function of the same catalog. The only wire
   difference is one `subscriptions/listen` request to a server that
   advertises `tools.listChanged`, which no model sees. The 2026-07-28 era
-  delivers change notifications only on a listen stream. The stream is
-  opened before the first `tools/list`, so a change made during
-  introspection is not lost, and its acknowledgement is awaited in the
+  delivers change notifications only on a listen stream. The listen
+  request is sent before the first `tools/list`. On an ordered transport
+  (stdio, or the in-memory pair used for an in-process `McpServer`) a
+  change made during introspection is therefore not lost; over Streamable
+  HTTP the two are separate requests, so a change in that brief window can
+  be missed until the server's next notification (or `refreshTools()`).
+  The acknowledgement is awaited in the
   background (never on the wrap's critical path), bounded at 5 s and
   failure-tolerant: a server that mishandles `subscriptions/listen` is just
   not followed. Opt-in would have meant almost no facade follows, for no
