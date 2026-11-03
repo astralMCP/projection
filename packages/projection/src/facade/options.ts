@@ -47,9 +47,15 @@ export interface WrapOptions {
    * qualified name (`gmail.send_email`). Resolved once, at wrap time, over
    * the introspected catalog: the first rule with an opinion decides a
    * tool; an exact `policy` entry beats every rule, and a rule beats the
-   * approvals mode and the annotations. A malformed decision fails safe to
-   * `'ask'`; a rule that throws fails the wrap (`validate`). A function
-   * rule must be deterministic — every instance must decide alike (R27).
+   * approvals mode and the annotations. A malformed decision — on a
+   * matching pattern, a missing one included — fails safe to `'ask'`; a
+   * rule that throws fails the wrap (`validate`). A function rule must be
+   * deterministic — every instance must decide alike (R27). The entry a
+   * function receives (description, annotations, schema) comes from the
+   * wrapped server and may be hostile: base `'auto'` only on facts you
+   * trust, such as a tool name you vouch for; basing `'ask'` or `'deny'` on
+   * them is fine. Read once, at wrap time: the rules are copied, so later
+   * changes to the array or its pattern objects are not seen.
    */
   policyRules?: readonly PolicyRule[];
   /**

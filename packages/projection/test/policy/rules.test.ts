@@ -69,8 +69,47 @@ describe('assertPolicyRules', () => {
   it('accepts undefined, an empty array, patterns and functions', () => {
     expect(assertPolicyRules(undefined)).toBeUndefined();
     expect(assertPolicyRules([])).toEqual([]);
-    const rules: PolicyRule[] = [{ match: '*send*', decision: 'ask' }, () => undefined];
-    expect(assertPolicyRules(rules)).toBe(rules);
+    const fn: PolicyRule = () => undefined;
+    const rules: PolicyRule[] = [{ match: '*send*', decision: 'ask' }, fn];
+    const snapshot = assertPolicyRules(rules);
+    expect(snapshot).toEqual(rules);
+    expect(snapshot).not.toBe(rules);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot?.[0])).toBe(true);
+    expect(snapshot?.[0]).not.toBe(rules[0]);
+    expect(snapshot?.[1]).toBe(fn);
+  });
+
+  it('returns a snapshot: later changes to the array or rules are not seen', () => {
+    const pattern = { match: '*send*', decision: 'ask' as PolicyDecision };
+    const rules: PolicyRule[] = [pattern];
+    const snapshot = assertPolicyRules(rules);
+    pattern.match = '*';
+    pattern.decision = 'auto';
+    rules.push({ match: '*', decision: 'deny' });
+    rules.unshift({ match: '*', decision: 'auto' });
+    const overrides = resolvePolicyRules(SERVER, snapshot, undefined);
+    expect(overrides).toEqual({
+      'gmail-send-email': 'ask',
+      'slack-send-message': 'ask',
+    });
+  });
+
+  it('reads each pattern property once', () => {
+    let reads = 0;
+    const rule = {
+      match: '*send*',
+      get decision() {
+        reads += 1;
+        return reads === 1 ? 'ask' : 'auto';
+      },
+    };
+    const snapshot = assertPolicyRules([rule]);
+    expect(resolvePolicyRules(SERVER, snapshot, undefined)).toEqual({
+      'gmail-send-email': 'ask',
+      'slack-send-message': 'ask',
+    });
+    expect(reads).toBe(1);
   });
 
   it.each([
@@ -188,6 +227,49 @@ describe('resolvePolicyRules fails safe', () => {
     });
   });
 
+  it.each([
+    ['a missing decision', { match: '*' }],
+    ['an explicit undefined decision', { match: '*', decision: undefined }],
+    ['a misspelt decision key', { match: '*', decison: 'ask' }],
+  ])('a matching pattern with %s decides ask, never falls through', (_label, rule) => {
+    const snapshot = assertPolicyRules([rule, { match: '*', decision: 'auto' }]);
+    const d = (approvals?: 'every-write' | 'destructive-only') => {
+      const overrides = resolvePolicyRules(SERVER, snapshot, undefined);
+      const context = policyContext({
+        ...(overrides !== undefined ? { policy: overrides } : {}),
+        ...(approvals !== undefined ? { approvals } : {}),
+      });
+      return SERVER.tools.map((t) => decidePolicy(t, context));
+    };
+    // Including the readOnlyHint: true tool, and under destructive-only.
+    expect(d()).toEqual(['ask', 'ask', 'ask', 'ask']);
+    expect(d('destructive-only')).toEqual(['ask', 'ask', 'ask', 'ask']);
+  });
+
+  it('a pattern without a decision has no effect on tools it does not match', () => {
+    const rule = { match: '*send*' } as unknown as PolicyRule;
+    expect(decisions([rule], undefined, 'destructive-only')).toEqual({
+      'gmail-send-email': 'ask',
+      'gdocs-insert-text': 'auto',
+      'slack-send-message': 'ask',
+      'gmail-list-labels': 'auto',
+    });
+  });
+
+  it('a non-enumerable exact override neither suppresses a rule nor vanishes silently', () => {
+    const policy = {} as Record<string, PolicyDecision>;
+    Object.defineProperty(policy, 'gmail-send-email', { value: 'auto', enumerable: false });
+    const overrides = resolvePolicyRules(SERVER, [{ match: '*send*', decision: 'ask' }], policy);
+    // Spread (what the frozen policy snapshot uses) never sees it, so the
+    // rule decides: the tool is not left without any opinion.
+    expect(overrides).toEqual({ 'gmail-send-email': 'ask', 'slack-send-message': 'ask' });
+    const context = policyContext({
+      ...(overrides !== undefined ? { policy: overrides } : {}),
+      approvals: 'destructive-only',
+    });
+    expect(decidePolicy(SERVER.tools[0] as ToolCatalogEntry, context)).toBe('ask');
+  });
+
   it('a throwing rule is a validate error naming the tool', () => {
     const boom = new Error('boom');
     try {
@@ -211,6 +293,25 @@ describe('resolvePolicyRules fails safe', () => {
   it('an async rule is a validate error, not a silent decision', () => {
     const rule = (async () => 'auto') as unknown as PolicyRule;
     expect(() => resolvePolicyRules(SERVER, [rule], undefined)).toThrow(/promise/);
+  });
+
+  it('an async rule that rejects is a validate error and no unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const rule = (async () => {
+        throw new Error('async boom');
+      }) as unknown as PolicyRule;
+      expect(() => resolvePolicyRules(SERVER, [rule], undefined)).toThrow(
+        expect.objectContaining({ phase: 'validate', message: expect.stringMatching(/promise/) }),
+      );
+      // Let the rejection settle and any unhandled-rejection report fire.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('a predicate gets a copy: mutating it cannot relax the catalog', () => {

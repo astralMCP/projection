@@ -204,15 +204,21 @@ policyRules: [
   description, input schema, annotations) and returns `'auto'`, `'ask'`,
   `'deny'`, or `undefined` for no opinion. It must be synchronous and
   deterministic — every instance of a horizontally scaled deployment must
-  decide alike (R27).
+  decide alike (R27). The entry comes from the wrapped server and may be
+  hostile: base `'auto'` only on facts you trust, such as a tool name you
+  vouch for; basing `'ask'` or `'deny'` on the description, annotations or
+  schema is fine.
 - Rules are tried in order and the **first with an opinion** decides the
   tool. An exact `policy` entry beats every rule; a rule beats the approvals
   mode and the annotations.
 - Rules are resolved **once, at wrap time**, over the server's tools, into
-  per-tool decisions frozen with the rest of the policy: every surface shows
+  per-tool decisions frozen with the rest of the policy (the rules
+  themselves are copied when the wrap starts, so later edits are not seen): every surface shows
   the decision the gate enforces, and no rule runs per request.
 - **Fail-safe.** A decision other than the three strings — from a function
-  or a pattern — means `ask`, never `auto`. A function that throws, or
+  or a pattern — means `ask`, never `auto`. A pattern that matches always
+  has an opinion, so one with a missing `decision` (a typo such as
+  `decison`) also means `ask` on the tools it matches. A function that throws, or
   returns a promise, fails the wrap with a `validate` `ProjectionError`; so
   does a `policyRules` value that is not an array of rules.
 - On `wrapMcpServers` a rule sees qualified names (`gmail.send_email`), so

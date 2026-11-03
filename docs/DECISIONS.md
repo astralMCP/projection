@@ -2325,11 +2325,18 @@ over it, and the result is the `policy` of the one frozen snapshot. So
 listing are unchanged and cannot drift: none of them ever calls a rule.
 Precedence is exact name > first rule with an opinion > approvals mode >
 annotations. A decision outside the three strings fails safe to `ask`
-(R14's rule for override values). A rule that throws or returns a promise
+(R14's rule for override values), including a missing one: a matching
+pattern always has an opinion, so a typo such as `decison` cannot let the
+tool fall through to `auto`. A rule that throws or returns a promise
 fails the wrap with a `validate` error: a broken rule is a deploy-time bug,
 and silently deciding `ask` for every tool would hide it. Predicates get a
 `structuredClone` of the entry, so they cannot mutate the catalog the gate
-reads.
+reads; that entry comes from the wrapped server and may be hostile, so a
+predicate should base `auto` only on facts the integrator trusts (a tool
+name they vouch for), while `ask` or `deny` may rest on anything. The
+rules themselves are snapshotted at validation (array copied, pattern
+rules copied and frozen), so edits made while the wrap awaits
+introspection are not seen.
 
 Patterns are a separate option, not glob keys inside `policy`: `policy`
 keys stay literal, so a tool whose name contains `*` can still be pinned
