@@ -812,8 +812,8 @@ describe('the wrap-time surface on facade.projections', () => {
   });
 });
 
-describe('notifications/tools/list_changed from the wrapped server', () => {
-  it('is ignored: the catalog, types and surface stay as wrapped, and a new tool is unknown', async () => {
+describe('notifications/tools/list_changed from a Client the integrator passed in', () => {
+  it('is not followed (R65): the catalog stays as wrapped until refreshTools()', async () => {
     const upstream = new McpServer({ name: 'growing', version: '1.0.0' });
     const ran: string[] = [];
     const add = (name: string) =>
@@ -857,6 +857,42 @@ describe('notifications/tools/list_changed from the wrapped server', () => {
     const names = (await c.listTools()).tools.map((tool) => tool.name);
     expect(names).toContain('first_tool');
     expect(names).not.toContain('second_tool');
+
+    // The integrator's own handler asks for it.
+    await f.refreshTools();
+    expect(f.catalog.tools.map((tool) => tool.name)).toEqual(['first_tool', 'second_tool']);
+    const now = await f.callTool({ name: 'second_tool', args: {} }, 'modern');
+    expect(isInputRequiredResult(now)).toBe(true);
     await caller.close();
+  });
+});
+
+describe('names stay put across a tools/list_changed refresh (R65)', () => {
+  const entry = (name: string) => ({ name, inputSchema: { type: 'object' } });
+  const catalog = (names: string[]) => ({
+    alias: 'default',
+    identity: 'x@1',
+    tools: names.map(entry),
+  });
+
+  it('a surviving tool keeps its listed name, and a newcomer never takes it', () => {
+    const reserved = new Set<string>();
+    const before = planDirectTools(catalog(['a.b']), { reserved });
+    expect(before.map((tool) => [tool.name, tool.target])).toEqual([['a_b', 'a.b']]);
+    // a_b now comes first and would map onto the same name.
+    const after = planDirectTools(catalog(['a_b', 'a.b']), { reserved, previous: before });
+    const byTarget = new Map(after.map((tool) => [tool.target, tool.name]));
+    expect(byTarget.get('a.b')).toBe('a_b');
+    expect(byTarget.get('a_b')).toMatch(/^a_b_[0-9a-f]{8}$/);
+    // Without a previous plan the catalog order decides, as at wrap time.
+    const fresh = planDirectTools(catalog(['a_b', 'a.b']), { reserved });
+    expect(fresh.map((tool) => [tool.name, tool.target])[0]).toEqual(['a_b', 'a_b']);
+  });
+
+  it('a removed tool frees its name for a later plan', () => {
+    const reserved = new Set<string>();
+    const before = planDirectTools(catalog(['a.b']), { reserved });
+    const after = planDirectTools(catalog(['a_b']), { reserved, previous: before });
+    expect(after.map((tool) => [tool.name, tool.target])).toEqual([['a_b', 'a_b']]);
   });
 });

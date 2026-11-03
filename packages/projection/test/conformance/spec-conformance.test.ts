@@ -642,8 +642,23 @@ describe('single facade, 2026-07-28 client', () => {
     ).rejects.toThrow(/not found/i);
   });
 
-  it('tools/list_changed: ignored — the catalog stays as wrapped (R47)', async () => {
-    const s = await modernSingle();
+  it('tools/list_changed: followed — the catalog is re-listed and swapped in (R65)', async () => {
+    const s = await modernSingle({ followListChanged: { debounceMs: 0, minIntervalMs: 100 } });
+    await call(s, 'add_tool');
+    await vi.waitFor(async () => {
+      const late = await call(s, 'late_tool');
+      expect(late.structuredContent?.['status']).toBe('ok');
+    });
+    await call(s, 'remove_tool');
+    // Gone from the catalog: a structured unknown-tool error, never a call.
+    await vi.waitFor(async () => {
+      const gone = await call(s, 'doomed');
+      expect(gone.structuredContent?.['phase']).toBe('validate');
+    });
+  });
+
+  it('tools/list_changed with followListChanged: false — the catalog stays as wrapped', async () => {
+    const s = await modernSingle({ followListChanged: false });
     await call(s, 'add_tool');
     const late = await call(s, 'late_tool');
     expect(late.structuredContent?.['phase']).toBe('validate');
@@ -651,8 +666,6 @@ describe('single facade, 2026-07-28 client', () => {
     const gone = await call(s, 'doomed');
     expect(gone.structuredContent?.['phase']).toBe('upstream');
   });
-
-  it.todo('refresh the catalog on tools/list_changed without breaking blob identity (proposal G4)');
 
   describe('code mode (execute_machine)', () => {
     it('TOOL_RESULT carries the raw content array, base64 included', async () => {

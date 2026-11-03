@@ -995,8 +995,8 @@ describe('multi-server facades with a box given by URL (R39, R41, R51, R60)', ()
       { blob: { key: KEY }, tokenStore: store },
     );
     facades.push(facade);
-    const identity = (facade as unknown as { deps: { view: { identity: string } } }).deps.view
-      .identity;
+    const identity = (facade as unknown as { snapshot: { view: { identity: string } } }).snapshot
+      .view.identity;
     expect(identity).toBe(
       `multi:${JSON.stringify([
         ['fs', 'files@1.0.0'],

@@ -69,6 +69,13 @@ export interface DirectTool {
 export interface DirectPlanOptions extends PolicyOptions {
   /** Names the facade already serves (Projection's own tools): never shadowed. */
   reserved: ReadonlySet<string>;
+  /**
+   * The plan this one replaces, after a `tools/list_changed` refresh (R65):
+   * a tool still declared keeps the name it was listed under, and no other
+   * tool takes that name, so a listed name never starts routing to a
+   * different tool while a model may still hold it. Absent at wrap time.
+   */
+  previous?: readonly DirectTool[];
 }
 
 /**
@@ -83,6 +90,13 @@ export interface DirectPlanOptions extends PolicyOptions {
 export function planDirectTools(catalog: ServerCatalog, options: DirectPlanOptions): DirectTool[] {
   const policy = policyContext(options);
   const taken = new Set(options.reserved);
+  const declared = new Set(catalog.tools.map((entry) => entry.name));
+  const kept = new Map<string, string>();
+  for (const tool of options.previous ?? []) {
+    if (declared.has(tool.target)) kept.set(tool.target, tool.name);
+  }
+  const held = new Set(kept.values());
+  const isTaken = (name: string): boolean => taken.has(name) || held.has(name);
   const tools: DirectTool[] = [];
   for (const entry of catalog.tools) {
     // On a boxed view `entry` is the qualified entry: policy is decided on it
@@ -93,7 +107,9 @@ export function planDirectTools(catalog: ServerCatalog, options: DirectPlanOptio
       member !== undefined
         ? `${member.alias}${DIRECT_BOX_SEPARATOR}${member.entry.name}`
         : entry.name;
-    const name = uniqueName(raw, entry.name, taken);
+    const keep = kept.get(entry.name);
+    const name =
+      keep !== undefined && !taken.has(keep) ? keep : uniqueName(raw, entry.name, isTaken);
     if (name === undefined) continue;
     taken.add(name);
 
@@ -193,12 +209,16 @@ export function directToolName(raw: string): string {
   return `${safe.slice(0, DIRECT_TOOL_NAME_MAX - 9)}_${hash8(raw)}`;
 }
 
-function uniqueName(raw: string, target: string, taken: ReadonlySet<string>): string | undefined {
+function uniqueName(
+  raw: string,
+  target: string,
+  isTaken: (name: string) => boolean,
+): string | undefined {
   const first = directToolName(raw);
-  if (!taken.has(first)) return first;
+  if (!isTaken(first)) return first;
   const suffix = `_${hash8(target)}`;
   const second = `${first.slice(0, DIRECT_TOOL_NAME_MAX - suffix.length)}${suffix}`;
-  return taken.has(second) ? undefined : second;
+  return isTaken(second) ? undefined : second;
 }
 
 function hash8(text: string): string {

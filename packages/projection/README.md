@@ -51,17 +51,9 @@ five tools in all, never a pass-through to the wrapped server's own:
   If your prompts or skills name the search tools, pin the surface with
   `projections: { direct: false }` (or `true` to always list directly).
 
-The catalog, the generated types and the policy are fixed at wrap time.
-Projection does not follow the wrapped server's
-`notifications/tools/list_changed`: a tool the server adds later is not
-listed or searchable, `call_tool` and `toolCall` refuse it as an unknown
-tool, and it has no listed alias, until you wrap again and serve the new
-facade; a removed tool stays listed, its calls failing upstream. Re-wrapping
-an in-process `McpServer` needs a fresh instance or the old facade closed
-first (a still-connected server cannot be wrapped). A per-tool `policy` key
-applies only to a tool present at wrap; keep keys for tools you expect, and
-they take effect on the next wrap. `policyRules` are resolved at wrap time
-too, over the same tools: a later tool gets their decision on the next wrap.
+The surface (direct listing or search) is fixed at wrap time; the catalog,
+types and policy follow the server's `notifications/tools/list_changed`
+(below).
 
 Every tool surface uses one posture vocabulary: a tool `runs immediately`
 (read-only, `auto` by policy, or, under `destructive-only`, a non-destructive
@@ -78,8 +70,8 @@ mislabel a damaging tool — enable it only for servers you trust.
 Even an honest server's `destructiveHint: false` means _additive_, not
 _harmless_: sending email, posting messages, sharing files and sending
 invites are typically non-destructive yet reach other people. `policyRules`
-pins tools by name pattern or by a function of the tool, resolved once at
-wrap time; an exact `policy` entry still wins, and a rule beats the mode:
+pins tools by name pattern or by a function of the tool, resolved at wrap
+time and again when the tool list changes; an exact `policy` entry still wins, and a rule beats the mode:
 
 ```ts
 approvals: 'destructive-only',
@@ -132,6 +124,14 @@ modern (2026-07-28) clients get MRTR approval round trips; legacy clients
 still run read-only machines and calls, and get a structured error the
 moment a call needs approval. You can also wrap a connected SDK `Client` to put
 Projection in front of a server you don't own.
+
+When the wrapped server sends `notifications/tools/list_changed`, Projection
+re-lists its tools (debounced and rate-capped) and swaps in the new catalog,
+types and policy at once; until then, that server's annotations are not
+trusted. `followListChanged: false` keeps the tools as wrapped. Behind
+`createMcpHandler`, pass the change on with
+`facade.onToolsChanged(() => handler.notify.toolsChanged())`. See
+[When your tool list changes](https://github.com/astralMCP/projection/blob/main/docs/server-authors.md#when-your-tool-list-changes).
 
 ### Several servers (preview)
 

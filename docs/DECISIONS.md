@@ -2649,3 +2649,115 @@ tag's built `dist/index.d.mts`.
   reconstructing it from squash commits again.
 - The changelog is for integrators. No tool, resource or prompt serves it,
   so it never reaches a model.
+
+## D45 — Follow `tools/list_changed`: re-list, swap whole, distrust while dirty, pin the surface (2026-11-02)
+
+Context. A customer wraps a ~240-tool Pipedream server where apps are
+enabled mid-conversation. The catalog, the generated types, the policy
+resolution (`policyRules`, D36) and the direct-listing decision were all
+snapshotted once at wrap time and the upstream's
+`notifications/tools/list_changed` was ignored, so a newly enabled app
+needed a re-wrap. Following the notification is part of the MCP spec we
+want to support. It is also the first time anything an LLM sees can change
+after the wrap, which raises three questions: what changes, what never
+changes, and how the approval gate stays correct while the catalog moves.
+
+Decision (R65).
+
+- **Default on, owned connections only.** `followListChanged` defaults to
+  `true`. An upstream that never sends the notification (every harness
+  eval, every golden) produces byte-identical output: the snapshot built at
+  wrap time is the same function of the same catalog. The only wire
+  difference is one `subscriptions/listen` request to a server that
+  advertises `tools.listChanged`, which no model sees. The 2026-07-28 era
+  delivers change notifications only on a listen stream. The stream is
+  opened before the first `tools/list`, so a change made during
+  introspection is not lost, and its acknowledgement is bounded at 5 s and
+  failure-tolerant: a server that mishandles `subscriptions/listen` is just
+  not followed. Opt-in would have meant almost no facade follows, for no
+  eval benefit. A caller's own `Client` is not subscribed, because setting
+  its notification handler would replace its owner's. `refreshTools()` is
+  the hook for those clients, and for servers that change without
+  notifying.
+- **Re-list, then swap the whole snapshot.** Everything a request reads
+  (catalog, `.d.ts`, bridge, overview, tool types, resources,
+  instructions, resolved policy, direct plan, and the gate's view) lives
+  in one immutable snapshot. A refresh builds a new snapshot from the
+  re-listed catalogs and swaps it in in the same synchronous step that
+  commits the introspector's definitions and drops its cached output
+  validators. A request captures the snapshot when it starts. Rules are
+  re-run on the new catalog. D36's "no surface ever calls a rule" still
+  holds: rules run only when a snapshot is built, never per call. A
+  rebuild that throws keeps the old snapshot. Nothing is swapped
+  piecemeal, so the posture the `.d.ts` shows is still the posture the
+  gate decides with, except in the dirty window below.
+- **Distrust while dirty.** Between a notification and the landing of a
+  re-listing started after it, the box's catalog is known to be possibly
+  stale. A tool that went from read-only to write would still auto-run off
+  the old annotations. So the gate (not the display surfaces) decides that
+  box with `readOnlyHint` and `destructiveHint` dropped and with only the
+  exact-name overrides. A function rule may have granted `auto` on the old
+  annotations, and the integrator's exact names are their own word. The
+  box goes dirty in the notification handler itself, synchronously. A
+  request already running may have decided a call from the trusted
+  snapshot. Each box carries a generation, and the per-request executor
+  refuses a call to a box that was trusted at request start and has been
+  notified since. The call is reported as a tool failure, never run.
+  Alternatives considered: re-listing before every call (a `tools/list`
+  per call, unbounded work under load); blocking requests until the
+  re-listing lands (a hostile box could stall the whole facade by never
+  settling). Residual risk: the window before the server's notification
+  reaches Projection, which no client can close.
+- **Bounded work.** Notifications only mark the box dirty and schedule a
+  cycle. Cycles are debounced (250 ms), rate-capped (one start per 2 s;
+  the floor of the knob is 100 ms so it cannot be configured away) and
+  coalesced (one cycle re-lists every dirty box, and notifications during a
+  cycle fold into the next). Each re-listing has the wrap-time bounds:
+  pages, tools, the facade total and the introspect timeout. Failures back
+  off per box up to 60 s, so a hostile box that fails forever never delays
+  an honest box beyond the shared interval. A notification storm therefore
+  costs at most one bounded walk and one rebuild per interval.
+- **Pin the surface.** The direct/catalog decision (and which boxes are
+  listed), the served search tools and the global search are made once,
+  at wrap time. The instructions name them, and a client reads
+  instructions once per session. Flipping a growing catalog from listed
+  to searched mid-session would leave the model calling tools the facade
+  no longer lists, and pointing it at a `search_tools` its host never saw.
+  Pinned means a catalog that outgrows the `'auto'` budget stays listed.
+  The docs tell integrators with growing servers to set `direct: false`.
+  Within the pinned surface, the definitions do change: directly listed
+  tools are added and removed, posture lines move, and a box search tool's
+  count updates.
+- **Downstream notification.** Servers a facade built that are still held
+  open (stdio, or `registerOn`) are tracked weakly and reconciled in place
+  with one `tools/list_changed` per refresh. The SDK sends one per
+  registration change, so the reconciliation holds them back and sends
+  one. Per-request servers behind `createMcpHandler` are built from the
+  current snapshot anyway, but the facade cannot reach the handler's
+  listen bus. `onToolsChanged` hands the event to the integrator, who
+  publishes it with `handler.notify.toolsChanged()`. Listeners fire only
+  when the listed definitions changed. A code-mode or search-only
+  facade's tool list never changes, so it never fires there.
+- **Stable listed names.** A refreshed plan keeps each surviving tool's
+  listed name and reserves it from newcomers. A collision hash suffix
+  depends on catalog order, so without this a model holding `a_b` could
+  find it routing to a different tool after a refresh. Approval would
+  still name the real tool (S2, S6), but a read-only call would not ask.
+- **Blobs.** Identity is unchanged by a refresh (it is server
+  name@version, or the URL identity), so outstanding approvals survive.
+  Every resume decides with the current snapshot, as R14 and D9 already
+  require, and a tool no longer declared is a structured `validate` error.
+  Across instances with different catalogs, the sealed name is what runs
+  (S2): it is either declared there, decided by that instance's policy, or
+  refused as unknown. It is never a different tool.
+- **Locked boxes (R54).** Unlocking is not a list change and still sends
+  nothing. R54's "the facade holds no subscription state" now has one
+  exception: the upstream listen streams of R65, which are per-instance
+  state like the locked/unlocked flag.
+
+Rejected: re-deciding the direct surface on each refresh (breaks prompts,
+see above); re-listing every box on any notification (one noisy box
+would cost every box a walk); trusting the new catalog only after N
+quiet seconds (delays honest changes without closing the pre-notification
+window); sending `resources/list_changed` (resource URIs never change, and
+reads already serve current text).

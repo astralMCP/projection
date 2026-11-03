@@ -1,6 +1,7 @@
 export {
   createIntrospector,
   Introspector,
+  type IntrospectedServer,
   type IntrospectOptions,
   type IntrospectorSources,
   type ServerSource,

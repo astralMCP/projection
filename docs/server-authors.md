@@ -68,39 +68,27 @@ HTTP, `createMcpHandler` answers a request body larger than 4 MiB with `413`
 before parsing it; pass `createMcpHandler(factory, { maxRequestBodySize })`
 if your clients send larger machine sources or tool arguments.
 
-`wrapMcpServer` introspects once, at wrap time: it reads `tools/list`
+`wrapMcpServer` introspects at wrap time: it reads `tools/list`
 (Projection follows `nextCursor` page by page itself, whatever the `Client`'s
 `listMaxPages` says, and fails with a `protocol` error as soon as the server
 has returned more than 2,000 tools, when a 100th page still carries
 `nextCursor`, or when a cursor repeats — wrap a server with a bounded tool
 surface whose pagination terminates),
-`instructions` and the server identity. Tools you add afterwards are not seen
-until the next wrap, and duplicate names collapse to one tool.
+`instructions` and the server identity. Duplicate names collapse to one tool.
+Tools you add, remove or re-annotate afterwards are picked up when your server
+sends `notifications/tools/list_changed` (see "When your tool list changes"
+below).
 
-Projection does not handle `notifications/tools/list_changed` from the
-wrapped server, on single- and multi-server facades alike. The catalog, the
-generated types and resources, the instructions, the direct-listing choice
-(below) and the frozen policy snapshot are all built once, at wrap time,
-from what introspection read, and the notification refreshes none of them.
-Projection does not send `tools/list_changed` to its own clients either. So:
+What follows a change and what stays as wrapped is in "When your tool list
+changes" below. Two things stay fixed for the facade's lifetime: the
+instructions, and which surface is served (the direct-listing choice, below).
+A `Client` you passed in is not followed until you call `refreshTools()`, and
+with `followListChanged: false` nothing is followed. In those cases a tool
+the server adds later is unknown to the facade (`call_tool` and `toolCall`
+refuse it, and nothing reaches your server), and a removed tool stays listed,
+its calls failing upstream.
 
-- A tool the server adds or enables later (an app switched on
-  mid-conversation, say) is not listed or searchable and is absent from the
-  types. `call_tool` and a machine's `toolCall` refuse it as an unknown tool;
-  it has no listed alias (calling its name on the facade is a protocol
-  not-found error). None of these reach your server.
-- A tool the server removes stays listed; calling it reaches your server,
-  which fails the call (an `upstream` error).
-- `policy` keys are exact tool names, matched against the wrap-time
-  catalog. A key for a tool that is not there yet is accepted and does
-  nothing; it takes effect on the next wrap, once the tool exists. Keep
-  such keys in your options rather than adding them later. `policyRules`
-  (see "Policy rules" below) are resolved at wrap time too, over the same
-  catalog: a tool that appears later is unknown to the facade (above), so
-  no rule reaches it until the next wrap, when the rules apply to it like
-  any other tool.
-
-To pick up a changed tool list, wrap again (`wrapMcpServer` /
+To change the surface itself, wrap again (`wrapMcpServer` /
 `wrapMcpServers`) and serve the new facade's `serverFactory`. For a
 connected `Client` or a source given by URL, wrap first and close the old
 facade once its in-flight requests finish. An in-process `McpServer` can
@@ -114,9 +102,10 @@ identity, not the tool list. The identity is the server's reported
 `name@version`; for a source given by URL, its canonical `url:`; on a
 multi-server facade, every box's alias and identity (so adding, removing or
 skipping a box, or any box's version change, also stops a pending approval
-resuming). A pending `call_tool` approval resumes on the new facade when key
-and identity are unchanged, and is checked against the new facade's catalog
-and policy (a tool now gone or denied is refused). To void outstanding
+resuming). A pending `call_tool` approval survives a followed
+`tools/list_changed`, and resumes on a new facade when key and identity are
+unchanged; either way it is checked against the current catalog and policy
+(a tool now gone or denied is refused). To void outstanding
 approvals across a re-wrap, rotate the blob key (without the old one in
 `previousKeys`). If you use a `replayCache`, pass the same instance (or
 shared store) to the new wrap, so a retry already spent on the old facade
@@ -173,6 +162,9 @@ const facade = await wrapMcpServer(myServer, {
   // Bound on connecting to the server and reading its tools at wrap time;
   // past it the wrap fails with a 'protocol' error. Default 30 000 ms.
   introspectTimeoutMs: 30_000,
+  // Follow tools/list_changed (see "When your tool list changes"). Default
+  // true; false keeps the tools as wrapped.
+  // followListChanged: { debounceMs: 250, minIntervalMs: 2_000 },
   // Advertised identity; default { name: 'projection-default', version: '0.1.0' }.
   serverInfo: { name: 'acme-code-mode', version: '2.0.0' },
 });
@@ -303,10 +295,12 @@ policyRules: [
 - Rules are tried in order and the **first with an opinion** decides the
   tool. An exact `policy` entry beats every rule; a rule beats the approvals
   mode and the annotations.
-- Rules are resolved **once, at wrap time**, over the server's tools, into
+- Rules are resolved **at wrap time**, over the server's tools, into
   per-tool decisions frozen with the rest of the policy (the rules
   themselves are copied when the wrap starts, so later edits are not seen): every surface shows
-  the decision the gate enforces, and no rule runs per request.
+  the decision the gate enforces, and no rule runs per request. When your
+  server's tool list changes (see "When your tool list changes"), the rules
+  run again over the new list, new tools included.
 - **Fail-safe.** A decision other than the three strings — from a function
   or a pattern — means `ask`, never `auto`. A pattern that matches always
   has an opinion, so one with a missing `decision` (a typo such as
@@ -912,7 +906,9 @@ A pre-built `Client` keeps its own transport and auth: Projection installs
 nothing on it, it keeps `name@version` as its identity, and a 401 from it
 surfaces as it always has. Use it for per-user (multi-tenant) auth, hosted
 redirect URIs, static tokens from a secret manager, or any scheme
-Projection's sign-in does not cover.
+Projection's sign-in does not cover. Projection does not follow its
+`tools/list_changed` itself: call `facade.refreshTools()` from the
+`Client`'s own handler (see "When your tool list changes").
 
 ## Legacy clients (pre-2026-07-28)
 
@@ -1002,6 +998,62 @@ model can read them and restructure. Exception: a `call_tool` result over
 'retry'. The other exception is `maxRoundTrips`: a trip-cap breach is phase
 `terminal`, by design — the workflow cannot self-heal within the same run,
 only be restructured and resubmitted.
+
+## When your tool list changes
+
+When your server adds, removes or re-annotates a tool and sends
+`notifications/tools/list_changed` (an `McpServer` does this for you when
+you call `registerTool`, `remove()` or `update()` after connecting),
+Projection re-lists your tools and swaps in everything derived from them at
+once: the catalog that search and `describe_tool` read, the generated
+types, the `discover_apis` overview, the resources, and the policy, with
+`policyRules` re-run over the new tools (PRD R65). This is on by default
+(`followListChanged: false` turns it off) and applies to servers Projection
+connects to itself: an `McpServer` instance or a server given by URL that
+advertises `tools.listChanged`.
+
+- **Bounded.** The re-listing is debounced (250 ms), at most one per 2 s
+  (`followListChanged: { debounceMs, minIntervalMs }`), bounded by
+  `introspectTimeoutMs` and the usual tool and page caps. A server that
+  floods the notification costs one re-listing per interval.
+- **Safe while it runs.** From the moment the notification arrives until the
+  new list is in place, your tools are decided as if they had no
+  `readOnlyHint` or `destructiveHint`. Only your exact `policy` entries
+  still apply; rule outcomes do not. So a tool you changed from read-only to
+  write never runs unapproved off the old list. A request that was already
+  running and would call such a tool gets a tool failure instead
+  ("the server's tool list changed while this request ran"), and the model
+  can call again. Approvals already in flight survive a refresh, but a
+  resume decides with the new list: a removed tool fails with an
+  unknown-tool error.
+- **The surface stays as wrapped.** Whether your tools are listed directly
+  (`projections.direct`) is decided once, at wrap time. A list that grows
+  past the `'auto'` budget stays listed, and one that was searched stays
+  searched, because the instructions a client already read name those
+  tools. If your server can grow a lot, set `projections.direct: false`.
+  Within that surface, the directly listed tools follow your list, and each
+  keeps its listed name while it exists.
+- **Telling your clients.** Code mode and the search tools never change.
+  When directly listed tools do, servers the facade built that are still
+  connected (stdio) are updated and sent `notifications/tools/list_changed`.
+  Behind `createMcpHandler`, each request already sees the new list. To
+  notify open `subscriptions/listen` streams, wire the facade to the handler:
+
+  ```ts
+  const handler = createMcpHandler(facade.serverFactory);
+  facade.onToolsChanged(() => handler.notify.toolsChanged());
+  ```
+
+- **Your own `Client`.** Projection never subscribes a `Client` you passed
+  in, because its notification handlers are yours. Call
+  `await facade.refreshTools()` from your handler (on a multi-server facade,
+  `refreshTools('<alias>')`, or no alias for every box). It goes through
+  the same debounce and resolves once the new list is in place.
+- **Several instances.** Each instance follows on its own, so behind a load
+  balancer instances may disagree for a moment. An approval minted on one
+  instance and resumed on another either names a tool that instance knows
+  (decided by its policy) or fails with an unknown-tool error. It never runs
+  a different tool.
 
 ## Lifecycle and operations
 
