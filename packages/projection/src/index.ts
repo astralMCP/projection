@@ -164,6 +164,7 @@ export {
   type ElicitationCopy,
   type ElicitationCopyOptions,
   type ResolvedCallPolicy,
+  type ToolPolicy,
   type ToolPosture,
 } from './policy/index.js';
 

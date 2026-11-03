@@ -84,6 +84,14 @@ policyRules: [
 ],
 ```
 
+To check what the policy resolved to, call `facade.policyOf(name)`: it
+returns `{ decision, posture }` (`'auto' | 'ask' | 'deny'` and the posture
+string above) for a tool — a qualified `<alias>.<tool>` on a multi-server
+facade — or `undefined` for a name the facade does not declare. It decides
+from the same frozen wrap-time settings and catalog lookup as the approval
+gate, so it cannot disagree with it, and it is integrator-only: nothing a
+model sees changes.
+
 `upstreamElicitation: 'forward'` lets a trusted wrapped server ask the user
 questions mid-call (a form, or a link to open): each is relayed over MRTR as
 `Question from <box> (not an approval)` with the server's words quoted and

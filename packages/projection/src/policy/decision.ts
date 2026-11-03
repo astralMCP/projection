@@ -153,6 +153,35 @@ export function postureOf(decision: PolicyDecision): ToolPosture {
   }
 }
 
+/**
+ * A tool's resolved policy (R14, R49): the decision the approval gate makes
+ * for it and the posture every model-facing surface names (R33).
+ */
+export interface ToolPolicy {
+  readonly decision: PolicyDecision;
+  readonly posture: ToolPosture;
+}
+
+/**
+ * The policy the gate decides for the tool `name` in `catalog` under
+ * `options`, or `undefined` when the catalog does not declare it. The same
+ * lookup and decision `call_tool` and {@link resolveCallPolicy} gate with:
+ * {@link findTool}, then {@link decidePolicy} on {@link policyContext}. On a
+ * boxed catalog `name` is qualified (`<box>.<tool>`). Backs the facades'
+ * `policyOf`, which pass their frozen wrap-time policy settings.
+ */
+export function toolPolicyOf(
+  catalog: ServerCatalog,
+  name: string,
+  options: PolicyOptions,
+): ToolPolicy | undefined {
+  if (typeof name !== 'string') return undefined;
+  const entry = findTool(catalog, name);
+  if (entry === undefined) return undefined;
+  const decision = decidePolicy(entry, policyContext(options));
+  return Object.freeze({ decision, posture: postureOf(decision) });
+}
+
 /** Result of resolving a pending call against a server catalog. */
 export type ResolvedCallPolicy =
   | { ok: true; decision: PolicyDecision; entry: ToolCatalogEntry }

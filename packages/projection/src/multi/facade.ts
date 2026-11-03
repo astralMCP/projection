@@ -93,7 +93,13 @@ import {
   type ProtocolEra,
   type ToolCallResult,
 } from '../mrtr/index.js';
-import { assertApprovalsMode, assertPolicyRules, resolvePolicyRules } from '../policy/index.js';
+import {
+  assertApprovalsMode,
+  assertPolicyRules,
+  resolvePolicyRules,
+  toolPolicyOf,
+  type ToolPolicy,
+} from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { MCP_SDK_VERSION } from '../blob/versions.js';
 import { generateToolTypes, type ToolTypeText } from '../typegen/index.js';
@@ -741,6 +747,11 @@ class MultiFacade implements MultiProjectionFacade {
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
+  }
+
+  /** By qualified name, over the merged view the gate decides on (R45, R49). */
+  policyOf(name: string): ToolPolicy | undefined {
+    return toolPolicyOf(this.deps.view, name, this.deps.policySettings);
   }
 
   callTool(

@@ -25,6 +25,8 @@
  *   the catalog entry, or a `validate`-phase `ProjectionError` for a tool
  *   the server does not declare.
  * - `ResolvedCallPolicy` — result union of `resolveCallPolicy`.
+ * - `toolPolicyOf(catalog, name, options)` / `ToolPolicy` — a tool's
+ *   resolved decision and posture by name (backs the facades' `policyOf`).
  * - `POLICY_DENIED_REASON` / `policyDeniedReason(toolName?)` — canonical
  *   TOOL_DENIED reason for policy-denied calls (a `deny` decision never
  *   produces an elicitation; the machine host injects TOOL_DENIED with
@@ -49,7 +51,9 @@ export {
   postureOf,
   POLICY_DENIED_REASON,
   resolveCallPolicy,
+  toolPolicyOf,
   type ResolvedCallPolicy,
+  type ToolPolicy,
   type ToolPosture,
 } from './decision.js';
 export { assertPolicyRules, globMatches, resolvePolicyRules } from './rules.js';
