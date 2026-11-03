@@ -371,6 +371,7 @@ describe('policyOf reflects policyRules through the frozen settings (R14, D36)',
       policy: { touch: 'auto' },
       policyRules: [
         { match: 'T*', decision: 'ask' }, // case-insensitive: tag, touch
+        { match: 'tag', decision: 'deny' }, // later and conflicting: must lose to T*
         (tool) => (tool.name === 'remove' ? 'deny' : undefined),
         { match: 'read', decision: 'deny' },
       ],
