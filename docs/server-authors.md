@@ -746,6 +746,25 @@ treat it as a secret and never parse, log or display it.
   `MemoryTokenStore` (exported) keeps values in memory. Compare-and-delete
   compares the exact strings; it need not be atomic across processes (the
   default store's is read, compare, delete). Never log a value.
+- **Reusing the keyring store.** `KeyringTokenStore` (exported) is the
+  default store, so you can keep your own credentials in the OS store with
+  the same guarantees: verified writes, 5 s timeouts, per-key ordering, and
+  failures reported as a `TokenStoreError` that never carries a value or
+  the keyring library's text. Its options are `warn`, `timeoutMs` and
+  `load`: `warn` receives the one fallback warning (default stderr),
+  `load` supplies the module (default: a dynamic import of
+  `@napi-rs/keyring` that bundlers do not follow, so a bundled app passes
+  `() => import('@napi-rs/keyring')`). Entries go under the same service,
+  `@astral-mcp/projection`, with the SHA-256 of your key as the account;
+  give your keys their own kind prefix (not `tokens:` or `registration:`)
+  so they never meet Projection's. `@napi-rs/keyring` is an optional
+  dependency: when it is not installed or fails to load, or the OS store
+  fails, the instance falls back to memory for the rest of its life, prints
+  the warning once, and `fallenBack` turns true — values set after that do
+  not survive a restart, so check `fallenBack` if persistence matters. A
+  `delete` that cannot reach an OS store that may hold the entry throws
+  `TokenStoreError` rather than report success. Each instance warns on its
+  own; Projection's default store is a separate instance.
 
 ### Signing out
 

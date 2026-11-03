@@ -142,7 +142,11 @@ export interface KeyringModule {
 }
 
 export interface KeyringTokenStoreOptions {
-  /** Loads the keyring module. Default: a dynamic `import('@napi-rs/keyring')`. */
+  /**
+   * Loads the keyring module. Default: a dynamic `import('@napi-rs/keyring')`
+   * with a variable specifier, which a bundler does not follow — a bundled
+   * app passes `() => import('@napi-rs/keyring')`. Tests pass a fake.
+   */
   load?: () => Promise<KeyringModule>;
   /** Per-operation timeout. Default {@link KEYRING_TIMEOUT_MS}. */
   timeoutMs?: number;

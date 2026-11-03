@@ -33,6 +33,7 @@ export {
   REGISTRATION_KEY_KIND,
   TOKENS_KEY_KIND,
   TokenStoreError,
+  type KeyringEntry,
   type KeyringModule,
   type KeyringTokenStoreOptions,
   type TokenStore,
