@@ -208,8 +208,8 @@ By default every tool that is not `readOnlyHint: true` asks. Tighten or
 loosen that per tool with `policy` (`'auto'`, `'ask'` or `'deny'`), or for
 many tools at once with `policyRules`.
 
-> **`policyRules` is new since 0.9.0.** It needs the next release, or a build
-> from `main`. On 0.9.0 the option is ignored without an error, so the
+> **`policyRules` and `policyOf` are new since 0.9.0.** They need the next
+> release, or a build from `main`. On 0.9.0 `policyRules` is ignored without an error, so the
 > example below would run with no pins. On 0.9.0, pin those tools with exact
 > `policy` entries instead, or don't use `'destructive-only'`.
 
@@ -242,7 +242,14 @@ reaches other people need the same treatment; see
 Precedence, strongest first: an exact `policy` entry, then the first
 matching `policyRules` rule, then `approvals`, then the tool's annotations.
 Everything is resolved once, at wrap time; every surface the model sees shows
-the decision the gate will enforce. See
+the decision the gate will enforce. To confirm a pin took effect, ask the facade
+for the decision the gate will make:
+
+```ts
+facade.policyOf('send_email')?.decision; // 'auto' | 'ask' | 'deny'; undefined for an unknown name
+```
+
+On a multi-server facade, pass the qualified name (`'gmail.send_email'`). See
 [Annotations drive the policy](docs/server-authors.md#annotations-drive-the-policy).
 
 ### 6. Production: keys and the replay cache
