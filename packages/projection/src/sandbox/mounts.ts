@@ -5,7 +5,8 @@
  * needs and nothing else:
  *
  * - `/src/machine.js`               — the (transpiled) authored module
- * - `/node_modules/xstate/*`        — the pinned XState v5 ESM build
+ * - `/node_modules/xstate/*`        — the pinned XState ESM build (v5, or v6 when
+ *                                     the facade opts in)
  * - `/node_modules/@astral-mcp/tools/index.js` — the caller-supplied bridge
  *
  * Import resolution is allowlist-based: only `xstate` and `@astral-mcp/tools`
@@ -21,6 +22,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { getModuleLoader, type SandboxOptions } from '@sebastianwessel/quickjs';
+import type { XStateMajor } from '../blob/versions.js';
 
 type NodeModulesMount = NonNullable<SandboxOptions['nodeModules']>;
 type ModulePathNormalizer = NonNullable<SandboxOptions['modulePathNormalizer']>;
@@ -31,6 +33,9 @@ export const AUTHORED_MODULE_PATH = '/src/machine.js';
 
 /** Specifier the authored code uses to import XState (R8). */
 export const XSTATE_SPECIFIER = 'xstate';
+
+/** The v6 drivers' import of `restoreActor` (experimental v6 runtime only). */
+export const XSTATE_PERSIST_SPECIFIER = 'xstate/persist';
 
 /** Specifier the authored code uses to import the generated tools bridge (R8). */
 export const TOOLS_SPECIFIER = '@astral-mcp/tools';
@@ -60,39 +65,59 @@ const ALLOWED_SPECIFIERS: ReadonlySet<string> = new Set([
   '@node_compatibility/response',
 ]);
 
-let cachedXStateMount: Record<string, string> | undefined;
+const cachedXStateMounts = new Map<XStateMajor, Record<string, string>>();
 
 /**
- * Build the virtual `node_modules/xstate` directory from the pinned XState v5
- * package installed on the host: the production ESM entry (`xstate.esm.js`,
- * mounted additionally as `index.js`) plus its sibling ESM chunk files, which
- * it references via relative imports. The chunks are self-contained (no bare
+ * Build the virtual `node_modules/xstate` directory from the pinned XState
+ * package installed on the host, plus the sibling ESM chunk files the entry
+ * references via relative imports. The chunks are self-contained (no bare
  * imports), so nothing else needs to resolve.
+ *
+ * - v5: the production ESM entry (`xstate.esm.js`, mounted as `index.js`).
+ * - v6 (experimental, the `xstate-v6` alias): the DEVELOPMENT build
+ *   (`xstate.development.esm.js` as `index.js`, `xstate-persist` as
+ *   `persist.js`). Its production build reports authoring mistakes as bare
+ *   codes (`XState error E4 ("X", "a", "guard")`); the development build
+ *   says what to write instead, and deep-freezes context so an in-place
+ *   mutation fails loudly instead of corrupting a sealed snapshot.
  */
-export function getXStateMount(): Record<string, string> {
-  if (cachedXStateMount === undefined) {
+export function getXStateMount(major: XStateMajor = 5): Record<string, string> {
+  let mount = cachedXStateMounts.get(major);
+  if (mount === undefined) {
     const require = createRequire(import.meta.url);
-    const distDir = join(dirname(require.resolve('xstate/package.json')), 'dist');
-    const mount: Record<string, string> = {};
+    const pkg = major === 6 ? 'xstate-v6' : 'xstate';
+    const distDir = join(dirname(require.resolve(`${pkg}/package.json`)), 'dist');
+    const wanted = (file: string): boolean =>
+      major === 6
+        ? file.endsWith('.development.esm.js')
+        : file.endsWith('.esm.js') && !file.includes('development');
+    const built: Record<string, string> = {};
     for (const file of readdirSync(distDir)) {
-      if (file.endsWith('.esm.js') && !file.includes('development')) {
-        mount[file] = readFileSync(join(distDir, file), 'utf8');
-      }
+      if (wanted(file)) built[file] = readFileSync(join(distDir, file), 'utf8');
     }
-    const entry = mount['xstate.esm.js'];
+    const entryName = major === 6 ? 'xstate.development.esm.js' : 'xstate.esm.js';
+    const entry = built[entryName];
     if (entry === undefined) {
-      throw new Error('xstate package layout not recognized: dist/xstate.esm.js missing');
+      throw new Error(`${pkg} package layout not recognized: dist/${entryName} missing`);
     }
-    mount['index.js'] = entry;
-    cachedXStateMount = mount;
+    built['index.js'] = entry;
+    if (major === 6) {
+      const persist = built['xstate-persist.development.esm.js'];
+      if (persist === undefined) {
+        throw new Error(`${pkg} package layout not recognized: dist/xstate-persist missing`);
+      }
+      built['persist.js'] = persist;
+    }
+    mount = built;
+    cachedXStateMounts.set(major, mount);
   }
-  return cachedXStateMount;
+  return mount;
 }
 
 /** Assemble the sandbox `node_modules` mount: xstate + the tools bridge. */
-export function buildNodeModulesMount(bridgeJs: string): NodeModulesMount {
+export function buildNodeModulesMount(bridgeJs: string, major: XStateMajor = 5): NodeModulesMount {
   return {
-    xstate: { ...getXStateMount() },
+    xstate: { ...getXStateMount(major) },
     '@astral-mcp': { tools: { 'index.js': bridgeJs } },
   };
 }
@@ -115,6 +140,11 @@ export const modulePathNormalizer: ModulePathNormalizer = (baseName, requestedNa
   const name = requestedName.replace(/^node:/, '');
   if (name === XSTATE_SPECIFIER) {
     return '/node_modules/xstate/index.js';
+  }
+  // The v6 drivers restore snapshots with restoreActor from xstate/persist.
+  // Pure like the entry; on a v5 mount the file is absent and the load fails.
+  if (name === XSTATE_PERSIST_SPECIFIER) {
+    return '/node_modules/xstate/persist.js';
   }
   if (name === TOOLS_SPECIFIER) {
     return '/node_modules/@astral-mcp/tools/index.js';

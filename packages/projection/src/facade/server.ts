@@ -25,6 +25,8 @@ import type {
   ProtocolEra,
   ToolCallResult,
 } from '../mrtr/index.js';
+import type { XStateMajor } from '../blob/versions.js';
+import { forXState } from '../machine-host/contract-v6.js';
 import { WORKFLOW_PROMPTS } from '../prompts/workflow-prompts.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { clampCaps, type ServerCatalog, type UpstreamCallOptions } from '../types.js';
@@ -456,13 +458,14 @@ export function registerCodeModeTools(
   handlers: CodeModeHandlers,
   copy: { executeMachine: string; discoverApis: string },
   promptCatalog: () => ServerCatalog,
+  xstate: XStateMajor = 5,
 ): void {
   server.registerTool(
     'execute_machine',
     {
       title: 'Execute a state machine',
-      description: copy.executeMachine,
-      inputSchema: EXECUTE_MACHINE_INPUT_SCHEMA,
+      description: forXState(copy.executeMachine, xstate),
+      inputSchema: xstate === 6 ? EXECUTE_MACHINE_INPUT_SCHEMA_V6 : EXECUTE_MACHINE_INPUT_SCHEMA,
       // MCP Apps (SEP-1865): app-capable hosts render the workflow
       // dashboard in place of the raw result. Hosts without the extension
       // ignore _meta.ui entirely.
@@ -523,7 +526,10 @@ export function registerCodeModeTools(
             content: {
               type: 'text' as const,
               // Safe: the zod argsSchema above admits only (optional) strings.
-              text: prompt.build(args as Record<string, string | undefined>, promptCatalog()),
+              text: forXState(
+                prompt.build(args as Record<string, string | undefined>, promptCatalog()),
+                xstate,
+              ),
             },
           },
         ],
@@ -583,4 +589,9 @@ const EXECUTE_MACHINE_INPUT_SCHEMA = z.object({
     .optional()
     .describe('Language of `code`. Defaults to TypeScript-compatible parsing.'),
   input: z.unknown().optional().describe('Passed to the machine as its `input`.'),
+});
+
+/** `execute_machine` arguments on an experimental XState v6 facade. */
+const EXECUTE_MACHINE_INPUT_SCHEMA_V6 = EXECUTE_MACHINE_INPUT_SCHEMA.extend({
+  code: z.string().describe('The machine module source: a default-exported XState v6 machine.'),
 });

@@ -117,7 +117,8 @@ export type EvalMode =
   | 'projection-search'
   | 'projection-nocode'
   | 'projection-codeonly'
-  | 'projection-nopreamble';
+  | 'projection-nopreamble'
+  | 'projection-xstate6';
 /** The modes a run plans by default (the opt-in exploration modes are not among them). */
 export const EVAL_MODES: readonly EvalMode[] = ['direct', 'projection', 'projection-boxes'];
 /**
@@ -137,6 +138,7 @@ export const KNOWN_EVAL_MODES: readonly EvalMode[] = [
   'projection-nocode',
   'projection-codeonly',
   'projection-nopreamble',
+  'projection-xstate6',
 ];
 
 /**
@@ -162,10 +164,16 @@ export function directSettingOf(mode: EvalMode): 'auto' | boolean {
  * - `projection-nopreamble`: `codeModePreamble: ''` (no routing preamble in
  *   the instructions; the server's own instructions and, on a multi-server
  *   facade, the box list stay).
+ *
+ * Not an ablation but the same mechanism: `projection-xstate6` is
+ * `projection` on the experimental XState v6 runtime (`xstate: 6`), so a
+ * run with both modes compares how well models author v5 and v6 machines
+ * on identical tasks.
  */
 export function projectionWrapOptions(mode: EvalMode): {
   projections?: { direct?: 'auto' | boolean; codeMode?: boolean; catalog?: boolean };
   codeModePreamble?: string;
+  xstate?: 6;
 } {
   switch (mode) {
     case 'projection-direct':
@@ -180,6 +188,8 @@ export function projectionWrapOptions(mode: EvalMode): {
       return { projections: { catalog: false } };
     case 'projection-nopreamble':
       return { codeModePreamble: '' };
+    case 'projection-xstate6':
+      return { xstate: 6 };
     default:
       return {};
   }
@@ -909,6 +919,7 @@ function openModeSession(
     case 'projection-nocode':
     case 'projection-codeonly':
     case 'projection-nopreamble':
+    case 'projection-xstate6':
       return openSingleProjectionSession(world, mode, options);
   }
 }

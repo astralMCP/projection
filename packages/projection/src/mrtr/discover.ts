@@ -18,7 +18,13 @@ import {
 } from '../catalog/boxes.js';
 import { decidePolicy, policyContext } from '../policy/decision.js';
 import { inertIdentity } from '../text-safety.js';
-import { XSTATE_VERSION } from '../blob/index.js';
+import { type XStateMajor, xstateVersionFor } from '../blob/versions.js';
+import {
+  authoringContractV6,
+  exampleDenialFallbackV6,
+  exampleHappyPathV6,
+  forXState,
+} from '../machine-host/contract-v6.js';
 import { dedupeTools, type PolicyOptions, type ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
 
@@ -211,8 +217,10 @@ export function buildResources(
   dts: string,
   policy?: PolicyOptions,
   maxRoundTrips?: number,
+  xstate: XStateMajor = 5,
 ): ProjectionResource[] {
   const subject = codeModeSubject(catalog, policy);
+  const v6 = xstate === 6;
   return [
     {
       uri: RESOURCE_URIS.toolTypes,
@@ -226,21 +234,23 @@ export function buildResources(
       name: 'authoring-contract.md',
       description: 'Rules an authored machine must follow.',
       mimeType: 'text/markdown',
-      text: authoringContract(subject.samples, maxRoundTrips),
+      text: v6
+        ? authoringContractV6(subject.samples, maxRoundTrips)
+        : authoringContract(subject.samples, maxRoundTrips),
     },
     {
       uri: RESOURCE_URIS.happyPath,
       name: 'happy-path.ts',
       description: 'Example machine: read-only work, completes in one call.',
       mimeType: 'text/plain',
-      text: exampleHappyPath(subject.samples),
+      text: v6 ? exampleHappyPathV6(subject.samples) : exampleHappyPath(subject.samples),
     },
     {
       uri: RESOURCE_URIS.denialFallback,
       name: 'denial-fallback.ts',
       description: 'Example machine: continues gracefully when approval is declined.',
       mimeType: 'text/plain',
-      text: exampleDenialFallback(subject.samples),
+      text: v6 ? exampleDenialFallbackV6(subject.samples) : exampleDenialFallback(subject.samples),
     },
     {
       // MCP Apps dashboard (PRD 12.1): rendered by app-capable hosts when
@@ -295,6 +305,8 @@ export interface DiscoverApisOptions {
   policy?: PolicyOptions;
   /** The facade's clamped `caps.maxRoundTrips` (R12), quoted by the contract's rule 5. */
   maxRoundTrips?: number;
+  /** The facade's XState major (`WrapOptions.xstate`): picks the contract. Default 5. */
+  xstate?: XStateMajor;
 }
 
 /** R37: a finite threshold is floored and clamped at 0; anything else is the default. */
@@ -340,14 +352,18 @@ export function discoverApis(
   const inline = [
     `Projection code mode over ${subject.label}.`,
     '',
-    `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
+    `XState version: ${xstateVersionFor(options.xstate ?? 5)} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',
     toolsSection,
     '',
-    authoringContract(subject.samples, options.maxRoundTrips),
+    options.xstate === 6
+      ? authoringContractV6(subject.samples, options.maxRoundTrips)
+      : authoringContract(subject.samples, options.maxRoundTrips),
   ].join('\n');
 
-  const links: ContentBlock[] = (options.resources ?? buildResources(catalog, ''))
+  const links: ContentBlock[] = (
+    options.resources ?? buildResources(catalog, '', undefined, undefined, options.xstate)
+  )
     .filter((resource) => !resource.uri.startsWith('ui://'))
     .map((resource) => ({
       type: 'resource_link',
@@ -401,9 +417,10 @@ export function buildInstructions(
   catalog: ServerCatalog,
   preamble?: string,
   projections: ProjectionSelection = { codeMode: true, catalog: true },
+  xstate: XStateMajor = 5,
 ): string {
   const wrapped = catalog.instructions?.trim();
-  const copy = preamble ?? defaultPreamble(projections);
+  const copy = preamble ?? forXState(defaultPreamble(projections), xstate);
   return wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${copy}` : copy;
 }
 

@@ -33,6 +33,7 @@
     "quickjs-emscripten-core": "0.32.0",
     "typescript": "^5.7.0",
     "xstate": "5.32.5",
+    "xstate-v6": "npm:xstate@6.0.0-beta.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {

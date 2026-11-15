@@ -115,6 +115,9 @@ importers:
       xstate:
         specifier: 5.32.5
         version: 5.32.5
+      xstate-v6:
+        specifier: npm:xstate@6.0.0-beta.2
+        version: xstate@6.0.0-beta.2
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -1165,7 +1168,9 @@ packages:
   '@smithy/core@3.35.2':
     resolution: {integrity: sha512-ejTukBuP/Pg3t9N8Ux+0zKsXeHWm7p6W3HbXFOyltKasSxZwCFmvTut7kBdZSCF3m9y1bXXyVu6p2xuMFcsTyQ==}
     engines: {node: '>=18.0.0'}
-    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
+    deprecated: |-
+      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
+        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -2896,6 +2901,10 @@ packages:
 
   xstate@5.32.5:
     resolution: {integrity: sha512-ULazi1oe6wGrXl0Frb6otSlkm5HLifbbVTkMk5kkSKqz4TkxJaVpnl6jOJwKeid3ORPxYyZQgNLUSYX9q65SIA==}
+
+  xstate@6.0.0-beta.2:
+    resolution: {integrity: sha512-jFqR+aZbmPCfwMhOw4TPqamfjWWN8H9DAVKlOp3pWY4W9IaqYu3mlb0VvkY8R5pNBn4kz7JsVbAFkddoZlii1A==}
+    hasBin: true
 
   yallist@4.0.0:
     resolution: {integrity: sha512-3wdGidZyq5PB084XLES5TpOSRA3wjXAlIWMhum2kRcv/41Sn2emQ0dycQW4uZXLejwKvg6EsvbdlVL+FYEct7A==}
@@ -5649,6 +5658,8 @@ snapshots:
   wrappy@1.0.2: {}
 
   xstate@5.32.5: {}
+
+  xstate@6.0.0-beta.2: {}
 
   yallist@4.0.0: {}
 

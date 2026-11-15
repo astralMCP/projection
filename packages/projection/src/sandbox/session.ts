@@ -13,6 +13,7 @@ import {
 import { readFile } from 'node:fs/promises';
 import { newVariant } from 'quickjs-emscripten-core';
 import type TS from 'typescript';
+import type { XStateMajor } from '../blob/versions.js';
 import { ProjectionError } from '../errors.js';
 import { clampCaps, type LogEntry, type ResourceCaps } from '../types.js';
 import { LogCollector, utf8Length } from './logs.js';
@@ -63,6 +64,8 @@ export interface SandboxSessionOptions {
   onToolCall: SandboxToolCallHandler;
   /** Zero-based MRTR segment index, recorded on every log entry (R31). */
   segment?: number;
+  /** XState major mounted at `xstate` (default 5; 6 is experimental). */
+  xstate?: XStateMajor;
 }
 
 /**
@@ -560,7 +563,7 @@ export async function createSandboxSession(
     // caller input. The boot script below additionally deletes the `fetch`
     // global stub.
     mountFs: { src: { 'machine.js': machineJs } },
-    nodeModules: buildNodeModulesMount(bridgeJs),
+    nodeModules: buildNodeModulesMount(bridgeJs, options.xstate ?? 5),
     modulePathNormalizer,
     getModuleLoader: getSandboxModuleLoader,
     env: {

@@ -34,7 +34,9 @@ import {
   type UpstreamHold,
   type UpstreamInputRequest,
 } from '../types.js';
+import type { XStateMajor } from '../blob/versions.js';
 import { TOOL_CALL_MODULE_SOURCE } from './contract.js';
+import { TOOL_CALL_MODULE_SOURCE_V6, v6AuthoringHint } from './contract-v6.js';
 import {
   bootstrapDriver,
   sendDriver,
@@ -75,6 +77,8 @@ export interface RunSegmentOptions extends PolicyOptions {
   caps?: Partial<ResourceCaps>;
   /** Zero-based MRTR segment index — stamps logs (R31). */
   segment?: number;
+  /** XState major authored machines run under (default 5; 6 is experimental). */
+  xstate?: XStateMajor;
   /**
    * Resume state. Present on every segment after the first: the verified
    * snapshot and the pending calls sealed alongside it, plus the verdicts
@@ -114,6 +118,7 @@ export interface RunSegmentOptions extends PolicyOptions {
 export async function runSegment(options: RunSegmentOptions): Promise<SegmentOutcome> {
   const caps = clampCaps(options.caps ?? {});
   const segment = options.segment ?? 0;
+  const major: XStateMajor = options.xstate ?? 5;
   const audit: AuditEntry[] = [...(options.resume?.audit ?? [])];
 
   let session: SandboxSession | undefined;
@@ -127,8 +132,9 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
       code: options.code,
       ...(options.lang !== undefined ? { lang: options.lang } : {}),
       caps,
-      bridgeSource: `${options.bridgeSource}\n${TOOL_CALL_MODULE_SOURCE}`,
+      bridgeSource: `${options.bridgeSource}\n${major === 6 ? TOOL_CALL_MODULE_SOURCE_V6 : TOOL_CALL_MODULE_SOURCE}`,
       segment,
+      xstate: major,
       onToolCall: (call) => {
         hookSeq += 1;
         hookRequests.push({ id: `${call.name}@${hookSeq}`, name: call.name, args: call.args });
@@ -152,7 +158,7 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
     }
 
     if (options.resume === undefined) {
-      await validate(session, caps, options.input);
+      await validate(session, caps, options.input, major);
     }
 
     const runner = new SegmentRunner({
@@ -165,13 +171,14 @@ export async function runSegment(options: RunSegmentOptions): Promise<SegmentOut
       audit,
       hookRequests,
       trip: options.resume?.trip ?? 0,
+      major,
     });
 
     return await runner.run(options);
   } catch (err) {
     return {
       status: 'error',
-      error: toStructuredError(err, session?.getLogs() ?? []),
+      error: toStructuredError(major === 6 ? withV6Hint(err) : err, session?.getLogs() ?? []),
       ...(audit.length > 0 ? { audit } : {}),
     };
   } finally {
@@ -194,13 +201,53 @@ async function validate(
   session: SandboxSession,
   caps: ResourceCaps,
   input: unknown,
+  major: XStateMajor,
 ): Promise<void> {
   const result = (await session.evaluate(
-    validationDriver(caps.maxStateNodes, input),
+    validationDriver(caps.maxStateNodes, input, major),
   )) as ValidationResult;
   if (result.ok) return;
-  throw validationError(result, caps);
+  throw validationError(result, caps, major);
 }
+
+/**
+ * v6: lead an authoring error's hint with where v6 differs from v5 (the
+ * development build's own message already says what to write instead).
+ */
+function withV6Hint(err: unknown): unknown {
+  if (!(err instanceof ProjectionError)) return err;
+  const hint = v6AuthoringHint(err.message);
+  if (hint === undefined) return err;
+  return new ProjectionError(err.phase, err.message, {
+    diagnostics: err.diagnostics,
+    hint,
+    logs: err.logs,
+  });
+}
+
+/** v6 replacements for the v5-worded validation messages and hints. */
+const V6_VALIDATION_SPECS: Record<string, ValidationSpec> = {
+  default_export_not_machine: {
+    phase: 'validate',
+    message: (detail) =>
+      `the default export is not an XState v6 machine${detail ? ` (got ${detail})` : ''}`,
+    hint: () =>
+      'Default-export the machine itself, not an actor or a factory: `export default setup({}).createMachine({ ... })`.',
+  },
+  invoke_banned: {
+    phase: 'validate',
+    message: (detail) =>
+      `the machine uses invoke (at ${detail || 'the machine root'}), which is not allowed`,
+    hint: () =>
+      'Tool calls must use toolCall (as a state entry, or enq(toolCall(name, { ... })) inside your own function), not createAsyncLogic/invoke: restored snapshots restart invoked actors and would re-execute approved writes. See discover_apis.',
+  },
+  context_not_serializable: {
+    phase: 'validate',
+    message: (detail) => `machine context is not JSON-serializable at ${detail}`,
+    hint: () =>
+      'Keep context to plain JSON values — no Map, Set, Date, class instances, functions or undefined. Store a string or number instead, and update it by returning a { context: { ... } } patch.',
+  },
+};
 
 /** Each validation failure code maps to a phase, a message, and a fix hint. */
 interface ValidationSpec {
@@ -257,9 +304,14 @@ const VALIDATION_SPECS: Record<string, ValidationSpec> = {
   },
 };
 
-function validationError(result: ValidationFailure, caps: ResourceCaps): ProjectionError {
+function validationError(
+  result: ValidationFailure,
+  caps: ResourceCaps,
+  major: XStateMajor,
+): ProjectionError {
   const detail = result.detail === null ? '' : String(result.detail);
-  const spec = VALIDATION_SPECS[result.code];
+  const spec =
+    (major === 6 ? V6_VALIDATION_SPECS[result.code] : undefined) ?? VALIDATION_SPECS[result.code];
   if (spec === undefined) {
     return new ProjectionError('validate', `machine validation failed: ${result.code}`, {
       hint: 'Review the authoring contract from discover_apis and resubmit.',
@@ -283,6 +335,7 @@ interface RunnerDeps {
   audit: AuditEntry[];
   hookRequests: RawRequest[];
   trip: number;
+  major: XStateMajor;
 }
 
 class SegmentRunner {
@@ -307,10 +360,12 @@ class SegmentRunner {
 
     let drained: DrainResult;
     if (resume === undefined) {
-      drained = (await session.evaluate(bootstrapDriver(options.input, undefined))) as DrainResult;
+      drained = (await session.evaluate(
+        bootstrapDriver(options.input, undefined, this.deps.major),
+      )) as DrainResult;
     } else {
       drained = (await session.evaluate(
-        bootstrapDriver(undefined, resume.snapshot),
+        bootstrapDriver(undefined, resume.snapshot, this.deps.major),
       )) as DrainResult;
       // Deliver verdicts for the calls sealed alongside the snapshot. The
       // args come from the sealed map, never from the restored machine (S2).
@@ -715,7 +770,7 @@ class SegmentRunner {
         },
       );
     }
-    return (await this.deps.session.evaluate(sendDriver(events))) as DrainResult;
+    return (await this.deps.session.evaluate(sendDriver(events, this.deps.major))) as DrainResult;
   }
 
   /**

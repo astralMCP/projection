@@ -8,6 +8,35 @@
  * driver's own code.
  */
 
+import type { XStateMajor } from '../blob/versions.js';
+
+/** v5: machines carry __xstatenode and a root state node; a v4 Machine(...) lacks one or the other. */
+const V5_MACHINE_CHECK = `  const isV5 =
+    machine.__xstatenode === true &&
+    machine.root !== undefined &&
+    typeof machine.getPersistedSnapshot === 'function';
+  if (!isV5) {
+    const looksV4 =
+      machine.__xstatenode === true ||
+      typeof machine.withConfig === 'function' ||
+      typeof machine.withContext === 'function';
+    return fail(looksV4 ? 'xstate_v4_machine' : 'default_export_not_machine');
+  }`;
+
+/**
+ * v6 (experimental): no __xstatenode marker; a machine has a root state
+ * node, its config, and pure transition functions. A v5-shaped config never
+ * gets here: v6's createMachine throws on v5 keys while the module loads.
+ */
+const V6_MACHINE_CHECK = `  const isV6 =
+    machine.root !== undefined &&
+    machine.config !== undefined &&
+    typeof machine.transition === 'function' &&
+    typeof machine.getPersistedSnapshot === 'function';
+  if (!isV6) {
+    return fail('default_export_not_machine', typeof machine.start === 'function' ? 'an actor or actor logic' : undefined);
+  }`;
+
 /**
  * Static validation of the default-exported machine (R24).
  *
@@ -21,7 +50,11 @@
  * `input` (`context: ({ input }) => ({ path: input.path })`) must validate
  * against the input it will actually run with, not against `undefined`.
  */
-export function validationDriver(maxStateNodes: number, input: unknown): string {
+export function validationDriver(
+  maxStateNodes: number,
+  input: unknown,
+  major: XStateMajor = 5,
+): string {
   const probeActor =
     input === undefined
       ? 'createActor(machine)'
@@ -40,20 +73,7 @@ function run() {
   if (typeof machine !== 'object' && typeof machine !== 'function') {
     return fail('default_export_not_machine', typeof machine);
   }
-  // XState v5 machines carry __xstatenode and a root state node; a v4
-  // Machine(...) result and every non-machine value lack one or the other.
-  const isV5 =
-    machine.__xstatenode === true &&
-    machine.root !== undefined &&
-    typeof machine.getPersistedSnapshot === 'function';
-  if (!isV5) {
-    const looksV4 =
-      machine.__xstatenode === true ||
-      typeof machine.withConfig === 'function' ||
-      typeof machine.withContext === 'function';
-    return fail(looksV4 ? 'xstate_v4_machine' : 'default_export_not_machine');
-  }
-
+${major === 6 ? V6_MACHINE_CHECK : V5_MACHINE_CHECK}
   // (a) State-node count: a tree walk of the instantiated definition (R12).
   let nodes = 0;
   const walkNodes = (node) => {
@@ -168,10 +188,17 @@ export default { queued: state.queue ? state.queue.length : 0 };
  * `input` and `snapshot` are interpolated as JSON literals. A restored
  * actor resumes exactly where the snapshot left off (R21).
  */
-export function bootstrapDriver(input: unknown, snapshot: unknown): string {
+export function bootstrapDriver(input: unknown, snapshot: unknown, major: XStateMajor = 5): string {
   const hasSnapshot = snapshot !== undefined;
+  // v6 restores through restoreActor (its createActor rejects a snapshot
+  // option); entry effects of the restored states do not run again.
+  const restore =
+    major === 6
+      ? `restoreActor(machine, ${JSON.stringify(snapshot)})`
+      : `createActor(machine, { snapshot: ${JSON.stringify(snapshot)} })`;
   return `
 import { createActor } from 'xstate';
+${major === 6 && hasSnapshot ? "import { restoreActor } from 'xstate/persist';" : ''}
 
 const g = globalThis.__projection;
 const machine = g.module.default;
@@ -181,7 +208,7 @@ ${DRAIN_HELPER}
 
 const actor = ${
     hasSnapshot
-      ? `createActor(machine, { snapshot: ${JSON.stringify(snapshot)} })`
+      ? restore
       : input === undefined
         ? 'createActor(machine)'
         : `createActor(machine, { input: ${JSON.stringify(input)} })`
@@ -201,12 +228,22 @@ export default drain();
  * holding one (server data) would reach the machine as inherited fields
  * (`event.result.approved` true) instead of an own key.
  */
-export function sendDriver(events: unknown[]): string {
+export function sendDriver(events: unknown[], major: XStateMajor = 5): string {
+  // v6: an event answering a toolCalls item ('<id>*<k>') also carries
+  // batch: '<id>', so the machine selects the batch with matches.
+  const stampBatch =
+    major === 6
+      ? `  if (typeof event.callId === 'string') {
+    const star = event.callId.lastIndexOf('*');
+    if (star > 0 && /^[0-9]+$/.test(event.callId.slice(star + 1))) event.batch = event.callId.slice(0, star);
+  }
+`
+      : '';
   return `
 const g = globalThis.__projection;
 const events = JSON.parse(${JSON.stringify(JSON.stringify(events))});
 for (const event of events) {
-  g.state.actor.send(event);
+${stampBatch}  g.state.actor.send(event);
 }
 export default g.state.drain();
 `;

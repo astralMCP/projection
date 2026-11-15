@@ -189,6 +189,8 @@ export {
   type BlobKeyDomain,
   type OpenBlobOptions,
 } from './blob/index.js';
+// Experimental XState v6 runtime (WrapOptions.xstate: 6; DECISIONS D47).
+export { XSTATE_V6_VERSION, type XStateMajor } from './blob/versions.js';
 
 // Sandbox runtime — QuickJS execution with hard caps
 export {

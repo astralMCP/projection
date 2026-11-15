@@ -17,6 +17,21 @@ export const LIB_VERSION = '0.10.0';
 export const XSTATE_VERSION = '5.32.5';
 
 /**
+ * Pinned XState v6 version for the experimental v6 runtime (`WrapOptions.xstate: 6`),
+ * installed under the `xstate-v6` npm alias (must match that pin). A v6 facade
+ * stamps and checks this instead of {@link XSTATE_VERSION}.
+ */
+export const XSTATE_V6_VERSION = '6.0.0-beta.2';
+
+/** The XState major a facade runs authored machines under. */
+export type XStateMajor = 5 | 6;
+
+/** The exact XState version a facade of this major stamps into its blobs. */
+export function xstateVersionFor(major: XStateMajor): string {
+  return major === 6 ? XSTATE_V6_VERSION : XSTATE_VERSION;
+}
+
+/**
  * The `@modelcontextprotocol/server` and `@modelcontextprotocol/client` version
  * Projection is built and tested against: the exact devDependency pin (must
  * match package.json). Not a blob stamp.

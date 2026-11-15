@@ -55,6 +55,7 @@ import {
 import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
+  assertXStateMajor,
   assertApprovalPrompts,
   freezePolicySettings,
   resolveDirectSetting,
@@ -287,6 +288,7 @@ export async function wrapMcpServer(
   assertApprovalPrompts(options.approvalPrompts);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const upstreamElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
+  assertXStateMajor(options.xstate);
   const follow = resolveFollowSettings(options.followListChanged);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)
@@ -420,13 +422,15 @@ function buildSingleSnapshot(
     previous?.projections ?? (listed ? Object.freeze({ ...selected, direct: true }) : selected);
 
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
+  const xstate = assertXStateMajor(options.xstate);
   const resources = buildResources(
     catalog,
     dts,
     undefined,
     clampCaps(options.caps ?? {}).maxRoundTrips,
+    xstate,
   );
-  const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
+  const instructions = buildInstructions(catalog, options.codeModePreamble, projections, xstate);
   return {
     catalog,
     dts,
@@ -584,6 +588,7 @@ class Facade implements ProjectionFacade {
     return executeMachine(args, {
       ...this.gateDeps(snapshot, era, clientCanElicit, clientUrlElicitation),
       bridgeSource: snapshot.bridgeSource,
+      xstate: assertXStateMajor(this.deps.options.xstate),
     });
   }
 
@@ -631,6 +636,7 @@ class Facade implements ProjectionFacade {
         : {}),
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
       maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
+      xstate: assertXStateMajor(this.deps.options.xstate),
     });
   }
 
@@ -682,7 +688,14 @@ class Facade implements ProjectionFacade {
     const era = options?.era;
     const snapshot = this.snapshot;
     if (this.projections.codeMode) {
-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, () => this.snapshot.catalog);
+      registerCodeModeTools(
+        server,
+        era,
+        this,
+        CODE_MODE_COPY,
+        () => this.snapshot.catalog,
+        assertXStateMajor(this.deps.options.xstate),
+      );
     }
     const copy = this.#catalogCopy();
     if (copy !== undefined) {
