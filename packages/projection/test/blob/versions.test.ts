@@ -6,6 +6,7 @@ import {
   LIB_VERSION,
   MCP_SDK_RANGE,
   MCP_SDK_VERSION,
+  XSTATE_V6_VERSION,
   XSTATE_VERSION,
 } from '../../src/blob/versions.js';
 
@@ -20,6 +21,13 @@ describe('version constants (R20 stamps, D2 pins)', () => {
   it('XSTATE_VERSION matches the installed (exactly pinned) xstate version', () => {
     const xstatePkg = require('xstate/package.json') as { version: string };
     expect(XSTATE_VERSION).toBe(xstatePkg.version);
+  });
+
+  it('XSTATE_V6_VERSION matches the installed xstate-v6 alias and its exact pin', () => {
+    const v6Pkg = require('xstate-v6/package.json') as { version: string };
+    expect(XSTATE_V6_VERSION).toBe(v6Pkg.version);
+    const pkg = require('../../package.json') as { dependencies: Record<string, string> };
+    expect(pkg.dependencies['xstate-v6']).toBe(`npm:xstate@${XSTATE_V6_VERSION}`);
   });
 
   it('MCP_SDK_VERSION matches the exact client and server devDependency pins', () => {

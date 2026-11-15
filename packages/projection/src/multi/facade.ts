@@ -31,6 +31,8 @@
  *   (R47); `optional` sources come later.
  */
 
+import type { XStateMajor } from '../blob/versions.js';
+import { forXState } from '../machine-host/contract-v6.js';
 import type { Client } from '@modelcontextprotocol/client';
 import type { McpServer, McpServerFactory } from '@modelcontextprotocol/server';
 import { tokenStoreOption, UpstreamConnector, type UpstreamSpec } from '../auth/index.js';
@@ -65,6 +67,7 @@ import {
 import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
+  assertXStateMajor,
   assertApprovalPrompts,
   freezePolicySettings,
   resolveDirectSetting,
@@ -194,6 +197,7 @@ export async function wrapMcpServers(
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const follow = resolveFollowSettings(options.followListChanged);
   const facadeElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
+  assertXStateMajor(options.xstate);
   // G1: a box forwards its server's questions when its own setting, else
   // the facade's, says `forward`.
   const forwarding = new Set(
@@ -358,10 +362,21 @@ function buildMultiSnapshot(
     toolTypes,
     // The code-mode resources (R3, R45), then the box overviews (R43, R45).
     resources: [
-      ...buildResources(view, dts, policySettings, clampCaps(options.caps ?? {}).maxRoundTrips),
+      ...buildResources(
+        view,
+        dts,
+        policySettings,
+        clampCaps(options.caps ?? {}).maxRoundTrips,
+        assertXStateMajor(options.xstate),
+      ),
       ...boxOverviewResources(view),
     ],
-    instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
+    instructions: buildMultiInstructions(
+      view,
+      projections,
+      options.codeModePreamble,
+      assertXStateMajor(options.xstate),
+    ),
     policySettings,
     projections,
     copy: catalogToolCopy(view, projections),
@@ -623,6 +638,7 @@ export function buildMultiInstructions(
   view: BoxedCatalog,
   projections: Readonly<ProjectionSelection>,
   preamble?: string,
+  xstate: XStateMajor = 5,
 ): string {
   const lines = [shelfHeader(projections, view.directBoxes.length === view.boxes.size)];
   for (const [alias, box] of view.boxes) {
@@ -637,12 +653,15 @@ export function buildMultiInstructions(
   }
   const copy =
     preamble ??
-    defaultMultiPreamble({
-      projections,
-      globalSearch: view.globalSearch,
-      directBoxes: view.directBoxes,
-      searchBoxes: view.searchBoxes,
-    });
+    forXState(
+      defaultMultiPreamble({
+        projections,
+        globalSearch: view.globalSearch,
+        directBoxes: view.directBoxes,
+        searchBoxes: view.searchBoxes,
+      }),
+      xstate,
+    );
   return `${copy}\n\n${lines.join('\n')}`;
 }
 
@@ -908,6 +927,7 @@ class MultiFacade implements MultiProjectionFacade {
     return executeMachine(args, {
       ...this.gateDeps(snapshot, era, clientCanElicit, clientUrlElicitation),
       bridgeSource: snapshot.bridgeSource,
+      xstate: assertXStateMajor(this.deps.options.xstate),
     });
   }
 
@@ -929,6 +949,7 @@ class MultiFacade implements MultiProjectionFacade {
       policy: snapshot.policySettings,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
       maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
+      xstate: assertXStateMajor(this.deps.options.xstate),
     });
   }
 
@@ -1027,6 +1048,7 @@ class MultiFacade implements MultiProjectionFacade {
         this,
         codeModeCopy(this.projections),
         () => this.snapshot.view,
+        assertXStateMajor(this.deps.options.xstate),
       );
     }
     if (this.projections.catalog) {

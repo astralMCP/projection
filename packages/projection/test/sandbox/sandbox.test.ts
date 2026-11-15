@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ProjectionError } from '../../src/errors.js';
 import { createSandboxSession, type SandboxToolCall } from '../../src/sandbox/index.js';
+import { DENIED_IMPORT_MARKER } from '../../src/sandbox/mounts.js';
 import { BRIDGE_STUB, TOGGLE_MACHINE_JS, withSession } from './helpers.js';
 
 describe('sandbox execution (R10)', () => {
@@ -227,6 +228,23 @@ describe('isolation invariants (R11/N3, R9, S1)', () => {
       expect(error).toBeInstanceOf(ProjectionError);
       expect((error as ProjectionError).phase).toBe('validate');
     }
+  });
+
+  it('denies xstate/persist on a v5 session like any other import', async () => {
+    const error = await createSandboxSession({
+      code: `import { restoreActor } from 'xstate/persist'; export default typeof restoreActor;`,
+      bridgeSource: BRIDGE_STUB,
+      onToolCall: () => ({}),
+    }).then(
+      async (session) => {
+        await session.dispose();
+        return undefined;
+      },
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(ProjectionError);
+    expect((error as ProjectionError).phase).toBe('validate');
+    expect((error as ProjectionError).message).toContain(DENIED_IMPORT_MARKER);
   });
 });
 

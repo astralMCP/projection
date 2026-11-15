@@ -159,6 +159,9 @@ const facade = await wrapMcpServer(myServer, {
 
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
+  // EXPERIMENTAL: models write XState v6 machines instead of v5 (XState 6
+  // beta, pinned). The contract, examples and errors switch to v6. Default 5.
+  // xstate: 6,
   // Bound on connecting to the server and reading its tools at wrap time;
   // past it the wrap fails with a 'protocol' error. Default 30 000 ms.
   introspectTimeoutMs: 30_000,

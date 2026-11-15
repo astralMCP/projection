@@ -2814,3 +2814,91 @@ of life (and raise `engines` with it, as a breaking change).
 Rejected: `[22, 24, 26]` (more minutes and flakes for a version the
 maintainer's pre-push check already runs on by convention); keeping
 `[22, 24]` (the newest V8 would go untested until users hit it).
+
+## D47 — Spike: an opt-in XState v6 runtime, designed for model authors (2026-11-15)
+
+Context. XState 6 entered beta on 2026-11-05 (latest 6.0.0-beta.3; npm
+`latest` is still 5.33.x). v6 removes the v5 action creators and guard
+combinators (`assign`, `enqueueActions`, `and`, …) and throws on the v5
+config keys `guard`, `actions`, string targets and array `entry`/`exit`.
+Transitions become plain objects `{ target, context, matches }` or one
+function `(args, enq) => ({ target, context })`, with side effects
+queued on `enq`. Persisted snapshots are not compatible across majors, and
+v6 restores them with `restoreActor` (from `xstate/persist`). Its
+`createActor` rejects a `snapshot` option. Every authored machine and
+every line of contract copy is v5, and v5 is what models have seen most of.
+
+Decision. Ship v6 as an experimental, opt-in runtime (`WrapOptions.xstate:
+6`) beside v5, which stays the default and byte-identical. Then decide on
+promotion from benchmark numbers, not from the API diff.
+
+- **Pin 6.0.0-beta.2 under the `xstate-v6` npm alias.** beta.3 was hours
+  old, inside pnpm's 24-hour release-age gate. The alias keeps one
+  workspace on both majors. `XSTATE_V6_VERSION` is the v6 facade's blob
+  stamp (`buildBlobPayload`/`openBlob` take `xstatev`), so a blob never
+  resumes on the other major. Call blobs keep the v5 stamp, since they
+  carry no snapshot.
+- **Mount the development build.** The production build reports
+  authoring mistakes as bare codes (`XState error E4 ("X", "a",
+  "guard")`). The development build says what to write instead, and it
+  deep-freezes context, so an in-place mutation fails at the line that
+  does it instead of corrupting a sealed snapshot. The cost is about
+  2× per segment: the denial-fallback example's suspend and resume legs
+  each go from a ~12 ms median to ~25 ms, still under the §10 100 ms
+  resume budget. Most likely this is parsing the larger bundle in each
+  fresh VM (unmeasured).
+- **Keep `toolCall` as the entry action. Register the request from an
+  `enq`'d effect.** v6 may compute an entry or transition function more
+  than once (the validation probe does), so the v5 bridge's immediate push
+  would be wrong. `toolCall(name, args)` resolves its arguments while the
+  function runs and registers once, when XState runs the effect. Inside an
+  author's own function, `enq(toolCall(name, { … }))` works too. A
+  function of `{ context }` there fails with a message saying to pass a
+  plain object.
+- **Route results with `matches`, not guards.** `{ matches: { callId: 'a' },
+  target: 'done' }` keeps the transition a plain object whose target is
+  visible statically. That preserves the PRD's "write actions are
+  statically auditable" argument for the common case, which a function
+  per conditional transition would erode. The v6 send driver adds `batch:
+  '<id>'` to the events of a `toolCalls` batch, so batches use `matches:
+  { batch }` too. `whenCall`/`whenCallIn` remain as predicates for use
+  inside functions.
+- **Write the contract for a v5-trained reader.** It opens with a v5 → v6
+  table of the habits that throw. Error hints are rewritten where the
+  v6 message alone would mislead:
+  - `import { assign }` surfaces as QuickJS's SyntaxError "Could not find
+    export". The hint names the v6 replacement for each common v5 export.
+  - A frozen-context TypeError gets a hint to return a patch.
+
+  The tool descriptions, preambles and prompts say v6 through one
+  substitution (`forXState`), so the v5 copy is unchanged.
+
+- **Keep the invoke ban.** v6's durable features (`xstate/durable`,
+  `createAsyncLogic` steps) assume a host that journals effects. Projection
+  is one sealed snapshot per MRTR round trip and does not.
+
+- **The invoke ban is defence in depth, not a guarantee.** `enq.spawn` of
+  callback logic that calls the bridge hook (and v5's `spawnChild`) is not
+  rejected. S2 still holds, because every request is gated, but a restored
+  child re-requests the same write, so the user sees an identical second
+  prompt. Tracked as a follow-up for both majors.
+
+Measuring it. The harness gains the opt-in mode `projection-xstate6`
+(`projection` plus `xstate: 6`). The decision run compares it with
+`projection` on the same tasks, with code mode forced:
+`PROJ_LIVE_EVAL=1 PROJ_EVAL_MODES=projection,projection-xstate6
+PROJ_EVAL_FORCE_CODE_MODE=1`. Promote v6 to the default only if it
+matches v5 on success and turns, and only once 6.0 is stable. The
+duplicated contract text then folds back into one source. Until then a
+v6 facade is not covered by the goldens and has no live smoke.
+
+Rejected:
+
+- Migrating outright. v6 is in beta, and its snapshot format changed
+  between prereleases.
+- The production build. Its error codes are useless to a model.
+- Guard-function routing (`whenCall` inside functions) as the taught
+  pattern. It hides targets from static analysis.
+- A new event field per result in the host. The `batch` stamp lives in
+  the v6 send driver only, so the v5 events and the audit trail are
+  untouched.

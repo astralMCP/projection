@@ -11,6 +11,7 @@ import {
   buildBlobPayload,
   type BlobKeyDomain,
 } from '../blob/index.js';
+import { type XStateMajor, xstateVersionFor } from '../blob/versions.js';
 import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
@@ -142,6 +143,8 @@ export interface ApprovalGateDeps extends PolicyOptions {
 export interface ExecuteMachineDeps extends ApprovalGateDeps {
   /** The `@astral-mcp/tools` bridge module source the sandbox loads (R2). */
   bridgeSource: string;
+  /** XState major authored machines run under (default 5; 6 is experimental). */
+  xstate?: XStateMajor;
 }
 
 /**
@@ -192,6 +195,7 @@ export async function executeMachine(
       ...(deps.approvals !== undefined ? { approvals: deps.approvals } : {}),
       ...(deps.toolApprovals !== undefined ? { toolApprovals: deps.toolApprovals } : {}),
       segment: resume?.trip ?? 0,
+      ...(deps.xstate !== undefined ? { xstate: deps.xstate } : {}),
       ...(resume !== undefined ? { resume } : {}),
     });
 
@@ -228,6 +232,7 @@ async function openResume(
 ): Promise<ResumeState> {
   const payload = openBlob(args.requestState as string, {
     expectedKind: 'machine',
+    xstatev: xstateVersionFor(deps.xstate ?? 5),
     code: args.code,
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
@@ -451,6 +456,7 @@ function suspendResult(
   }
 
   const payload = buildBlobPayload({
+    xstatev: xstateVersionFor(deps.xstate ?? 5),
     code: args.code,
     serverIdentity: deps.catalog.identity,
     snapshot: outcome.snapshot,

@@ -11,6 +11,17 @@ survive an upgrade.
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `WrapOptions.xstate: 6`: models write XState v6 machines instead of v5. The facade
+  serves a v6 authoring contract and examples, runs machines on XState 6.0.0-beta.2's development
+  build (installed as the `xstate-v6` alias), and names v6 in its tool descriptions and preambles.
+  `toolCall` stays the entry action; results are selected with `matches: { callId }` and batches
+  with `matches: { batch }`. v5 imports and v5 config keys fail with hints that name the v6
+  replacement. Blobs are stamped with the v6 version, so a workflow never resumes across majors.
+  v5 remains the default and its output is unchanged. New exports: `XSTATE_V6_VERSION`,
+  `XStateMajor` (D47).
+
 ## [0.10.0] - 2026-11-03
 
 ### Breaking

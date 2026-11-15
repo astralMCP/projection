@@ -21,7 +21,8 @@
  *                          calling over the raw tools; native-ptc is skipped on models without it, e.g. Haiku
  *                          4.5), projection-direct, projection-auto, and the ablations projection-search
  *                          (projections.direct false), projection-nocode (codeMode false), projection-codeonly
- *                          (catalog false), projection-nopreamble (codeModePreamble '')
+ *                          (catalog false), projection-nopreamble (codeModePreamble ''), and projection-xstate6
+ *                          (projection on the experimental XState v6 runtime, xstate: 6; compare with projection)
  *   PROJ_EVAL_HOST_PROMPT=realistic  every mode: put a ~12k-token generic agent-host system prompt
  *                          (src/eval/host-prompt.ts) before the session's own (default: the one-line framing only)
  *   PROJ_EVAL_TIMEOUT_MIN  interactive runs: the test's timeout in minutes (default 30)

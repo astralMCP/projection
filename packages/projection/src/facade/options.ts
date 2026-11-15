@@ -12,6 +12,7 @@ import { ProjectionError } from '../errors.js';
 import type { TokenStore } from '../auth/token-store.js';
 import { DEFAULT_INTROSPECT_TIMEOUT_MS } from '../introspector/constants.js';
 import type { BlobKeyDomain } from '../blob/index.js';
+import type { XStateMajor } from '../blob/versions.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
 import type { ApprovalPrompts } from '../mrtr/batch.js';
 import type {
@@ -95,6 +96,15 @@ export interface WrapOptions {
    * code-mode, catalog or routing copy).
    */
   codeModePreamble?: string;
+  /**
+   * EXPERIMENTAL. The XState major authored machines are written in and run
+   * under: `5` (default) or `6` (XState 6 beta, pinned; DECISIONS D47). A
+   * v6 facade serves the v6 authoring contract and examples, runs machines
+   * on XState v6's development build, and stamps its blobs with the v6
+   * version, so a blob never resumes across majors. Read once, at wrap
+   * time; any other value fails the wrap (`validate`).
+   */
+  xstate?: XStateMajor;
   /** Compatibility switches for pre-2026-07-28 clients. */
   compat?: {
     /**
@@ -367,6 +377,19 @@ export function approvalGateDeps(input: {
     ...(options.replayCache !== undefined ? { replayCache: options.replayCache } : {}),
     ...(options.approvalPrompts !== undefined ? { approvalPrompts: options.approvalPrompts } : {}),
   };
+}
+
+/** `xstate`, validated: 5, 6, or absent (5); anything else is a `validate` error at wrap time. */
+export function assertXStateMajor(value: unknown): XStateMajor {
+  if (value === undefined || value === 5) return 5;
+  if (value === 6) return 6;
+  throw new ProjectionError(
+    'validate',
+    `xstate must be 5 or 6, got ${JSON.stringify(value) ?? String(value)}`,
+    {
+      hint: 'Omit xstate for XState v5, or set xstate: 6 to opt into the experimental XState v6 runtime.',
+    },
+  );
 }
 
 /**
