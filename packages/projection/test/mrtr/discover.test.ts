@@ -59,6 +59,24 @@ describe('discover_apis (R3)', () => {
     // The denial example must actually demonstrate handling a denial.
     expect(EXAMPLE_DENIAL_FALLBACK).toContain('TOOL_DENIED');
   });
+
+  it('serves tools.d.ts with v6 transport copy on a v6 facade and unchanged on v5', () => {
+    const typesText = (xstate: 5 | 6): string =>
+      buildResources(CATALOG, dts, undefined, undefined, xstate).find(
+        (resource) => resource.uri === RESOURCE_URIS.toolTypes,
+      )?.text ?? '';
+
+    expect(typesText(5)).toBe(dts);
+    expect(dts).toContain('whenCallIn');
+
+    const v6 = typesText(6);
+    expect(v6).not.toContain('whenCallIn');
+    expect(v6).not.toContain('guard');
+    expect(v6).not.toContain('fromPromise');
+    expect(v6).toContain('matches: { callId: id }');
+    expect(v6).toContain('matches: { batch: id }');
+    expect(v6).toContain('createAsyncLogic / invoke');
+  });
 });
 
 describe('hostile wrapped-server identity (S5)', () => {

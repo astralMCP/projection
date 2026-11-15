@@ -123,37 +123,44 @@ export function buildNodeModulesMount(bridgeJs: string, major: XStateMajor = 5):
 }
 
 /**
- * Allowlisting module path normalizer (R8/R9). Relative imports resolve
- * against the importing module; allowlisted bare specifiers resolve into
- * `/node_modules`; everything else maps to a denied sentinel path.
+ * Allowlisting module path normalizer (R8/R9) for the given XState major.
+ * Relative imports resolve against the importing module; allowlisted bare
+ * specifiers resolve into `/node_modules`; everything else maps to a denied
+ * sentinel path.
  *
  * `xstate` and `@astral-mcp/tools` map directly to their `index.js` files
  * (rather than the package directory) so that the relative chunk imports
- * inside them resolve against the package directory.
+ * inside them resolve against the package directory. `xstate/persist`
+ * resolves only for v6 sessions; on v5 it is denied like any other import.
  */
-export const modulePathNormalizer: ModulePathNormalizer = (baseName, requestedName) => {
-  if (requestedName.startsWith('.')) {
-    const parts = baseName.split('/');
-    parts.pop();
-    return resolvePath(`/${parts.join('/')}`, requestedName);
-  }
-  const name = requestedName.replace(/^node:/, '');
-  if (name === XSTATE_SPECIFIER) {
-    return '/node_modules/xstate/index.js';
-  }
-  // The v6 drivers restore snapshots with restoreActor from xstate/persist.
-  // Pure like the entry; on a v5 mount the file is absent and the load fails.
-  if (name === XSTATE_PERSIST_SPECIFIER) {
-    return '/node_modules/xstate/persist.js';
-  }
-  if (name === TOOLS_SPECIFIER) {
-    return '/node_modules/@astral-mcp/tools/index.js';
-  }
-  if (ALLOWED_SPECIFIERS.has(name)) {
-    return join('/node_modules', name);
-  }
-  return `${DENIED_PREFIX}${requestedName}`;
-};
+export function modulePathNormalizerFor(major: XStateMajor): ModulePathNormalizer {
+  return (baseName, requestedName) => {
+    if (requestedName.startsWith('.')) {
+      const parts = baseName.split('/');
+      parts.pop();
+      return resolvePath(`/${parts.join('/')}`, requestedName);
+    }
+    const name = requestedName.replace(/^node:/, '');
+    if (name === XSTATE_SPECIFIER) {
+      return '/node_modules/xstate/index.js';
+    }
+    // The v6 drivers restore snapshots with restoreActor from xstate/persist.
+    // Pure like the entry, and mounted only for v6.
+    if (major === 6 && name === XSTATE_PERSIST_SPECIFIER) {
+      return '/node_modules/xstate/persist.js';
+    }
+    if (name === TOOLS_SPECIFIER) {
+      return '/node_modules/@astral-mcp/tools/index.js';
+    }
+    if (ALLOWED_SPECIFIERS.has(name)) {
+      return join('/node_modules', name);
+    }
+    return `${DENIED_PREFIX}${requestedName}`;
+  };
+}
+
+/** The v5 (default) module path normalizer. */
+export const modulePathNormalizer: ModulePathNormalizer = modulePathNormalizerFor(5);
 
 /**
  * Module loader wrapping the package default: turns denied sentinel paths

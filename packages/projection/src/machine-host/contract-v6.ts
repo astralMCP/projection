@@ -419,8 +419,10 @@ const V5_EXPORTS: Readonly<Record<string, string>> = {
   emit: 'Use enq.emit(event) inside a function (args, enq) => { ... }.',
   log: 'Use enq.log(...) inside a function (args, enq) => { ... }, or console.log.',
   cancel: 'Use enq.cancel(id) inside a function (args, enq) => { ... }.',
-  spawnChild: 'Use enq.spawn(logic, options) inside a function (args, enq) => { ... }.',
-  stopChild: 'Use enq.stop(ref) inside a function (args, enq) => { ... }.',
+  spawnChild:
+    'Machines here do not start actors: request tools with toolCall from @astral-mcp/tools and wait for TOOL_RESULT.',
+  stopChild:
+    'Machines here do not start actors: request tools with toolCall from @astral-mcp/tools and wait for TOOL_RESULT.',
   and: 'Write the condition with && inside a transition function, returning undefined to ignore the event.',
   or: 'Write the condition with || inside a transition function, returning undefined to ignore the event.',
   not: 'Write the condition with ! inside a transition function, returning undefined to ignore the event.',
@@ -448,7 +450,7 @@ export function v6AuthoringHint(message: string): string | undefined {
       : `XState v6 does not export '${name}'. Import only setup (or createMachine) from 'xstate'; everything else a machine needs is in the transition shapes of the authoring contract (discover_apis).`;
   }
   if (
-    /not extensible|read[- ]only property|Cannot assign to read only|object is frozen/i.test(
+    /not extensible|read[- ]only property|is read-only|Cannot assign to read only|object is frozen/i.test(
       message,
     )
   ) {
@@ -475,4 +477,36 @@ export function forXState(text: string, major: XStateMajor): string {
     .replaceAll('XState v5', 'XState v6')
     .replaceAll('invoke/fromPromise', 'invoke/createAsyncLogic')
     .replaceAll('fromPromise/invoke', 'createAsyncLogic/invoke');
+}
+
+/** The v5 transport note in the generated `tools.d.ts` header (`typegen/generate.ts`). */
+const DTS_TRANSPORT_V5 = [
+  '// Tool functions are the transport used by the library-supplied',
+  '// `toolCall` action. Do NOT wrap them in fromPromise / invoked actors',
+  '// (banned pattern R7) — emit toolCall(name, args) and handle the',
+  '// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead. For one call per',
+  '// item, toolCalls(name, argsList, { id }) requests them all in one step',
+  '// (guard with whenCallIn(id)). Every event carries `event.args`, its',
+  "// call's own arguments: match a result to its item by them.",
+].join('\n');
+
+/** The same note for a v6 facade: select events with `matches`, never invoke. */
+const DTS_TRANSPORT_V6 = [
+  '// Tool functions are the transport used by the library-supplied',
+  '// `toolCall` action. NEVER wrap a tool call in createAsyncLogic / invoke',
+  '// (banned pattern R7) — emit toolCall(name, args) and handle the',
+  '// TOOL_RESULT / TOOL_ERROR / TOOL_DENIED events instead; select one',
+  "// call's events with matches: { callId: id }. For one call per item,",
+  '// toolCalls(name, argsList, { id }) requests them all in one step',
+  '// (select its events with matches: { batch: id }). Every event carries',
+  "// `event.args`, its call's own arguments: match a result to its item by them.",
+].join('\n');
+
+/**
+ * The generated `tools.d.ts` text for a facade's XState major: v5 unchanged,
+ * byte for byte; on v6 the header's transport note is rewritten for v6.
+ */
+export function dtsForXState(dts: string, major: XStateMajor): string {
+  if (major === 5) return dts;
+  return dts.replace(DTS_TRANSPORT_V5, DTS_TRANSPORT_V6);
 }

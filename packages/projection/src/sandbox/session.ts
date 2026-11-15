@@ -21,7 +21,7 @@ import {
   buildNodeModulesMount,
   DENIED_IMPORT_MARKER,
   getSandboxModuleLoader,
-  modulePathNormalizer,
+  modulePathNormalizerFor,
   TOOLS_SPECIFIER,
   XSTATE_SPECIFIER,
 } from './mounts.js';
@@ -564,7 +564,7 @@ export async function createSandboxSession(
     // global stub.
     mountFs: { src: { 'machine.js': machineJs } },
     nodeModules: buildNodeModulesMount(bridgeJs, options.xstate ?? 5),
-    modulePathNormalizer,
+    modulePathNormalizer: modulePathNormalizerFor(options.xstate ?? 5),
     getModuleLoader: getSandboxModuleLoader,
     env: {
       [TOOL_CALL_BINDING]: (name: unknown, args: unknown) => {

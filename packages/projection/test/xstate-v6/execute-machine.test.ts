@@ -313,6 +313,26 @@ export default setup({}).createMachine({
     expect(err.hint).toContain('Context is frozen');
   });
 
+  it('assigning a context property is caught, with the same hint', async () => {
+    const code = `
+import { setup } from 'xstate';
+import { toolCall } from '@astral-mcp/tools';
+export default setup({}).createMachine({
+  context: { status: 'pending' },
+  initial: 'reading',
+  states: {
+    reading: {
+      entry: toolCall('read_file', () => ({ path: '/a' })),
+      on: { TOOL_RESULT: ({ context }) => { context.status = 'x'; return { target: 'done' }; } },
+    },
+    done: { type: 'final' },
+  },
+});`;
+    const err = error(await executeMachine({ code }, deps()));
+    expect(err.message).toMatch(/is read-only/);
+    expect(err.hint).toContain('Context is frozen');
+  });
+
   it('invoke is still rejected, with v6 wording', async () => {
     const code = `
 import { setup, createAsyncLogic } from 'xstate';

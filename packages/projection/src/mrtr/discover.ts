@@ -21,6 +21,7 @@ import { inertIdentity } from '../text-safety.js';
 import { type XStateMajor, xstateVersionFor } from '../blob/versions.js';
 import {
   authoringContractV6,
+  dtsForXState,
   exampleDenialFallbackV6,
   exampleHappyPathV6,
   forXState,
@@ -227,7 +228,7 @@ export function buildResources(
       name: 'tools.d.ts',
       description: `TypeScript definitions for the tools of ${subject.label}.`,
       mimeType: 'text/plain',
-      text: dts,
+      text: dtsForXState(dts, xstate),
     },
     {
       uri: RESOURCE_URIS.contract,

@@ -2877,6 +2877,12 @@ promotion from benchmark numbers, not from the API diff.
   `createAsyncLogic` steps) assume a host that journals effects. Projection
   is one sealed snapshot per MRTR round trip and does not.
 
+- **The invoke ban is defence in depth, not a guarantee.** `enq.spawn` of
+  callback logic that calls the bridge hook (and v5's `spawnChild`) is not
+  rejected. S2 still holds, because every request is gated, but a restored
+  child re-requests the same write, so the user sees an identical second
+  prompt. Tracked as a follow-up for both majors.
+
 Measuring it. The harness gains the opt-in mode `projection-xstate6`
 (`projection` plus `xstate: 6`). The decision run compares it with
 `projection` on the same tasks, with code mode forced:

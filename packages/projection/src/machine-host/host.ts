@@ -222,6 +222,7 @@ function withV6Hint(err: unknown): unknown {
     diagnostics: err.diagnostics,
     hint,
     logs: err.logs,
+    cause: err,
   });
 }
 
