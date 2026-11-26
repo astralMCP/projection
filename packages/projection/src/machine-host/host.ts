@@ -76,6 +76,12 @@ export interface RunSegmentOptions extends PolicyOptions {
   /** Zero-based MRTR segment index — stamps logs (R31). */
   segment?: number;
   /**
+   * The sealed-blob ceiling (`BlobSealerConfig.maxBlobBytes`, default
+   * `DEFAULT_MAX_BLOB_BYTES`). The program runtime bounds a snapshot by it
+   * before encoding (D48); the machine host does not read it.
+   */
+  maxBlobBytes?: number;
+  /**
    * Resume state. Present on every segment after the first: the verified
    * snapshot and the pending calls sealed alongside it, plus the verdicts
    * the client returned for those calls.

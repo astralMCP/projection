@@ -6,6 +6,8 @@ import {
   LIB_VERSION,
   MCP_SDK_RANGE,
   MCP_SDK_VERSION,
+  PSYCHOSCRIPT_VERSION,
+  runtimeStampFor,
   XSTATE_VERSION,
 } from '../../src/blob/versions.js';
 
@@ -20,6 +22,20 @@ describe('version constants (R20 stamps, D2 pins)', () => {
   it('XSTATE_VERSION matches the installed (exactly pinned) xstate version', () => {
     const xstatePkg = require('xstate/package.json') as { version: string };
     expect(XSTATE_VERSION).toBe(xstatePkg.version);
+  });
+
+  it('PSYCHOSCRIPT_VERSION matches the exact pin and the installed psychoscript', () => {
+    const pkg = require('../../package.json') as { dependencies: Record<string, string> };
+    expect(pkg.dependencies['psychoscript']).toBe(PSYCHOSCRIPT_VERSION);
+    const installed = JSON.parse(
+      readFileSync(join(require.resolve('psychoscript'), '../../package.json'), 'utf8'),
+    ) as { version: string };
+    expect(installed.version).toBe(PSYCHOSCRIPT_VERSION);
+  });
+
+  it('the two runtimes stamp distinct values, so a blob never resumes under the other', () => {
+    expect(runtimeStampFor('xstate')).toBe(XSTATE_VERSION);
+    expect(runtimeStampFor('psychoscript')).toBe(`psychoscript@${PSYCHOSCRIPT_VERSION}`);
   });
 
   it('MCP_SDK_VERSION matches the exact client and server devDependency pins', () => {

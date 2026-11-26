@@ -19,6 +19,13 @@ import {
 import { decidePolicy, policyContext } from '../policy/decision.js';
 import { inertIdentity } from '../text-safety.js';
 import { XSTATE_VERSION } from '../blob/index.js';
+import { PSYCHOSCRIPT_VERSION, type CodeRuntime } from '../blob/versions.js';
+import {
+  exampleProgramDenialFallback,
+  exampleProgramHappyPath,
+  forProgram,
+  programContract,
+} from '../program-host/contract.js';
 import { dedupeTools, type PolicyOptions, type ServerCatalog } from '../types.js';
 import type { CallToolResult, ContentBlock } from './protocol.js';
 
@@ -211,36 +218,43 @@ export function buildResources(
   dts: string,
   policy?: PolicyOptions,
   maxRoundTrips?: number,
+  runtime: CodeRuntime = 'xstate',
 ): ProjectionResource[] {
   const subject = codeModeSubject(catalog, policy);
+  const program = runtime === 'psychoscript';
+  const kind = program ? 'program' : 'machine';
   return [
     {
       uri: RESOURCE_URIS.toolTypes,
       name: 'tools.d.ts',
       description: `TypeScript definitions for the tools of ${subject.label}.`,
       mimeType: 'text/plain',
-      text: dts,
+      text: program ? forProgram(dts) : dts,
     },
     {
       uri: RESOURCE_URIS.contract,
       name: 'authoring-contract.md',
-      description: 'Rules an authored machine must follow.',
+      description: `Rules an authored ${kind} must follow.`,
       mimeType: 'text/markdown',
-      text: authoringContract(subject.samples, maxRoundTrips),
+      text: program
+        ? programContract(subject.samples, maxRoundTrips)
+        : authoringContract(subject.samples, maxRoundTrips),
     },
     {
       uri: RESOURCE_URIS.happyPath,
       name: 'happy-path.ts',
-      description: 'Example machine: read-only work, completes in one call.',
+      description: `Example ${kind}: read-only work, completes in one call.`,
       mimeType: 'text/plain',
-      text: exampleHappyPath(subject.samples),
+      text: program ? exampleProgramHappyPath(subject.samples) : exampleHappyPath(subject.samples),
     },
     {
       uri: RESOURCE_URIS.denialFallback,
       name: 'denial-fallback.ts',
-      description: 'Example machine: continues gracefully when approval is declined.',
+      description: `Example ${kind}: continues gracefully when approval is declined.`,
       mimeType: 'text/plain',
-      text: exampleDenialFallback(subject.samples),
+      text: program
+        ? exampleProgramDenialFallback(subject.samples)
+        : exampleDenialFallback(subject.samples),
     },
     {
       // MCP Apps dashboard (PRD 12.1): rendered by app-capable hosts when
@@ -261,6 +275,8 @@ export function buildResources(
 export const DEFAULT_INLINE_TOOL_THRESHOLD = 40;
 
 export interface DiscoverApisOptions {
+  /** What runs execute_machine's code (`WrapOptions.codeRuntime`): picks the contract. Default `xstate`. */
+  runtime?: CodeRuntime;
   /** Whether the catalog projection (`search_tools` / `describe_tool`) is served (R37). */
   catalog?: boolean;
   /**
@@ -337,17 +353,24 @@ export function discoverApis(
           ? `Tools: ${toolCount} on this server — too many to list here. ${find} Call describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`
           : `Tools: ${toolCount} on this server — too many to list here. Call search_tools to find tools by name or purpose and describe_tool for a tool's arguments (types: true adds its TypeScript); the full definitions are in ${RESOURCE_URIS.toolTypes}.`;
   }
+  const program = options.runtime === 'psychoscript';
   const inline = [
     `Projection code mode over ${subject.label}.`,
     '',
-    `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
+    program
+      ? `Runtime: plain JavaScript on psychoscript ${PSYCHOSCRIPT_VERSION} (pinned). The global tools object is the only way out of the program: there are no imports, no network and no filesystem.`
+      : `XState version: ${XSTATE_VERSION} (pinned). Importable modules: 'xstate', '@astral-mcp/tools'. Nothing else resolves; there is no network and no filesystem.`,
     '',
-    toolsSection,
+    program ? forProgram(toolsSection) : toolsSection,
     '',
-    authoringContract(subject.samples, options.maxRoundTrips),
+    program
+      ? programContract(subject.samples, options.maxRoundTrips)
+      : authoringContract(subject.samples, options.maxRoundTrips),
   ].join('\n');
 
-  const links: ContentBlock[] = (options.resources ?? buildResources(catalog, ''))
+  const links: ContentBlock[] = (
+    options.resources ?? buildResources(catalog, '', undefined, undefined, options.runtime)
+  )
     .filter((resource) => !resource.uri.startsWith('ui://'))
     .map((resource) => ({
       type: 'resource_link',
@@ -401,9 +424,11 @@ export function buildInstructions(
   catalog: ServerCatalog,
   preamble?: string,
   projections: ProjectionSelection = { codeMode: true, catalog: true },
+  runtime: CodeRuntime = 'xstate',
 ): string {
   const wrapped = catalog.instructions?.trim();
-  const copy = preamble ?? defaultPreamble(projections);
+  const preset = defaultPreamble(projections);
+  const copy = preamble ?? (runtime === 'psychoscript' ? forProgram(preset) : preset);
   return wrapped !== undefined && wrapped.length > 0 ? `${wrapped}\n\n${copy}` : copy;
 }
 

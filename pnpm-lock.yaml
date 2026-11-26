@@ -106,6 +106,9 @@ importers:
       '@sebastianwessel/quickjs':
         specifier: 3.1.0
         version: 3.1.0(typescript@5.9.3)
+      psychoscript:
+        specifier: 0.3.0
+        version: 0.3.0
       quickjs-emscripten-core:
         specifier: 0.32.0
         version: 0.32.0
@@ -1346,6 +1349,11 @@ packages:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
 
+  acorn@8.15.0:
+    resolution: {integrity: sha512-NZyJarBfL7nWwIq+FDL6Zp/yHEhePMNnnJ0y3qfieCrmNvYct8uvtiV41UvlSe6apAfk0fY1FbWx+NwfmpvtTg==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
+
   agent-base@6.0.2:
     resolution: {integrity: sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==}
     engines: {node: '>= 6.0.0'}
@@ -2428,6 +2436,15 @@ packages:
   proxy-addr@2.0.7:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
+
+  psychoscript@0.3.0:
+    resolution: {integrity: sha512-S4VohBlR6aXJtitKUZaYJ0OYs7AHjdKqBGYEL+6YoMU0oBFiVTFw8vTPrFujKBRuhjtj5kNu69CCJ/MBk4eM2g==}
+    engines: {bun: '>=1.4', node: '>=24'}
+    peerDependencies:
+      effect: ^4.1.0
+    peerDependenciesMeta:
+      effect:
+        optional: true
 
   pump@3.0.4:
     resolution: {integrity: sha512-VS7sjc6KR7e1ukRFhQSY5LM2uBWAUPiOPa/A3mkKmiMwSmRFUITt0xuj+/lesgnCv+dPIEYlkzrcyXgquIHMcA==}
@@ -3906,6 +3923,8 @@ snapshots:
       mime-types: 3.0.2
       negotiator: 1.0.0
 
+  acorn@8.15.0: {}
+
   agent-base@6.0.2:
     dependencies:
       debug: 4.4.3
@@ -5154,6 +5173,10 @@ snapshots:
     dependencies:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
+
+  psychoscript@0.3.0:
+    dependencies:
+      acorn: 8.15.0
 
   pump@3.0.4:
     dependencies:

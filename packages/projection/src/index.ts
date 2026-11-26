@@ -189,6 +189,8 @@ export {
   type BlobKeyDomain,
   type OpenBlobOptions,
 } from './blob/index.js';
+// Experimental program runtime (WrapOptions.codeRuntime: 'psychoscript'; DECISIONS D48).
+export { PSYCHOSCRIPT_VERSION, type CodeRuntime } from './blob/versions.js';
 
 // Sandbox runtime — QuickJS execution with hard caps
 export {

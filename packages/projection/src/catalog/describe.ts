@@ -23,7 +23,9 @@ import {
   MAX_IDENTITY_CHARS,
   neutralizeControlChars,
 } from '../text-safety.js';
+import type { CodeRuntime } from '../blob/versions.js';
 import type { CallToolResult } from '../mrtr/protocol.js';
+import { forProgram } from '../program-host/contract.js';
 import type { ToolTypeText } from '../typegen/index.js';
 import {
   findTool,
@@ -50,6 +52,12 @@ export interface DescribeToolArgs {
 export interface DescribeToolOptions extends PolicyOptions {
   /** Per-tool generated types from typegen (R34). */
   toolTypes?: ReadonlyMap<string, ToolTypeText>;
+  /**
+   * What runs execute_machine's code (D48): on `psychoscript`, Projection's
+   * own sentences here speak of programs. The server's description and
+   * schemas are never rewritten.
+   */
+  runtime?: CodeRuntime;
 }
 
 /** `structuredContent` of a `describe_tool` result (R34). */
@@ -107,7 +115,7 @@ export function describeTool(
   };
 
   return {
-    content: [{ type: 'text', text: render(catalog, described) }],
+    content: [{ type: 'text', text: render(catalog, described, options.runtime) }],
     structuredContent: { ...described },
   };
 }
@@ -140,7 +148,11 @@ function location(catalog: ServerCatalog, name: string): string {
   return `on server ${inertIdentity(catalog.identity)}`;
 }
 
-function render(catalog: ServerCatalog, tool: ToolDescription): string {
+function render(
+  catalog: ServerCatalog,
+  tool: ToolDescription,
+  runtime: CodeRuntime | undefined,
+): string {
   const name = capLength(neutralizeControlChars(tool.name), MAX_IDENTITY_CHARS);
   const lines: string[] = [`Tool ${JSON.stringify(name)} ${location(catalog, tool.name)}`];
   lines.push(
@@ -158,7 +170,8 @@ function render(catalog: ServerCatalog, tool: ToolDescription): string {
   if (tool.outputSchema !== undefined) {
     lines.push('', 'Output schema (JSON Schema):', jsonBlock(tool.outputSchema));
   } else {
-    lines.push('', undeclaredOutput(tool));
+    const line = undeclaredOutput(tool);
+    lines.push('', runtime === 'psychoscript' ? forProgram(line) : line);
   }
   if (tool.schemaTruncated) {
     lines.push(

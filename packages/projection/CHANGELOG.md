@@ -16,6 +16,26 @@ survive an upgrade.
 - Node 24 or later is now required (`engines.node` `>=24`, was `>=22`). CI tests Node 24 and 26.
   Node 22 leaves maintenance in April 2027, and a candidate sandbox runtime under evaluation (psychoscript) requires Node 24.
 
+### Added
+
+- EXPERIMENTAL `WrapOptions.codeRuntime: 'psychoscript'` (DECISIONS D48). `execute_machine` then runs
+  a plain JavaScript program that awaits `tools.<tool>(args)` (`tools.<box>.<tool>(args)` on
+  `wrapMcpServers`) on the pinned psychoscript 0.3.0 interpreter, instead of an XState machine. A
+  gated call pauses the program; after the approval it resumes where it paused, and gated calls
+  started together (`Promise.allSettled`) share one round trip. A declined call throws an error
+  named `ToolDenied` into the program. The facade serves a program authoring contract, examples
+  and rewritten tool copy, and stamps its blobs `psychoscript@0.3.0`, so a blob never resumes
+  under the other runtime. Not yet supported: forwarding a server's own questions (G1). Not safe
+  for untrusted multi-tenant use yet: the interpreter runs on the server's thread, so memory
+  (`Buffer.alloc` especially) and a catastrophic regular-expression match are not bounded by the
+  wall clock, which only a worker thread will fix. Exports `PSYCHOSCRIPT_VERSION` and the
+  `CodeRuntime` type.
+
+### Changed
+
+- A blob from another XState version now fails with `runtime version mismatch: … produced under
+  xstate <v>` (was `xstate version mismatch`), so the same message also names a psychoscript stamp.
+
 ## [0.10.0] - 2026-11-03
 
 ### Breaking

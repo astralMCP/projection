@@ -159,6 +159,13 @@ const facade = await wrapMcpServer(myServer, {
 
   caps: { maxRoundTrips: 4 }, // see "Resource caps" below
   codeModePreamble: '...', // replaces the whole instructions preamble
+  // EXPERIMENTAL (DECISIONS D48): models write a plain JavaScript program
+  // that awaits tools.<tool>(args), instead of an XState machine. Approvals
+  // pause the program and resume it where it stopped. Not for untrusted
+  // multi-tenant use yet: it runs on the server's thread, with no memory
+  // limit, and one catastrophic regex match blocks the process past the
+  // wall clock. Default 'xstate'.
+  // codeRuntime: 'psychoscript',
   // Bound on connecting to the server and reading its tools at wrap time;
   // past it the wrap fails with a 'protocol' error. Default 30 000 ms.
   introspectTimeoutMs: 30_000,

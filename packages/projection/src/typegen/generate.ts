@@ -178,14 +178,14 @@ function toolDoc(tool: ToolCatalogEntry, context: PolicyContext): string {
 }
 
 /** The `.d.ts` header lines after its origin line: how to import the surface. */
-const DTS_IMPORT_LINES = [
+export const DTS_IMPORT_LINES = [
   '//',
   '// Import inside an authored machine module as:',
   `//   import { tools } from '${TOOLS_MODULE_SPECIFIER}';`,
 ];
 
 /** The closing `.d.ts` header lines: the tool functions are transport only (R7). */
-const DTS_TRANSPORT_LINES = [
+export const DTS_TRANSPORT_LINES = [
   '//',
   '// Tool functions are the transport used by the library-supplied',
   '// `toolCall` action. Do NOT wrap them in fromPromise / invoked actors',

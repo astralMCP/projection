@@ -40,6 +40,8 @@ import {
 } from './auth/index.js';
 import { callTool, describeTool, searchTools, type CallToolArgs } from './catalog/index.js';
 import { markDirectListed } from './catalog/search.js';
+import type { CodeRuntime } from './blob/versions.js';
+import { forProgramCopy } from './program-host/contract.js';
 import { ProjectionError, toStructuredError } from './errors.js';
 import {
   batchToolListChanged,
@@ -56,6 +58,7 @@ import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
   assertApprovalPrompts,
+  assertCodeRuntime,
   freezePolicySettings,
   resolveDirectSetting,
   resolveIntrospectTimeout,
@@ -287,6 +290,7 @@ export async function wrapMcpServer(
   assertApprovalPrompts(options.approvalPrompts);
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const upstreamElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
+  assertCodeRuntime(options.codeRuntime);
   const follow = resolveFollowSettings(options.followListChanged);
   const tokenStore = tokenStoreOption(options.tokenStore);
   const connector = isUpstreamSpecShape(source)
@@ -420,13 +424,15 @@ function buildSingleSnapshot(
     previous?.projections ?? (listed ? Object.freeze({ ...selected, direct: true }) : selected);
 
   const { dts, bridgeSource, overview, toolTypes } = generateToolTypes(catalog, policySettings);
+  const runtime = assertCodeRuntime(options.codeRuntime);
   const resources = buildResources(
     catalog,
     dts,
     undefined,
     clampCaps(options.caps ?? {}).maxRoundTrips,
+    runtime,
   );
-  const instructions = buildInstructions(catalog, options.codeModePreamble, projections);
+  const instructions = buildInstructions(catalog, options.codeModePreamble, projections, runtime);
   return {
     catalog,
     dts,
@@ -571,7 +577,13 @@ class Facade implements ProjectionFacade {
 
   #catalogCopy(): CatalogToolCopy | undefined {
     if (!this.projections.catalog) return undefined;
-    return this.projections.direct === true ? DIRECT_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY;
+    const copy = this.projections.direct === true ? DIRECT_CATALOG_TOOL_COPY : CATALOG_TOOL_COPY;
+    return this.#runtime === 'psychoscript' ? forProgramCopy(copy) : copy;
+  }
+
+  /** What runs execute_machine's code (`codeRuntime`, validated at wrap time). */
+  get #runtime(): CodeRuntime {
+    return assertCodeRuntime(this.deps.options.codeRuntime);
   }
 
   executeMachine(
@@ -584,6 +596,7 @@ class Facade implements ProjectionFacade {
     return executeMachine(args, {
       ...this.gateDeps(snapshot, era, clientCanElicit, clientUrlElicitation),
       bridgeSource: snapshot.bridgeSource,
+      runtime: this.#runtime,
     });
   }
 
@@ -631,6 +644,7 @@ class Facade implements ProjectionFacade {
         : {}),
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
       maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
+      runtime: this.#runtime,
     });
   }
 
@@ -649,6 +663,7 @@ class Facade implements ProjectionFacade {
       return describeTool(snapshot.catalog, args, {
         ...snapshot.policySettings,
         toolTypes: snapshot.toolTypes,
+        runtime: this.#runtime,
       });
     } catch (err) {
       return errorResult(toStructuredError(err));
@@ -682,7 +697,14 @@ class Facade implements ProjectionFacade {
     const era = options?.era;
     const snapshot = this.snapshot;
     if (this.projections.codeMode) {
-      registerCodeModeTools(server, era, this, CODE_MODE_COPY, () => this.snapshot.catalog);
+      registerCodeModeTools(
+        server,
+        era,
+        this,
+        CODE_MODE_COPY,
+        () => this.snapshot.catalog,
+        this.#runtime,
+      );
     }
     const copy = this.#catalogCopy();
     if (copy !== undefined) {
