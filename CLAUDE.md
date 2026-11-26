@@ -12,7 +12,7 @@ reasoning-loop benchmark), `@astral-mcp/demo-host` (MCP Apps browser demo, `apps
   for every change.
 - `pnpm run format` — always run before committing; CI fails on oxfmt
   drift in any committed file.
-- Node ≥24 is required (`engine-strict`). The maintainer's machine provides
+- Node ≥24 is required (`engineStrict` in `pnpm-workspace.yaml`). The maintainer's machine provides
   Node via mise (24 LTS, on PATH in every shell — no PATH prefix needed); CI
   tests Node 24 and 26.
 

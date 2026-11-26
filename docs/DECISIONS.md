@@ -2821,8 +2821,9 @@ Context. D46 set CI to the oldest supported Node and the newest LTS,
 `[22, 26]`, and said to drop the oldest at end of life. Node 22 is in
 maintenance until April 2027. A candidate sandbox runtime,
 psychoscript (a confined JavaScript interpreter whose runs suspend to
-bytes and resume), declares `engines.node` `>=24`. Under pnpm's
-`engine-strict` our Node 22 CI job would refuse to install it.
+bytes and resume), declares `engines.node` `>=24`. With `engineStrict`
+on (below), pnpm checks dependencies' engines too, so our Node 22 CI
+job would refuse to install it.
 
 Decision. Drop Node 22 now rather than at end of life. The published
 package and the workspace root both require `>=24`; the CI matrix is
@@ -2835,6 +2836,9 @@ tests the oldest supported Node and the newest LTS.
   runs on the oldest supported version.
 - `engines` has no upper bound: 27 is not tested, but a cap would make
   `engine-strict` installs fail the day 27 ships.
+- `engine-strict=true` moves from `.npmrc`, which pnpm 11 ignores, to
+  `engineStrict: true` in `pnpm-workspace.yaml`. The Node requirement
+  is now enforced for contributors and CI, not just warned.
 
 Rejected: waiting for April 2027 (blocks evaluating psychoscript on
 the version CI tests); `>=24 <27` (an upper bound breaks installs

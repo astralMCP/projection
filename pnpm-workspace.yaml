@@ -1,6 +1,9 @@
 packages:
   - packages/*
   - apps/*
+# Fail installs on an unsupported Node (root and dependency engines).
+# pnpm 11 ignores engine-strict in .npmrc.
+engineStrict: true
 allowBuilds:
   esbuild: true
   # The sqlite3 native binding behind the mcp-sqlite smoke-test server.

@@ -14,7 +14,7 @@ survive an upgrade.
 ### Breaking
 
 - Node 24 or later is now required (`engines.node` `>=24`, was `>=22`). CI tests Node 24 and 26.
-  Node 22 leaves maintenance in April 2027, and an upcoming sandbox runtime needs Node 24.
+  Node 22 leaves maintenance in April 2027, and a candidate sandbox runtime under evaluation (psychoscript) requires Node 24.
 
 ## [0.10.0] - 2026-11-03
 
