@@ -866,12 +866,28 @@ function isAbort(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
 }
 
+/** Projection's own MCP tools, which a program may try to call through `tools`. */
+const FACADE_TOOL =
+  /^(?:search_tools|search_[A-Za-z0-9_-]+|describe_tool|call_tool|discover_apis|execute_machine)$/u;
+
 function unknownTool(
   error: ProjectionError,
   catalog: ServerCatalog,
   name: string,
 ): ProjectionError {
   const message = error.message;
+  // Projection's own MCP tools are not functions inside a program: in the
+  // thread eval, models wrote tools.search_tools(...) after discover_apis
+  // pointed them at search_tools, and got a misleading did-you-mean.
+  if (FACADE_TOOL.test(name)) {
+    return new ProjectionError(
+      'validate',
+      `${name} is a tool of this MCP server, not a function inside programs`,
+      {
+        hint: `Call ${name} directly (outside execute_machine) to find the tool you need, then call that tool's name in the program as tools.<name>(args)${isBoxedCatalog(catalog) ? ', or tools.<box>.<tool>(args)' : ''}. The tools object holds only the wrapped server's tools.`,
+      },
+    );
+  }
   const didYouMean = didYouMeanHint(catalog, name);
   return new ProjectionError('validate', message, {
     hint: `${didYouMean}Call tools by the names in tools.d.ts${isBoxedCatalog(catalog) ? ', as tools.<box>.<tool>(args)' : ''}; see discover_apis.`,

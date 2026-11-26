@@ -223,3 +223,14 @@ describe('psychoscript runtime: errors a model can act on', () => {
     expect(structured(result)['logs']).toMatchObject([{ level: 'log', message: 'hi 1' }]);
   });
 });
+
+describe('psychoscript runtime: Projection tools called from inside a program', () => {
+  it('tools.search_tools(...) says to call it directly, without a misleading did-you-mean', async () => {
+    const code = `return await tools.search_tools({ query: 'merge' })`;
+    const failed = error(await executeMachine({ code }, deps()));
+    expect(failed.phase).toBe('validate');
+    expect(failed.message).toContain('not a function inside programs');
+    expect(failed.hint).toContain('Call search_tools directly');
+    expect(failed.hint).not.toContain('Did you mean');
+  });
+});

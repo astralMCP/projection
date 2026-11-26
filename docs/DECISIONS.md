@@ -2967,3 +2967,24 @@ the worker-thread isolation above is in place.
 Rejected: replacing XState outright (unmeasured, and the memory gap);
 compiling programs into machines (a second language to debug); a new tool
 name now (it would confound the comparison with the authoring style).
+
+Thread eval (2026-11-26). With no working API key, models ran as T3
+threads (Claude Code, Sonnet 5.5) against the GitHub fake, through
+`packages/harness/scripts/serve-eval-world.ts` (one fresh world per
+thread, approvals answered by the harness's approve-all persona, built-in
+tools denied) and scored by `score-thread-eval.ts` with the tasks' own
+graders. 18 multi-step and hard tasks, once per runtime, code mode
+forced in the prompt:
+
+- XState: 18/18 succeeded, 31 execute_machine calls, none failed.
+- psychoscript: 18/18 succeeded, 54 calls, 14 failed. 13 of the 14 were
+  `tools.search_tools(...)` inside a program, after discover_apis had
+  pointed the model at search_tools, answered with a misleading
+  did-you-mean. A rerun of the same code: 18/18, 50 calls, 9 failed.
+- After a targeted error and a contract line saying search_tools,
+  describe_tool and call_tool are called directly, not from inside the
+  program: 18/18, 39 calls, none failed.
+
+One run per task and a long host prompt: a first signal, not the API
+eval. It shows models write working programs as reliably as machines on
+these tasks, at slightly more calls; it does not measure turns or tokens.

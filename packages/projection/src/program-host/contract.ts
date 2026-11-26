@@ -58,7 +58,10 @@ await tool calls at top level, and return the result.
 Rules:
 1. Call tools as async functions on the global tools object, with one plain
    object of arguments: await ${callee(read.name)}({ ... }). The input argument
-   of execute_machine is the global input (null when you pass none).
+   of execute_machine is the global input (null when you pass none). tools
+   holds only the wrapped server's tools: search_tools, describe_tool and
+   call_tool are tools of this MCP server, so call them directly, before
+   writing the program, not as tools.search_tools(...) inside it.
 2. Tools marked "asks for approval" pause the program until the user
    approves that exact call; the arguments at that moment are the ones that
    run. When the user answers, the program continues where it paused: calls
