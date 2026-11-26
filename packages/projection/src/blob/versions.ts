@@ -17,6 +17,32 @@ export const LIB_VERSION = '0.10.0';
 export const XSTATE_VERSION = '5.32.5';
 
 /**
+ * Pinned psychoscript version for the experimental program runtime
+ * (`WrapOptions.codeRuntime: 'psychoscript'`; must match the exact pin in
+ * package.json). A psychoscript snapshot resumes only in the build that
+ * wrote it, so a program blob is stamped with this instead of the XState
+ * version.
+ */
+export const PSYCHOSCRIPT_VERSION = '0.3.0';
+
+/**
+ * What runs the code `execute_machine` is given: an XState v5 machine
+ * (`xstate`, the default) or a plain JavaScript program on psychoscript
+ * (`psychoscript`, experimental).
+ */
+export type CodeRuntime = 'xstate' | 'psychoscript';
+
+/**
+ * The runtime stamp an `execute_machine` blob carries in its `xstatev` field
+ * and is strict-matched on open (Q3): the XState version for a machine,
+ * `psychoscript@<version>` for a program. Distinct values, so a blob never
+ * resumes under the other runtime.
+ */
+export function runtimeStampFor(runtime: CodeRuntime): string {
+  return runtime === 'psychoscript' ? `psychoscript@${PSYCHOSCRIPT_VERSION}` : XSTATE_VERSION;
+}
+
+/**
  * The `@modelcontextprotocol/server` and `@modelcontextprotocol/client` version
  * Projection is built and tested against: the exact devDependency pin (must
  * match package.json). Not a blob stamp.

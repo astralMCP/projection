@@ -117,7 +117,8 @@ export type EvalMode =
   | 'projection-search'
   | 'projection-nocode'
   | 'projection-codeonly'
-  | 'projection-nopreamble';
+  | 'projection-nopreamble'
+  | 'projection-psychoscript';
 /** The modes a run plans by default (the opt-in exploration modes are not among them). */
 export const EVAL_MODES: readonly EvalMode[] = ['direct', 'projection', 'projection-boxes'];
 /**
@@ -137,6 +138,7 @@ export const KNOWN_EVAL_MODES: readonly EvalMode[] = [
   'projection-nocode',
   'projection-codeonly',
   'projection-nopreamble',
+  'projection-psychoscript',
 ];
 
 /**
@@ -162,10 +164,17 @@ export function directSettingOf(mode: EvalMode): 'auto' | boolean {
  * - `projection-nopreamble`: `codeModePreamble: ''` (no routing preamble in
  *   the instructions; the server's own instructions and, on a multi-server
  *   facade, the box list stay).
+ *
+ * Not an ablation but the same mechanism: `projection-psychoscript` is
+ * `projection` on the experimental program runtime (`codeRuntime:
+ * 'psychoscript'`, D48): the model writes a plain JavaScript program
+ * instead of an XState machine, so a run with both modes compares the two
+ * authoring styles on identical tasks.
  */
 export function projectionWrapOptions(mode: EvalMode): {
   projections?: { direct?: 'auto' | boolean; codeMode?: boolean; catalog?: boolean };
   codeModePreamble?: string;
+  codeRuntime?: 'psychoscript';
 } {
   switch (mode) {
     case 'projection-direct':
@@ -180,6 +189,8 @@ export function projectionWrapOptions(mode: EvalMode): {
       return { projections: { catalog: false } };
     case 'projection-nopreamble':
       return { codeModePreamble: '' };
+    case 'projection-psychoscript':
+      return { codeRuntime: 'psychoscript' };
     default:
       return {};
   }
@@ -909,6 +920,7 @@ function openModeSession(
     case 'projection-nocode':
     case 'projection-codeonly':
     case 'projection-nopreamble':
+    case 'projection-psychoscript':
       return openSingleProjectionSession(world, mode, options);
   }
 }

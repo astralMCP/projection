@@ -50,7 +50,9 @@ import {
   listedBoxesSentence,
   searchToolsPhrase,
 } from '../catalog/search.js';
+import type { CodeRuntime } from '../blob/versions.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
+import { forProgram, forProgramCopy } from '../program-host/contract.js';
 import {
   batchToolListChanged,
   distrustCatalog,
@@ -66,6 +68,7 @@ import {
   approvalGateDeps,
   assertUpstreamElicitationMode,
   assertApprovalPrompts,
+  assertCodeRuntime,
   freezePolicySettings,
   resolveDirectSetting,
   resolveIntrospectTimeout,
@@ -194,6 +197,7 @@ export async function wrapMcpServers(
   const introspectTimeoutMs = resolveIntrospectTimeout(options.introspectTimeoutMs);
   const follow = resolveFollowSettings(options.followListChanged);
   const facadeElicitation = assertUpstreamElicitationMode(options.upstreamElicitation);
+  assertCodeRuntime(options.codeRuntime);
   // G1: a box forwards its server's questions when its own setting, else
   // the facade's, says `forward`.
   const forwarding = new Set(
@@ -358,13 +362,22 @@ function buildMultiSnapshot(
     toolTypes,
     // The code-mode resources (R3, R45), then the box overviews (R43, R45).
     resources: [
-      ...buildResources(view, dts, policySettings, clampCaps(options.caps ?? {}).maxRoundTrips),
+      ...buildResources(
+        view,
+        dts,
+        policySettings,
+        clampCaps(options.caps ?? {}).maxRoundTrips,
+        assertCodeRuntime(options.codeRuntime),
+      ),
       ...boxOverviewResources(view),
     ],
-    instructions: buildMultiInstructions(view, projections, options.codeModePreamble),
+    instructions: forRuntime(
+      buildMultiInstructions(view, projections, options.codeModePreamble),
+      assertCodeRuntime(options.codeRuntime),
+    ),
     policySettings,
     projections,
-    copy: catalogToolCopy(view, projections),
+    copy: forRuntime(catalogToolCopy(view, projections), assertCodeRuntime(options.codeRuntime)),
     directBoxes,
     plan,
     directTools: plan.filter((tool) => tool.alias !== undefined && directBoxes.has(tool.alias)),
@@ -908,6 +921,7 @@ class MultiFacade implements MultiProjectionFacade {
     return executeMachine(args, {
       ...this.gateDeps(snapshot, era, clientCanElicit, clientUrlElicitation),
       bridgeSource: snapshot.bridgeSource,
+      runtime: assertCodeRuntime(this.deps.options.codeRuntime),
     });
   }
 
@@ -929,6 +943,7 @@ class MultiFacade implements MultiProjectionFacade {
       policy: snapshot.policySettings,
       ...(catalogInlineThreshold !== undefined ? { inlineThreshold: catalogInlineThreshold } : {}),
       maxRoundTrips: clampCaps(this.deps.options.caps ?? {}).maxRoundTrips,
+      runtime: assertCodeRuntime(this.deps.options.codeRuntime),
     });
   }
 
@@ -959,10 +974,13 @@ class MultiFacade implements MultiProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
     const snapshot = this.snapshot;
     try {
-      return describeTool(snapshot.view, args, {
-        ...snapshot.policySettings,
-        toolTypes: snapshot.toolTypes,
-      });
+      return forRuntime(
+        describeTool(snapshot.view, args, {
+          ...snapshot.policySettings,
+          toolTypes: snapshot.toolTypes,
+        }),
+        assertCodeRuntime(this.deps.options.codeRuntime),
+      );
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
@@ -1027,6 +1045,7 @@ class MultiFacade implements MultiProjectionFacade {
         this,
         codeModeCopy(this.projections),
         () => this.snapshot.view,
+        assertCodeRuntime(this.deps.options.codeRuntime),
       );
     }
     if (this.projections.catalog) {
@@ -1099,4 +1118,10 @@ class MultiFacade implements MultiProjectionFacade {
     this.#tracker.close();
     return this.deps.introspector.close();
   }
+}
+
+/** Model-facing copy for the facade's runtime: machine text rewritten for programs (D48). */
+function forRuntime<T>(copy: T, runtime: CodeRuntime): T {
+  if (runtime !== 'psychoscript') return copy;
+  return typeof copy === 'string' ? (forProgram(copy) as T) : forProgramCopy(copy);
 }

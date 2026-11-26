@@ -2843,3 +2843,76 @@ tests the oldest supported Node and the newest LTS.
 Rejected: waiting for April 2027 (blocks evaluating psychoscript on
 the version CI tests); `>=24 <27` (an upper bound breaks installs
 without anything to prevent).
+
+## D48 — Spike: plain JavaScript programs on psychoscript as an opt-in code runtime (2026-11-26)
+
+Context. Code mode asks models to write XState machines because a machine
+can be snapshotted at an approval and restored afterwards. The cost is
+the authoring style: states, events, `toolCall`, guards and `assign`,
+which models get wrong in ways the contract has to keep patching. An
+XState v6 spike (PR #88) kept that style. psychoscript (MIT, 0.x,
+anomalyco/psychoscript) is a confined JavaScript interpreter whose runs
+suspend to bytes and resume, so it can give the same guarantee to an
+ordinary program: `const r = await tools.read_file({ path })`.
+
+Decision. `WrapOptions.codeRuntime: 'psychoscript'` is an experimental
+opt-in; `'xstate'` stays the default, byte for byte.
+
+- `src/program-host/host.ts` returns the same `SegmentOutcome` as the
+  machine host, so sealing, approvals, batching, the audit, the round-trip
+  cap and replay protection are the MRTR adapter's, unchanged.
+- Every tool is a psychoscript durable host function. `start` decides the
+  policy once, in the segment that made the call. A gated call's `wait`
+  blocks; once no call is executing, the run is suspended and its state
+  (base64) sealed with the pending calls. Calls started together share one
+  round trip (R15).
+- On resume, a pending call's `wait` applies its verdict: approved runs
+  the SEALED arguments from `pending` (S2) once; declined or newly
+  policy-denied (D9) throws an Error named `ToolDenied` into the program.
+  Arguments are normalized to plain JSON at `start`, so what is sealed is
+  what the server receives.
+- A run is never suspended while a call executes, so no executed call is
+  interrupted and repeated. A resumed auto call fails closed rather than
+  run twice (unreachable by construction).
+- An unknown tool or a cap fails the whole workflow, even inside
+  try/catch, as a machine's would; a tool's own failure is a catchable
+  `ToolError`.
+- The blob's `xstatev` field carries `psychoscript@0.3.0`, so a program
+  blob never opens on an XState facade or the reverse. psychoscript also
+  refuses a snapshot from another build.
+- Model-facing copy: a dedicated program contract and examples; every
+  shared text (descriptions, preambles, prompts, catalog copy,
+  `tools.d.ts`) goes through `forProgram`, and a test asserts no machine
+  vocabulary reaches a model on a program facade. The tool keeps its name,
+  `execute_machine`, so the harness and its route counts work unchanged.
+- The harness mode `projection-psychoscript` compares the two on the same
+  tasks.
+
+Measured (denial-fallback example, fake executor, median of 35): first
+segment 5.7 ms against 12.8 ms for XState; resume 1.8 ms against 12.2 ms.
+The sealed `requestState` grows from about 0.5 KB to 3.9 KB (the VM's whole
+state); the R23 ceiling is 128 KB.
+
+Known gaps, each a condition for making it the default:
+
+- No memory limit. psychoscript runs in this process; a program that
+  hoards memory is stopped only by the segment wall clock (1.15 GB in 3 s
+  in a probe). The QuickJS sandbox caps memory (D15). Promotion needs the
+  interpreter in a worker with `resourceLimits`, or a cap upstream.
+- One regular-expression match cannot be interrupted (upstream says so).
+- G1: a server's own questions are not forwarded; such a call fails as a
+  `ToolError`.
+- psychoscript's `timeoutMs` sums active time across resumes; the per-
+  segment cap is our own abort timer, and theirs is a backstop at
+  `segmentWallClockMs × (maxRoundTrips + 1)`.
+- Console output of a segment that suspends or is aborted is lost.
+- The tool name still says "machine".
+- 0.x with breaking releases weekly: pinned exactly, like XState.
+
+Promote only if the live eval (`projection` against
+`projection-psychoscript`) shows success and turns at least as good, and
+the memory gap is closed.
+
+Rejected: replacing XState outright (unmeasured, and the memory gap);
+compiling programs into machines (a second language to debug); a new tool
+name now (it would confound the comparison with the authoring style).

@@ -422,6 +422,11 @@ export interface BuildBlobPayloadInput {
   /** Minting tool (R36). Default `machine`. */
   kind?: BlobKind | undefined;
   /**
+   * The runtime stamp recorded as `xstatev` (`runtimeStampFor`). Default
+   * {@link XSTATE_VERSION}; a psychoscript facade passes its own stamp.
+   */
+  runtime?: string | undefined;
+  /**
    * The text the blob is bound to (S4): the original `code` argument for a
    * `machine` blob, the canonical request for a `call` blob (R36).
    */
@@ -463,7 +468,7 @@ export function buildBlobPayload(input: BuildBlobPayloadInput): BlobPayload {
     v: BLOB_SCHEMA_VERSION,
     kind: input.kind ?? 'machine',
     libv: LIB_VERSION,
-    xstatev: XSTATE_VERSION,
+    xstatev: input.runtime ?? XSTATE_VERSION,
     codeHash: hashCode(input.code),
     serverIdentity: input.serverIdentity,
     snapshot: input.snapshot,
@@ -546,6 +551,12 @@ export interface OpenBlobOptions {
    * blob sealed in the other domain fails authentication.
    */
   domain?: BlobKeyDomain | undefined;
+  /**
+   * The runtime stamp this instance resumes under (`runtimeStampFor`),
+   * strict-matched against the blob's `xstatev` (Q3). Default
+   * {@link XSTATE_VERSION}.
+   */
+  runtime?: string | undefined;
   /** Clock override for testability, Unix ms. Default `Date.now()`. */
   now?: number | undefined;
 }
@@ -615,9 +626,10 @@ export function openBlob(blob: string, options: OpenBlobOptions): BlobPayload {
       HINT_VERSION,
     );
   }
-  if (payload['xstatev'] !== XSTATE_VERSION) {
+  const runtime = options.runtime ?? XSTATE_VERSION;
+  if (payload['xstatev'] !== runtime) {
     throw verificationError(
-      `xstate version mismatch: blob snapshot was produced under xstate ${JSON.stringify(payload['xstatev'])}, this instance runs ${XSTATE_VERSION}`,
+      `xstate version mismatch: blob snapshot was produced under xstate ${JSON.stringify(payload['xstatev'])}, this instance runs ${runtime}`,
       HINT_VERSION,
     );
   }

@@ -25,6 +25,8 @@ import type {
   ProtocolEra,
   ToolCallResult,
 } from '../mrtr/index.js';
+import type { CodeRuntime } from '../blob/versions.js';
+import { forProgram, PROGRAM_CODE_DESCRIPTION } from '../program-host/contract.js';
 import { WORKFLOW_PROMPTS } from '../prompts/workflow-prompts.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import { clampCaps, type ServerCatalog, type UpstreamCallOptions } from '../types.js';
@@ -456,13 +458,17 @@ export function registerCodeModeTools(
   handlers: CodeModeHandlers,
   copy: { executeMachine: string; discoverApis: string },
   promptCatalog: () => ServerCatalog,
+  runtime: CodeRuntime = 'xstate',
 ): void {
+  // The program runtime (D48) rewrites the shared machine copy.
+  const text = runtime === 'psychoscript' ? forProgram : (copy: string): string => copy;
   server.registerTool(
     'execute_machine',
     {
-      title: 'Execute a state machine',
-      description: copy.executeMachine,
-      inputSchema: EXECUTE_MACHINE_INPUT_SCHEMA,
+      title: runtime === 'psychoscript' ? 'Run a program' : 'Execute a state machine',
+      description: text(copy.executeMachine),
+      inputSchema:
+        runtime === 'psychoscript' ? EXECUTE_PROGRAM_INPUT_SCHEMA : EXECUTE_MACHINE_INPUT_SCHEMA,
       // MCP Apps (SEP-1865): app-capable hosts render the workflow
       // dashboard in place of the raw result. Hosts without the extension
       // ignore _meta.ui entirely.
@@ -498,7 +504,7 @@ export function registerCodeModeTools(
     'discover_apis',
     {
       title: 'Discover the tool API',
-      description: copy.discoverApis,
+      description: text(copy.discoverApis),
       inputSchema: z.object({}),
     },
     () => handlers.discoverApis(),
@@ -515,7 +521,7 @@ export function registerCodeModeTools(
     }
     server.registerPrompt(
       prompt.name,
-      { title: prompt.title, description: prompt.description, argsSchema: z.object(shape) },
+      { title: prompt.title, description: text(prompt.description), argsSchema: z.object(shape) },
       (args: Record<string, unknown>) => ({
         messages: [
           {
@@ -523,7 +529,7 @@ export function registerCodeModeTools(
             content: {
               type: 'text' as const,
               // Safe: the zod argsSchema above admits only (optional) strings.
-              text: prompt.build(args as Record<string, string | undefined>, promptCatalog()),
+              text: text(prompt.build(args as Record<string, string | undefined>, promptCatalog())),
             },
           },
         ],
@@ -583,4 +589,14 @@ const EXECUTE_MACHINE_INPUT_SCHEMA = z.object({
     .optional()
     .describe('Language of `code`. Defaults to TypeScript-compatible parsing.'),
   input: z.unknown().optional().describe('Passed to the machine as its `input`.'),
+});
+
+/** `execute_machine` arguments on an experimental program facade (D48). */
+const EXECUTE_PROGRAM_INPUT_SCHEMA = z.object({
+  code: z.string().describe(PROGRAM_CODE_DESCRIPTION),
+  lang: z
+    .enum(['ts', 'js'])
+    .optional()
+    .describe('Language of `code`. Defaults to TypeScript, whose types are stripped.'),
+  input: z.unknown().optional().describe("The program's global `input`."),
 });

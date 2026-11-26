@@ -11,9 +11,11 @@ import {
   buildBlobPayload,
   type BlobKeyDomain,
 } from '../blob/index.js';
+import { type CodeRuntime, runtimeStampFor } from '../blob/versions.js';
 import { approvalSubject, blobKeyDomain, isBoxedCatalog, routeCall } from '../catalog/boxes.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
 import { runSegment } from '../machine-host/index.js';
+import { runProgramSegment } from '../program-host/host.js';
 import { buildElicitationCopy } from '../policy/index.js';
 import { capLength, neutralizeControlChars } from '../text-safety.js';
 import {
@@ -142,6 +144,11 @@ export interface ApprovalGateDeps extends PolicyOptions {
 export interface ExecuteMachineDeps extends ApprovalGateDeps {
   /** The `@astral-mcp/tools` bridge module source the sandbox loads (R2). */
   bridgeSource: string;
+  /**
+   * What runs the code (`WrapOptions.codeRuntime`): an XState machine in
+   * the QuickJS sandbox (default) or a psychoscript program (experimental).
+   */
+  runtime?: CodeRuntime;
 }
 
 /**
@@ -180,7 +187,8 @@ export async function executeMachine(
       );
     }
 
-    const outcome = await runSegment({
+    const run = deps.runtime === 'psychoscript' ? runProgramSegment : runSegment;
+    const outcome = await run({
       code: args.code,
       ...(args.lang !== undefined ? { lang: args.lang } : {}),
       ...(args.input !== undefined ? { input: args.input } : {}),
@@ -228,6 +236,7 @@ async function openResume(
 ): Promise<ResumeState> {
   const payload = openBlob(args.requestState as string, {
     expectedKind: 'machine',
+    runtime: runtimeStampFor(deps.runtime ?? 'xstate'),
     code: args.code,
     serverIdentity: deps.catalog.identity,
     config: deps.blob,
@@ -451,6 +460,7 @@ function suspendResult(
   }
 
   const payload = buildBlobPayload({
+    runtime: runtimeStampFor(deps.runtime ?? 'xstate'),
     code: args.code,
     serverIdentity: deps.catalog.identity,
     snapshot: outcome.snapshot,

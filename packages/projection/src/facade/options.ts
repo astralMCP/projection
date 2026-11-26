@@ -12,6 +12,7 @@ import { ProjectionError } from '../errors.js';
 import type { TokenStore } from '../auth/token-store.js';
 import { DEFAULT_INTROSPECT_TIMEOUT_MS } from '../introspector/constants.js';
 import type { BlobKeyDomain } from '../blob/index.js';
+import type { CodeRuntime } from '../blob/versions.js';
 import type { ApprovalGateDeps, ProjectionSelection, ProtocolEra } from '../mrtr/index.js';
 import type { ApprovalPrompts } from '../mrtr/batch.js';
 import type {
@@ -95,6 +96,19 @@ export interface WrapOptions {
    * code-mode, catalog or routing copy).
    */
   codeModePreamble?: string;
+  /**
+   * EXPERIMENTAL. What runs the code `execute_machine` is given (DECISIONS
+   * D48): `'xstate'` (default), an XState v5 machine in the QuickJS
+   * sandbox; or `'psychoscript'`, a plain JavaScript program that awaits
+   * tool functions, run on the pinned psychoscript interpreter and resumed
+   * after each approval. A psychoscript facade serves the program
+   * authoring contract and examples, and stamps its blobs so a blob never
+   * resumes under the other runtime. psychoscript has no memory limit and
+   * runs in this process: only the per-segment wall clock bounds a
+   * program. Read once, at wrap time; any other value fails the wrap
+   * (`validate`).
+   */
+  codeRuntime?: CodeRuntime;
   /** Compatibility switches for pre-2026-07-28 clients. */
   compat?: {
     /**
@@ -381,6 +395,19 @@ export function assertUpstreamElicitationMode(
   throw new ProjectionError('validate', `${label} must be "forward" or "refuse"`, {
     hint: "Pass upstreamElicitation: 'forward' to pass a trusted server's own questions on to the user, or omit it to refuse them (the default).",
   });
+}
+
+/** `codeRuntime`, validated: `'xstate'`, `'psychoscript'`, or absent (`'xstate'`). */
+export function assertCodeRuntime(value: unknown): CodeRuntime {
+  if (value === undefined || value === 'xstate') return 'xstate';
+  if (value === 'psychoscript') return 'psychoscript';
+  throw new ProjectionError(
+    'validate',
+    `codeRuntime must be 'xstate' or 'psychoscript', got ${JSON.stringify(value) ?? String(value)}`,
+    {
+      hint: "Omit codeRuntime for XState machines, or set codeRuntime: 'psychoscript' to opt into the experimental program runtime.",
+    },
+  );
 }
 
 /** Validate `WrapOptions.approvalPrompts` at wrap time: absent, or one of the two layouts. */
