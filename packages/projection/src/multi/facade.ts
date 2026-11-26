@@ -52,7 +52,7 @@ import {
 } from '../catalog/search.js';
 import type { CodeRuntime } from '../blob/versions.js';
 import { ProjectionError, toStructuredError } from '../errors.js';
-import { forProgram, forProgramCopy } from '../program-host/contract.js';
+import { forProgram } from '../program-host/contract.js';
 import {
   batchToolListChanged,
   distrustCatalog,
@@ -371,13 +371,15 @@ function buildMultiSnapshot(
       ),
       ...boxOverviewResources(view),
     ],
-    instructions: forRuntime(
-      buildMultiInstructions(view, projections, options.codeModePreamble),
+    instructions: buildMultiInstructions(
+      view,
+      projections,
+      options.codeModePreamble,
       assertCodeRuntime(options.codeRuntime),
     ),
     policySettings,
     projections,
-    copy: forRuntime(catalogToolCopy(view, projections), assertCodeRuntime(options.codeRuntime)),
+    copy: catalogToolCopy(view, projections, assertCodeRuntime(options.codeRuntime)),
     directBoxes,
     plan,
     directTools: plan.filter((tool) => tool.alias !== undefined && directBoxes.has(tool.alias)),
@@ -636,8 +638,10 @@ export function buildMultiInstructions(
   view: BoxedCatalog,
   projections: Readonly<ProjectionSelection>,
   preamble?: string,
+  runtime: CodeRuntime = 'xstate',
 ): string {
-  const lines = [shelfHeader(projections, view.directBoxes.length === view.boxes.size)];
+  const own = ownCopy(runtime);
+  const lines = [own(shelfHeader(projections, view.directBoxes.length === view.boxes.size))];
   for (const [alias, box] of view.boxes) {
     const about = boxAbout(box);
     // Marked only on a mixed facade: when every box is listed the header says so.
@@ -648,14 +652,18 @@ export function buildMultiInstructions(
     // shelf they read as facts the model must have before it acts (v16).
     lines.push(about !== undefined ? `- ${alias} — ${about} (${tools})` : `- ${alias} (${tools})`);
   }
+  // An integrator's preamble is theirs, and box abouts are the servers':
+  // only Projection's default preamble and the shelf header are rewritten.
   const copy =
     preamble ??
-    defaultMultiPreamble({
-      projections,
-      globalSearch: view.globalSearch,
-      directBoxes: view.directBoxes,
-      searchBoxes: view.searchBoxes,
-    });
+    own(
+      defaultMultiPreamble({
+        projections,
+        globalSearch: view.globalSearch,
+        directBoxes: view.directBoxes,
+        searchBoxes: view.searchBoxes,
+      }),
+    );
   return `${copy}\n\n${lines.join('\n')}`;
 }
 
@@ -758,6 +766,25 @@ const GLOBAL_SEARCH_COPY: SearchToolCopy = {
  * source of truth — and every search tool the copy names is served.
  */
 function catalogToolCopy(
+  view: BoxedCatalog,
+  projections: Readonly<ProjectionSelection>,
+  runtime: CodeRuntime,
+): CatalogToolCopy {
+  const copy = boxedCatalogToolCopy(view, projections);
+  if (runtime !== 'psychoscript') return copy;
+  // The search copy carries each box's about (the server's words) and no
+  // machine vocabulary: only the describe and call copy is rewritten.
+  const own = ownCopy(runtime);
+  return {
+    ...copy,
+    describeDescription: own(copy.describeDescription),
+    callDescription: own(copy.callDescription),
+    toolName: own(copy.toolName),
+    describeTypes: own(copy.describeTypes),
+  };
+}
+
+function boxedCatalogToolCopy(
   view: BoxedCatalog,
   projections: Readonly<ProjectionSelection>,
 ): CatalogToolCopy {
@@ -974,13 +1001,11 @@ class MultiFacade implements MultiProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
     const snapshot = this.snapshot;
     try {
-      return forRuntime(
-        describeTool(snapshot.view, args, {
-          ...snapshot.policySettings,
-          toolTypes: snapshot.toolTypes,
-        }),
-        assertCodeRuntime(this.deps.options.codeRuntime),
-      );
+      return describeTool(snapshot.view, args, {
+        ...snapshot.policySettings,
+        toolTypes: snapshot.toolTypes,
+        runtime: assertCodeRuntime(this.deps.options.codeRuntime),
+      });
     } catch (err) {
       return errorResult(toStructuredError(err));
     }
@@ -1120,8 +1145,11 @@ class MultiFacade implements MultiProjectionFacade {
   }
 }
 
-/** Model-facing copy for the facade's runtime: machine text rewritten for programs (D48). */
-function forRuntime<T>(copy: T, runtime: CodeRuntime): T {
-  if (runtime !== 'psychoscript') return copy;
-  return typeof copy === 'string' ? (forProgram(copy) as T) : forProgramCopy(copy);
+/**
+ * Projection's own copy for the facade's runtime: machine text rewritten for
+ * programs (D48). Only ever applied to Projection's strings, never to an
+ * integrator's preamble or a wrapped server's text.
+ */
+function ownCopy(runtime: CodeRuntime): (copy: string) => string {
+  return runtime === 'psychoscript' ? forProgram : (copy) => copy;
 }

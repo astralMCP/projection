@@ -660,11 +660,11 @@ class Facade implements ProjectionFacade {
   describeTool(args: { name: string; types?: boolean }): CallToolResult {
     const snapshot = this.snapshot;
     try {
-      const described = describeTool(snapshot.catalog, args, {
+      return describeTool(snapshot.catalog, args, {
         ...snapshot.policySettings,
         toolTypes: snapshot.toolTypes,
+        runtime: this.#runtime,
       });
-      return this.#runtime === 'psychoscript' ? forProgramCopy(described) : described;
     } catch (err) {
       return errorResult(toStructuredError(err));
     }

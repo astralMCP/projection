@@ -159,6 +159,97 @@ describe('program runtime surface: no machine vocabulary reaches the model', () 
   });
 });
 
+/** All text of a tool result, structured content included. */
+function resultText(result: unknown): string {
+  return JSON.stringify(result);
+}
+
+describe('program runtime: the adapter speaks of programs', () => {
+  const gatedTwice = `
+await tools.write_file({ path: '/a', content: 'x' })
+await tools.write_file({ path: '/b', content: 'x' })
+return 'ok'
+`;
+
+  it('the round-trip limit says how to finish with a program', async () => {
+    const facade = await wrapMcpServer(fsServer([]), {
+      blob: { key: KEY },
+      codeRuntime: 'psychoscript',
+      caps: { maxRoundTrips: 1 },
+    });
+    facades.push(facade);
+    const first = await facade.executeMachine({ code: gatedTwice }, 'modern');
+    const limited = await facade.executeMachine(
+      {
+        code: gatedTwice,
+        requestState: sealedState(first),
+        inputResponses: { [requestKeys(first)[0] as string]: ACCEPT },
+      },
+      'modern',
+    );
+    const text = resultText(limited);
+    expect(text).toContain('stopped unfinished');
+    expect(text).toContain('Promise.allSettled');
+    expect(MACHINE_WORDS.exec(text)).toBeNull();
+  });
+
+  it('the legacy-client gate says this program', async () => {
+    const facade = await wrapMcpServer(fsServer([]), {
+      blob: { key: KEY },
+      codeRuntime: 'psychoscript',
+    });
+    facades.push(facade);
+    const gated = await facade.executeMachine({ code: gatedTwice }, 'legacy');
+    const text = resultText(gated);
+    expect(text).toContain('this program needs approval');
+    expect(text).toContain('Write a program that only calls tools that run without approval');
+    expect(MACHINE_WORDS.exec(text)).toBeNull();
+  });
+});
+
+describe('program runtime: integrator and server text is never rewritten', () => {
+  const upstream = 'Before a machine reads its fields, pause the machine.';
+  const tool = { name: 'reboot', description: upstream, readOnly: true };
+
+  it('describe_tool keeps the server description, and its own sentence speaks of programs', async () => {
+    const single = await wrapMcpServer(fsServer([], [tool]), {
+      blob: { key: KEY },
+      codeRuntime: 'psychoscript',
+    });
+    const multi = await wrapMcpServers(
+      { fs: fsServer([], [tool]) },
+      { blob: { key: KEY }, codeRuntime: 'psychoscript' },
+    );
+    facades.push(single, multi);
+    for (const [facade, name] of [
+      [single, 'reboot'],
+      [multi, 'fs.reboot'],
+    ] as const) {
+      const described = resultText(facade.describeTool({ name }));
+      expect(described).toContain(upstream);
+      expect(described).toContain('Before a program reads its fields');
+    }
+  });
+
+  it("a multi-server facade keeps the integrator's preamble verbatim, like a single server", async () => {
+    const preamble = 'Integrator copy: author a machine and use execute_machine.';
+    const multi = await wrapMcpServers(
+      { fs: fsServer([]) },
+      { blob: { key: KEY }, codeRuntime: 'psychoscript', codeModePreamble: preamble },
+    );
+    const single = await wrapMcpServer(fsServer([]), {
+      blob: { key: KEY },
+      codeRuntime: 'psychoscript',
+      codeModePreamble: preamble,
+    });
+    facades.push(multi, single);
+    for (const facade of [multi, single]) {
+      const instructions = (await connect(facade)).getInstructions() ?? '';
+      expect(instructions).toContain(preamble);
+    }
+  });
+});
+
 describe('program runtime on a multi-server facade', () => {
   it('one program spans boxes; each gated call is approved on its own, in one round trip', async () => {
     const log: RecordedCall[] = [];

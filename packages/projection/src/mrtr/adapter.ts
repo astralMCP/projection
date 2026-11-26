@@ -165,8 +165,9 @@ export async function executeMachine(
   const caps = clampCaps(deps.caps ?? {});
 
   try {
-    assertCodeSize(args.code, caps);
-    assertInputSize(args.input, caps);
+    const noun = codeNoun(deps.runtime);
+    assertCodeSize(args.code, caps, noun);
+    assertInputSize(args.input, caps, noun);
 
     const resume = args.requestState !== undefined ? await openResume(args, deps) : undefined;
 
@@ -179,7 +180,7 @@ export async function executeMachine(
     // the workflow — this arm only catches a blob minted before a cap change.
     // Nothing from this blob runs; what earlier round trips ran is listed.
     if (resume !== undefined && resume.trip > caps.maxRoundTrips) {
-      const limit = roundTripLimit(caps);
+      const limit = roundTripLimit(caps, deps.runtime);
       return withApprovalOutcomes(
         errorResult({ phase: 'terminal', ...limit, diagnostics: [], logs: [] }),
         resume.audit,
@@ -200,6 +201,7 @@ export async function executeMachine(
       ...(deps.approvals !== undefined ? { approvals: deps.approvals } : {}),
       ...(deps.toolApprovals !== undefined ? { toolApprovals: deps.toolApprovals } : {}),
       segment: resume?.trip ?? 0,
+      ...(deps.blob.maxBlobBytes !== undefined ? { maxBlobBytes: deps.blob.maxBlobBytes } : {}),
       ...(resume !== undefined ? { resume } : {}),
     });
 
@@ -329,7 +331,7 @@ function toToolCallResult(
       return {
         content: [
           { type: 'text', text: JSON.stringify(outcome.output ?? null, null, 2) },
-          ...noteBlocks(outcome.notes),
+          ...noteBlocks(outcome.notes, codeNoun(deps.runtime)),
           ...refusalBlocks(outcome.audit, deps.redact),
           ...logBlocks(outcome.logs),
         ],
@@ -380,11 +382,13 @@ function suspendResult(
   // R28: a client that cannot carry MRTR must fail here rather than silently
   // executing an unapproved write or hanging (see legacy-gate.ts).
   const onlyQuestions = Object.keys(outcome.pending).length === 0;
+  const program = deps.runtime === 'psychoscript';
+  const author = program ? 'Write a program' : 'Author a machine';
   const gate = legacySuspendError(deps, {
-    subject: 'this machine',
+    subject: program ? 'this program' : 'this machine',
     readOnlyAdvice: onlyQuestions
-      ? 'Author a machine that avoids the tool whose server asks the user questions'
-      : 'Author a machine that only calls tools that run without approval',
+      ? `${author} that avoids the tool whose server asks the user questions`
+      : `${author} that only calls tools that run without approval`,
     ...(onlyQuestions ? { need: "to pass on a question a tool's server asked the user" } : {}),
   });
   if (gate !== undefined) return fail(gate.phase, gate.message, gate.hint);
@@ -392,7 +396,7 @@ function suspendResult(
   // R18: refuse to suspend again once the cap is reached, rather than
   // minting a blob the retry would reject.
   if (outcome.trip > caps.maxRoundTrips) {
-    const limit = roundTripLimit(caps);
+    const limit = roundTripLimit(caps, deps.runtime);
     return fail('terminal', limit.message, limit.hint);
   }
 
@@ -405,7 +409,7 @@ function suspendResult(
     if (entry === undefined) {
       return fail(
         'validate',
-        `the machine requested approval for unknown tool "${call.name}"`,
+        `the ${codeNoun(deps.runtime)} requested approval for unknown tool "${call.name}"`,
         'Call only tools listed by discover_apis.',
       );
     }
@@ -502,11 +506,26 @@ function suspendResult(
  * told the user the task was done (D30). So it says the workflow did not
  * finish, that the calls not yet made were not made, and how to finish.
  */
-export function roundTripLimit(caps: ResourceCaps): { message: string; hint: string } {
+export function roundTripLimit(
+  caps: ResourceCaps,
+  runtime: CodeRuntime = 'xstate',
+): { message: string; hint: string } {
+  const limit = `this workflow stopped unfinished: it reached the limit of ${caps.maxRoundTrips} ${caps.maxRoundTrips === 1 ? 'round trip' : 'round trips'} (approvals and forwarded server questions)`;
+  if (runtime === 'psychoscript') {
+    return {
+      message: `${limit}, so the program did not run to its end`,
+      hint: `The calls the program had not made yet were not made. Tell the user the task is incomplete, or finish it: start the remaining gated calls together (Promise.allSettled over them) in one program, so they take one round trip, leaving out the ones listed as already done, or make them with call_tool.`,
+    };
+  }
   return {
-    message: `this workflow stopped unfinished: it reached the limit of ${caps.maxRoundTrips} ${caps.maxRoundTrips === 1 ? 'round trip' : 'round trips'} (approvals and forwarded server questions), so the machine did not reach its final state`,
+    message: `${limit}, so the machine did not reach its final state`,
     hint: `The calls the machine had not made yet were not made. Tell the user the task is incomplete, or finish it: issue the remaining gated calls together with toolCalls (one round trip for all of them), leaving out the ones listed as already done, or make them with call_tool.`,
   };
+}
+
+/** What the submitted code is called in the adapter's own copy: a machine, or a program (D48). */
+function codeNoun(runtime: CodeRuntime | undefined): 'machine' | 'program' {
+  return runtime === 'psychoscript' ? 'program' : 'machine';
 }
 
 /**
@@ -596,13 +615,15 @@ function refusalBlocks(audit: AuditEntry[], redact?: RedactionHook): ContentBloc
  * are already single neutralized lines, prefixed with the tool and
  * bounded by the host.
  */
-function noteBlocks(notes: string[] | undefined): ContentBlock[] {
+function noteBlocks(notes: string[] | undefined, noun: 'machine' | 'program'): ContentBlock[] {
   if (notes === undefined || notes.length === 0) return [];
   return [
     {
       type: 'text',
       text: [
-        'Notes on the tool results this run read (added by this server, not by the machine; check that the output above accounts for them):',
+        noun === 'program'
+          ? 'Notes on this run and the tool results it read (added by this server, not by the program; check that the output above accounts for them):'
+          : 'Notes on the tool results this run read (added by this server, not by the machine; check that the output above accounts for them):',
         ...notes.map((note) => `- ${note}`),
       ].join('\n'),
     },
@@ -670,14 +691,14 @@ function logBlocks(logs: LogEntry[]): ContentBlock[] {
   return [{ type: 'text', text: `Console output:\n${text}` }];
 }
 
-function assertCodeSize(code: string, caps: ResourceCaps): void {
+function assertCodeSize(code: string, caps: ResourceCaps, noun: 'machine' | 'program'): void {
   const size = Buffer.byteLength(code, 'utf8');
   if (size > caps.maxCodeBytes) {
     throw new ProjectionError(
       'cap_exceeded',
       `submitted code is ${size} bytes, exceeding the limit of ${caps.maxCodeBytes}`,
       {
-        hint: `Shorten the machine to at most ${caps.maxCodeBytes} bytes.`,
+        hint: `Shorten the ${noun} to at most ${caps.maxCodeBytes} bytes.`,
       },
     );
   }
@@ -689,13 +710,13 @@ function assertCodeSize(code: string, caps: ResourceCaps): void {
  * value — is what the sandbox actually pays for. Bounding it here yields a
  * structured cap_exceeded error instead of an opaque WASM memory failure.
  */
-function assertInputSize(input: unknown, caps: ResourceCaps): void {
+function assertInputSize(input: unknown, caps: ResourceCaps, noun: 'machine' | 'program'): void {
   if (input === undefined) return;
   let json: string | undefined;
   try {
     json = JSON.stringify(input);
   } catch (err) {
-    throw new ProjectionError('validate', 'machine input is not JSON-serializable', {
+    throw new ProjectionError('validate', `${noun} input is not JSON-serializable`, {
       hint: 'Remove circular references from the input; it must serialize to plain JSON.',
       cause: err,
     });
@@ -709,7 +730,7 @@ function assertInputSize(input: unknown, caps: ResourceCaps): void {
       'cap_exceeded',
       `submitted input serializes to ${size} bytes, exceeding the limit of ${caps.maxInputBytes}`,
       {
-        hint: `Shrink the machine input to at most ${caps.maxInputBytes} bytes of JSON.`,
+        hint: `Shrink the ${noun} input to at most ${caps.maxInputBytes} bytes of JSON.`,
       },
     );
   }

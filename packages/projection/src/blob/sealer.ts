@@ -629,7 +629,7 @@ export function openBlob(blob: string, options: OpenBlobOptions): BlobPayload {
   const runtime = options.runtime ?? XSTATE_VERSION;
   if (payload['xstatev'] !== runtime) {
     throw verificationError(
-      `xstate version mismatch: blob snapshot was produced under xstate ${JSON.stringify(payload['xstatev'])}, this instance runs ${runtime}`,
+      `runtime version mismatch: blob snapshot was produced under ${runtimeLabel(payload['xstatev'])}, this instance runs ${runtimeLabel(runtime)}`,
       HINT_VERSION,
     );
   }
@@ -675,4 +675,14 @@ export function openBlob(blob: string, options: OpenBlobOptions): BlobPayload {
   }
 
   return verified;
+}
+
+/**
+ * A runtime stamp (`xstatev`) as a version-mismatch message names it: a bare
+ * version is XState's (`xstate 5.32.5`), any other stamp names its runtime
+ * (`psychoscript@0.3.0`). The blob's value is quoted, never trusted as text.
+ */
+function runtimeLabel(stamp: unknown): string {
+  if (typeof stamp === 'string' && /^\d[\w.+-]*$/u.test(stamp)) return `xstate ${stamp}`;
+  return JSON.stringify(stamp) ?? 'none';
 }

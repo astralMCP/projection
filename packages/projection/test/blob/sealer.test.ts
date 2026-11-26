@@ -194,7 +194,15 @@ describe('version checks (R21 step 2, Q3 strict rejection)', () => {
 
   it('rejects an xstatev mismatch', () => {
     const blob = sealBlob(makePayload({ xstatev: '5.0.0' }), makeConfig());
-    expectVerificationFailure(() => open(blob), /xstate version mismatch/);
+    expectVerificationFailure(() => open(blob), /runtime version mismatch.*xstate 5\.0\.0/);
+  });
+
+  it('names a psychoscript stamp as a runtime, not an xstate version', () => {
+    const blob = sealBlob(makePayload({ xstatev: 'psychoscript@0.0.1' }), makeConfig());
+    expectVerificationFailure(
+      () => open(blob),
+      /runtime version mismatch: blob snapshot was produced under "psychoscript@0\.0\.1"/,
+    );
   });
 });
 

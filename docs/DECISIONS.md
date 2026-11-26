@@ -2863,9 +2863,45 @@ opt-in; `'xstate'` stays the default, byte for byte.
   cap and replay protection are the MRTR adapter's, unchanged.
 - Every tool is a psychoscript durable host function. `start` decides the
   policy once, in the segment that made the call. A gated call's `wait`
-  blocks; once no call is executing, the run is suspended and its state
-  (base64) sealed with the pending calls. Calls started together share one
-  round trip (R15).
+  blocks; once the interpreter is idle (below), the run is suspended and
+  its state (base64) sealed with the pending calls. Calls started together
+  share one round trip (R15).
+- Idle means psychoscript's driver has parked: no runnable job, no queued
+  host call, only calls in flight. A timer is not that signal: psychoscript
+  slices long computations and continues on `setImmediate`, so a
+  "quiet for a macrotask" check fired mid-loop and split a batch (a 3e6
+  loop between two gated calls asked for the first alone). 0.3.0 exposes
+  the park only as a test hook, `parking.onPark` in
+  `dist/runtime/driver.js`, outside the `exports` map: the host loads it by
+  file URL (same module instance), and an AsyncLocalStorage entered around
+  each segment's `run()` attributes the process-wide, argument-less hook to
+  its segment. A park suspends when some gated call waits, nothing
+  executes, and every unsettled `wait` is a blocked gated call, checked one
+  macrotask later with no progress in between. A missing hook fails every
+  run. Upstream should export an idle signal before promotion.
+- Every outcome (completed, thrown, wall clock, fatal) is built only after
+  every call still executing has settled, as the machine host awaits every
+  execute, so an approved write that ran is always in the audit (R15b).
+  Once a run has failed fatally or its segment ended, every later `start`
+  or `wait` is refused without running anything.
+- A gated call the program started but never awaited is not run and nobody
+  is asked when the run ends without it: the result carries a note naming
+  it. psychoscript's warnings (an unhandled rejection) become notes too,
+  neutralized and bounded.
+- Console output: psychoscript keeps a run's lines across resumes, so a
+  segment reports only the lines after those the incoming snapshot already
+  held (counted from the snapshot's interpreter record), stamped with its
+  own segment index, on completion, a throw, the wall clock and a suspend,
+  capped at `maxConsoleBytes` like the machine host. Only a fatal abort
+  (unknown tool, a cap) loses them. The per-segment wall clock is
+  psychoscript's own `timeoutMs`, whose result keeps the logs: on resume
+  the snapshot header's active-time budget is reset and its limit set to
+  one segment; an abort timer is a backstop past it.
+- Caps: a tool call's arguments over `maxInputBytes` of JSON fail that call
+  with a catchable `ToolError` before anything is recorded or run. A
+  suspend passes psychoscript `maxBytes` = 8 x the blob ceiling
+  (`maxBlobBytes`, default 128 KB): a larger state is a `cap_exceeded`
+  error (keep less data in variables across an approval).
 - On resume, a pending call's `wait` applies its verdict: approved runs
   the SEALED arguments from `pending` (S2) once; declined or newly
   policy-denied (D9) throws an Error named `ToolDenied` into the program.
@@ -2895,23 +2931,38 @@ state); the R23 ceiling is 128 KB.
 
 Known gaps, each a condition for making it the default:
 
-- No memory limit. psychoscript runs in this process; a program that
-  hoards memory is stopped only by the segment wall clock (1.15 GB in 3 s
-  in a probe). The QuickJS sandbox caps memory (D15). Promotion needs the
-  interpreter in a worker with `resourceLimits`, or a cap upstream.
-- One regular-expression match cannot be interrupted (upstream says so).
+- The interpreter runs on the server's own thread, and three things escape
+  the wall clock, which can only fire between interpreter slices:
+  - One regular-expression match runs natively and cannot be interrupted;
+    it blocks the whole Node process. `/^(a+)+$/` on 27 a's and a b took
+    about 5 s, on 31 a's about 80 s.
+  - Memory is not bounded by the wall clock. `Buffer.alloc` creates host
+    memory outside the V8 heap with no size cap: 1 GiB per statement in
+    about 2 ms. Plain hoarding reached 1.15 GB in 3 s in a probe. The
+    QuickJS sandbox caps memory (D15).
+  - Copying across the host boundary is synchronous: a tool call's
+    arguments are copied before the size cap can refuse them, and a
+    suspend serializes the whole state before psychoscript compares it
+    with `maxBytes` (a program holding a 256 MB Buffer still blocks about
+    8 s before the clear `cap_exceeded`).
+
+  These make the runtime unsafe for untrusted multi-tenant use today.
+  Running the interpreter in a worker thread (terminated at the deadline,
+  with `resourceLimits`) is required before promotion.
+
+- The idle signal is an internal test hook of 0.3.0 (above).
 - G1: a server's own questions are not forwarded; such a call fails as a
   `ToolError`.
-- psychoscript's `timeoutMs` sums active time across resumes; the per-
-  segment cap is our own abort timer, and theirs is a backstop at
-  `segmentWallClockMs × (maxRoundTrips + 1)`.
-- Console output of a segment that suspends or is aborted is lost.
+- Console output of a run ended by a fatal failure (unknown tool, a cap) is
+  lost, and reading the line count from the snapshot depends on
+  psychoscript's record layout (pinned; it degrades to reporting every
+  line).
 - The tool name still says "machine".
 - 0.x with breaking releases weekly: pinned exactly, like XState.
 
 Promote only if the live eval (`projection` against
 `projection-psychoscript`) shows success and turns at least as good, and
-the memory gap is closed.
+the worker-thread isolation above is in place.
 
 Rejected: replacing XState outright (unmeasured, and the memory gap);
 compiling programs into machines (a second language to debug); a new tool
