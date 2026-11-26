@@ -62,7 +62,7 @@ you already have, and point your MCP host at that instead.
 
 ### 1. Install
 
-Requires Node ≥ 22.12 and an ES module project (`"type": "module"`).
+Requires Node ≥ 24 and an ES module project (`"type": "module"`).
 
 ```bash
 npm install @astral-mcp/projection @modelcontextprotocol/server@~2.4.0 @modelcontextprotocol/client@~2.4.0
@@ -110,8 +110,7 @@ serveStdio(facade.serverFactory);
 
 Then replace the server's entry in your host's MCP configuration so it runs
 this script with Node. Use absolute paths for both the script and a `node`
-binary ≥ 22.18 (it runs TypeScript directly; on 22.12–22.17 compile the
-script first, or run it with `tsx`). Hosts often start servers from another
+binary ≥ 24 (it runs TypeScript directly). Hosts often start servers from another
 working directory, with a different `PATH`. Many hosts use this shape; the
 exact file and fields depend on the host:
 
@@ -406,7 +405,7 @@ to correct it.
 
 ## Contributing
 
-Requires Node ≥ 22.12 (CI tests 22 and 26) and pnpm.
+Requires Node ≥ 24 (CI tests 24 and 26) and pnpm.
 
 ```bash
 pnpm install

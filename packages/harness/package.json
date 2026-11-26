@@ -33,7 +33,7 @@
   "devDependencies": {
     "@modelcontextprotocol/server-filesystem": "1.0.0",
     "@modelcontextprotocol/server-github": "2025.4.8",
-    "@types/node": "^22.20.5",
+    "@types/node": "^24.19.2",
     "mcp-sqlite": "1.0.9",
     "tsdown": "^0.23.3",
     "unrun": "^0.3.1",

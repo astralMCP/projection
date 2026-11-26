@@ -199,4 +199,4 @@ See
   harness, self-heal benchmark, and an MCP Apps
   demo host live alongside the library
 
-Requires Node ≥ 22. MIT licensed.
+Requires Node ≥ 24. MIT licensed.

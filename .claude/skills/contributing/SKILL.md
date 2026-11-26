@@ -41,9 +41,9 @@ CI = `pnpm run check` + `pnpm run format:check`. Formatting drift in ANY
 committed file (including `.claude/*.json`) fails CI — always run
 `pnpm run format` before committing.
 
-Node ≥22.12 is required (`engine-strict`; vitest 5 needs 22.12). The
+Node ≥24 is required (`engineStrict` in `pnpm-workspace.yaml`). The
 maintainer's machine provides Node via mise (24 LTS, on PATH by default), so
-commands need no PATH prefix. CI runs `check` on Node 22 and 26.
+commands need no PATH prefix. CI runs `check` on Node 24 and 26.
 
 ## Commit / PR conventions
 

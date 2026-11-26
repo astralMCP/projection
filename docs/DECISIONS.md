@@ -2814,3 +2814,32 @@ of life (and raise `engines` with it, as a breaking change).
 Rejected: `[22, 24, 26]` (more minutes and flakes for a version the
 maintainer's pre-push check already runs on by convention); keeping
 `[22, 24]` (the newest V8 would go untested until users hit it).
+
+## D47 — Require Node 24; CI tests 24 and 26 (2026-11-26)
+
+Context. D46 set CI to the oldest supported Node and the newest LTS,
+`[22, 26]`, and said to drop the oldest at end of life. Node 22 is in
+maintenance until April 2027. A candidate sandbox runtime,
+psychoscript (a confined JavaScript interpreter whose runs suspend to
+bytes and resume), declares `engines.node` `>=24`. With `engineStrict`
+on (below), pnpm checks dependencies' engines too, so our Node 22 CI
+job would refuse to install it.
+
+Decision. Drop Node 22 now rather than at end of life. The published
+package and the workspace root both require `>=24`; the CI matrix is
+`[24, 26]`; `@types/node` moves to 24. D46's rule otherwise stands: CI
+tests the oldest supported Node and the newest LTS.
+
+- This is a breaking change for consumers on Node 22, so it ships in
+  the next minor release under **Breaking**.
+- The maintainer's machine already runs 24, so the pre-push check now
+  runs on the oldest supported version.
+- `engines` has no upper bound: 27 is not tested, but a cap would make
+  `engine-strict` installs fail the day 27 ships.
+- `engine-strict=true` moves from `.npmrc`, which pnpm 11 ignores, to
+  `engineStrict: true` in `pnpm-workspace.yaml`. The Node requirement
+  is now enforced for contributors and CI, not just warned.
+
+Rejected: waiting for April 2027 (blocks evaluating psychoscript on
+the version CI tests); `>=24 <27` (an upper bound breaks installs
+without anything to prevent).
